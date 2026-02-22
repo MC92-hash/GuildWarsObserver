@@ -224,6 +224,14 @@ public:
 
     Camera* GetCamera() { return m_user_camera.get(); }
 
+    ID3D11VertexShader* GetVertexShader() const { return m_vertex_shader->GetShader(); }
+    ID3D11InputLayout*  GetInputLayout()  const { return m_vertex_shader->GetInputLayout(); }
+    ID3D11PixelShader*  GetDefaultPixelShader() const
+    {
+        auto it = m_pixel_shaders.find(PixelShaderType::OldModel);
+        return it != m_pixel_shaders.end() ? it->second->GetShader() : nullptr;
+    }
+
     // Camera override for model viewer mode
     void SetCameraOverride(const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj, const DirectX::XMFLOAT3& pos)
     {

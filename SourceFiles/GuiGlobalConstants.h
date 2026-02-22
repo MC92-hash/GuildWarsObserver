@@ -8,6 +8,13 @@ class GuiGlobalConstants
 {
 public:
 	inline static bool settings_loaded = false;
+
+	// Persistent gw.dat path (saved across sessions)
+	inline static std::string saved_gw_dat_path;
+
+	// Persistent match data folder path (saved across sessions)
+	inline static std::string saved_match_data_folder_path;
+
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;
 	inline static const int right_panel_width = 450;
@@ -33,6 +40,13 @@ public:
 	inline static bool is_model_viewer_panel_open = false;
 	inline static bool is_window_controller_open = true;
 	inline static bool is_compass_open = true;
+	inline static bool is_debug_match_metadata_open = false;
+	inline static bool is_replay_browser_open = true;
+
+	// Font settings
+	inline static int saved_font_index = 2;
+	inline static float saved_font_size = 18.0f;
+	inline static bool font_needs_rebuild = false;
 
 	// Window settings
 	inline static int window_width = -1;
@@ -232,12 +246,22 @@ public:
 		file << "model_viewer_panel=" << (is_model_viewer_panel_open ? 1 : 0) << "\n";
 		file << "window_controller=" << (is_window_controller_open ? 1 : 0) << "\n";
 		file << "compass=" << (is_compass_open ? 1 : 0) << "\n";
+		file << "debug_match_metadata=" << (is_debug_match_metadata_open ? 1 : 0) << "\n";
+		file << "replay_browser=" << (is_replay_browser_open ? 1 : 0) << "\n";
 
 		file << "window_width=" << window_width << "\n";
 		file << "window_height=" << window_height << "\n";
 		file << "window_pos_x=" << window_pos_x << "\n";
 		file << "window_pos_y=" << window_pos_y << "\n";
 		file << "window_maximized=" << (window_maximized ? 1 : 0) << "\n";
+
+		file << "\n[Font]\n";
+		file << "font_index=" << saved_font_index << "\n";
+		file << "font_size=" << static_cast<int>(saved_font_size) << "\n";
+
+		file << "\n[Config]\n";
+		file << "gw_dat_path=" << saved_gw_dat_path << "\n";
+		file << "match_data_folder=" << saved_match_data_folder_path << "\n";
 
 		file.close();
 	}
@@ -253,15 +277,25 @@ public:
 
 		std::string line;
 		while (std::getline(file, line)) {
-			// Skip section headers and empty lines
 			if (line.empty() || line[0] == '[') continue;
 
-			// Parse key=value
 			size_t pos = line.find('=');
 			if (pos == std::string::npos) continue;
 
 			std::string key = line.substr(0, pos);
-			int value = std::stoi(line.substr(pos + 1));
+			std::string val_str = line.substr(pos + 1);
+
+			if (key == "gw_dat_path") {
+				saved_gw_dat_path = val_str;
+				continue;
+			}
+			if (key == "match_data_folder") {
+				saved_match_data_folder_path = val_str;
+				continue;
+			}
+
+			int value = 0;
+			try { value = std::stoi(val_str); } catch (...) { continue; }
 
 			if (key == "dat_browser") is_dat_browser_open = (value != 0);
 			else if (key == "dat_browser_resizeable") is_dat_browser_resizeable = (value != 0);
@@ -281,6 +315,10 @@ public:
 			else if (key == "model_viewer_panel") is_model_viewer_panel_open = (value != 0);
 			else if (key == "window_controller") is_window_controller_open = (value != 0);
 			else if (key == "compass") is_compass_open = (value != 0);
+			else if (key == "debug_match_metadata") is_debug_match_metadata_open = (value != 0);
+			else if (key == "replay_browser") is_replay_browser_open = (value != 0);
+			else if (key == "font_index") saved_font_index = value;
+			else if (key == "font_size") saved_font_size = static_cast<float>(value);
 			else if (key == "window_width") window_width = value;
 			else if (key == "window_height") window_height = value;
 			else if (key == "window_pos_x") window_pos_x = value;

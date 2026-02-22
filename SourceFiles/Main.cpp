@@ -56,7 +56,7 @@ LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
     SymInitialize(process, NULL, TRUE);
 
     std::stringstream ss;
-    ss << "Sorry! Guild Wars Map Browser just crashed unexpectedly.\n";
+    ss << "Sorry! Guild Wars Observer just crashed unexpectedly.\n";
     ss << "A dump file has been created: \"CrashDump.dmp\".\n";
     ss << "Please contact the developers or create an issue on Github with the dump file attached if possible.\n\n";
     ss << "-------------------------------------------------------------------------------\n";
@@ -146,7 +146,7 @@ namespace
     POINT g_modelViewerClickStartPos = { 0, 0 };  // For detecting clicks vs drags
 }
 
-LPCWSTR g_szAppName = L"GuildWarsMapBrowser";
+LPCWSTR g_szAppName = L"Guild Wars Observer";
 
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void ExitMapBrowser() noexcept;
@@ -186,7 +186,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         wcex.hIcon = LoadIconW(hInstance, L"IDI_ICON");
         wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wcex.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        wcex.lpszClassName = L"GuildWarsMapBrowserWindowClass";
+        wcex.lpszClassName = L"GuildWarsObserverWindowClass";
         wcex.hIconSm = LoadIconW(wcex.hInstance, L"IDI_ICON");
         if (! RegisterClassExW(&wcex))
             return 1;
@@ -212,10 +212,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
 
         // Create window
-        HWND hwnd = CreateWindowExW(0, L"GuildWarsMapBrowserWindowClass", g_szAppName, WS_OVERLAPPEDWINDOW,
+        HWND hwnd = CreateWindowExW(0, L"GuildWarsObserverWindowClass", g_szAppName, WS_OVERLAPPEDWINDOW,
             x, y, w, h,
             nullptr, nullptr, hInstance, nullptr);
-        // TODO: Change to CreateWindowExW(WS_EX_TOPMOST, L"GuildWarsMapBrowserWindowClass", g_szAppName, WS_POPUP,
+        // TODO: Change to CreateWindowExW(WS_EX_TOPMOST, L"GuildWarsObserverWindowClass", g_szAppName, WS_POPUP,
         // to default to fullscreen.
 
         g_input_manager = std::make_unique<InputManager>(hwnd);

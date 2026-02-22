@@ -8,10 +8,104 @@
 #include "draw_dat_load_progress_bar.h"
 #include "draw_picking_info.h"
 #include "draw_ui.h"
+#include "draw_timeline.h"
 #include "animation_state.h"
 #include "ModelViewer/ModelViewer.h"
+#include "TextureCache.h"
+#include "FontConfig.h"
+#include "SkillDatabase.h"
 
 extern void ExitMapBrowser() noexcept;
+
+static std::string GetFontBasePath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Fonts"))
+            return (dir / "Textures" / "Fonts").string();
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    return "";
+}
+
+static void MergeCJKFallback(ImFontAtlas* atlas, float fontSize)
+{
+    // Korean: Hangul Jamo + Hangul Syllables
+    // Japanese: Hiragana + Katakana + CJK Unified Ideographs subset
+    static const ImWchar ranges[] = {
+        0x3000, 0x30FF,   // CJK Symbols, Hiragana, Katakana
+        0x3100, 0x312F,   // Bopomofo
+        0x31F0, 0x31FF,   // Katakana Phonetic Extensions
+        0xAC00, 0xD7A3,   // Hangul Syllables
+        0x3131, 0x318E,   // Hangul Compatibility Jamo
+        0x4E00, 0x9FFF,   // CJK Unified Ideographs
+        0xFF00, 0xFFEF,   // Halfwidth and Fullwidth Forms
+        0, 0
+    };
+
+    ImFontConfig mergeConfig;
+    mergeConfig.MergeMode = true;
+    mergeConfig.PixelSnapH = true;
+
+    const char* fallbacks[] = {
+        "C:\\Windows\\Fonts\\malgun.ttf",
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\YuGothR.ttc",
+    };
+
+    for (const char* path : fallbacks)
+    {
+        if (std::filesystem::exists(path))
+        {
+            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, ranges);
+            return;
+        }
+    }
+}
+
+static void LoadSelectedFont(float fontSize)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+
+    int idx = GuiGlobalConstants::saved_font_index;
+    if (idx < 0 || idx >= g_fontTableCount)
+        idx = 0;
+
+    const FontEntry& entry = g_fontTable[idx];
+    bool loaded = false;
+
+    if (entry.fileName != nullptr)
+    {
+        std::string fullPath;
+        if (entry.isSystemFont)
+            fullPath = std::string("C:\\Windows\\Fonts\\") + entry.fileName;
+        else
+        {
+            std::string base = GetFontBasePath();
+            if (!base.empty())
+                fullPath = base + "\\" + entry.fileName;
+        }
+
+        if (!fullPath.empty() && std::filesystem::exists(fullPath))
+        {
+            io.Fonts->AddFontFromFileTTF(fullPath.c_str(), fontSize);
+            loaded = true;
+        }
+    }
+
+    if (!loaded)
+        io.Fonts->AddFontDefault();
+
+    MergeCJKFallback(io.Fonts, fontSize);
+
+    io.Fonts->Build();
+}
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -40,8 +134,9 @@ MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
 
 MapBrowser::~MapBrowser()
 {
-    GuiGlobalConstants::SaveSettings(); // Save window visibility settings on exit
-    CloseTextureErrorLog(); // Ensure log file is closed on exit
+    GetTextureCache().Shutdown();
+    GuiGlobalConstants::SaveSettings();
+    CloseTextureErrorLog();
 }
 
 
@@ -58,6 +153,17 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         m_deviceResources->GetD3DDeviceContext(), m_input_manager);
     m_map_renderer->Initialize(static_cast<float>(width), static_cast<float>(height));
 
+    m_agent_overlay = std::make_unique<AgentOverlay>(
+        m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
+    m_agent_overlay->Initialize();
+
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        auto replayPath = std::filesystem::path(exePath).parent_path() / "replay.json";
+        if (std::filesystem::exists(replayPath))
+            m_match_replay.LoadFromFile(replayPath);
+    }
 
     // Setup Dear ImGui
     IMGUI_CHECKVERSION();
@@ -88,8 +194,53 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
 
+    GetTextureCache().Init(m_deviceResources->GetD3DDevice());
+
     // Load saved window visibility settings
     GuiGlobalConstants::LoadSettings();
+
+    // Load the user's preferred font
+    LoadSelectedFont(GuiGlobalConstants::saved_font_size);
+
+    // Load skill database (walk up from exe to find Data folder)
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        auto dir = std::filesystem::path(exePath).parent_path();
+        for (int i = 0; i < 5; i++)
+        {
+            if (std::filesystem::exists(dir / "Data" / "skilldata.json"))
+            {
+                GetSkillDatabase().Load((dir / "Data").string());
+                break;
+            }
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+    }
+
+    // Auto-load gw.dat from saved config if path is valid
+    if (!GuiGlobalConstants::saved_gw_dat_path.empty() && !gw_dat_path_set)
+    {
+        std::filesystem::path datPath(GuiGlobalConstants::saved_gw_dat_path);
+        if (std::filesystem::exists(datPath))
+        {
+            gw_dat_path = std::wstring(GuiGlobalConstants::saved_gw_dat_path.begin(),
+                                       GuiGlobalConstants::saved_gw_dat_path.end());
+            gw_dat_path_set = true;
+        }
+    }
+
+    // Auto-load match data folder from saved config
+    if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
+    {
+        std::filesystem::path matchFolder(GuiGlobalConstants::saved_match_data_folder_path);
+        if (std::filesystem::exists(matchFolder) && std::filesystem::is_directory(matchFolder))
+        {
+            m_replay_library.SetMatchDataFolder(GuiGlobalConstants::saved_match_data_folder_path);
+            m_replay_library.ScanFolder();
+        }
+    }
 }
 
 #pragma region Frame Update
@@ -128,10 +279,25 @@ void MapBrowser::Tick()
     // Update the last frame time
     last_frame_time = high_resolution_clock::now();
 
+    // #region agent log
+    auto _dbg_work_start = high_resolution_clock::now();
+    // #endregion
+
     m_timer.Tick([&]() {
         Update(elapsed);
         Render();
         });
+
+    // #region agent log
+    {
+        static int _dbg_fc = 0; if (++_dbg_fc % 60 == 0) {
+            double _w = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_work_start).count();
+            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
+            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"C\",\"location\":\"MapBrowser.cpp:Tick\",\"message\":\"frame\",\"data\":{\"elapsed_ms\":" << elapsed.count() << ",\"work_ms\":" << _w << "},\"timestamp\":" << _ts << "}\n";
+        }
+    }
+    // #endregion
 }
 
 // Updates the world.
@@ -220,6 +386,46 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
     }
 
     m_map_renderer->Update(elapsed.count() / 1000.0);
+
+    // #region agent log
+    auto _dbg_ovl_start = high_resolution_clock::now();
+    // #endregion
+
+    if (m_match_replay.IsLoaded())
+    {
+        float dt = static_cast<float>(elapsed.count() / 1000.0);
+        m_match_replay.Update(dt);
+
+        const auto& replayAgents = m_match_replay.GetCurrentAgents();
+        if (!replayAgents.empty() && m_agent_overlay)
+        {
+            std::vector<AgentMarker> markers;
+            markers.reserve(replayAgents.size());
+            for (const auto& ra : replayAgents)
+            {
+                AgentMarker m;
+                m.id = ra.id;
+                m.position = { ra.x, ra.y, ra.z };
+                m.color = ra.color;
+                markers.push_back(m);
+            }
+            m_agent_overlay->SetMarkers(std::move(markers));
+        }
+    }
+
+    if (m_agent_overlay)
+        m_agent_overlay->Update();
+
+    // #region agent log
+    {
+        static int _dbg_uc = 0; if (++_dbg_uc % 60 == 0) {
+            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_ovl_start).count();
+            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
+            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"A\",\"location\":\"MapBrowser.cpp:Update\",\"message\":\"overlay_update_time\",\"data\":{\"ms\":" << _ms << "},\"timestamp\":" << _ts << "}\n";
+        }
+    }
+    // #endregion
 }
 #pragma endregion
 
@@ -435,6 +641,33 @@ void MapBrowser::Render()
         m_map_renderer->RemoveBoneVisualization(boneLineIds);
     }
 
+    // #region agent log
+    auto _dbg_ovlr_start = high_resolution_clock::now();
+    // #endregion
+
+    // --- Render Agent Overlay ---
+    if (m_agent_overlay && m_agent_overlay->IsEnabled())
+    {
+        m_deviceResources->PIXBeginEvent(L"Agent Overlay");
+        auto* camera = m_map_renderer->GetCamera();
+        m_agent_overlay->Render(
+            camera->GetView(), camera->GetProj(),
+            m_map_renderer->GetVertexShader(),
+            m_map_renderer->GetDefaultPixelShader(),
+            m_map_renderer->GetInputLayout());
+        m_deviceResources->PIXEndEvent();
+    }
+
+    // #region agent log
+    {
+        static int _dbg_rc = 0; if (++_dbg_rc % 60 == 0) {
+            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_ovlr_start).count();
+            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
+            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"B\",\"location\":\"MapBrowser.cpp:Render\",\"message\":\"overlay_render_time\",\"data\":{\"ms\":" << _ms << ",\"markers\":" << (m_agent_overlay ? (int)m_agent_overlay->GetMarkers().size() : -1) << "},\"timestamp\":" << _ts << "}\n";
+        }
+    }
+    // #endregion
 
     // --- Process Picking ---
     // Resolve multisampled picking texture if necessary
@@ -482,6 +715,14 @@ void MapBrowser::Render()
     picking_info.camera_pos = m_map_renderer->GetCamera()->GetPosition3f();
 
 
+    // --- Hot-reload font if changed via Preferences ---
+    if (GuiGlobalConstants::font_needs_rebuild)
+    {
+        GuiGlobalConstants::font_needs_rebuild = false;
+        LoadSelectedFont(GuiGlobalConstants::saved_font_size);
+        ImGui_ImplDX11_InvalidateDeviceObjects();
+    }
+
     // --- Start ImGui Frame ---
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
@@ -497,7 +738,7 @@ void MapBrowser::Render()
     }
     else {
         draw_ui(m_dat_managers, m_dat_manager_to_show_in_dat_browser, m_map_renderer.get(), picking_info, m_csv_data, m_FPS_target, m_timer, m_extract_panel_info,
-            msaa_changed, msaa_level_index, msaa_levels, m_hash_index);
+            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library);
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active
@@ -524,14 +765,32 @@ void MapBrowser::Render()
             ImGui::ShowDemoWindow(&show_demo_window);
     }
 
+    // --- Draw Replay Timeline Bar ---
+    draw_timeline_bar(m_match_replay);
+
     // --- Render ImGui ---
     m_deviceResources->PIXBeginEvent(L"Render ImGui");
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_deviceResources->PIXEndEvent();
 
+    // #region agent log
+    auto _dbg_present_start = high_resolution_clock::now();
+    // #endregion
+
     // --- Present Frame ---
     m_deviceResources->Present();
+
+    // #region agent log
+    {
+        static int _dbg_pc = 0; if (++_dbg_pc % 60 == 0) {
+            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_present_start).count();
+            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
+            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"C\",\"location\":\"MapBrowser.cpp:Render\",\"message\":\"present_time\",\"data\":{\"ms\":" << _ms << "},\"timestamp\":" << _ts << "}\n";
+        }
+    }
+    // #endregion
 
     // --- Post-Present Logic (Safe to do non-UI work here) ---
     if (msaa_changed) {

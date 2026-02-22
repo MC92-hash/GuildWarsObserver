@@ -15,6 +15,10 @@
 #include "draw_pathfinding_panel.h"
 #include "animation_state.h"
 #include "ModelViewer/ModelViewerPanel.h"
+#include "draw_debug_match_metadata.h"
+#include "draw_replay_browser.h"
+#include "ReplayLibrary.h"
+#include "FontConfig.h"
 #include <draw_gui_window_controller.h>
 #include <draw_extract_panel.h>
 #include <byte_pattern_search_panel.h>
@@ -160,9 +164,60 @@ static void draw_compass_overlay(MapRenderer* map_renderer)
 	ImGui::End();
 }
 
+static bool s_preferences_open = false;
+
+static void draw_preferences_window()
+{
+	if (!s_preferences_open) return;
+
+	ImGui::SetNextWindowSize(ImVec2(420, 220), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Preferences", &s_preferences_open, ImGuiWindowFlags_NoCollapse))
+	{
+		ImGui::End();
+		return;
+	}
+
+	ImGui::SeparatorText("Font");
+
+	int currentFont = GuiGlobalConstants::saved_font_index;
+	if (currentFont < 0 || currentFont >= g_fontTableCount)
+		currentFont = 0;
+
+	if (ImGui::BeginCombo("Font Family", g_fontTable[currentFont].displayName))
+	{
+		for (int i = 0; i < g_fontTableCount; i++)
+		{
+			bool selected = (i == currentFont);
+			if (ImGui::Selectable(g_fontTable[i].displayName, selected))
+			{
+				GuiGlobalConstants::saved_font_index = i;
+				GuiGlobalConstants::font_needs_rebuild = true;
+				GuiGlobalConstants::SaveSettings();
+			}
+			if (selected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
+	}
+
+	float fontSize = GuiGlobalConstants::saved_font_size;
+	if (ImGui::SliderFloat("Font Size", &fontSize, 10.0f, 28.0f, "%.0f px"))
+	{
+		GuiGlobalConstants::saved_font_size = fontSize;
+		GuiGlobalConstants::font_needs_rebuild = true;
+		GuiGlobalConstants::SaveSettings();
+	}
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Font changes apply immediately.");
+
+	ImGui::End();
+}
+
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
-	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index)
+	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
+	ReplayLibrary& replay_library)
 {
 	// Set DAT managers pointer for animation auto-loading (needs to be available in draw_dat_browser)
 	SetAnimationDATManagers(&dat_managers);
@@ -170,14 +225,30 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	int initial_dat_manager_to_show = dat_manager_to_show;
 
-	if (!gw_dat_path_set)
-	{
-		draw_gui_for_open_dat_file();
-	}
-	else
-	{
-		// Main menu bar
-		if (ImGui::BeginMainMenuBar()) {
+	// File dialog key used by both the menu item and the first-run prompt
+	static bool open_dat_file_dialog = false;
+	static bool open_match_folder_dialog = false;
+
+	// Main menu bar — always visible
+	if (ImGui::BeginMainMenuBar()) {
+		if (ImGui::BeginMenu("File")) {
+			if (ImGui::MenuItem("Load .dat File...")) {
+				open_dat_file_dialog = true;
+			}
+			if (ImGui::MenuItem("Load Match Data Folder...")) {
+				open_match_folder_dialog = true;
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Preferences...")) {
+				s_preferences_open = true;
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Exit")) {
+				PostQuitMessage(0);
+			}
+			ImGui::EndMenu();
+		}
+		if (gw_dat_path_set) {
 			if (ImGui::BeginMenu("View")) {
 				bool changed = false;
 				changed |= ImGui::MenuItem("DAT Browser", NULL, &GuiGlobalConstants::is_dat_browser_open);
@@ -205,10 +276,6 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 					changed = true;
 				}
 				if (changed) GuiGlobalConstants::SaveSettings();
-				ImGui::Separator();
-				if (ImGui::MenuItem("Exit")) {
-					PostQuitMessage(0);
-				}
 				ImGui::EndMenu();
 			}
 			if (ImGui::BeginMenu("Layout")) {
@@ -223,9 +290,81 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 				}
 				ImGui::EndMenu();
 			}
-			ImGui::EndMainMenuBar();
+		}
+		if (ImGui::MenuItem("Replay Browser", NULL, &GuiGlobalConstants::is_replay_browser_open)) {
+			GuiGlobalConstants::SaveSettings();
+		}
+		if (ImGui::BeginMenu("Debug")) {
+			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
+				GuiGlobalConstants::SaveSettings();
+			}
+			ImGui::EndMenu();
+		}
+		ImGui::EndMainMenuBar();
+	}
+
+	// Open file dialog triggered by File menu
+	if (open_dat_file_dialog) {
+		open_dat_file_dialog = false;
+
+		std::string initial_filepath = ".";
+		if (!GuiGlobalConstants::saved_gw_dat_path.empty()) {
+			auto parentDir = std::filesystem::path(GuiGlobalConstants::saved_gw_dat_path).parent_path();
+			if (std::filesystem::exists(parentDir))
+				initial_filepath = parentDir.string();
+		}
+		if (!std::filesystem::exists(initial_filepath) || !std::filesystem::is_directory(initial_filepath)) {
+			auto exe_dir = get_executable_directory();
+			if (exe_dir.has_value())
+				initial_filepath = exe_dir.value().string();
 		}
 
+		ImGuiFileDialog::Instance()->OpenDialog("ChooseGwDatKey", "Select Gw.dat", ".dat",
+			initial_filepath + "\\.");
+	}
+
+	// Display the file dialog (shared between menu and first-run)
+	if (ImGuiFileDialog::Instance()->Display("ChooseGwDatKey", ImGuiWindowFlags_NoCollapse,
+		ImVec2(500, 400)))
+	{
+		if (ImGuiFileDialog::Instance()->IsOk())
+		{
+			std::string filePathName = ImGuiFileDialog::Instance()->GetFilePathName();
+
+			GuiGlobalConstants::saved_gw_dat_path = filePathName;
+			GuiGlobalConstants::SaveSettings();
+
+			save_last_filepath(filePathName, "dat_browser_last_filepath.txt");
+
+			std::wstring wstr(filePathName.begin(), filePathName.end());
+			gw_dat_path = wstr;
+			gw_dat_path_set = true;
+		}
+		ImGuiFileDialog::Instance()->Close();
+	}
+
+	// Handle match data folder selection via Windows folder browser
+	if (open_match_folder_dialog) {
+		open_match_folder_dialog = false;
+
+		std::wstring wFolderPath = OpenDirectoryDialog();
+		if (!wFolderPath.empty())
+		{
+			std::string folderPath(wFolderPath.begin(), wFolderPath.end());
+			GuiGlobalConstants::saved_match_data_folder_path = folderPath;
+			GuiGlobalConstants::SaveSettings();
+
+			replay_library.SetMatchDataFolder(folderPath);
+			replay_library.ScanFolder();
+		}
+	}
+
+	if (!gw_dat_path_set)
+	{
+		draw_gui_for_open_dat_file();
+	}
+	else
+	{
 		if (GuiGlobalConstants::is_window_controller_open) {
 			draw_gui_window_controller();
 		}
@@ -276,6 +415,15 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			draw_compass_overlay(map_renderer);
 		}
 	}
+
+	// Replay browser (available regardless of DAT state)
+	draw_replay_browser(replay_library);
+
+	// Debug panels (available regardless of DAT state)
+	draw_debug_match_metadata_panel(replay_library);
+
+	// Preferences window
+	draw_preferences_window();
 
 	dat_manager_to_show_changed = dat_manager_to_show != initial_dat_manager_to_show;
 }

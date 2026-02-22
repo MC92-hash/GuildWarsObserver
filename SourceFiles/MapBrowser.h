@@ -11,6 +11,9 @@
 #include "DATManager.h"
 #include "MapRenderer.h"
 #include "ModelViewer/ModelViewer.h"
+#include "AgentOverlay.h"
+#include "MatchReplay.h"
+#include "ReplayLibrary.h"
 #include <draw_extract_panel.h>
 
 using namespace std::chrono;
@@ -111,6 +114,9 @@ private:
     std::vector<std::vector<std::string>> m_csv_data;
 
     std::unique_ptr<MapRenderer> m_map_renderer;
+    std::unique_ptr<AgentOverlay> m_agent_overlay;
+    MatchReplay m_match_replay;
+    ReplayLibrary m_replay_library;
 
     std::string m_error_msg = "";
     bool m_show_error_msg = false;
