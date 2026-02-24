@@ -70,6 +70,28 @@ struct PartyMeta
     std::vector<PlayerMeta> others;
 };
 
+struct LordDamageEvent
+{
+    std::string timestamp;
+    int caster_id = 0;
+    int target_id = 0;
+    float value = 0.f;
+    int damage_type = 0;
+    int attacking_team = 0;
+    long damage = 0;
+    long damage_before = 0;
+    long damage_after = 0;
+};
+
+struct LordDamageData
+{
+    std::vector<LordDamageEvent> events;
+    long total_lord_damage_blue = 0;
+    long total_lord_damage_red = 0;
+    bool has_data = false;
+    std::string debug_status;
+};
+
 struct MatchMeta
 {
     int map_id = 0;
@@ -87,6 +109,7 @@ struct MatchMeta
     std::map<std::string, int> team_damage;
     std::map<std::string, PartyMeta> parties;
     std::map<std::string, GuildMeta> guilds;
+    LordDamageData lord_damage;
 
     std::string folder_name;
     std::string folder_path;
@@ -109,6 +132,7 @@ private:
     std::string m_folder_path;
     static bool ParseInfosJson(const std::filesystem::path& jsonPath, MatchMeta& out);
     static void ParsePlayerArray(const void* jsonArray, std::vector<PlayerMeta>& out);
+    static void ParseLordEvents(const std::filesystem::path& matchFolder, LordDamageData& out);
 };
 
 class ReplayLibrary

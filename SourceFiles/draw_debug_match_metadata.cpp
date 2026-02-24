@@ -340,6 +340,61 @@ static void DrawSingleMatch(const MatchMeta& m, int index)
 
         DrawGuildsSection(m.guilds);
 
+        if (ImGui::TreeNode("StoC"))
+        {
+            if (ImGui::TreeNode("Lord Damage"))
+            {
+                const auto& ld = m.lord_damage;
+                if (!ld.has_data)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                        "No lord damage data available.");
+                }
+                else
+                {
+                    ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f),
+                        "Total Lord Damage  Blue: %ld", ld.total_lord_damage_blue);
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                        "Total Lord Damage  Red:  %ld", ld.total_lord_damage_red);
+                    ImGui::Separator();
+
+                    ImGui::Text("Events: %d", (int)ld.events.size());
+
+                    ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_SizingFixedFit;
+
+                    if (ImGui::BeginTable("##lord_dmg_events", 5, flags))
+                    {
+                        ImGui::TableSetupColumn("Timestamp");
+                        ImGui::TableSetupColumn("Caster ID");
+                        ImGui::TableSetupColumn("Damage");
+                        ImGui::TableSetupColumn("Team");
+                        ImGui::TableSetupColumn("Cumulative After");
+                        ImGui::TableHeadersRow();
+
+                        for (const auto& evt : ld.events)
+                        {
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn(); ImGui::TextUnformatted(evt.timestamp.c_str());
+                            ImGui::TableNextColumn(); ImGui::Text("%d", evt.caster_id);
+                            ImGui::TableNextColumn(); ImGui::Text("%ld", evt.damage);
+                            ImGui::TableNextColumn();
+                            if (evt.attacking_team == 1)
+                                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Blue (1)");
+                            else if (evt.attacking_team == 2)
+                                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Red (2)");
+                            else
+                                ImGui::Text("%d", evt.attacking_team);
+                            ImGui::TableNextColumn(); ImGui::Text("%ld", evt.damage_after);
+                        }
+                        ImGui::EndTable();
+                    }
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
+        }
+
         ImGui::Unindent(8.0f);
     }
     ImGui::PopID();

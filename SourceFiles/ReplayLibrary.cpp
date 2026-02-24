@@ -6,6 +6,249 @@
 
 using json = nlohmann::json;
 
+// ---------------------------------------------------------------------------
+// Self-contained DEFLATE decompressor (RFC 1951)
+// ---------------------------------------------------------------------------
+namespace {
+
+struct BitStream
+{
+    const uint8_t* src;
+    size_t len;
+    size_t pos = 0;
+    uint32_t buf = 0;
+    int bits = 0;
+
+    void fill()
+    {
+        while (bits <= 24 && pos < len)
+        {
+            buf |= static_cast<uint32_t>(src[pos++]) << bits;
+            bits += 8;
+        }
+    }
+
+    uint32_t read(int n)
+    {
+        if (bits < n) fill();
+        uint32_t val = buf & ((1U << n) - 1);
+        buf >>= n;
+        bits -= n;
+        return val;
+    }
+
+    void align()
+    {
+        int discard = bits & 7;
+        buf >>= discard;
+        bits -= discard;
+    }
+};
+
+static constexpr int kMaxBits = 15;
+static constexpr int kMaxLitLenSyms = 288;
+static constexpr int kMaxDistSyms = 32;
+
+struct HuffTable
+{
+    uint16_t counts[kMaxBits + 1] = {};
+    uint16_t symbols[kMaxLitLenSyms] = {};
+};
+
+static bool BuildHuff(HuffTable& t, const uint8_t* lengths, int num)
+{
+    memset(t.counts, 0, sizeof(t.counts));
+    for (int i = 0; i < num; i++)
+        t.counts[lengths[i]]++;
+    t.counts[0] = 0;
+
+    uint16_t offsets[kMaxBits + 1];
+    offsets[0] = 0;
+    offsets[1] = 0;
+    for (int i = 1; i < kMaxBits; i++)
+        offsets[i + 1] = offsets[i] + t.counts[i];
+
+    for (int i = 0; i < num; i++)
+        if (lengths[i])
+            t.symbols[offsets[lengths[i]]++] = static_cast<uint16_t>(i);
+    return true;
+}
+
+static int DecodeSymbol(BitStream& bs, const HuffTable& t)
+{
+    bs.fill();
+    int code = 0, first = 0, index = 0;
+    for (int len = 1; len <= kMaxBits; len++)
+    {
+        code |= (bs.buf & 1);
+        bs.buf >>= 1;
+        bs.bits--;
+        int count = t.counts[len];
+        if (code < first + count)
+            return t.symbols[index + (code - first)];
+        index += count;
+        first = (first + count) << 1;
+        code <<= 1;
+    }
+    return -1;
+}
+
+static const uint16_t kLenBase[29] = {
+    3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
+    35,43,51,59,67,83,99,115,131,163,195,227,258
+};
+static const uint8_t kLenExtra[29] = {
+    0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0
+};
+static const uint16_t kDistBase[30] = {
+    1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,
+    257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577
+};
+static const uint8_t kDistExtra[30] = {
+    0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13
+};
+
+static bool InflateRaw(const uint8_t* src, size_t srcLen,
+    std::vector<uint8_t>& out, size_t sizeHint)
+{
+    out.clear();
+    out.reserve(sizeHint ? sizeHint : srcLen * 4);
+
+    BitStream bs;
+    bs.src = src;
+    bs.len = srcLen;
+
+    int bfinal;
+    do
+    {
+        bfinal = bs.read(1);
+        int btype = bs.read(2);
+
+        if (btype == 0) // stored
+        {
+            bs.align();
+            if (bs.pos + 4 > bs.len) return false;
+            uint16_t len = bs.src[bs.pos] | (bs.src[bs.pos + 1] << 8);
+            uint16_t nlen = bs.src[bs.pos + 2] | (bs.src[bs.pos + 3] << 8);
+            bs.pos += 4;
+            bs.buf = 0;
+            bs.bits = 0;
+            if ((uint16_t)(~nlen) != len) return false;
+            if (bs.pos + len > bs.len) return false;
+            out.insert(out.end(), bs.src + bs.pos, bs.src + bs.pos + len);
+            bs.pos += len;
+        }
+        else if (btype == 1 || btype == 2) // fixed or dynamic Huffman
+        {
+            HuffTable litLen, dist;
+
+            if (btype == 1)
+            {
+                uint8_t lengths[kMaxLitLenSyms];
+                int i = 0;
+                for (; i < 144; i++) lengths[i] = 8;
+                for (; i < 256; i++) lengths[i] = 9;
+                for (; i < 280; i++) lengths[i] = 7;
+                for (; i < 288; i++) lengths[i] = 8;
+                BuildHuff(litLen, lengths, 288);
+
+                uint8_t dlengths[kMaxDistSyms];
+                for (i = 0; i < 32; i++) dlengths[i] = 5;
+                BuildHuff(dist, dlengths, 32);
+            }
+            else
+            {
+                int hlit = bs.read(5) + 257;
+                int hdist = bs.read(5) + 1;
+                int hclen = bs.read(4) + 4;
+
+                static const int kCodeOrder[19] = {
+                    16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
+                };
+                uint8_t clLengths[19] = {};
+                for (int i = 0; i < hclen; i++)
+                    clLengths[kCodeOrder[i]] = static_cast<uint8_t>(bs.read(3));
+
+                HuffTable clTable;
+                BuildHuff(clTable, clLengths, 19);
+
+                uint8_t lengths[kMaxLitLenSyms + kMaxDistSyms] = {};
+                int total = hlit + hdist;
+                for (int i = 0; i < total;)
+                {
+                    int sym = DecodeSymbol(bs, clTable);
+                    if (sym < 0) return false;
+                    if (sym < 16)
+                    {
+                        lengths[i++] = static_cast<uint8_t>(sym);
+                    }
+                    else if (sym == 16)
+                    {
+                        if (i == 0) return false;
+                        int rep = bs.read(2) + 3;
+                        uint8_t prev = lengths[i - 1];
+                        for (int j = 0; j < rep && i < total; j++)
+                            lengths[i++] = prev;
+                    }
+                    else if (sym == 17)
+                    {
+                        int rep = bs.read(3) + 3;
+                        for (int j = 0; j < rep && i < total; j++)
+                            lengths[i++] = 0;
+                    }
+                    else if (sym == 18)
+                    {
+                        int rep = bs.read(7) + 11;
+                        for (int j = 0; j < rep && i < total; j++)
+                            lengths[i++] = 0;
+                    }
+                    else return false;
+                }
+
+                BuildHuff(litLen, lengths, hlit);
+                BuildHuff(dist, lengths + hlit, hdist);
+            }
+
+            for (;;)
+            {
+                int sym = DecodeSymbol(bs, litLen);
+                if (sym < 0) return false;
+                if (sym < 256)
+                {
+                    out.push_back(static_cast<uint8_t>(sym));
+                }
+                else if (sym == 256)
+                {
+                    break;
+                }
+                else
+                {
+                    sym -= 257;
+                    if (sym >= 29) return false;
+                    int length = kLenBase[sym] + bs.read(kLenExtra[sym]);
+
+                    int dsym = DecodeSymbol(bs, dist);
+                    if (dsym < 0 || dsym >= 30) return false;
+                    int distance = kDistBase[dsym] + bs.read(kDistExtra[dsym]);
+
+                    if (distance > static_cast<int>(out.size())) return false;
+                    size_t srcOff = out.size() - distance;
+                    for (int j = 0; j < length; j++)
+                        out.push_back(out[srcOff + j]);
+                }
+            }
+        }
+        else
+        {
+            return false;
+        }
+    } while (!bfinal);
+
+    return true;
+}
+
+} // anonymous namespace
+
 static bool IsStandaloneCommaLine(const std::string& line)
 {
     bool foundComma = false;
@@ -221,6 +464,200 @@ bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, 
     }
 }
 
+static std::string DecompressGzipFile(const std::filesystem::path& gzPath)
+{
+    std::ifstream file(gzPath, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return {};
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize < 18) return {};
+
+    std::vector<uint8_t> data(fileSize);
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(data.data()), fileSize);
+    file.close();
+
+    if (data[0] != 0x1F || data[1] != 0x8B) return {};
+    if (data[2] != 0x08) return {};
+
+    uint8_t flags = data[3];
+    size_t pos = 10;
+
+    if (flags & 0x04) // FEXTRA
+    {
+        if (pos + 2 > fileSize) return {};
+        uint16_t xlen = data[pos] | (data[pos + 1] << 8);
+        pos += 2 + xlen;
+    }
+    if (flags & 0x08) // FNAME
+    {
+        while (pos < fileSize && data[pos] != 0) pos++;
+        pos++;
+    }
+    if (flags & 0x10) // FCOMMENT
+    {
+        while (pos < fileSize && data[pos] != 0) pos++;
+        pos++;
+    }
+    if (flags & 0x02) // FHCRC
+        pos += 2;
+
+    if (pos >= fileSize - 8) return {};
+
+    int deflateLen = static_cast<int>(fileSize - 8 - pos);
+    if (deflateLen <= 0) return {};
+
+    uint32_t origSize = data[fileSize - 4] | (data[fileSize - 3] << 8) |
+        (data[fileSize - 2] << 16) | (data[fileSize - 1] << 24);
+
+    std::vector<uint8_t> inflated;
+    if (!InflateRaw(data.data() + pos, static_cast<size_t>(deflateLen),
+        inflated, origSize))
+        return {};
+
+    if (inflated.empty()) return {};
+    return std::string(reinterpret_cast<const char*>(inflated.data()), inflated.size());
+}
+
+static void ParseLordEventsFromString(const std::string& content, LordDamageData& out)
+{
+    long max_damage_after_blue = 0;
+    long max_damage_after_red = 0;
+
+    std::istringstream stream(content);
+    std::string line;
+    while (std::getline(stream, line))
+    {
+        if (line.empty()) continue;
+
+        size_t bracket_close = line.find(']');
+        if (bracket_close == std::string::npos) continue;
+
+        std::string timestamp = line.substr(0, bracket_close + 1);
+        std::string rest = line.substr(bracket_close + 1);
+
+        size_t start = rest.find_first_not_of(" \t");
+        if (start == std::string::npos) continue;
+        rest = rest.substr(start);
+
+        if (rest.rfind("LORD_DAMAGE;", 0) != 0) continue;
+        rest = rest.substr(12);
+
+        std::vector<std::string> fields;
+        std::istringstream ss(rest);
+        std::string token;
+        while (std::getline(ss, token, ';'))
+            fields.push_back(token);
+
+        if (fields.size() < 8) continue;
+
+        try
+        {
+            LordDamageEvent evt;
+            evt.timestamp = timestamp;
+            evt.caster_id = std::stoi(fields[0]);
+            evt.target_id = std::stoi(fields[1]);
+            evt.value = std::stof(fields[2]);
+            evt.damage_type = std::stoi(fields[3]);
+            evt.attacking_team = std::stoi(fields[4]);
+            evt.damage = std::stol(fields[5]);
+            evt.damage_before = std::stol(fields[6]);
+            evt.damage_after = std::stol(fields[7]);
+
+            if (evt.attacking_team == 1)
+                max_damage_after_blue = (std::max)(max_damage_after_blue, evt.damage_after);
+            else if (evt.attacking_team == 2)
+                max_damage_after_red = (std::max)(max_damage_after_red, evt.damage_after);
+
+            out.events.push_back(std::move(evt));
+        }
+        catch (const std::exception&)
+        {
+            continue;
+        }
+    }
+
+    out.total_lord_damage_blue = max_damage_after_blue;
+    out.total_lord_damage_red = max_damage_after_red;
+    out.has_data = !out.events.empty();
+}
+
+void LocalReplayProvider::ParseLordEvents(const std::filesystem::path& matchFolder, LordDamageData& out)
+{
+    out = LordDamageData{};
+
+    std::filesystem::path candidates[] = {
+        matchFolder / "StoC" / "lord_events.txt",
+        matchFolder / "lord_events.txt",
+    };
+    std::filesystem::path gz_candidates[] = {
+        matchFolder / "StoC" / "lord_events.txt.gz",
+        matchFolder / "lord_events.txt.gz",
+    };
+
+    std::string content;
+    std::string source_path;
+
+    for (const auto& p : candidates)
+    {
+        if (std::filesystem::exists(p))
+        {
+            std::ifstream file(p);
+            if (!file.is_open()) continue;
+            std::ostringstream buf;
+            buf << file.rdbuf();
+            content = buf.str();
+            source_path = p.string();
+            break;
+        }
+    }
+
+    if (content.empty())
+    {
+        for (const auto& p : gz_candidates)
+        {
+            if (std::filesystem::exists(p))
+            {
+                content = DecompressGzipFile(p);
+                source_path = p.string();
+                if (content.empty())
+                {
+                    out.debug_status = "Failed to decompress: " + p.string();
+                    return;
+                }
+                break;
+            }
+        }
+    }
+
+    if (content.empty())
+    {
+        auto stocDir = matchFolder / "StoC";
+        if (std::filesystem::exists(stocDir) && std::filesystem::is_directory(stocDir))
+        {
+            std::string listing = "StoC/ exists but no lord_events file. Contents: ";
+            int count = 0;
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(stocDir, ec))
+            {
+                if (count > 0) listing += ", ";
+                listing += e.path().filename().string();
+                if (++count >= 15) { listing += " ..."; break; }
+            }
+            if (count == 0) listing += "(empty)";
+            out.debug_status = listing;
+        }
+        else
+        {
+            out.debug_status = "No StoC/ folder found in: " + matchFolder.string();
+        }
+        return;
+    }
+
+    out.debug_status = "Loaded: " + source_path;
+    ParseLordEventsFromString(content, out);
+}
+
 std::vector<MatchMeta> LocalReplayProvider::GetAvailableReplays()
 {
     std::vector<MatchMeta> results;
@@ -238,7 +675,10 @@ std::vector<MatchMeta> LocalReplayProvider::GetAvailableReplays()
 
         MatchMeta meta;
         if (ParseInfosJson(infosPath, meta))
+        {
+            ParseLordEvents(entry.path(), meta.lord_damage);
             results.push_back(std::move(meta));
+        }
     }
 
     return results;

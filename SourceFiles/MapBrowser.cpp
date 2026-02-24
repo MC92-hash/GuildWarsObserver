@@ -32,11 +32,48 @@ static std::string GetFontBasePath()
     return "";
 }
 
-static void MergeCJKFallback(ImFontAtlas* atlas, float fontSize)
+static void MergeUnicodeFallback(ImFontAtlas* atlas, float fontSize)
 {
-    // Korean: Hangul Jamo + Hangul Syllables
-    // Japanese: Hiragana + Katakana + CJK Unified Ideographs subset
-    static const ImWchar ranges[] = {
+    ImFontConfig mergeConfig;
+    mergeConfig.MergeMode = true;
+    mergeConfig.PixelSnapH = true;
+
+    // Symbols & geometric shapes (▶, ■, ●, arrows, etc.)
+    static const ImWchar symbolRanges[] = {
+        0x2190, 0x21FF,   // Arrows
+        0x2200, 0x22FF,   // Mathematical Operators
+        0x2300, 0x23FF,   // Miscellaneous Technical
+        0x2500, 0x257F,   // Box Drawing
+        0x2580, 0x259F,   // Block Elements
+        0x25A0, 0x25FF,   // Geometric Shapes (includes ▶ U+25B6)
+        0x2600, 0x26FF,   // Miscellaneous Symbols
+        0x2700, 0x27BF,   // Dingbats
+        0, 0
+    };
+
+    const char* symbolFonts[] = {
+        "C:\\Windows\\Fonts\\seguisym.ttf",  // Segoe UI Symbol
+        "C:\\Windows\\Fonts\\segoeui.ttf",   // Segoe UI
+        "C:\\Windows\\Fonts\\arial.ttf",     // Arial (basic symbols)
+    };
+
+    for (const char* path : symbolFonts)
+    {
+        if (std::filesystem::exists(path))
+        {
+            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, symbolRanges);
+            break;
+        }
+    }
+
+    // Extended Latin, Greek, Cyrillic, CJK
+    static const ImWchar cjkRanges[] = {
+        0x0100, 0x024F,   // Latin Extended-A + B
+        0x0250, 0x02AF,   // IPA Extensions
+        0x1E00, 0x1EFF,   // Latin Extended Additional
+        0x0370, 0x03FF,   // Greek and Coptic
+        0x0400, 0x04FF,   // Cyrillic
+        0x0500, 0x052F,   // Cyrillic Supplement
         0x3000, 0x30FF,   // CJK Symbols, Hiragana, Katakana
         0x3100, 0x312F,   // Bopomofo
         0x31F0, 0x31FF,   // Katakana Phonetic Extensions
@@ -47,22 +84,18 @@ static void MergeCJKFallback(ImFontAtlas* atlas, float fontSize)
         0, 0
     };
 
-    ImFontConfig mergeConfig;
-    mergeConfig.MergeMode = true;
-    mergeConfig.PixelSnapH = true;
-
-    const char* fallbacks[] = {
+    const char* cjkFallbacks[] = {
         "C:\\Windows\\Fonts\\malgun.ttf",
         "C:\\Windows\\Fonts\\meiryo.ttc",
         "C:\\Windows\\Fonts\\msgothic.ttc",
         "C:\\Windows\\Fonts\\YuGothR.ttc",
     };
 
-    for (const char* path : fallbacks)
+    for (const char* path : cjkFallbacks)
     {
         if (std::filesystem::exists(path))
         {
-            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, ranges);
+            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, cjkRanges);
             return;
         }
     }
@@ -102,7 +135,28 @@ static void LoadSelectedFont(float fontSize)
     if (!loaded)
         io.Fonts->AddFontDefault();
 
-    MergeCJKFallback(io.Fonts, fontSize);
+    MergeUnicodeFallback(io.Fonts, fontSize);
+
+    // Load bold variant for UI elements that need it
+    GuiGlobalConstants::boldFont = nullptr;
+    if (entry.boldFileName != nullptr)
+    {
+        std::string boldPath;
+        if (entry.isSystemFont)
+            boldPath = std::string("C:\\Windows\\Fonts\\") + entry.boldFileName;
+        else
+        {
+            std::string base = GetFontBasePath();
+            if (!base.empty())
+                boldPath = base + "\\" + entry.boldFileName;
+        }
+
+        if (!boldPath.empty() && std::filesystem::exists(boldPath))
+        {
+            GuiGlobalConstants::boldFont = io.Fonts->AddFontFromFileTTF(boldPath.c_str(), fontSize);
+            MergeUnicodeFallback(io.Fonts, fontSize);
+        }
+    }
 
     io.Fonts->Build();
 }

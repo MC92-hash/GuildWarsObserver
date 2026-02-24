@@ -45,8 +45,9 @@ public:
 
 	// Font settings
 	inline static int saved_font_index = 2;
-	inline static float saved_font_size = 18.0f;
+	inline static float saved_font_size = 15.0f;
 	inline static bool font_needs_rebuild = false;
+	inline static ImFont* boldFont = nullptr;
 
 	// Window settings
 	inline static int window_width = -1;
@@ -54,6 +55,10 @@ public:
 	inline static int window_pos_x = -1;
 	inline static int window_pos_y = -1;
 	inline static bool window_maximized = false;
+
+	// Replay browser splitter settings (-1 = use default proportions)
+	inline static int replay_filter_width = -1;
+	inline static int replay_list_height = -1;
 
 	inline static bool prev_is_dat_browser_open;
 	inline static bool prev_is_dat_browser_resizeable;
@@ -254,6 +259,8 @@ public:
 		file << "window_pos_x=" << window_pos_x << "\n";
 		file << "window_pos_y=" << window_pos_y << "\n";
 		file << "window_maximized=" << (window_maximized ? 1 : 0) << "\n";
+		file << "replay_filter_width=" << replay_filter_width << "\n";
+		file << "replay_list_height=" << replay_list_height << "\n";
 
 		file << "\n[Font]\n";
 		file << "font_index=" << saved_font_index << "\n";
@@ -324,6 +331,8 @@ public:
 			else if (key == "window_pos_x") window_pos_x = value;
 			else if (key == "window_pos_y") window_pos_y = value;
 			else if (key == "window_maximized") window_maximized = (value != 0);
+			else if (key == "replay_filter_width") replay_filter_width = value;
+			else if (key == "replay_list_height") replay_list_height = value;
 		}
 
 		file.close();

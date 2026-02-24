@@ -298,6 +298,31 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
 				GuiGlobalConstants::SaveSettings();
 			}
+			if (ImGui::BeginMenu("Responsive Test Mode")) {
+				struct Preset { const char* label; int w; int h; };
+				static const Preset presets[] = {
+					{ " 800 x  600", 800, 600 },
+					{ "1024 x  768", 1024, 768 },
+					{ "1366 x  768", 1366, 768 },
+					{ "1600 x  900", 1600, 900 },
+					{ "1920 x 1080", 1920, 1080 },
+					{ "2560 x 1440", 2560, 1440 },
+				};
+				for (const auto& p : presets) {
+					if (ImGui::MenuItem(p.label)) {
+						HWND hw = FindWindowW(L"GuildWarsObserverWindowClass", nullptr);
+						if (hw) {
+							RECT rc = { 0, 0, (LONG)p.w, (LONG)p.h };
+							AdjustWindowRectEx(&rc, GetWindowLong(hw, GWL_STYLE), TRUE, GetWindowLong(hw, GWL_EXSTYLE));
+							SetWindowPos(hw, nullptr, 0, 0,
+								rc.right - rc.left, rc.bottom - rc.top,
+								SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+							ShowWindow(hw, SW_RESTORE);
+						}
+					}
+				}
+				ImGui::EndMenu();
+			}
 			ImGui::EndMenu();
 		}
 		ImGui::EndMainMenuBar();
