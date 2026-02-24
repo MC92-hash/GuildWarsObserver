@@ -2237,9 +2237,15 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         ImGui::PushStyleColor(ImGuiCol_Border,         colBorder);
         ImGui::PushStyleColor(ImGuiCol_Text,           kColorText);
 
-        ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+        bool clicked = ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
         bool hovered = ImGui::IsItemHovered();
         bool active  = ImGui::IsItemActive();
+
+        if (clicked)
+        {
+            g_pendingReplay.requested = true;
+            g_pendingReplay.match = m;
+        }
 
         ImVec2 rMin = ImGui::GetItemRectMin();
         ImVec2 rMax = ImGui::GetItemRectMax();

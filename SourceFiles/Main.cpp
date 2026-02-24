@@ -582,6 +582,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         break;
 
+    case WM_ACTIVATE:
+        if (g_input_manager)
+        {
+            if (LOWORD(wParam) != WA_INACTIVE)
+                g_input_manager->ReRegisterRawInput();
+            else
+                g_input_manager->OnFocusLost();
+        }
+        break;
+
     case WM_POWERBROADCAST:
         switch (wParam)
         {

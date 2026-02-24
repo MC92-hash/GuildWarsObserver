@@ -1011,6 +1011,7 @@ public:
 
     void Render(ID3D11RenderTargetView* render_target_view, ID3D11RenderTargetView* picking_render_target, ID3D11DepthStencilView* depth_stencil_view)
     {
+        BindRegularVertexShader();
         m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
         m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
 
@@ -1108,6 +1109,7 @@ public:
 
     void RenderForReflection(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
     {
+        BindRegularVertexShader();
         m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
         m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
 
@@ -1143,6 +1145,7 @@ public:
 
     void RenderForShadowMap(ID3D11DepthStencilView* depth_stencil_view)
     {
+        BindRegularVertexShader();
         m_deviceContext->OMSetRenderTargets(0, nullptr, depth_stencil_view);
         m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
 

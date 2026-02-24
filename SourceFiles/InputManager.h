@@ -27,11 +27,15 @@ public:
     void TrackMouseLeave(HWND hWnd);
 	void OnMouseLeave(HWND hWnd);
 
+    void ReRegisterRawInput();
+    void OnFocusLost();
+
     POINT GetClientCoords(HWND hWnd);
 
 	POINT GetWindowCenter(HWND hWnd);
 
 private:
+    HWND m_hWnd = nullptr;
     RAWINPUTDEVICE rid;
 
     POINT m_mouse_pos;

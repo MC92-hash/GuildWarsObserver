@@ -2,12 +2,13 @@
 #include "InputManager.h"
 
 InputManager::InputManager(HWND hWnd)
-	: m_mouse_pos{0, 0}
+	: m_hWnd(hWnd)
+	, m_mouse_pos{0, 0}
 {
 	rid.usUsagePage = 0x01; // Generic Desktop Controls
     rid.usUsage = 0x02;    // Mouse
     rid.dwFlags = 0;
-    rid.hwndTarget = hWnd; // Handle to your window
+    rid.hwndTarget = hWnd;
     RegisterRawInputDevices(&rid, 1, sizeof(rid));
 }
 
@@ -130,7 +131,27 @@ void InputManager::TrackMouseLeave(HWND hWnd)
     TrackMouseEvent(&tme);
 }
 
-bool InputManager::IsKeyDown(UINT key) const { return (GetAsyncKeyState(key) & 0x8000); }
+bool InputManager::IsKeyDown(UINT key) const
+{
+    if (m_hWnd && GetForegroundWindow() != m_hWnd)
+        return false;
+    return (GetAsyncKeyState(key) & 0x8000) != 0;
+}
+
+void InputManager::ReRegisterRawInput()
+{
+    rid.hwndTarget = m_hWnd;
+    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+}
+
+void InputManager::OnFocusLost()
+{
+    if (!m_isCursorShown)
+    {
+        ShowCursor(TRUE);
+        m_isCursorShown = true;
+    }
+}
 
 POINT InputManager::GetClientCoords(HWND hWnd)
 {

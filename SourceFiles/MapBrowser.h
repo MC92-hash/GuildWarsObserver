@@ -14,6 +14,7 @@
 #include "AgentOverlay.h"
 #include "MatchReplay.h"
 #include "ReplayLibrary.h"
+#include "ReplayWindow.h"
 #include <draw_extract_panel.h>
 
 using namespace std::chrono;
@@ -120,4 +121,8 @@ private:
 
     std::string m_error_msg = "";
     bool m_show_error_msg = false;
+
+    std::vector<std::unique_ptr<ReplayWindow>> m_replay_windows;
+    void ProcessPendingReplayRequest();
+    void TickReplayWindows();
 };

@@ -14,6 +14,7 @@
 #include "TextureCache.h"
 #include "FontConfig.h"
 #include "SkillDatabase.h"
+#include "draw_replay_browser.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -304,12 +305,22 @@ void MapBrowser::Tick()
     // Check if extraction is in progress; if so, don't skip frames
     bool is_extracting = !m_mft_indices_to_extract.empty() || !m_mft_indices_to_extract_textures.empty();
 
+    // Always tick replay windows regardless of main window focus
+    ProcessPendingReplayRequest();
+    TickReplayWindows();
+
     if (!is_extracting) {
         if (IsIconic(m_deviceResources->GetWindow())) {
             return;
         }
         if (GetForegroundWindow() != m_deviceResources->GetWindow()) {
-            return;
+            // Still tick if a replay window is in the foreground
+            bool replayHasFocus = false;
+            for (auto& rw : m_replay_windows)
+                if (rw && rw->IsAlive() && GetForegroundWindow() == rw->GetHWND())
+                    replayHasFocus = true;
+            if (!replayHasFocus)
+                return;
         }
     }
 
@@ -1819,3 +1830,54 @@ void MapBrowser::WriteToTextureErrorLog(int mft_index, int file_hash, const std:
 
 #pragma endregion
 
+// ---------------------------------------------------------------------------
+// Replay Window Management
+// ---------------------------------------------------------------------------
+
+void MapBrowser::ProcessPendingReplayRequest()
+{
+    if (!g_pendingReplay.requested) return;
+    g_pendingReplay.requested = false;
+
+    // Require DAT to be loaded
+    if (m_dat_managers.count(0) == 0 ||
+        m_dat_managers[0]->m_initialization_state != InitializationState::Completed)
+    {
+        MessageBoxA(m_deviceResources->GetWindow(),
+            "gw.dat is not loaded yet. Please open gw.dat first.",
+            "Replay Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    if (!m_hash_index_initialized)
+    {
+        MessageBoxA(m_deviceResources->GetWindow(),
+            "gw.dat is still indexing. Please wait a moment and try again.",
+            "Replay Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
+    ReplayWindow* rw = ReplayWindow::Create(
+        hInst, g_pendingReplay.match, m_dat_managers[0].get(), m_hash_index);
+
+    if (rw)
+        m_replay_windows.emplace_back(rw);
+}
+
+void MapBrowser::TickReplayWindows()
+{
+    for (auto it = m_replay_windows.begin(); it != m_replay_windows.end(); )
+    {
+        auto& rw = *it;
+        if (rw && rw->IsAlive())
+        {
+            rw->Tick();
+            ++it;
+        }
+        else
+        {
+            it = m_replay_windows.erase(it);
+        }
+    }
+}
