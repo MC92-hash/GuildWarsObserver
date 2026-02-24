@@ -666,3 +666,64 @@ bool PollAgentParseCompletion(ReplayContext& ctx)
     ctx.agentsLoaded = true;
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// ClassifyAgents: match parsed agents against MatchMeta and NPC/Gadget tables
+// ---------------------------------------------------------------------------
+
+void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
+                    const MatchMeta& meta)
+{
+    // Build model_id -> PlayerMeta lookup from both parties
+    std::unordered_map<uint32_t, const PlayerMeta*> playerByModelId;
+    for (auto& [partyId, party] : meta.parties)
+    {
+        for (auto& p : party.players)
+            playerByModelId[static_cast<uint32_t>(p.model_id)] = &p;
+    }
+
+    for (auto& [agentId, ard] : agents)
+    {
+        if (ard.snapshots.empty()) continue;
+
+        const auto& first = ard.snapshots[0];
+        ard.modelId        = first.model_id;
+        ard.agentModelType = first.agent_model_type;
+        ard.teamId         = first.team_id;
+
+        // Player: agent_model_type == 0x3000 AND model_id matches metadata
+        if (first.agent_model_type == 0x3000)
+        {
+            auto it = playerByModelId.find(first.model_id);
+            if (it != playerByModelId.end())
+            {
+                ard.type         = AgentType::Player;
+                ard.playerName   = it->second->encoded_name;
+                ard.teamId       = static_cast<uint8_t>(it->second->team_id);
+                ard.categoryName = it->second->encoded_name;
+                continue;
+            }
+        }
+
+        // NPC check
+        const char* npcName = LookupNpcName(first.model_id);
+        if (npcName)
+        {
+            ard.type         = AgentType::NPC;
+            ard.categoryName = npcName;
+            continue;
+        }
+
+        // Gadget check (use gadget_id field from the snapshot)
+        const char* gadgetName = LookupGadgetName(first.gadget_id);
+        if (gadgetName)
+        {
+            ard.type         = AgentType::Gadget;
+            ard.categoryName = gadgetName;
+            continue;
+        }
+
+        ard.type         = AgentType::Unknown;
+        ard.categoryName = "Unknown";
+    }
+}

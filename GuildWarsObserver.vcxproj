@@ -285,6 +285,7 @@
     <ClInclude Include="SourceFiles\ReplayWindow.h" />
     <ClInclude Include="SourceFiles\ReplayMapData.h" />
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
+    <ClInclude Include="SourceFiles\StoCParser.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\FontConfig.h" />
     <ClInclude Include="SourceFiles\SkillDatabase.h" />
@@ -471,6 +472,7 @@
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow.cpp" />
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp" />
+    <ClCompile Include="SourceFiles\StoCParser.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
     <ClCompile Include="SourceFiles\SkillDatabase.cpp" />
     <ClCompile Include="SourceFiles\DXMathHelpers.cpp" />

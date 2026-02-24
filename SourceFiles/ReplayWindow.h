@@ -64,6 +64,9 @@ private:
     void Clear();
     void DrawImGuiOverlay();
     void DrawAgentDataWindow();
+    void DrawStoCWindow();
+    void DrawAgentOverlay();
+    void DrawMapCalibrationWindow();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -107,7 +110,27 @@ private:
     int  m_selectedAgentId = -1;
     float m_debugTimeline = 0.f;
     bool m_showParsedView = true;
+    float m_agentListWidth = 220.f;
     std::vector<int> m_sortedAgentIds;
+    std::vector<int> m_playerIds;
+    std::vector<int> m_npcIds;
+    std::vector<int> m_gadgetIds;
+    std::vector<int> m_unknownIds;
+    bool m_agentsClassified = false;
+
+    // --- Agent overlay & calibration (Phase 2) ---
+    bool m_showAgentOverlay = true;
+    bool m_showMapCalibrationWindow = false;
+    bool m_showRawPositions = false;
+    bool m_showMapOriginAxes = false;
+    bool m_calibrationLoaded = false;
+
+    // --- StoC debug window ---
+    bool m_showStoCWindow = false;
+    StoCCategory m_selectedStoCCategory = StoCCategory::AgentMovement;
+    int  m_selectedStoCEventIdx = -1;
+    float m_stocListWidth = 180.f;
+    bool m_stocShowRaw = false;
 
     // --- Loading overlay GPU resources ---
     struct OverlayVertex { float x, y, r, g, b, a; };

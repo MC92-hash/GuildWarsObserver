@@ -1,12 +1,18 @@
 #include "pch.h"
 #include "ReplayWindow.h"
 #include "AgentSnapshotParser.h"
+#include "StoCParser.h"
+#include "SkillDatabase.h"
 #include "DXMathHelpers.h"
 #include <d3dcompiler.h>
+#include <fstream>
 #pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
+
+static void SaveMapTransform(int mapId, const MapTransform& t);
+static MapTransform LoadMapTransform(int mapId, bool* found = nullptr);
 
 bool ReplayWindow::s_classRegistered = false;
 
@@ -373,6 +379,13 @@ void ReplayWindow::StepValidate()
         m_replayCtx.agentParseProgress = std::make_shared<AgentParseProgress>();
         LaunchAgentSnapshotParsing(m_replayCtx.matchFolderPath,
                                    m_replayCtx.agentParseProgress);
+    }
+
+    // Launch async StoC event parsing in parallel
+    if (!m_replayCtx.stocParseProgress)
+    {
+        m_replayCtx.stocParseProgress = std::make_shared<StoCParseProgress>();
+        LaunchStoCParsing(m_replayCtx.matchFolderPath, m_replayCtx.stocParseProgress);
     }
 
     m_loadingPhase = LoadingPhase::Init;
@@ -905,13 +918,42 @@ void ReplayWindow::Tick()
     // Poll async agent snapshot parsing
     PollAgentParseCompletion(m_replayCtx);
 
-    // Build the sorted agent ID list once when data arrives
-    if (m_replayCtx.agentsLoaded && m_sortedAgentIds.empty() && !m_replayCtx.agents.empty())
+    // Poll async StoC event parsing
+    PollStoCParseCompletion(m_replayCtx);
+
+    // Once agents are loaded, classify and build per-category lists
+    if (m_replayCtx.agentsLoaded && !m_agentsClassified && !m_replayCtx.agents.empty())
     {
+        ClassifyAgents(m_replayCtx.agents, m_matchMeta);
+
         m_sortedAgentIds.reserve(m_replayCtx.agents.size());
-        for (auto& [id, _] : m_replayCtx.agents)
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
             m_sortedAgentIds.push_back(id);
+            switch (ard.type) {
+            case AgentType::Player:  m_playerIds.push_back(id);  break;
+            case AgentType::NPC:     m_npcIds.push_back(id);     break;
+            case AgentType::Gadget:  m_gadgetIds.push_back(id);  break;
+            default:                 m_unknownIds.push_back(id);  break;
+            }
+        }
         std::sort(m_sortedAgentIds.begin(), m_sortedAgentIds.end());
+        std::sort(m_playerIds.begin(),  m_playerIds.end());
+        std::sort(m_npcIds.begin(),     m_npcIds.end());
+        std::sort(m_gadgetIds.begin(),  m_gadgetIds.end());
+        std::sort(m_unknownIds.begin(), m_unknownIds.end());
+
+        m_agentsClassified = true;
+    }
+
+    // Auto-load saved calibration transform for this map, or fall back to
+    // WebGL-derived defaults if no saved data exists.
+    if (!m_calibrationLoaded && m_replayCtx.mapLoaded)
+    {
+        bool found = false;
+        MapTransform saved = LoadMapTransform(m_replayCtx.mapId, &found);
+        m_replayCtx.mapTransform = found ? saved : GetDefaultMapTransform();
+        m_calibrationLoaded = true;
     }
 
     m_timer.Tick([this]()
@@ -1058,13 +1100,29 @@ void ReplayWindow::DrawImGuiOverlay()
     // Top menu bar
     if (ImGui::BeginMainMenuBar())
     {
-        if (ImGui::BeginMenu("Debug"))
+        if (ImGui::BeginMenu("File"))
         {
-            ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
+            if (ImGui::MenuItem("Close Replay"))
+            {
+                PostMessage(m_hwnd, WM_CLOSE, 0, 0);
+            }
             ImGui::EndMenu();
         }
 
-        // Show agent parse status in the menu bar
+        if (ImGui::BeginMenu("View"))
+        {
+            ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Debug"))
+        {
+            ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
+            ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
+            ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
+            ImGui::EndMenu();
+        }
+
         if (m_replayCtx.agentParseProgress && !m_replayCtx.agentsLoaded)
         {
             int done = m_replayCtx.agentParseProgress->files_done.load();
@@ -1072,9 +1130,11 @@ void ReplayWindow::DrawImGuiOverlay()
             auto label = std::format("  Parsing agents... {}/{}", done, total);
             ImGui::TextDisabled("%s", label.c_str());
         }
-        else if (m_replayCtx.agentsLoaded)
+        if (m_replayCtx.stocParseProgress && !m_replayCtx.stocLoaded)
         {
-            auto label = std::format("  Agents: {}", m_replayCtx.agents.size());
+            int done = m_replayCtx.stocParseProgress->files_done.load();
+            int total = m_replayCtx.stocParseProgress->files_total.load();
+            auto label = std::format("  Parsing StoC... {}/{}", done, total);
             ImGui::TextDisabled("%s", label.c_str());
         }
 
@@ -1084,10 +1144,335 @@ void ReplayWindow::DrawImGuiOverlay()
     if (m_showAgentDataWindow)
         DrawAgentDataWindow();
 
+    if (m_showMapCalibrationWindow)
+        DrawMapCalibrationWindow();
+
+    if (m_showStoCWindow)
+        DrawStoCWindow();
+
+    DrawAgentOverlay();
+
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
     ImGui::SetCurrentContext(prevCtx);
+}
+
+// ---------------------------------------------------------------------------
+// Map calibration transform: save / load
+// ---------------------------------------------------------------------------
+
+static constexpr const char* kCalibrationFile = "map_transforms.txt";
+
+static void SaveMapTransform(int mapId, const MapTransform& t)
+{
+    std::map<int, MapTransform> all;
+    {
+        std::ifstream in(kCalibrationFile);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            int id;
+            float ox, oy, oz, sx, sy, sz, rot;
+            int fx, fy, fz, syz, sxz, sxy;
+            if (sscanf_s(line.c_str(), "%d %f %f %f %f %f %f %f %d %d %d %d %d %d",
+                         &id, &ox, &oy, &oz, &sx, &sy, &sz, &rot,
+                         &fx, &fy, &fz, &syz, &sxz, &sxy) == 14)
+            {
+                all[id] = { ox, oy, oz, sx, sy, sz, rot,
+                            fx != 0, fy != 0, fz != 0,
+                            syz != 0, sxz != 0, sxy != 0 };
+            }
+        }
+    }
+    all[mapId] = t;
+    {
+        std::ofstream out(kCalibrationFile);
+        out << "# map_id offX offY offZ scaleX scaleY scaleZ rotation flipX flipY flipZ swapYZ swapXZ swapXY\n";
+        for (auto& [id, mt] : all)
+        {
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                     "%d %.4f %.4f %.4f %.6f %.6f %.6f %.4f %d %d %d %d %d %d\n",
+                     id, mt.offsetX, mt.offsetY, mt.offsetZ,
+                     mt.scaleX, mt.scaleY, mt.scaleZ, mt.rotationDegrees,
+                     mt.flipX ? 1 : 0, mt.flipY ? 1 : 0, mt.flipZ ? 1 : 0,
+                     mt.swapYZ ? 1 : 0, mt.swapXZ ? 1 : 0, mt.swapXY ? 1 : 0);
+            out << buf;
+        }
+    }
+}
+
+static MapTransform LoadMapTransform(int mapId, bool* found)
+{
+    if (found) *found = false;
+    std::ifstream in(kCalibrationFile);
+    if (!in.is_open()) return {};
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        int id;
+        float ox, oy, oz, sx, sy, sz, rot;
+        int fx, fy, fz, syz, sxz, sxy;
+        if (sscanf_s(line.c_str(), "%d %f %f %f %f %f %f %f %d %d %d %d %d %d",
+                     &id, &ox, &oy, &oz, &sx, &sy, &sz, &rot,
+                     &fx, &fy, &fz, &syz, &sxz, &sxy) == 14)
+        {
+            if (id == mapId) {
+                if (found) *found = true;
+                return { ox, oy, oz, sx, sy, sz, rot,
+                         fx != 0, fy != 0, fz != 0,
+                         syz != 0, sxz != 0, sxy != 0 };
+            }
+        }
+    }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// Agent Overlay: full calibration transform pipeline + rendering
+// ---------------------------------------------------------------------------
+
+static ImU32 GetAgentTeamColor(uint8_t teamId)
+{
+    switch (teamId) {
+    case 1:  return IM_COL32(0x2A, 0x8C, 0xFF, 0xFF);
+    case 2:  return IM_COL32(0xFF, 0x4A, 0x4A, 0xFF);
+    default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
+    }
+}
+
+static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
+                                     float& outX, float& outY, float& outZ)
+{
+    const auto& snaps = ard.snapshots;
+    if (snaps.empty()) { outX = outY = outZ = 0.f; return; }
+    if (t <= snaps.front().time) {
+        outX = snaps.front().x; outY = snaps.front().y; outZ = snaps.front().z; return;
+    }
+    if (t >= snaps.back().time) {
+        outX = snaps.back().x; outY = snaps.back().y; outZ = snaps.back().z; return;
+    }
+    int lo = 0, hi = static_cast<int>(snaps.size()) - 1;
+    while (lo < hi) {
+        int mid = lo + (hi - lo + 1) / 2;
+        if (snaps[mid].time <= t) lo = mid; else hi = mid - 1;
+    }
+    auto& s0 = snaps[lo];
+    if (lo + 1 < static_cast<int>(snaps.size())) {
+        auto& s1 = snaps[lo + 1];
+        float dt = s1.time - s0.time;
+        float a = (dt > 0.001f) ? (t - s0.time) / dt : 0.f;
+        outX = s0.x + (s1.x - s0.x) * a;
+        outY = s0.y + (s1.y - s0.y) * a;
+        outZ = s0.z + (s1.z - s0.z) * a;
+    } else {
+        outX = s0.x; outY = s0.y; outZ = s0.z;
+    }
+}
+
+static std::string GetAgentLabel(const AgentReplayData& ard)
+{
+    switch (ard.type) {
+    case AgentType::Player: return ard.playerName;
+    case AgentType::NPC:    return ard.categoryName;
+    case AgentType::Gadget: return ard.categoryName;
+    default:                return std::format("Agent {}", ard.agent_id);
+    }
+}
+
+static XMFLOAT3 ApplyMapTransformToPos(float snapX, float snapY, float snapZ,
+                                        const MapTransform& t)
+{
+    // 0. Base axis remap: GWCA (x,y,z_height) → GWMB (x, z_height, y)
+    float px = snapX;
+    float py = snapZ;
+    float pz = snapY;
+
+    // 1. Axis swaps
+    if (t.swapYZ) { float tmp = py; py = pz; pz = tmp; }
+    if (t.swapXZ) { float tmp = px; px = pz; pz = tmp; }
+    if (t.swapXY) { float tmp = px; px = py; py = tmp; }
+
+    // 2. Axis flips
+    if (t.flipX) px = -px;
+    if (t.flipY) py = -py;
+    if (t.flipZ) pz = -pz;
+
+    // 3. Rotation around Y axis
+    if (t.rotationDegrees != 0.f) {
+        float rad = t.rotationDegrees * (XM_PI / 180.f);
+        float c = cosf(rad), s = sinf(rad);
+        float rx = px * c - pz * s;
+        float rz = px * s + pz * c;
+        px = rx;
+        pz = rz;
+    }
+
+    // 4. Offset
+    px += t.offsetX;
+    py += t.offsetY;
+    pz += t.offsetZ;
+
+    // 5. Scale
+    px *= t.scaleX;
+    py *= t.scaleY;
+    pz *= t.scaleZ;
+
+    return { px, py, pz };
+}
+
+static bool ProjectToScreen(XMMATRIX viewProj, float vpW, float vpH,
+                             const XMFLOAT3& worldPos, float& scrX, float& scrY)
+{
+    XMVECTOR clip = XMVector4Transform(
+        XMVectorSet(worldPos.x, worldPos.y, worldPos.z, 1.f), viewProj);
+    float w = XMVectorGetW(clip);
+    if (w <= 0.001f) return false;
+    float ndcX = XMVectorGetX(clip) / w;
+    float ndcY = XMVectorGetY(clip) / w;
+    scrX = (ndcX + 1.f) * 0.5f * vpW;
+    scrY = (1.f - ndcY) * 0.5f * vpH;
+    return (scrX > -200.f && scrX < vpW + 200.f &&
+            scrY > -200.f && scrY < vpH + 200.f);
+}
+
+void ReplayWindow::DrawAgentOverlay()
+{
+    if (!m_showAgentOverlay) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    auto vp = m_deviceResources->GetScreenViewport();
+    float vpW = vp.Width, vpH = vp.Height;
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float dotRadius = 6.f;
+    const float labelOffY = 8.f;
+    const MapTransform& t = m_replayCtx.mapTransform;
+
+    // Optional: draw origin axes
+    if (m_showMapOriginAxes)
+    {
+        const float axisLen = 2000.f;
+        struct { XMFLOAT3 end; ImU32 col; } axes[] = {
+            { { axisLen, 0, 0 }, IM_COL32(255, 60, 60, 200) },
+            { { 0, axisLen, 0 }, IM_COL32(60, 255, 60, 200) },
+            { { 0, 0, axisLen }, IM_COL32(60, 100, 255, 200) },
+        };
+        float ox, oy;
+        if (ProjectToScreen(viewProj, vpW, vpH, { 0, 0, 0 }, ox, oy))
+        {
+            for (auto& a : axes) {
+                float ax, ay;
+                if (ProjectToScreen(viewProj, vpW, vpH, a.end, ax, ay))
+                    dl->AddLine(ImVec2(ox, oy), ImVec2(ax, ay), a.col, 2.f);
+            }
+        }
+    }
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, sx, sy, sz);
+
+        // Optional: show raw axis-remapped position (no transform)
+        if (m_showRawPositions) {
+            XMFLOAT3 rawPos = { sx, sz, sy };
+            float rsx, rsy;
+            if (ProjectToScreen(viewProj, vpW, vpH, rawPos, rsx, rsy))
+                dl->AddCircle(ImVec2(rsx, rsy), 3.f, IM_COL32(255, 255, 0, 120), 0, 1.f);
+        }
+
+        XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, t);
+        float scrX, scrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
+
+        ImU32 dotColor = GetAgentTeamColor(ard.teamId);
+        dl->AddCircleFilled(ImVec2(scrX, scrY), dotRadius, dotColor);
+        dl->AddCircle(ImVec2(scrX, scrY), dotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+
+        std::string label = GetAgentLabel(ard);
+        ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
+        float lx = scrX - textSize.x * 0.5f;
+        float ly = scrY + dotRadius + labelOffY;
+        dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
+        dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Debug window: Map Calibration
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawMapCalibrationWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(400, 620), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Map Calibration", &m_showMapCalibrationWindow))
+    {
+        ImGui::End();
+        return;
+    }
+
+    MapTransform& t = m_replayCtx.mapTransform;
+    ImGui::Text("Map ID: %d", m_replayCtx.mapId);
+    ImGui::TextDisabled("Base remap: x=snap.x  y=snap.z(height)  z=snap.y");
+    ImGui::Separator();
+
+    ImGui::Text("1. Axis Swaps");
+    ImGui::Checkbox("Swap Y / Z", &t.swapYZ);
+    ImGui::SameLine();
+    ImGui::Checkbox("Swap X / Z", &t.swapXZ);
+    ImGui::SameLine();
+    ImGui::Checkbox("Swap X / Y", &t.swapXY);
+    ImGui::Separator();
+
+    ImGui::Text("2. Axis Flips");
+    ImGui::Checkbox("Flip X", &t.flipX);
+    ImGui::SameLine();
+    ImGui::Checkbox("Flip Y", &t.flipY);
+    ImGui::SameLine();
+    ImGui::Checkbox("Flip Z", &t.flipZ);
+    ImGui::Separator();
+
+    ImGui::Text("3. Rotation (Y axis)");
+    ImGui::SliderFloat("Rotation", &t.rotationDegrees, 0.f, 360.f, "%.1f deg");
+    ImGui::Separator();
+
+    ImGui::Text("4. Offset");
+    ImGui::DragFloat("Offset X", &t.offsetX, 10.f, -100000.f, 100000.f, "%.1f");
+    ImGui::DragFloat("Offset Y", &t.offsetY, 10.f, -100000.f, 100000.f, "%.1f");
+    ImGui::DragFloat("Offset Z", &t.offsetZ, 10.f, -100000.f, 100000.f, "%.1f");
+    ImGui::Separator();
+
+    ImGui::Text("5. Scale");
+    ImGui::DragFloat("Scale X", &t.scaleX, 0.005f, 0.01f, 10.f, "%.4f");
+    ImGui::DragFloat("Scale Y", &t.scaleY, 0.005f, 0.01f, 10.f, "%.4f");
+    ImGui::DragFloat("Scale Z", &t.scaleZ, 0.005f, 0.01f, 10.f, "%.4f");
+    ImGui::Separator();
+
+    ImGui::Text("Visualization");
+    ImGui::Checkbox("Show raw positions", &m_showRawPositions);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show origin axes", &m_showMapOriginAxes);
+    ImGui::Separator();
+
+    if (ImGui::Button("Reset (identity)"))
+        t = {};
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reset (default)"))
+        t = GetDefaultMapTransform();
+
+    ImGui::SameLine();
+    if (ImGui::Button("Save"))
+        SaveMapTransform(m_replayCtx.mapId, t);
+
+    ImGui::End();
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,72 +1551,178 @@ void ReplayWindow::DrawAgentDataWindow()
         return;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(960, 640), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Agent Data", &m_showAgentDataWindow))
     {
         ImGui::End();
         return;
     }
 
-    // Timeline slider
+    // ---- Top bar: timeline + stats ----
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     ImGui::Text("Timeline:");
     ImGui::SameLine();
-    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderFloat("##timeline", &m_debugTimeline, 0.f, maxT, "%.1fs");
 
-    int totalSnapshots = 0;
-    for (auto& [id, ard] : m_replayCtx.agents)
-        totalSnapshots += static_cast<int>(ard.snapshots.size());
-    ImGui::Text("Agents: %d | Total snapshots: %d | Max time: %.1fs",
-                static_cast<int>(m_replayCtx.agents.size()), totalSnapshots, maxT);
+    ImGui::Text("Players: %d  |  NPCs: %d  |  Gadgets: %d  |  Unknown: %d  |  Total: %d",
+                static_cast<int>(m_playerIds.size()),
+                static_cast<int>(m_npcIds.size()),
+                static_cast<int>(m_gadgetIds.size()),
+                static_cast<int>(m_unknownIds.size()),
+                static_cast<int>(m_replayCtx.agents.size()));
 
-    ImGui::Separator();
-
-    // View mode toggle
     ImGui::Checkbox("Parsed View", &m_showParsedView);
     ImGui::SameLine();
     ImGui::TextDisabled("(uncheck for raw text)");
-
     ImGui::Separator();
 
-    // Left pane: agent list
-    ImGui::BeginChild("AgentList", ImVec2(140, 0), true);
-    for (int agentId : m_sortedAgentIds)
-    {
-        auto& ard = m_replayCtx.agents[agentId];
-        uint8_t teamId = 0;
-        if (!ard.snapshots.empty())
-            teamId = ard.snapshots[0].team_id;
+    // ---- Left pane: categorized agent list (resizable) ----
+    ImGui::BeginChild("AgentList", ImVec2(m_agentListWidth, 0), true);
 
+    // Helper lambda to draw a selectable agent row inside a category
+    auto DrawAgentEntry = [&](int agentId, const AgentReplayData& ard)
+    {
         ImVec4 color(1, 1, 1, 1);
-        if (teamId == 1) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
-        else if (teamId == 2) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
-        else if (teamId == 3) color = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
+        if (ard.teamId == 1) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
+        else if (ard.teamId == 2) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+        else if (ard.teamId == 3) color = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
 
         ImGui::PushStyleColor(ImGuiCol_Text, color);
-        bool selected = (m_selectedAgentId == agentId);
-        auto label = std::format("Agent {}", agentId);
-        if (ImGui::Selectable(label.c_str(), selected))
+
+        std::string label;
+        if (ard.type == AgentType::Player)
+            label = std::format("[{}] {}", agentId, ard.playerName);
+        else if (!ard.categoryName.empty() && ard.categoryName != "Unknown")
+            label = std::format("[{}] {}", agentId, ard.categoryName);
+        else
+            label = std::format("[{}] id:{}", agentId, ard.modelId);
+
+        if (ImGui::Selectable(label.c_str(), m_selectedAgentId == agentId))
             m_selectedAgentId = agentId;
+
         ImGui::PopStyleColor();
+    };
+
+    // --- PLAYERS section (grouped by team) ---
+    if (!m_playerIds.empty() && ImGui::TreeNodeEx("Players", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        // Blue team
+        bool anyBlue = false;
+        for (int id : m_playerIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            if (ard.teamId == 1) { anyBlue = true; break; }
+        }
+        if (anyBlue && ImGui::TreeNodeEx("Blue Team", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (int id : m_playerIds)
+            {
+                auto& ard = m_replayCtx.agents[id];
+                if (ard.teamId == 1) DrawAgentEntry(id, ard);
+            }
+            ImGui::TreePop();
+        }
+
+        // Red team
+        bool anyRed = false;
+        for (int id : m_playerIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            if (ard.teamId == 2) { anyRed = true; break; }
+        }
+        if (anyRed && ImGui::TreeNodeEx("Red Team", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (int id : m_playerIds)
+            {
+                auto& ard = m_replayCtx.agents[id];
+                if (ard.teamId == 2) DrawAgentEntry(id, ard);
+            }
+            ImGui::TreePop();
+        }
+
+        // Other teams (if any)
+        for (int id : m_playerIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            if (ard.teamId != 1 && ard.teamId != 2) DrawAgentEntry(id, ard);
+        }
+
+        ImGui::TreePop();
     }
+
+    // --- NPCs section ---
+    if (!m_npcIds.empty() && ImGui::TreeNodeEx("NPCs", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        for (int id : m_npcIds)
+            DrawAgentEntry(id, m_replayCtx.agents[id]);
+        ImGui::TreePop();
+    }
+
+    // --- Gadgets section ---
+    if (!m_gadgetIds.empty() && ImGui::TreeNode("Gadgets"))
+    {
+        for (int id : m_gadgetIds)
+            DrawAgentEntry(id, m_replayCtx.agents[id]);
+        ImGui::TreePop();
+    }
+
+    // --- Unknown section ---
+    if (!m_unknownIds.empty() && ImGui::TreeNode("Unknown"))
+    {
+        for (int id : m_unknownIds)
+            DrawAgentEntry(id, m_replayCtx.agents[id]);
+        ImGui::TreePop();
+    }
+
     ImGui::EndChild();
 
+    // Vertical drag splitter between left and right panes
+    ImGui::SameLine();
+    {
+        float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::Button("##splitter", ImVec2(4.0f, -1));
+        if (ImGui::IsItemActive())
+            m_agentListWidth += ImGui::GetIO().MouseDelta.x;
+        m_agentListWidth = std::clamp(m_agentListWidth, 120.f, avail - 200.f);
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
     ImGui::SameLine();
 
-    // Right pane: snapshot detail
+    // ---- Right pane: agent detail ----
     ImGui::BeginChild("AgentDetail", ImVec2(0, 0), true);
 
     if (m_selectedAgentId >= 0 && m_replayCtx.agents.count(m_selectedAgentId))
     {
         auto& ard = m_replayCtx.agents[m_selectedAgentId];
-        ImGui::Text("Agent %d  |  %d snapshots  |  Team: %s",
-                    ard.agent_id, static_cast<int>(ard.snapshots.size()),
-                    ard.snapshots.empty() ? "?" : GetTeamName(ard.snapshots[0].team_id));
+
+        // Header with classification info
+        ImGui::TextColored(ImVec4(1, 0.9f, 0.4f, 1), "Agent %d  [%s]",
+                           ard.agent_id, AgentTypeName(ard.type));
+        ImGui::SameLine();
+        ImGui::Text(" |  %d snapshots  |  Model: %u  |  Team: %s (%u)",
+                    static_cast<int>(ard.snapshots.size()), ard.modelId,
+                    GetTeamName(ard.teamId), ard.teamId);
+
+        if (ard.type == AgentType::Player)
+        {
+            ImGui::Text("Player: %s", ard.playerName.c_str());
+        }
+        else if (!ard.categoryName.empty() && ard.categoryName != "Unknown")
+        {
+            ImGui::Text("Category: %s", ard.categoryName.c_str());
+        }
+        else
+        {
+            ImGui::Text("agent_model_type: 0x%X  |  model_id: %u  |  gadget_id: %u",
+                        ard.agentModelType, ard.modelId,
+                        ard.snapshots.empty() ? 0u : ard.snapshots[0].gadget_id);
+        }
+
         ImGui::Separator();
 
-        // Show snapshot at current timeline position
+        // Snapshot at current timeline
         const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
         if (snap)
         {
@@ -1242,7 +1733,7 @@ void ReplayWindow::DrawAgentDataWindow()
             {
                 if (ImGui::BeginTable("SnapFields", 2,
                     ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
-                    ImVec2(0, 280)))
+                    ImVec2(0, 260)))
                 {
                     ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed, 200);
                     ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
@@ -1415,6 +1906,573 @@ void ReplayWindow::DrawAgentDataWindow()
 }
 
 // ---------------------------------------------------------------------------
+// Debug window: StoC Events Viewer
+// ---------------------------------------------------------------------------
+
+static ImU32 StoCCategoryColor(StoCCategory cat)
+{
+    switch (cat) {
+    case StoCCategory::AgentMovement: return IM_COL32(160, 160, 160, 255);
+    case StoCCategory::Skill:         return IM_COL32(80,  140, 255, 255);
+    case StoCCategory::AttackSkill:   return IM_COL32(255, 165, 60,  255);
+    case StoCCategory::BasicAttack:   return IM_COL32(240, 220, 60,  255);
+    case StoCCategory::Combat:        return IM_COL32(255, 70,  70,  255);
+    case StoCCategory::Jumbo:         return IM_COL32(180, 100, 255, 255);
+    case StoCCategory::Unknown:       return IM_COL32(220, 220, 220, 255);
+    default:                          return IM_COL32(255, 255, 255, 255);
+    }
+}
+
+static int StoCCategoryCount(const StoCData& d, StoCCategory cat)
+{
+    switch (cat) {
+    case StoCCategory::AgentMovement: return static_cast<int>(d.agentMovement.size());
+    case StoCCategory::Skill:         return static_cast<int>(d.skill.size());
+    case StoCCategory::AttackSkill:   return static_cast<int>(d.attackSkill.size());
+    case StoCCategory::BasicAttack:   return static_cast<int>(d.basicAttack.size());
+    case StoCCategory::Combat:        return static_cast<int>(d.combat.size());
+    case StoCCategory::Jumbo:         return static_cast<int>(d.jumbo.size());
+    case StoCCategory::Unknown:       return static_cast<int>(d.unknown.size());
+    default: return 0;
+    }
+}
+
+static std::string GetAgentDisplayName(const ReplayContext& ctx, int agentId)
+{
+    if (agentId <= 0)
+        return std::format("Agent {} (Missing)", agentId);
+
+    auto it = ctx.agents.find(agentId);
+    if (it == ctx.agents.end())
+        return std::format("Agent {} (Missing)", agentId);
+
+    auto& ard = it->second;
+    switch (ard.type) {
+    case AgentType::Player: return std::format("{} (Player)", ard.playerName);
+    case AgentType::NPC:    return std::format("{} (NPC)", ard.categoryName);
+    case AgentType::Gadget: return std::format("{} (Gadget)", ard.categoryName);
+    default:                return std::format("Agent {} (Unknown)", agentId);
+    }
+}
+
+static std::string GetSkillDisplayName(int skillId)
+{
+    if (skillId <= 0)
+        return "None";
+
+    auto& db = GetSkillDatabase();
+    if (db.IsLoaded())
+    {
+        const SkillInfo* si = db.Get(skillId);
+        if (si && !si->name.empty())
+            return si->name;
+    }
+    return std::format("Skill {}", skillId);
+}
+
+static int ResolveTarget(int targetId, int casterId)
+{
+    return (targetId == 0) ? casterId : targetId;
+}
+
+static const char* JumboPartyLabel(int partyValue)
+{
+    if (partyValue == 1635021873) return "Party 1";
+    if (partyValue == 1635021874) return "Party 2";
+    return "Unknown";
+}
+
+void ReplayWindow::DrawStoCWindow()
+{
+    if (!m_replayCtx.stocLoaded)
+    {
+        ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("StoC Events", &m_showStoCWindow))
+            ImGui::TextWrapped("StoC event data is still loading...");
+        ImGui::End();
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(1100, 660), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("StoC Events", &m_showStoCWindow))
+    {
+        ImGui::End();
+        return;
+    }
+
+    auto& sd = m_replayCtx.stocData;
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+
+    // ---- Event timeline bar ----
+    {
+        ImVec2 canvasPos = ImGui::GetCursorScreenPos();
+        float canvasW = ImGui::GetContentRegionAvail().x;
+        float canvasH = 32.f;
+
+        ImGui::InvisibleButton("##timeline_canvas", ImVec2(canvasW, canvasH));
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasW, canvasPos.y + canvasH),
+                          IM_COL32(30, 30, 30, 255));
+        dl->AddRect(canvasPos, ImVec2(canvasPos.x + canvasW, canvasPos.y + canvasH),
+                    IM_COL32(80, 80, 80, 255));
+
+        auto PlotEvents = [&](const auto& events, StoCCategory cat)
+        {
+            ImU32 col = StoCCategoryColor(cat);
+            for (auto& ev : events)
+            {
+                float xp = canvasPos.x + (ev.time / maxT) * canvasW;
+                dl->AddLine(ImVec2(xp, canvasPos.y), ImVec2(xp, canvasPos.y + canvasH), col, 1.0f);
+            }
+        };
+
+        if (m_selectedStoCCategory == StoCCategory::AgentMovement || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.agentMovement, StoCCategory::AgentMovement);
+        if (m_selectedStoCCategory == StoCCategory::Skill || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.skill, StoCCategory::Skill);
+        if (m_selectedStoCCategory == StoCCategory::AttackSkill || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.attackSkill, StoCCategory::AttackSkill);
+        if (m_selectedStoCCategory == StoCCategory::BasicAttack || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.basicAttack, StoCCategory::BasicAttack);
+        if (m_selectedStoCCategory == StoCCategory::Combat || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.combat, StoCCategory::Combat);
+        if (m_selectedStoCCategory == StoCCategory::Jumbo || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.jumbo, StoCCategory::Jumbo);
+        if (m_selectedStoCCategory == StoCCategory::Unknown || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.unknown, StoCCategory::Unknown);
+
+        if (ImGui::IsItemClicked())
+            m_debugTimeline = ((ImGui::GetIO().MousePos.x - canvasPos.x) / canvasW) * maxT;
+    }
+
+    ImGui::Checkbox("Show Raw", &m_stocShowRaw);
+    ImGui::Separator();
+
+    // ---- Left pane: category list ----
+    ImGui::BeginChild("StoCCatList", ImVec2(m_stocListWidth, 0), true);
+
+    for (int i = 0; i < static_cast<int>(StoCCategory::_Count); i++)
+    {
+        auto cat = static_cast<StoCCategory>(i);
+        int count = StoCCategoryCount(sd, cat);
+        ImU32 col = StoCCategoryColor(cat);
+        ImGui::PushStyleColor(ImGuiCol_Text, col);
+        auto label = std::format("{} ({})", StoCCategoryName(cat), count);
+        if (ImGui::Selectable(label.c_str(), m_selectedStoCCategory == cat))
+        {
+            m_selectedStoCCategory = cat;
+            m_selectedStoCEventIdx = -1;
+        }
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::EndChild();
+
+    // Splitter
+    ImGui::SameLine();
+    {
+        float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::Button("##stoc_splitter", ImVec2(4.0f, -1));
+        if (ImGui::IsItemActive())
+            m_stocListWidth += ImGui::GetIO().MouseDelta.x;
+        m_stocListWidth = std::clamp(m_stocListWidth, 120.f, avail - 200.f);
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    ImGui::SameLine();
+
+    // ---- Right pane: event table ----
+    ImGui::BeginChild("StoCDetail", ImVec2(0, 0), true);
+
+    const auto& rctx = m_replayCtx;
+
+    switch (m_selectedStoCCategory)
+    {
+    // ====================== AGENT MOVEMENT ======================
+    case StoCCategory::AgentMovement:
+    {
+        ImGui::Text("Agent Movement Events: %d", static_cast<int>(sd.agentMovement.size()));
+        if (ImGui::BeginTable("AMTable", 6,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",  ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableSetupColumn("Agent ID", ImGuiTableColumnFlags_WidthFixed, 55);
+            ImGui::TableSetupColumn("Agent Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("X",     ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Y",     ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Plane", ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.agentMovement.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.agentMovement[row];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##am{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%d", ev.agent_id);
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.agent_id).c_str());
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::Text("%.1f", ev.x);
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::Text("%.1f", ev.y);
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::Text("%.0f", ev.plane);
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.agentMovement.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.agentMovement[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== SKILL EVENTS ======================
+    case StoCCategory::Skill:
+    {
+        ImGui::Text("Skill Events: %d", static_cast<int>(sd.skill.size()));
+        if (ImGui::BeginTable("SKTable", 8,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",       ImGuiTableColumnFlags_WidthFixed, 50);
+            ImGui::TableSetupColumn("Type",        ImGuiTableColumnFlags_WidthFixed, 130);
+            ImGui::TableSetupColumn("Skill",       ImGuiTableColumnFlags_WidthFixed, 40);
+            ImGui::TableSetupColumn("Skill Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Caster",      ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Caster Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Target",      ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Target Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.skill.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.skill[row];
+                    int tid = ResolveTarget(ev.target_id, ev.caster_id);
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##sk{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.type.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%d", ev.skill_id);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(GetSkillDisplayName(ev.skill_id).c_str());
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::Text("%d", ev.caster_id);
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.caster_id).c_str());
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::Text("%d", tid);
+                    ImGui::TableSetColumnIndex(7);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, tid).c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.skill.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.skill[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== ATTACK SKILL EVENTS ======================
+    case StoCCategory::AttackSkill:
+    {
+        ImGui::Text("Attack Skill Events: %d", static_cast<int>(sd.attackSkill.size()));
+        if (ImGui::BeginTable("ASKTable", 8,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",       ImGuiTableColumnFlags_WidthFixed, 50);
+            ImGui::TableSetupColumn("Type",        ImGuiTableColumnFlags_WidthFixed, 150);
+            ImGui::TableSetupColumn("Skill",       ImGuiTableColumnFlags_WidthFixed, 40);
+            ImGui::TableSetupColumn("Skill Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Caster",      ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Caster Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Target",      ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Target Name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.attackSkill.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.attackSkill[row];
+                    int tid = ResolveTarget(ev.target_id, ev.caster_id);
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##ask{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.type.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%d", ev.skill_id);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(GetSkillDisplayName(ev.skill_id).c_str());
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::Text("%d", ev.caster_id);
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.caster_id).c_str());
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::Text("%d", tid);
+                    ImGui::TableSetColumnIndex(7);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, tid).c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.attackSkill.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.attackSkill[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== BASIC ATTACK EVENTS ======================
+    case StoCCategory::BasicAttack:
+    {
+        ImGui::Text("Basic Attack Events: %d", static_cast<int>(sd.basicAttack.size()));
+        if (ImGui::BeginTable("BATable", 6,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",        ImGuiTableColumnFlags_WidthFixed, 50);
+            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("Caster",       ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Caster Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Target",       ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Target Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.basicAttack.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.basicAttack[row];
+                    int tid = ResolveTarget(ev.target_id, ev.caster_id);
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##ba{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.type.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%d", ev.caster_id);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.caster_id).c_str());
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::Text("%d", tid);
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, tid).c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.basicAttack.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.basicAttack[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== COMBAT EVENTS ======================
+    case StoCCategory::Combat:
+    {
+        ImGui::Text("Combat Events: %d", static_cast<int>(sd.combat.size()));
+        if (ImGui::BeginTable("CMTable", 8,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",        ImGuiTableColumnFlags_WidthFixed, 50);
+            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableSetupColumn("Caster",       ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Caster Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Target",       ImGuiTableColumnFlags_WidthFixed, 45);
+            ImGui::TableSetupColumn("Target Name",  ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Value",        ImGuiTableColumnFlags_WidthFixed, 65);
+            ImGui::TableSetupColumn("Dmg Type",     ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.combat.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.combat[row];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##cm{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.type.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%d", ev.caster_id);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.caster_id).c_str());
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::Text("%d", ev.target_id);
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextUnformatted(GetAgentDisplayName(rctx, ev.target_id).c_str());
+                    ImGui::TableSetColumnIndex(6);
+                    ImGui::Text("%.2f", ev.value);
+                    ImGui::TableSetColumnIndex(7);
+                    ImGui::Text("%d", ev.damage_type);
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.combat.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.combat[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== JUMBO MESSAGES ======================
+    case StoCCategory::Jumbo:
+    {
+        ImGui::Text("Jumbo Messages: %d", static_cast<int>(sd.jumbo.size()));
+        if (ImGui::BeginTable("JMBTable", 4,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",        ImGuiTableColumnFlags_WidthFixed, 55);
+            ImGui::TableSetupColumn("Message",      ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Party Value",   ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableSetupColumn("Party",         ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.jumbo.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.jumbo[row];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##jmb{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.message.c_str());
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%d", ev.party_value);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(JumboPartyLabel(ev.party_value));
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(sd.jumbo.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", sd.jumbo[m_selectedStoCEventIdx].raw_line.c_str());
+        }
+        break;
+    }
+
+    // ====================== UNKNOWN EVENTS ======================
+    case StoCCategory::Unknown:
+    {
+        ImGui::Text("Unknown Events: %d", static_cast<int>(sd.unknown.size()));
+        if (ImGui::BeginTable("UNKTable", 2,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 55);
+            ImGui::TableSetupColumn("Raw Line", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.unknown.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.unknown[row];
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:.1f}##unk{}", ev.time, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                        m_selectedStoCEventIdx = row;
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.raw_line.c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        break;
+    }
+
+    default:
+        ImGui::TextWrapped("Select a category from the left.");
+        break;
+    }
+
+    ImGui::EndChild();
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
 
 void ReplayWindow::Clear()
 {
@@ -1478,8 +2536,13 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
 {
     auto* rw = reinterpret_cast<ReplayWindow*>(GetWindowLongPtr(hWnd, GWLP_USERDATA));
 
-    // Forward to ImGui if initialized (save/restore main app context)
-    bool imguiCapture = false;
+    // Forward to ImGui if initialized (save/restore main app context).
+    // Split capture checks: keyboard only blocks when a text input widget is
+    // active (WantTextInput), so WASD camera movement works even when an ImGui
+    // window (e.g. Agent Offset) has focus. Mouse is blocked only when the
+    // cursor is over an ImGui window (WantCaptureMouse).
+    bool imguiCaptureMouse = false;
+    bool imguiCaptureKeys  = false;
     if (rw && rw->m_imguiInitialized)
     {
         ImGuiContext* prevCtx = ImGui::GetCurrentContext();
@@ -1491,45 +2554,48 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             return true;
         }
 
-        imguiCapture = ImGui::GetIO().WantCaptureMouse || ImGui::GetIO().WantCaptureKeyboard;
+        imguiCaptureMouse = ImGui::GetIO().WantCaptureMouse;
+        imguiCaptureKeys  = ImGui::GetIO().WantTextInput;
         ImGui::SetCurrentContext(prevCtx);
     }
 
-    bool inputAllowed = rw && rw->m_loadingPhase == LoadingPhase::Ready && !imguiCapture;
+    bool isReady = rw && rw->m_loadingPhase == LoadingPhase::Ready;
+    bool keyAllowed   = isReady && !imguiCaptureKeys;
+    bool mouseAllowed = isReady && !imguiCaptureMouse;
 
     switch (message)
     {
     case WM_KEYDOWN:
-        if (inputAllowed && rw->m_inputManager)
+        if (keyAllowed && rw->m_inputManager)
             rw->m_inputManager->OnKeyDown(wParam, hWnd);
         break;
 
     case WM_KEYUP:
-        if (inputAllowed && rw->m_inputManager)
+        if (keyAllowed && rw->m_inputManager)
             rw->m_inputManager->OnKeyUp(wParam, hWnd);
         break;
 
     case WM_INPUT:
-        if (inputAllowed && rw->m_inputManager)
+        if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->ProcessRawInput(lParam);
         break;
 
     case WM_LBUTTONDOWN:
     case WM_MBUTTONDOWN:
     case WM_RBUTTONDOWN:
-        if (inputAllowed && rw->m_inputManager)
+        if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         break;
 
     case WM_LBUTTONUP:
     case WM_MBUTTONUP:
     case WM_RBUTTONUP:
-        if (inputAllowed && rw->m_inputManager)
+        if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         break;
 
     case WM_MOUSEWHEEL:
-        if (inputAllowed && rw->m_inputManager)
+        if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam), hWnd);
         break;
 

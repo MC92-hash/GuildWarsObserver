@@ -333,6 +333,9 @@
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\StoCParser.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\TextureCache.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -735,6 +738,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\StoCParser.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\TextureCache.cpp">
