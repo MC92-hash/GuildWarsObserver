@@ -32,7 +32,7 @@ inline uint32_t GetDatMapId(int metadataMapId)
     }
 }
 
-enum class AgentType : uint8_t { Unknown, Player, NPC, Gadget };
+enum class AgentType : uint8_t { Unknown, Player, NPC, Gadget, Flag, Spirit, Item };
 
 inline const char* AgentTypeName(AgentType t)
 {
@@ -40,13 +40,137 @@ inline const char* AgentTypeName(AgentType t)
     case AgentType::Player:  return "Player";
     case AgentType::NPC:     return "NPC";
     case AgentType::Gadget:  return "Gadget";
+    case AgentType::Flag:    return "Flag";
+    case AgentType::Spirit:  return "Spirit";
+    case AgentType::Item:    return "Item";
     default:                 return "Unknown";
     }
+}
+
+// Per-map flag item_id pairs. Returns true if the given item_id is a flag
+// on the specified map. Flags must never be interpolated — they snap to
+// their exact recorded snapshot positions.
+inline bool IsFlagItemId(int mapId, uint32_t itemId)
+{
+    if (itemId == 0) return false;
+    switch (mapId) {
+    case 167: return itemId == 57 || itemId == 58;   // Burning Isle
+    case 168: return itemId == 45 || itemId == 46;   // Druid's Isle
+    case 170: return itemId == 49 || itemId == 50;   // Frozen Isle
+    case 171: return itemId == 67 || itemId == 68;   // Warrior's Isle
+    case 174: return itemId == 45 || itemId == 46;   // Nomad's Isle
+    case 175: return itemId == 45 || itemId == 46;   // Isle of the Dead
+    case 355: return itemId == 61 || itemId == 62;   // Isle of Weeping Stone
+    case 356: return itemId == 61 || itemId == 62;   // Isle of Jade
+    case 357: return itemId == 65 || itemId == 66;   // Imperial Isle
+    case 358: return itemId == 61 || itemId == 62;   // Isle of Meditation
+    case 533: return itemId == 69 || itemId == 70;   // Uncharted Isle
+    case 534: return itemId == 61 || itemId == 62;   // Isle of Wurms
+    case 541: return itemId == 73 || itemId == 74;   // Corrupted Isle
+    case 542: return itemId == 61 || itemId == 62;   // Isle of Solitude
+    default:  return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ritualist spirit lookup: model_id → { skill_id, display_name }
+// ---------------------------------------------------------------------------
+
+struct SpiritInfo
+{
+    int         skillId;
+    const char* name;
+};
+
+inline const SpiritInfo* LookupSpirit(uint32_t modelId)
+{
+    static const struct { uint32_t modelId; SpiritInfo info; } table[] = {
+        { 4275, { 305,  "Spirit of Union" } },
+        { 4279, { 3020, "Spirit of Wanderlust" } },
+        { 4264, { 3006, "Spirit of Shadowsong" } },
+        { 4265, { 3007, "Spirit of Pain" } },
+        { 4274, { 3016, "Spirit of Shelter" } },
+        { 4273, { 3015, "Spirit of Earthbind" } },
+        { 4267, { 3009, "Spirit of Soothing" } },
+        { 5770, { 3025, "Spirit of Recovery" } },
+        { 4271, { 3013, "Spirit of Recuperation" } },
+        { 5904, { 3099, "Spirit of Rejuvenation" } },
+        { 4269, { 3012, "Spirit of Life" } },
+        { 4270, { 3011, "Spirit of Preservation" } },
+        { 4277, { 3018, "Spirit of Restoration" } },
+        { 4272, { 3014, "Spirit of Dissonance" } },
+        { 4268, { 3010, "Spirit of Displacement" } },
+        { 4276, { 3017, "Spirit of Disenchantment" } },
+        { 5771, { 3023, "Spirit of Anguish" } },
+        { 4289, { 997,  "Spirit of Famine" } },
+        { 2937, { 475,  "Spirit of Quickening Zephyr" } },
+        { 2938, { 476,  "Spirit of Nature's Renewal" } },
+        { 2939, { 477,  "Spirit of Muddy Terrain" } },
+        { 2927, { 464,  "Spirit of Edge of Extinction" } },
+        { 2929, { 467,  "Spirit of Fertile Season" } },
+        { 5767, { 1472, "Spirit of Toxicity" } },
+        { 2936, { 474,  "Spirit of Energizing Wind" } },
+        { 4266, { 3008, "Spirit of Destruction" } },
+        { 5773, { 3022, "Spirit of Gaze of Fury" } },
+        { 5905, { 3038, "Spirit of Agony" } },
+        { 4278, { 3019, "Spirit of Bloodsong" } },
+    };
+    for (auto& e : table)
+        if (e.modelId == modelId) return &e.info;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Spirit danger-zone radius (game units). Used for the overlap / coexistence
+// rule: spirits of the same model_id and team within 2.7 × radius of each
+// other cannot coexist — the oldest one is hidden.
+//
+// Binding Rituals (Ritualist):  effect range ≈ 2500  (spirit range / earshot)
+// Nature Rituals  (Ranger):     effect range ≈ 5000  (larger area)
+// ---------------------------------------------------------------------------
+
+inline float GetSpiritRadius(uint32_t modelId)
+{
+    switch (modelId) {
+    // --- Ranger Nature Rituals (large area) ---
+    case 2927: // Edge of Extinction
+    case 2929: // Fertile Season
+    case 2936: // Energizing Wind
+    case 2937: // Quickening Zephyr
+    case 2938: // Nature's Renewal
+    case 2939: // Muddy Terrain
+    case 4289: // Famine
+    case 5767: // Toxicity
+        return 5000.f;
+
+    // --- Ritualist Binding Rituals (spirit range) ---
+    default:
+        return 2500.f;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Map-specific item_id lookup (non-flag items like Vine Seed, Repair Kit)
+// ---------------------------------------------------------------------------
+
+inline const char* LookupMapItem(int mapId, uint32_t itemId)
+{
+    if (itemId == 0) return nullptr;
+    switch (mapId) {
+    case 168: // Druid's Isle
+        if (itemId == 47 || itemId == 48) return "Vine Seed";
+        break;
+    case 171: // Warrior's Isle
+        if (itemId == 59 || itemId == 60) return "Repair Kit";
+        break;
+    }
+    return nullptr;
 }
 
 inline const char* LookupNpcName(uint32_t modelId)
 {
     switch (modelId) {
+    case 168: return "Lesser Flame Sentinel";
     case 170: return "Guild Lord";
     case 172: return "Bodyguard";
     case 173: return "Footman";
@@ -89,7 +213,9 @@ inline const char* LookupGadgetName(uint32_t gadgetId)
     case 4203: return "Tower Flag Stand";
     case 4217: return "Resurrection Shrine";
     case 4218: return "Resurrection Shrine";
+    case 1299: return "Vine Bridge";
     case 4334: return "Acid Trap";
+    case 4558: return "Stone Spores";
     case 4645: return "Gate Lock";
     case 4646: return "Gate Lock";
     case 4647: return "Gate Lock";
@@ -101,6 +227,7 @@ inline const char* LookupGadgetName(uint32_t gadgetId)
     case 4720: return "Obelisk Flag Stand";
     case 4721: return "Gate Lock";
     case 4722: return "Gate Lock";
+    case 4725: return "Lever";
     case 5988: return "Southern Health Shrine";
     default:   return nullptr;
     }
@@ -195,6 +322,24 @@ struct AgentSnapshot
     std::string raw_line;
 };
 
+// MOVE_TO_POINT target extracted from StoC agent movement events.
+// Sorted by time; used as authoritative movement anchors in interpolation.
+struct MoveToPointEvent
+{
+    float time = 0.f;
+    float targetX = 0.f;
+    float targetY = 0.f;
+};
+
+// A time interval during which an agent was casting a skill.
+// Built from StoC SKILL_ACTIVATED / SKILL_FINISHED / SKILL_STOPPED events.
+struct CastInterval
+{
+    float start = 0.f;
+    float end   = 0.f;
+    int   skillId = 0;
+};
+
 struct AgentReplayData
 {
     int agent_id = 0;
@@ -206,6 +351,53 @@ struct AgentReplayData
     uint8_t  teamId = 0;
     uint32_t modelId = 0;
     uint16_t agentModelType = 0;
+
+    // Spirit-specific metadata
+    int      spiritSkillId = 0;
+    std::string spiritSkillName;
+
+    // Per-agent MOVE_TO_POINT events (built from StoC after both parsers finish)
+    std::vector<MoveToPointEvent> moveEvents;
+
+    // Transient spirit overlap state (recomputed each frame, not serialized)
+    bool  overlapHidden       = false;
+    float overlapDistNewest   = 0.f;   // distance to the newest spirit of same type+team
+    float overlapThreshold    = 0.f;   // 2.7 × spirit radius
+    bool  overlapIsNewest     = false;  // true if this is the newest of its group
+
+    // Per-agent casting intervals (built from StoC skill events)
+    std::vector<CastInterval> castHistory;
+
+    bool isCastingAtTime(float t) const
+    {
+        for (auto& ci : castHistory)
+            if (t >= ci.start && t <= ci.end) return true;
+        return false;
+    }
+
+    int castingSkillAtTime(float t) const
+    {
+        for (auto& ci : castHistory)
+            if (t >= ci.start && t <= ci.end) return ci.skillId;
+        return 0;
+    }
+
+    // Returns true if the agent is dead at time t, based on the nearest
+    // snapshot's is_dead flag. Resurrection is handled automatically because
+    // a new snapshot with is_dead=false will appear at the res location.
+    bool isDeadAtTime(float t) const
+    {
+        if (snapshots.empty()) return false;
+        if (t <= snapshots.front().time) return snapshots.front().is_dead;
+        if (t >= snapshots.back().time)  return snapshots.back().is_dead;
+        // Binary search for last snapshot with time <= t
+        int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        return snapshots[lo].is_dead;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -333,6 +525,25 @@ struct AgentParseProgress
     std::vector<std::string> errors;
 };
 
+// ---------------------------------------------------------------------------
+// Interpolation settings
+// ---------------------------------------------------------------------------
+
+enum class InterpolationMode : uint8_t { OriginalLinear, Improved };
+
+struct InterpolationSettings
+{
+    InterpolationMode mode = InterpolationMode::Improved;
+    bool  enabled              = true;   // master on/off (off = snap to nearest)
+    bool  showRawSnapshots     = false;  // grey dots at raw snapshot positions
+    bool  showInterpolatedLine = false;  // line between raw and interpolated
+    bool  showMoveAnchors      = false;  // yellow dots at MOVE_TO_POINT targets
+    bool  showCastingFreeze    = false;  // purple ring when agent is frozen by casting
+    bool  showDeadFreeze       = false;  // black dot when agent is frozen by death
+    float gapThreshold         = 0.4f;   // seconds; gaps larger than this trigger prediction
+    float velocityInfluence    = 1.0f;   // 0..1 blending weight for MOVE_TO_POINT prediction
+};
+
 struct ReplayContext
 {
     std::filesystem::path matchFolderPath;
@@ -354,4 +565,7 @@ struct ReplayContext
 
     // Per-map calibration transform (loaded from file, tunable at runtime)
     MapTransform mapTransform;
+
+    // Interpolation configuration
+    InterpolationSettings interpSettings;
 };

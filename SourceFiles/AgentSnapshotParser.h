@@ -16,6 +16,6 @@ void LaunchAgentSnapshotParsing(const std::filesystem::path& matchFolder,
 bool PollAgentParseCompletion(ReplayContext& ctx);
 
 // After agents are loaded, match them against the metadata from infos.json
-// and classify each agent as Player / NPC / Gadget / Unknown.
+// and classify each agent as Player / NPC / Gadget / Flag / Unknown.
 void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
-                    const MatchMeta& meta);
+                    const MatchMeta& meta, int mapId);

@@ -672,7 +672,7 @@ bool PollAgentParseCompletion(ReplayContext& ctx)
 // ---------------------------------------------------------------------------
 
 void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
-                    const MatchMeta& meta)
+                    const MatchMeta& meta, int mapId)
 {
     // Build model_id -> PlayerMeta lookup from both parties
     std::unordered_map<uint32_t, const PlayerMeta*> playerByModelId;
@@ -691,6 +691,23 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
         ard.agentModelType = first.agent_model_type;
         ard.teamId         = first.team_id;
 
+        // Flag check (item_id-based, per map) — must come early
+        if (IsFlagItemId(mapId, first.item_id))
+        {
+            ard.type         = AgentType::Flag;
+            ard.categoryName = "Flag";
+            continue;
+        }
+
+        // Map-specific item check (Vine Seed, Repair Kit, etc.)
+        const char* itemName = LookupMapItem(mapId, first.item_id);
+        if (itemName)
+        {
+            ard.type         = AgentType::Item;
+            ard.categoryName = itemName;
+            continue;
+        }
+
         // Player: agent_model_type == 0x3000 AND model_id matches metadata
         if (first.agent_model_type == 0x3000)
         {
@@ -703,6 +720,17 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
                 ard.categoryName = it->second->encoded_name;
                 continue;
             }
+        }
+
+        // Spirit check (model_id-based)
+        const SpiritInfo* spirit = LookupSpirit(first.model_id);
+        if (spirit)
+        {
+            ard.type            = AgentType::Spirit;
+            ard.categoryName    = spirit->name;
+            ard.spiritSkillId   = spirit->skillId;
+            ard.spiritSkillName = spirit->name;
+            continue;
         }
 
         // NPC check

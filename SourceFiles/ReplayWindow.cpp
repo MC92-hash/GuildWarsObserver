@@ -924,7 +924,7 @@ void ReplayWindow::Tick()
     // Once agents are loaded, classify and build per-category lists
     if (m_replayCtx.agentsLoaded && !m_agentsClassified && !m_replayCtx.agents.empty())
     {
-        ClassifyAgents(m_replayCtx.agents, m_matchMeta);
+        ClassifyAgents(m_replayCtx.agents, m_matchMeta, m_replayCtx.mapId);
 
         m_sortedAgentIds.reserve(m_replayCtx.agents.size());
         for (auto& [id, ard] : m_replayCtx.agents)
@@ -934,6 +934,9 @@ void ReplayWindow::Tick()
             case AgentType::Player:  m_playerIds.push_back(id);  break;
             case AgentType::NPC:     m_npcIds.push_back(id);     break;
             case AgentType::Gadget:  m_gadgetIds.push_back(id);  break;
+            case AgentType::Flag:    m_flagIds.push_back(id);    break;
+            case AgentType::Spirit:  m_spiritIds.push_back(id);  break;
+            case AgentType::Item:    m_itemIds.push_back(id);    break;
             default:                 m_unknownIds.push_back(id);  break;
             }
         }
@@ -941,9 +944,84 @@ void ReplayWindow::Tick()
         std::sort(m_playerIds.begin(),  m_playerIds.end());
         std::sort(m_npcIds.begin(),     m_npcIds.end());
         std::sort(m_gadgetIds.begin(),  m_gadgetIds.end());
+        std::sort(m_flagIds.begin(),    m_flagIds.end());
+        std::sort(m_spiritIds.begin(),  m_spiritIds.end());
+        std::sort(m_itemIds.begin(),    m_itemIds.end());
         std::sort(m_unknownIds.begin(), m_unknownIds.end());
 
         m_agentsClassified = true;
+    }
+
+    // Once both agents and StoC data are loaded, distribute MOVE_TO_POINT
+    // events from the global StoC list into per-agent moveEvents vectors.
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_moveEventsBuilt)
+    {
+        for (auto& ev : m_replayCtx.stocData.agentMovement)
+        {
+            auto it = m_replayCtx.agents.find(ev.agent_id);
+            if (it != m_replayCtx.agents.end())
+            {
+                it->second.moveEvents.push_back(
+                    MoveToPointEvent{ ev.time, ev.x, ev.y });
+            }
+        }
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            std::sort(ard.moveEvents.begin(), ard.moveEvents.end(),
+                      [](const MoveToPointEvent& a, const MoveToPointEvent& b) {
+                          return a.time < b.time;
+                      });
+        }
+        m_moveEventsBuilt = true;
+    }
+
+    // Build per-agent casting intervals from StoC skill/attack-skill events.
+    // A SKILL_ACTIVATED opens an interval; SKILL_FINISHED / SKILL_STOPPED closes it.
+    // INSTANT_SKILL_USED has no cast time so we skip it.
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_castIntervalsBuilt)
+    {
+        // Track open (unfinished) casts per caster_id
+        std::unordered_map<int, CastInterval> openCasts;
+
+        auto processStart = [&](int casterId, float time, int skillId) {
+            openCasts[casterId] = CastInterval{ time, time, skillId };
+        };
+        auto processEnd = [&](int casterId, float time) {
+            auto oc = openCasts.find(casterId);
+            if (oc != openCasts.end()) {
+                oc->second.end = time;
+                auto it = m_replayCtx.agents.find(casterId);
+                if (it != m_replayCtx.agents.end())
+                    it->second.castHistory.push_back(oc->second);
+                openCasts.erase(oc);
+            }
+        };
+
+        for (auto& ev : m_replayCtx.stocData.skill)
+        {
+            if (ev.type == "SKILL_ACTIVATED")
+                processStart(ev.caster_id, ev.time, ev.skill_id);
+            else if (ev.type == "SKILL_FINISHED" || ev.type == "SKILL_STOPPED")
+                processEnd(ev.caster_id, ev.time);
+        }
+
+        for (auto& ev : m_replayCtx.stocData.attackSkill)
+        {
+            if (ev.type == "ATTACK_SKILL_ACTIVATED")
+                processStart(ev.caster_id, ev.time, ev.skill_id);
+            else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
+                processEnd(ev.caster_id, ev.time);
+        }
+
+        // Sort each agent's cast history by start time
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            std::sort(ard.castHistory.begin(), ard.castHistory.end(),
+                      [](const CastInterval& a, const CastInterval& b) {
+                          return a.start < b.start;
+                      });
+        }
+        m_castIntervalsBuilt = true;
     }
 
     // Auto-load saved calibration transform for this map, or fall back to
@@ -1119,6 +1197,7 @@ void ReplayWindow::DrawImGuiOverlay()
         {
             ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
             ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
+            ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
             ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
             ImGui::EndMenu();
         }
@@ -1146,6 +1225,9 @@ void ReplayWindow::DrawImGuiOverlay()
 
     if (m_showMapCalibrationWindow)
         DrawMapCalibrationWindow();
+
+    if (m_showInterpolationWindow)
+        DrawInterpolationWindow();
 
     if (m_showStoCWindow)
         DrawStoCWindow();
@@ -1242,8 +1324,21 @@ static ImU32 GetAgentTeamColor(uint8_t teamId)
     }
 }
 
-static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
-                                     float& outX, float& outY, float& outZ)
+// Binary search: find index of last snapshot with time <= t
+static int FindSnapshotIndex(const std::vector<AgentSnapshot>& snaps, float t)
+{
+    int lo = 0, hi = static_cast<int>(snaps.size()) - 1;
+    while (lo < hi) {
+        int mid = lo + (hi - lo + 1) / 2;
+        if (snaps[mid].time <= t) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+}
+
+// Snap to the nearest snapshot <= t (no blending). Used for flags and
+// when interpolation is disabled.
+static void SnapAgentPosition(const AgentReplayData& ard, float t,
+                              float& outX, float& outY, float& outZ)
 {
     const auto& snaps = ard.snapshots;
     if (snaps.empty()) { outX = outY = outZ = 0.f; return; }
@@ -1253,11 +1348,23 @@ static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
     if (t >= snaps.back().time) {
         outX = snaps.back().x; outY = snaps.back().y; outZ = snaps.back().z; return;
     }
-    int lo = 0, hi = static_cast<int>(snaps.size()) - 1;
-    while (lo < hi) {
-        int mid = lo + (hi - lo + 1) / 2;
-        if (snaps[mid].time <= t) lo = mid; else hi = mid - 1;
+    int idx = FindSnapshotIndex(snaps, t);
+    outX = snaps[idx].x; outY = snaps[idx].y; outZ = snaps[idx].z;
+}
+
+// Original linear interpolation (legacy behavior).
+static void LinearInterpolatePosition(const AgentReplayData& ard, float t,
+                                      float& outX, float& outY, float& outZ)
+{
+    const auto& snaps = ard.snapshots;
+    if (snaps.empty()) { outX = outY = outZ = 0.f; return; }
+    if (t <= snaps.front().time) {
+        outX = snaps.front().x; outY = snaps.front().y; outZ = snaps.front().z; return;
     }
+    if (t >= snaps.back().time) {
+        outX = snaps.back().x; outY = snaps.back().y; outZ = snaps.back().z; return;
+    }
+    int lo = FindSnapshotIndex(snaps, t);
     auto& s0 = snaps[lo];
     if (lo + 1 < static_cast<int>(snaps.size())) {
         auto& s1 = snaps[lo + 1];
@@ -1271,12 +1378,144 @@ static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
     }
 }
 
+// Find the last MOVE_TO_POINT event at or before time t (binary search).
+// Returns -1 if none exists.
+static int FindMoveEventIndex(const std::vector<MoveToPointEvent>& moves, float t)
+{
+    if (moves.empty()) return -1;
+    int lo = 0, hi = static_cast<int>(moves.size()) - 1, result = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (moves[mid].time <= t) { result = mid; lo = mid + 1; }
+        else { hi = mid - 1; }
+    }
+    return result;
+}
+
+// Improved interpolation: MOVE_TO_POINT aware.
+//   - For small gaps (<= gapThreshold): pure linear lerp
+//   - For large gaps: use MOVE_TO_POINT target as movement direction anchor
+//     blended with linear interpolation via velocityInfluence slider.
+//   - If no MOVE_TO_POINT exists for the interval, pure linear interpolation.
+static void ImprovedInterpolatePosition(const AgentReplayData& ard, float t,
+                                        const InterpolationSettings& s,
+                                        float& outX, float& outY, float& outZ)
+{
+    const auto& snaps = ard.snapshots;
+    if (snaps.empty()) { outX = outY = outZ = 0.f; return; }
+    if (t <= snaps.front().time) {
+        outX = snaps.front().x; outY = snaps.front().y; outZ = snaps.front().z; return;
+    }
+    if (t >= snaps.back().time) {
+        outX = snaps.back().x; outY = snaps.back().y; outZ = snaps.back().z; return;
+    }
+
+    int lo = FindSnapshotIndex(snaps, t);
+    auto& prev = snaps[lo];
+
+    if (lo + 1 >= static_cast<int>(snaps.size())) {
+        outX = prev.x; outY = prev.y; outZ = prev.z;
+        return;
+    }
+    auto& next = snaps[lo + 1];
+    float gap = next.time - prev.time;
+    float alpha = (gap > 0.001f) ? (t - prev.time) / gap : 0.f;
+
+    // Base linear interpolation
+    float lx = prev.x + (next.x - prev.x) * alpha;
+    float ly = prev.y + (next.y - prev.y) * alpha;
+    float lz = prev.z + (next.z - prev.z) * alpha;
+
+    // MOVE_TO_POINT directional prediction for large gaps
+    if (gap > s.gapThreshold && s.velocityInfluence > 0.f)
+    {
+        int moveIdx = FindMoveEventIndex(ard.moveEvents, t);
+        if (moveIdx >= 0)
+        {
+            auto& move = ard.moveEvents[moveIdx];
+
+            // Direction from previous snapshot position toward the MOVE_TO_POINT target
+            float dx = move.targetX - prev.x;
+            float dy = move.targetY - prev.y;
+            float dist = sqrtf(dx * dx + dy * dy);
+
+            if (dist > 1.f)
+            {
+                // Estimate speed from the distance between the two bracketing snapshots
+                float speed = sqrtf((next.x - prev.x) * (next.x - prev.x) +
+                                    (next.y - prev.y) * (next.y - prev.y)) / gap;
+
+                float dirX = dx / dist;
+                float dirY = dy / dist;
+                float dt = t - prev.time;
+
+                float px = prev.x + dirX * speed * dt;
+                float py = prev.y + dirY * speed * dt;
+                float pz = prev.z;
+
+                float beta = (gap - s.gapThreshold) / 1.0f;
+                if (beta > 1.f) beta = 1.f;
+                beta *= s.velocityInfluence;
+
+                outX = lx + (px - lx) * beta;
+                outY = ly + (py - ly) * beta;
+                outZ = lz + (pz - lz) * beta;
+                return;
+            }
+        }
+        // No applicable MOVE_TO_POINT — fall through to pure linear
+    }
+
+    outX = lx;
+    outY = ly;
+    outZ = lz;
+}
+
+// Unified entry point: routes through flag snap / disabled snap /
+// original linear / improved, based on agent type and settings.
+static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
+                                     const InterpolationSettings& is,
+                                     float& outX, float& outY, float& outZ)
+{
+    // Flags and Spirits never interpolate — snap to nearest recorded position
+    if (ard.type == AgentType::Flag || ard.type == AgentType::Spirit) {
+        SnapAgentPosition(ard, t, outX, outY, outZ);
+        return;
+    }
+
+    // Death freeze: dead agents stay fixed at their last known position
+    if (ard.isDeadAtTime(t)) {
+        SnapAgentPosition(ard, t, outX, outY, outZ);
+        return;
+    }
+
+    // Casting freeze: agent must not move while casting a skill
+    if (ard.isCastingAtTime(t)) {
+        SnapAgentPosition(ard, t, outX, outY, outZ);
+        return;
+    }
+
+    // Master toggle off → snap to nearest
+    if (!is.enabled) {
+        SnapAgentPosition(ard, t, outX, outY, outZ);
+        return;
+    }
+
+    if (is.mode == InterpolationMode::OriginalLinear)
+        LinearInterpolatePosition(ard, t, outX, outY, outZ);
+    else
+        ImprovedInterpolatePosition(ard, t, is, outX, outY, outZ);
+}
+
 static std::string GetAgentLabel(const AgentReplayData& ard)
 {
     switch (ard.type) {
     case AgentType::Player: return ard.playerName;
     case AgentType::NPC:    return ard.categoryName;
     case AgentType::Gadget: return ard.categoryName;
+    case AgentType::Flag:   return "Flag";
+    case AgentType::Spirit: return ard.categoryName;
+    case AgentType::Item:   return ard.categoryName;
     default:                return std::format("Agent {}", ard.agent_id);
     }
 }
@@ -1353,6 +1592,19 @@ void ReplayWindow::DrawAgentOverlay()
     const float labelOffY = 8.f;
     const MapTransform& t = m_replayCtx.mapTransform;
 
+    // Map boundary clamping: use terrain bounds if available.
+    // Bounds are in GWMB mesh coordinates (post-transform), so we clamp after
+    // applying the map transform.
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+    bool hasBounds = (terrain != nullptr);
+    float bMinX = 0, bMaxX = 0, bMinZ = 0, bMaxZ = 0;
+    if (hasBounds) {
+        bMinX = terrain->m_bounds.map_min_x;
+        bMaxX = terrain->m_bounds.map_max_x;
+        bMinZ = terrain->m_bounds.map_min_z;
+        bMaxZ = terrain->m_bounds.map_max_z;
+    }
+
     // Optional: draw origin axes
     if (m_showMapOriginAxes)
     {
@@ -1373,14 +1625,97 @@ void ReplayWindow::DrawAgentOverlay()
         }
     }
 
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+
+    // --- Spirit overlap pass: determine which spirits are hidden ---
+    // Group spirits by (team, model_id). Within each group, only the newest
+    // spirit is unconditionally visible; older ones are hidden if they are
+    // within 2.7 × the spirit's danger-zone radius of the newest.
+    {
+        struct SpiritEntry { int agentId; float spawnTime; float px, py; };
+        // Key: (teamId << 32) | modelId
+        std::unordered_map<uint64_t, std::vector<SpiritEntry>> groups;
+
+        for (int id : m_spiritIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            ard.overlapHidden     = false;
+            ard.overlapIsNewest   = false;
+            ard.overlapDistNewest = 0.f;
+            ard.overlapThreshold  = 0.f;
+
+            if (ard.snapshots.empty()) continue;
+            if (m_debugTimeline < ard.snapshots.front().time ||
+                m_debugTimeline > ard.snapshots.back().time)
+                continue;
+
+            float sx, sy, sz;
+            SnapAgentPosition(ard, m_debugTimeline, sx, sy, sz);
+
+            uint64_t key = (static_cast<uint64_t>(ard.teamId) << 32) | ard.modelId;
+            groups[key].push_back({ id, ard.snapshots.front().time, sx, sy });
+        }
+
+        for (auto& [key, entries] : groups)
+        {
+            if (entries.size() <= 1) {
+                if (!entries.empty()) {
+                    auto& a = m_replayCtx.agents[entries[0].agentId];
+                    a.overlapIsNewest  = true;
+                    a.overlapThreshold = 2.7f * GetSpiritRadius(a.modelId);
+                }
+                continue;
+            }
+
+            // Sort newest first (highest spawnTime)
+            std::sort(entries.begin(), entries.end(),
+                      [](const SpiritEntry& a, const SpiritEntry& b) {
+                          return a.spawnTime > b.spawnTime;
+                      });
+
+            auto& newest = entries[0];
+            auto& newestArd = m_replayCtx.agents[newest.agentId];
+            float radius = GetSpiritRadius(newestArd.modelId);
+            float threshold = 2.7f * radius;
+
+            newestArd.overlapIsNewest  = true;
+            newestArd.overlapThreshold = threshold;
+
+            for (size_t i = 1; i < entries.size(); ++i)
+            {
+                auto& e = entries[i];
+                auto& a = m_replayCtx.agents[e.agentId];
+                float dx = e.px - newest.px;
+                float dy = e.py - newest.py;
+                float dist = sqrtf(dx * dx + dy * dy);
+
+                a.overlapThreshold  = threshold;
+                a.overlapDistNewest = dist;
+                a.overlapHidden     = (dist < threshold);
+            }
+        }
+    }
+
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         if (ard.snapshots.empty()) continue;
 
-        float sx, sy, sz;
-        InterpolateAgentPosition(ard, m_debugTimeline, sx, sy, sz);
+        // Flags and Spirits only exist within their snapshot time range
+        if (ard.type == AgentType::Flag || ard.type == AgentType::Spirit)
+        {
+            if (m_debugTimeline < ard.snapshots.front().time ||
+                m_debugTimeline > ard.snapshots.back().time)
+                continue;
+        }
 
-        // Optional: show raw axis-remapped position (no transform)
+        // Spirit overlap rule: hide older spirits too close to the newest
+        if (ard.type == AgentType::Spirit && ard.overlapHidden)
+            continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+
+        // Optional: show raw axis-remapped position (no transform) — from calibration panel
         if (m_showRawPositions) {
             XMFLOAT3 rawPos = { sx, sz, sy };
             float rsx, rsy;
@@ -1388,13 +1723,93 @@ void ReplayWindow::DrawAgentOverlay()
                 dl->AddCircle(ImVec2(rsx, rsy), 3.f, IM_COL32(255, 255, 0, 120), 0, 1.f);
         }
 
+        // Optional: show raw snapshot position as grey dot (from interp panel)
+        float rawScrX = 0.f, rawScrY = 0.f;
+        bool rawOnScreen = false;
+        if (is.showRawSnapshots && ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
+        {
+            float rx, ry, rz;
+            SnapAgentPosition(ard, m_debugTimeline, rx, ry, rz);
+            XMFLOAT3 rawPos = ApplyMapTransformToPos(rx, ry, rz, t);
+            rawOnScreen = ProjectToScreen(viewProj, vpW, vpH, rawPos, rawScrX, rawScrY);
+            if (rawOnScreen)
+                dl->AddCircleFilled(ImVec2(rawScrX, rawScrY), 3.f, IM_COL32(160, 160, 160, 180));
+        }
+
+        // Optional: draw MOVE_TO_POINT anchors (yellow diamond + line from snap)
+        if (is.showMoveAnchors && !ard.moveEvents.empty() &&
+            ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
+        {
+            int moveIdx = FindMoveEventIndex(ard.moveEvents, m_debugTimeline);
+            if (moveIdx >= 0) {
+                auto& move = ard.moveEvents[moveIdx];
+                XMFLOAT3 mpos = ApplyMapTransformToPos(move.targetX, move.targetY, 0.f, t);
+                float msx, msy;
+                if (ProjectToScreen(viewProj, vpW, vpH, mpos, msx, msy)) {
+                    dl->AddCircleFilled(ImVec2(msx, msy), 4.f, IM_COL32(255, 255, 0, 200));
+                    float snapScrX, snapScrY;
+                    float rx, ry, rz;
+                    SnapAgentPosition(ard, m_debugTimeline, rx, ry, rz);
+                    XMFLOAT3 spos = ApplyMapTransformToPos(rx, ry, rz, t);
+                    if (ProjectToScreen(viewProj, vpW, vpH, spos, snapScrX, snapScrY))
+                        dl->AddLine(ImVec2(snapScrX, snapScrY), ImVec2(msx, msy),
+                                    IM_COL32(255, 255, 0, 100), 1.f);
+                }
+            }
+        }
+
         XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, t);
+
+        // Clamp to map boundaries to prevent out-of-bounds drift
+        if (hasBounds) {
+            if (pos.x < bMinX) pos.x = bMinX;
+            if (pos.x > bMaxX) pos.x = bMaxX;
+            if (pos.z < bMinZ) pos.z = bMinZ;
+            if (pos.z > bMaxZ) pos.z = bMaxZ;
+        }
+
         float scrX, scrY;
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
 
-        ImU32 dotColor = GetAgentTeamColor(ard.teamId);
+        // Debug line between raw snapshot and interpolated position
+        if (is.showInterpolatedLine && rawOnScreen &&
+            ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
+            dl->AddLine(ImVec2(rawScrX, rawScrY), ImVec2(scrX, scrY),
+                        IM_COL32(255, 255, 255, 80), 1.f);
+
+        bool casting = ard.isCastingAtTime(m_debugTimeline);
+        bool dead    = ard.isDeadAtTime(m_debugTimeline);
+
+        ImU32 dotColor;
+        if (ard.type == AgentType::Flag)
+            dotColor = IM_COL32(0xFF, 0xD7, 0x00, 0xFF);      // gold
+        else if (ard.type == AgentType::Spirit)
+            dotColor = IM_COL32(0x80, 0xFF, 0x80, 0xFF);      // light green
+        else if (ard.type == AgentType::Item)
+            dotColor = IM_COL32(0xFF, 0xA5, 0x00, 0xFF);      // orange
+        else
+            dotColor = GetAgentTeamColor(ard.teamId);
         dl->AddCircleFilled(ImVec2(scrX, scrY), dotRadius, dotColor);
         dl->AddCircle(ImVec2(scrX, scrY), dotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+
+        // Dead freeze indicator: black X over the dot
+        if (is.showDeadFreeze && dead &&
+            ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
+        {
+            float r = dotRadius + 2.f;
+            dl->AddLine(ImVec2(scrX - r, scrY - r), ImVec2(scrX + r, scrY + r),
+                        IM_COL32(0, 0, 0, 240), 2.f);
+            dl->AddLine(ImVec2(scrX + r, scrY - r), ImVec2(scrX - r, scrY + r),
+                        IM_COL32(0, 0, 0, 240), 2.f);
+        }
+
+        // Casting freeze indicator: purple ring around frozen agents
+        if (is.showCastingFreeze && casting && !dead &&
+            ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
+        {
+            dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 3.f,
+                          IM_COL32(180, 60, 255, 220), 0, 2.f);
+        }
 
         std::string label = GetAgentLabel(ard);
         ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
@@ -1471,6 +1886,71 @@ void ReplayWindow::DrawMapCalibrationWindow()
     ImGui::SameLine();
     if (ImGui::Button("Save"))
         SaveMapTransform(m_replayCtx.mapId, t);
+
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Debug window: Interpolation Settings
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawInterpolationWindow()
+{
+    ImGui::SetNextWindowSize(ImVec2(340, 280), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Interpolation", &m_showInterpolationWindow))
+    {
+        ImGui::End();
+        return;
+    }
+
+    InterpolationSettings& s = m_replayCtx.interpSettings;
+
+    ImGui::Checkbox("Enable Interpolation", &s.enabled);
+    if (!s.enabled) ImGui::TextDisabled("(all agents snap to nearest snapshot)");
+    ImGui::Separator();
+
+    ImGui::Text("Mode");
+    int mode = static_cast<int>(s.mode);
+    ImGui::RadioButton("Original (Linear)", &mode, 0);
+    ImGui::RadioButton("Improved (MOVE_TO_POINT Aware)", &mode, 1);
+    s.mode = static_cast<InterpolationMode>(mode);
+    ImGui::Separator();
+
+    bool improved = (s.mode == InterpolationMode::Improved);
+    if (!improved) ImGui::BeginDisabled();
+
+    ImGui::Text("Improved Mode Settings");
+    ImGui::SliderFloat("Gap Threshold", &s.gapThreshold, 0.1f, 2.0f, "%.2f s");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Minimum time gap before MOVE_TO_POINT prediction is used");
+    ImGui::SliderFloat("Velocity Influence", &s.velocityInfluence, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Blending weight between linear and MOVE_TO_POINT prediction");
+
+    if (!improved) ImGui::EndDisabled();
+    ImGui::Separator();
+
+    ImGui::Text("Movement Freeze Rules");
+    ImGui::TextDisabled("Agents freeze when casting or dead.");
+    ImGui::TextDisabled("Applies to both interpolation modes.");
+    ImGui::Checkbox("Show Casting Freeze", &s.showCastingFreeze);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Purple ring around agents that are currently casting");
+    ImGui::Checkbox("Show Dead Freeze", &s.showDeadFreeze);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Black X over agents that are dead");
+    ImGui::Separator();
+
+    ImGui::Text("Visualization");
+    ImGui::Checkbox("Show raw snapshot positions", &s.showRawSnapshots);
+    ImGui::Checkbox("Show interp debug lines", &s.showInterpolatedLine);
+    ImGui::Checkbox("Show MOVE_TO_POINT anchors", &s.showMoveAnchors);
+    ImGui::Separator();
+
+    const char* modeLabel = (s.mode == InterpolationMode::OriginalLinear)
+        ? "Original (Linear)" : "Improved (MOVE_TO_POINT)";
+    ImGui::TextDisabled("Active: %s  |  %s",
+                        modeLabel, s.enabled ? "ON" : "OFF");
 
     ImGui::End();
 }
@@ -1565,10 +2045,13 @@ void ReplayWindow::DrawAgentDataWindow()
     ImGui::SetNextItemWidth(-1);
     ImGui::SliderFloat("##timeline", &m_debugTimeline, 0.f, maxT, "%.1fs");
 
-    ImGui::Text("Players: %d  |  NPCs: %d  |  Gadgets: %d  |  Unknown: %d  |  Total: %d",
+    ImGui::Text("Players:%d  Flags:%d  NPCs:%d  Spirits:%d  Gadgets:%d  Items:%d  Unknown:%d  Total:%d",
                 static_cast<int>(m_playerIds.size()),
+                static_cast<int>(m_flagIds.size()),
                 static_cast<int>(m_npcIds.size()),
+                static_cast<int>(m_spiritIds.size()),
                 static_cast<int>(m_gadgetIds.size()),
+                static_cast<int>(m_itemIds.size()),
                 static_cast<int>(m_unknownIds.size()),
                 static_cast<int>(m_replayCtx.agents.size()));
 
@@ -1607,47 +2090,38 @@ void ReplayWindow::DrawAgentDataWindow()
     // --- PLAYERS section (grouped by team) ---
     if (!m_playerIds.empty() && ImGui::TreeNodeEx("Players", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        // Blue team
         bool anyBlue = false;
         for (int id : m_playerIds)
-        {
-            auto& ard = m_replayCtx.agents[id];
-            if (ard.teamId == 1) { anyBlue = true; break; }
-        }
+            if (m_replayCtx.agents[id].teamId == 1) { anyBlue = true; break; }
         if (anyBlue && ImGui::TreeNodeEx("Blue Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
-            {
-                auto& ard = m_replayCtx.agents[id];
-                if (ard.teamId == 1) DrawAgentEntry(id, ard);
-            }
+                if (m_replayCtx.agents[id].teamId == 1) DrawAgentEntry(id, m_replayCtx.agents[id]);
             ImGui::TreePop();
         }
 
-        // Red team
         bool anyRed = false;
         for (int id : m_playerIds)
-        {
-            auto& ard = m_replayCtx.agents[id];
-            if (ard.teamId == 2) { anyRed = true; break; }
-        }
+            if (m_replayCtx.agents[id].teamId == 2) { anyRed = true; break; }
         if (anyRed && ImGui::TreeNodeEx("Red Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
-            {
-                auto& ard = m_replayCtx.agents[id];
-                if (ard.teamId == 2) DrawAgentEntry(id, ard);
-            }
+                if (m_replayCtx.agents[id].teamId == 2) DrawAgentEntry(id, m_replayCtx.agents[id]);
             ImGui::TreePop();
         }
 
-        // Other teams (if any)
         for (int id : m_playerIds)
-        {
-            auto& ard = m_replayCtx.agents[id];
-            if (ard.teamId != 1 && ard.teamId != 2) DrawAgentEntry(id, ard);
-        }
+            if (m_replayCtx.agents[id].teamId != 1 && m_replayCtx.agents[id].teamId != 2)
+                DrawAgentEntry(id, m_replayCtx.agents[id]);
 
+        ImGui::TreePop();
+    }
+
+    // --- Flags section ---
+    if (!m_flagIds.empty() && ImGui::TreeNodeEx("Flags", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        for (int id : m_flagIds)
+            DrawAgentEntry(id, m_replayCtx.agents[id]);
         ImGui::TreePop();
     }
 
@@ -1659,10 +2133,48 @@ void ReplayWindow::DrawAgentDataWindow()
         ImGui::TreePop();
     }
 
+    // --- Spirits section (grouped by team) ---
+    if (!m_spiritIds.empty() && ImGui::TreeNodeEx("Spirits", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        bool anyT1 = false;
+        for (int id : m_spiritIds)
+            if (m_replayCtx.agents[id].teamId == 1) { anyT1 = true; break; }
+        if (anyT1 && ImGui::TreeNodeEx("Team 1 Spirits", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (int id : m_spiritIds)
+                if (m_replayCtx.agents[id].teamId == 1) DrawAgentEntry(id, m_replayCtx.agents[id]);
+            ImGui::TreePop();
+        }
+
+        bool anyT2 = false;
+        for (int id : m_spiritIds)
+            if (m_replayCtx.agents[id].teamId == 2) { anyT2 = true; break; }
+        if (anyT2 && ImGui::TreeNodeEx("Team 2 Spirits", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (int id : m_spiritIds)
+                if (m_replayCtx.agents[id].teamId == 2) DrawAgentEntry(id, m_replayCtx.agents[id]);
+            ImGui::TreePop();
+        }
+
+        for (int id : m_spiritIds)
+            if (m_replayCtx.agents[id].teamId != 1 && m_replayCtx.agents[id].teamId != 2)
+                DrawAgentEntry(id, m_replayCtx.agents[id]);
+
+        ImGui::TreePop();
+    }
+
     // --- Gadgets section ---
     if (!m_gadgetIds.empty() && ImGui::TreeNode("Gadgets"))
     {
         for (int id : m_gadgetIds)
+            DrawAgentEntry(id, m_replayCtx.agents[id]);
+        ImGui::TreePop();
+    }
+
+    // --- Items section ---
+    if (!m_itemIds.empty() && ImGui::TreeNode("Items"))
+    {
+        for (int id : m_itemIds)
             DrawAgentEntry(id, m_replayCtx.agents[id]);
         ImGui::TreePop();
     }
@@ -1708,6 +2220,25 @@ void ReplayWindow::DrawAgentDataWindow()
         if (ard.type == AgentType::Player)
         {
             ImGui::Text("Player: %s", ard.playerName.c_str());
+        }
+        else if (ard.type == AgentType::Spirit)
+        {
+            ImGui::Text("Spirit: %s  |  Skill ID: %d", ard.categoryName.c_str(), ard.spiritSkillId);
+            ImGui::Text("Overlap Hidden: %s  |  Newest: %s",
+                        ard.overlapHidden ? "Yes" : "No",
+                        ard.overlapIsNewest ? "Yes" : "No");
+            ImGui::Text("Overlap Threshold: %.0f  |  Dist to Newest: %.0f",
+                        ard.overlapThreshold, ard.overlapDistNewest);
+        }
+        else if (ard.type == AgentType::Item)
+        {
+            ImGui::Text("Item: %s  |  item_id: %u", ard.categoryName.c_str(),
+                        ard.snapshots.empty() ? 0u : ard.snapshots[0].item_id);
+        }
+        else if (ard.type == AgentType::Gadget)
+        {
+            ImGui::Text("Gadget: %s  |  gadget_id: %u", ard.categoryName.c_str(),
+                        ard.snapshots.empty() ? 0u : ard.snapshots[0].gadget_id);
         }
         else if (!ard.categoryName.empty() && ard.categoryName != "Unknown")
         {

@@ -67,6 +67,7 @@ private:
     void DrawStoCWindow();
     void DrawAgentOverlay();
     void DrawMapCalibrationWindow();
+    void DrawInterpolationWindow();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -115,12 +116,18 @@ private:
     std::vector<int> m_playerIds;
     std::vector<int> m_npcIds;
     std::vector<int> m_gadgetIds;
+    std::vector<int> m_flagIds;
+    std::vector<int> m_spiritIds;
+    std::vector<int> m_itemIds;
     std::vector<int> m_unknownIds;
-    bool m_agentsClassified = false;
+    bool m_agentsClassified    = false;
+    bool m_moveEventsBuilt     = false;
+    bool m_castIntervalsBuilt  = false;
 
     // --- Agent overlay & calibration (Phase 2) ---
     bool m_showAgentOverlay = true;
     bool m_showMapCalibrationWindow = false;
+    bool m_showInterpolationWindow = false;
     bool m_showRawPositions = false;
     bool m_showMapOriginAxes = false;
     bool m_calibrationLoaded = false;
