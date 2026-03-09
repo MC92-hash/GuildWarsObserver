@@ -114,6 +114,8 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
         { 5773, { 3022, "Spirit of Gaze of Fury" } },
         { 5905, { 3038, "Spirit of Agony" } },
         { 4278, { 3019, "Spirit of Bloodsong" } },
+        { 5766, { 1730, "Spirit of Infuriating Heat" } },
+        { 4286, { 1213, "Spirit of Tranquility" } },
     };
     for (auto& e : table)
         if (e.modelId == modelId) return &e.info;
@@ -121,18 +123,17 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
 }
 
 // ---------------------------------------------------------------------------
-// Spirit danger-zone radius (game units). Used for the overlap / coexistence
-// rule: spirits of the same model_id and team within 2.7 × radius of each
-// other cannot coexist — the oldest one is hidden.
+// Spirit overwrite distance (game units). If two spirits of the same
+// model_id and team are within this distance, the older one is destroyed.
 //
-// Binding Rituals (Ritualist):  effect range ≈ 2500  (spirit range / earshot)
-// Nature Rituals  (Ranger):     effect range ≈ 5000  (larger area)
+// Ranger Nature Rituals:  overwrite within 3500 units
+// Ritualist Binding Rituals: overwrite within 2512 units
 // ---------------------------------------------------------------------------
 
-inline float GetSpiritRadius(uint32_t modelId)
+inline float GetSpiritOverwriteDist(uint32_t modelId)
 {
     switch (modelId) {
-    // --- Ranger Nature Rituals (large area) ---
+    // --- Ranger Nature Rituals ---
     case 2927: // Edge of Extinction
     case 2929: // Fertile Season
     case 2936: // Energizing Wind
@@ -141,11 +142,13 @@ inline float GetSpiritRadius(uint32_t modelId)
     case 2939: // Muddy Terrain
     case 4289: // Famine
     case 5767: // Toxicity
-        return 5000.f;
+    case 5766: // Infuriating Heat
+    case 4286: // Tranquility
+        return 3500.f;
 
-    // --- Ritualist Binding Rituals (spirit range) ---
+    // --- Ritualist Binding Rituals ---
     default:
-        return 2500.f;
+        return 2512.f;
     }
 }
 
@@ -351,6 +354,11 @@ struct AgentReplayData
     uint8_t  teamId = 0;
     uint32_t modelId = 0;
     uint16_t agentModelType = 0;
+    int      playerNumber = 0;
+    int      primaryProf  = 0;
+    int      secondaryProf = 0;
+    int      playerLevel  = 0;
+    std::string partyBarLabel;
 
     // Spirit-specific metadata
     int      spiritSkillId = 0;
@@ -390,13 +398,55 @@ struct AgentReplayData
         if (snapshots.empty()) return false;
         if (t <= snapshots.front().time) return snapshots.front().is_dead;
         if (t >= snapshots.back().time)  return snapshots.back().is_dead;
-        // Binary search for last snapshot with time <= t
         int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
         while (lo < hi) {
             int mid = lo + (hi - lo + 1) / 2;
             if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
         }
         return snapshots[lo].is_dead;
+    }
+
+    bool isAliveAtTime(float t) const
+    {
+        if (snapshots.empty()) return false;
+        if (t <= snapshots.front().time) return snapshots.front().is_alive;
+        if (t >= snapshots.back().time)  return snapshots.back().is_alive;
+        int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        return snapshots[lo].is_alive;
+    }
+
+    // Returns the time at which the current death sequence began.
+    // Walk backwards from the snapshot at time t to find the first is_dead
+    // snapshot in this contiguous death run. Used to freeze position at death.
+    float deathTransitionTime(float t) const
+    {
+        if (snapshots.empty()) return t;
+        int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        while (lo > 0 && snapshots[lo - 1].is_dead) lo--;
+        return snapshots[lo].time;
+    }
+
+    // Returns the time at which is_alive first became false in the current
+    // contiguous not-alive run ending at snapshot time t.  Used by spirits
+    // where is_alive may go false without is_dead going true (overwrite/despawn).
+    float notAliveTransitionTime(float t) const
+    {
+        if (snapshots.empty()) return t;
+        int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        while (lo > 0 && !snapshots[lo - 1].is_alive) lo--;
+        return snapshots[lo].time;
     }
 };
 
@@ -533,7 +583,7 @@ enum class InterpolationMode : uint8_t { OriginalLinear, Improved };
 
 struct InterpolationSettings
 {
-    InterpolationMode mode = InterpolationMode::Improved;
+    InterpolationMode mode = InterpolationMode::OriginalLinear;
     bool  enabled              = true;   // master on/off (off = snap to nearest)
     bool  showRawSnapshots     = false;  // grey dots at raw snapshot positions
     bool  showInterpolatedLine = false;  // line between raw and interpolated
@@ -568,4 +618,10 @@ struct ReplayContext
 
     // Interpolation configuration
     InterpolationSettings interpSettings;
+
+    // Playback state (Phase 3 timeline controller)
+    bool  isPlaying      = false;
+    bool  loopPlayback   = false;
+    float playbackSpeed  = 1.0f;
+    int   speedIndex     = 2;        // index into {0.25, 0.5, 1, 2, 4, 8}
 };

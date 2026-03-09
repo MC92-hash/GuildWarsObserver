@@ -2223,10 +2223,9 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         ImGui::SetCursorScreenPos(ImVec2(btnX, btnY));
 
         const ImVec4 colBtnBg      (0.102f, 0.102f, 0.102f, 1.0f);
-        const ImVec4 colBtnHover   (0.165f, 0.165f, 0.165f, 1.0f);
-        const ImVec4 colBtnActive  (0.067f, 0.067f, 0.067f, 1.0f);
+        const ImVec4 colBtnHover   (0.180f, 0.185f, 0.190f, 1.0f);
+        const ImVec4 colBtnActive  (0.130f, 0.135f, 0.140f, 1.0f);
         const ImVec4 colBorder     = kColorAccent;
-        const ImVec4 colGreen      (0.0f,   1.0f,   0.4f,   1.0f);
 
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, padY));
@@ -2253,13 +2252,32 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         ImGui::PopStyleColor(5);
         ImGui::PopStyleVar(3);
 
-        // Draw ▶ icon (larger) in green
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImFont* drawFont = semibold ? semibold : ImGui::GetFont();
+
+        // Visual states: icon and text colors react to hover/press
+        ImVec4 colGreen    (0.0f,  1.0f, 0.4f, 1.0f);
+        ImVec4 colTextDraw = kColorText;
+
+        if (active)
+        {
+            colGreen    = ImVec4(0.0f, 0.85f, 0.35f, 1.0f);
+            colTextDraw = ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+        }
+        else if (hovered)
+        {
+            colGreen    = ImVec4(0.15f, 1.0f, 0.55f, 1.0f);
+            colTextDraw = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        }
+
+        // Content offset: slight push on press
+        float pushY = active ? 1.0f : 0.0f;
+
+        // Draw ▶ icon
         {
             float iconX = rMin.x + padX;
-            float iconY = rMin.y + (btnH - iconFontSz) * 0.5f;
-            ImGui::GetWindowDrawList()->AddText(
-                semibold ? semibold : ImGui::GetFont(),
-                iconFontSz,
+            float iconY = rMin.y + (btnH - iconFontSz) * 0.5f + pushY;
+            dl->AddText(drawFont, iconFontSz,
                 ImVec2(iconX, iconY),
                 ImGui::GetColorU32(colGreen),
                 playIcon);
@@ -2269,23 +2287,27 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         if (!narrowHeader)
         {
             float textX = rMin.x + padX + iconW + 4.0f;
-            float textY = rMin.y + (btnH - fontSize) * 0.5f;
-            ImGui::GetWindowDrawList()->AddText(
-                semibold ? semibold : ImGui::GetFont(),
-                fontSize,
+            float textY = rMin.y + (btnH - fontSize) * 0.5f + pushY;
+            dl->AddText(drawFont, fontSize,
                 ImVec2(textX, textY),
-                ImGui::GetColorU32(kColorText),
+                ImGui::GetColorU32(colTextDraw),
                 "REPLAY MATCH");
         }
 
         if (semibold) ImGui::PopFont();
 
-        // Pressed: brighter gold border
+        // Hover: subtle accent glow border
+        if (hovered && !active)
+        {
+            ImU32 glowCol = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.45f));
+            dl->AddRect(rMin, rMax, glowCol, 5.0f, 0, 1.5f);
+        }
+
+        // Pressed: bright accent border
         if (active)
         {
             ImU32 brightGold = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.90f));
-            ImGui::GetWindowDrawList()->AddRect(
-                rMin, rMax, brightGold, 5.0f, 0, 2.0f);
+            dl->AddRect(rMin, rMax, brightGold, 5.0f, 0, 2.5f);
         }
 
         if (narrowHeader && hovered)
@@ -2627,15 +2649,14 @@ void draw_replay_browser(ReplayLibrary& library)
                 s_state.userFilterW = std::clamp(s_state.userFilterW, filterMinW, filterMaxW);
             }
             if (ImGui::IsItemDeactivated())
-            {
-                GuiGlobalConstants::replay_filter_width = (int)s_state.userFilterW;
                 GuiGlobalConstants::SaveSettings();
-            }
         }
         else
         {
             ImGui::SameLine(0, sp);
         }
+
+        GuiGlobalConstants::replay_filter_width = (int)s_state.userFilterW;
 
         DrawMatchListTable(filtered, matches, topRowH);
 
@@ -2650,10 +2671,9 @@ void draw_replay_browser(ReplayLibrary& library)
                     std::min(totalH * 0.90f, maxTopRow));
             }
             if (ImGui::IsItemDeactivated())
-            {
-                GuiGlobalConstants::replay_list_height = (int)s_state.userTopRowH;
                 GuiGlobalConstants::SaveSettings();
-            }
+
+            GuiGlobalConstants::replay_list_height = (int)s_state.userTopRowH;
 
             if (validSelection())
                 DrawMatchDetailPanel(matches[s_state.selectedMatchIndex]);

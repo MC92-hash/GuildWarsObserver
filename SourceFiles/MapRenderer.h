@@ -26,6 +26,8 @@ using namespace DirectX;
 class MapRenderer
 {
 public:
+    bool m_disableMovementInput = false;
+
     // Reconstructed from Gw.exe gameplay camera path (GmView_UpdateCameraFrustum + Frame_SetCameraFovAndZFar).
     static constexpr float kGwDefaultCameraFovDegrees = 50.0f;
     static constexpr float kGwDefaultCameraNearZ = 10.0f;
@@ -910,17 +912,20 @@ public:
         static double time_elapsed = 0;
         time_elapsed += dt_seconds;
 
-        // Walk
-        if (m_input_manager->IsKeyDown('W'))
-            m_user_camera->Walk(WalkDirection::Forward, dt_seconds);
-        if (m_input_manager->IsKeyDown('S'))
-            m_user_camera->Walk(WalkDirection::Backward, dt_seconds);
+        if (!m_disableMovementInput)
+        {
+            // Walk
+            if (m_input_manager->IsKeyDown('W'))
+                m_user_camera->Walk(WalkDirection::Forward, dt_seconds);
+            if (m_input_manager->IsKeyDown('S'))
+                m_user_camera->Walk(WalkDirection::Backward, dt_seconds);
 
-        // Strafe
-        if (m_input_manager->IsKeyDown('Q') || (m_input_manager->IsKeyDown('A')))
-            m_user_camera->Strafe(StrafeDirection::Left, dt_seconds);
-        if (m_input_manager->IsKeyDown('E') || (m_input_manager->IsKeyDown('D')))
-            m_user_camera->Strafe(StrafeDirection::Right, dt_seconds);
+            // Strafe
+            if (m_input_manager->IsKeyDown('Q') || (m_input_manager->IsKeyDown('A')))
+                m_user_camera->Strafe(StrafeDirection::Left, dt_seconds);
+            if (m_input_manager->IsKeyDown('E') || (m_input_manager->IsKeyDown('D')))
+                m_user_camera->Strafe(StrafeDirection::Right, dt_seconds);
+        }
 
         m_user_camera->Update(dt_seconds);
 

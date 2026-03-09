@@ -15,6 +15,7 @@
 #include "FontConfig.h"
 #include "SkillDatabase.h"
 #include "draw_replay_browser.h"
+#include "CursorSystem.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -189,6 +190,10 @@ MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
 
 MapBrowser::~MapBrowser()
 {
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+
     GetTextureCache().Shutdown();
     GuiGlobalConstants::SaveSettings();
     CloseTextureErrorLog();
@@ -225,6 +230,9 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    g_Cursors.Load();
 
     // Enable INI persistence for window positions/sizes
     static std::string iniFilePath;
@@ -835,6 +843,8 @@ void MapBrowser::Render()
 
     // --- Render ImGui ---
     m_deviceResources->PIXBeginEvent(L"Render ImGui");
+    UpdateCursorMode();
+    ApplyCursor();
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_deviceResources->PIXEndEvent();

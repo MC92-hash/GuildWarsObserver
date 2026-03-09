@@ -8,6 +8,7 @@
 #include "ModelViewer/ModelViewer.h"
 #include "Extract_BASS_DLL_resource.h"
 #include "imgui.h"
+#include "CursorSystem.h"
 #include <filesystem>
 #include <DbgHelp.h>
 
@@ -609,6 +610,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 s_in_suspend = false;
             }
             return TRUE;
+        }
+        break;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && g_Cursors.loaded)
+        {
+            if (g_DraggingWindow)
+            {
+                ::SetCursor(g_Cursors.Get(CursorMode::Move));
+                return TRUE;
+            }
+            HCURSOR cur = g_Cursors.Get(g_CurrentCursor);
+            if (cur) { ::SetCursor(cur); return TRUE; }
         }
         break;
 

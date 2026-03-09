@@ -15,6 +15,17 @@
 #include <memory>
 #include <variant>
 
+struct ReplayHotkeys
+{
+    int rewind5s  = ImGuiKey_LeftArrow;
+    int forward5s = ImGuiKey_RightArrow;
+    int playPause = ImGuiKey_Space;
+
+    static ReplayHotkeys& Get();
+    void Save() const;
+    void Load();
+};
+
 class ReplayWindow final : public DX::IDeviceNotify
 {
 public:
@@ -68,6 +79,9 @@ private:
     void DrawAgentOverlay();
     void DrawMapCalibrationWindow();
     void DrawInterpolationWindow();
+    void DrawTimelineController();
+    void DrawShortcutPreferences();
+    void DrawPartyWindows();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -124,6 +138,47 @@ private:
     bool m_moveEventsBuilt     = false;
     bool m_castIntervalsBuilt  = false;
 
+    // --- Flag state machine ---
+    enum class FlagLocationType { Base, Carried, Ground, Stand };
+
+    struct FlagEvent {
+        float time = 0.f;
+        FlagLocationType location = FlagLocationType::Base;
+        float x = 0, y = 0, z = 0;
+        int carrierAgentId = -1;
+        int flagAgentId = -1;   // when >= 0, use this agent's position (moves with carrier)
+    };
+
+    struct FlagTeamState {
+        bool valid = false;
+        float baseX = 0, baseY = 0, baseZ = 0;
+        std::vector<int> flagAgentIds;
+        std::vector<FlagEvent> timeline;
+    };
+
+    FlagTeamState m_flagState[2];
+    std::vector<std::pair<float, int>> m_captureEvents;  // (time, teamIdx) — only one flag on stand at a time
+    float m_flagStandX = 0, m_flagStandY = 0, m_flagStandZ = 0;
+    bool  m_flagStandFound = false;
+    bool  m_flagStateBuilt = false;
+
+    FlagEvent EvaluateFlagState(int teamIdx, float time) const;
+    void BuildFlagStateTimeline();
+    void DrawFlags();
+
+    // --- Playback bar (always visible, bottom-anchored) ---
+
+    // --- Party windows (Phase 5+6) ---
+    bool m_showTeam1Party = true;
+    bool m_showTeam2Party = true;
+    bool m_partyWindowsPositioned = false;
+    std::vector<int> m_team1PlayerIds;
+    std::vector<int> m_team2PlayerIds;
+    std::vector<int> m_team1NpcIds;
+    std::vector<int> m_team2NpcIds;
+    std::string m_team1GuildHeader;
+    std::string m_team2GuildHeader;
+
     // --- Agent overlay & calibration (Phase 2) ---
     bool m_showAgentOverlay = true;
     bool m_showMapCalibrationWindow = false;
@@ -131,6 +186,37 @@ private:
     bool m_showRawPositions = false;
     bool m_showMapOriginAxes = false;
     bool m_calibrationLoaded = false;
+
+    bool m_showShortcutPreferences = false;
+
+    // --- Follow-agent camera (Phase 4) ---
+    enum class CameraMode { Free, FollowAgent };
+    CameraMode m_cameraMode = CameraMode::Free;
+    int        m_followedAgentId = -1;
+    int        m_hoveredAgentId  = -1;
+
+    float      m_followDist      = 0.f;
+    float      m_followDistTarget = 0.f;
+    float      m_followYaw       = 0.f;
+    float      m_followPitch     = 0.f;
+    static constexpr float kFollowLerpSpeed   = 6.0f;
+    static constexpr float kFollowZoomFactor  = 0.6f;
+    static constexpr float kFollowMinDist     = 50.f;
+    static constexpr float kFollowMaxDist     = 10000.f;
+    static constexpr float kFollowMinPitch    = -1.40f;  // ~-80 degrees
+    static constexpr float kFollowMaxPitch    =  1.40f;  // ~+80 degrees
+
+    void UpdateFollowCamera(float dt);
+    void EnterFollowMode(int agentId);
+    void ExitFollowMode();
+
+    // --- Mouse drag & scroll zoom state ---
+    bool  m_rightMouseDown = false;
+    bool  m_leftMouseDown  = false;
+    bool  m_leftClickPending = false;
+    POINT m_mouseDragOrigin{};
+    float m_panSpeed = 2.0f;
+    float m_zoomSpeed = 200.0f;
 
     // --- StoC debug window ---
     bool m_showStoCWindow = false;

@@ -4,8 +4,18 @@
 #include "StoCParser.h"
 #include "SkillDatabase.h"
 #include "DXMathHelpers.h"
+#include "FontConfig.h"
+#include "GuiGlobalConstants.h"
+#include "TextureCache.h"
+#include "CursorSystem.h"
+
+#define NANOSVG_IMPLEMENTATION
+#include "../ThirdParty/nanosvg/nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "../ThirdParty/nanosvg/nanosvgrast.h"
 #include <d3dcompiler.h>
 #include <fstream>
+#include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
@@ -13,6 +23,57 @@ using Microsoft::WRL::ComPtr;
 
 static void SaveMapTransform(int mapId, const MapTransform& t);
 static MapTransform LoadMapTransform(int mapId, bool* found = nullptr);
+
+// ---------------------------------------------------------------------------
+// Hotkey persistence (singleton, JSON)
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetHotkeysFilePath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    auto settingsDir = dir / "settings";
+    if (!std::filesystem::exists(settingsDir))
+        std::filesystem::create_directories(settingsDir);
+    return settingsDir / "hotkeys.json";
+}
+
+ReplayHotkeys& ReplayHotkeys::Get()
+{
+    static ReplayHotkeys instance;
+    static bool loaded = false;
+    if (!loaded) { instance.Load(); loaded = true; }
+    return instance;
+}
+
+void ReplayHotkeys::Save() const
+{
+    auto path = GetHotkeysFilePath();
+    std::ofstream f(path);
+    if (!f.is_open()) return;
+    f << "{\n"
+      << "  \"rewind5s\": "  << rewind5s  << ",\n"
+      << "  \"forward5s\": " << forward5s << ",\n"
+      << "  \"playPause\": " << playPause << "\n"
+      << "}\n";
+}
+
+void ReplayHotkeys::Load()
+{
+    auto path = GetHotkeysFilePath();
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    try {
+        nlohmann::json j;
+        f >> j;
+        if (j.contains("rewind5s"))  rewind5s  = j["rewind5s"].get<int>();
+        if (j.contains("forward5s")) forward5s = j["forward5s"].get<int>();
+        if (j.contains("playPause")) playPause = j["playPause"].get<int>();
+    } catch (...) {}
+}
+
+// ---------------------------------------------------------------------------
 
 bool ReplayWindow::s_classRegistered = false;
 
@@ -289,6 +350,21 @@ bool ReplayWindow::InitLoadingOverlay()
 // ImGui init / shutdown (private context for this window)
 // ---------------------------------------------------------------------------
 
+static std::string GetReplayFontBasePath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Fonts"))
+            return (dir / "Textures" / "Fonts").string();
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    return "";
+}
+
 void ReplayWindow::InitImGui()
 {
     if (m_imguiInitialized) return;
@@ -299,6 +375,7 @@ void ReplayWindow::InitImGui()
     ImGui::SetCurrentContext(m_imguiContext);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
     io.IniFilename = nullptr;
 
     ImGui::StyleColorsDark();
@@ -306,6 +383,34 @@ void ReplayWindow::InitImGui()
     style.WindowRounding = 4.0f;
     style.FrameRounding = 2.0f;
     style.GrabRounding = 2.0f;
+
+    // Load the same font as the main UI
+    float fontSize = GuiGlobalConstants::saved_font_size;
+    int fontIdx = GuiGlobalConstants::saved_font_index;
+    if (fontIdx < 0 || fontIdx >= g_fontTableCount) fontIdx = 2;
+    const FontEntry& fe = g_fontTable[fontIdx];
+    bool fontLoaded = false;
+
+    if (fe.fileName)
+    {
+        std::string fullPath;
+        if (fe.isSystemFont)
+            fullPath = std::string("C:\\Windows\\Fonts\\") + fe.fileName;
+        else
+        {
+            std::string base = GetReplayFontBasePath();
+            if (!base.empty()) fullPath = base + "\\" + fe.fileName;
+        }
+        if (!fullPath.empty() && std::filesystem::exists(fullPath))
+        {
+            io.Fonts->AddFontFromFileTTF(fullPath.c_str(), fontSize);
+            fontLoaded = true;
+        }
+    }
+    if (!fontLoaded)
+        io.Fonts->AddFontDefault();
+
+    io.Fonts->Build();
 
     ImGui_ImplWin32_Init(m_hwnd);
     ImGui_ImplDX11_Init(m_deviceResources->GetD3DDevice(),
@@ -949,6 +1054,116 @@ void ReplayWindow::Tick()
         std::sort(m_itemIds.begin(),    m_itemIds.end());
         std::sort(m_unknownIds.begin(), m_unknownIds.end());
 
+        // Build modelId -> PlayerMeta* lookup for player metadata
+        std::unordered_map<uint32_t, const PlayerMeta*> modelToPlayer;
+        for (auto& [partyId, party] : m_matchMeta.parties)
+            for (auto& p : party.players)
+                modelToPlayer[static_cast<uint32_t>(p.model_id)] = &p;
+
+        auto ProfShort = [](int id) -> const char* {
+            switch (id) {
+            case 1: return "W"; case 2: return "R"; case 3: return "Mo";
+            case 4: return "N"; case 5: return "Me"; case 6: return "E";
+            case 7: return "A"; case 8: return "Rt"; case 9: return "P";
+            case 10: return "D"; default: return "?";
+            }
+        };
+
+        for (int id : m_playerIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            auto it = modelToPlayer.find(ard.modelId);
+            if (it != modelToPlayer.end())
+            {
+                const PlayerMeta* pm = it->second;
+                ard.playerNumber  = pm->player_number;
+                ard.primaryProf   = pm->primary;
+                ard.secondaryProf = pm->secondary;
+                ard.playerLevel   = pm->level;
+
+                char buf[256];
+                snprintf(buf, sizeof(buf), "%s/%s%d %s",
+                         ProfShort(pm->primary), ProfShort(pm->secondary),
+                         pm->level, ard.playerName.c_str());
+                ard.partyBarLabel = buf;
+            }
+            else
+            {
+                ard.partyBarLabel = ard.playerName;
+            }
+
+            if (ard.teamId == 1)
+                m_team1PlayerIds.push_back(id);
+            else if (ard.teamId == 2)
+                m_team2PlayerIds.push_back(id);
+        }
+
+        auto sortByPlayerNum = [&](std::vector<int>& ids) {
+            std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+                return m_replayCtx.agents[a].playerNumber
+                     < m_replayCtx.agents[b].playerNumber;
+            });
+        };
+        sortByPlayerNum(m_team1PlayerIds);
+        sortByPlayerNum(m_team2PlayerIds);
+
+        // Build guild header strings
+        auto BuildGuildHeader = [&](const std::string& partyId) -> std::string {
+            auto pit = m_matchMeta.parties.find(partyId);
+            if (pit == m_matchMeta.parties.end()) return "Unknown";
+            std::map<int, int> guildCounts;
+            for (auto& p : pit->second.players)
+                if (p.guild_id > 0) guildCounts[p.guild_id]++;
+            int bestGuildId = 0, bestCount = 0;
+            for (auto& [gid, cnt] : guildCounts)
+                if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
+            if (bestGuildId == 0) return "Unknown";
+            auto git = m_matchMeta.guilds.find(std::to_string(bestGuildId));
+            if (git != m_matchMeta.guilds.end())
+                return git->second.name + " [" + git->second.tag + "]";
+            return "Unknown";
+        };
+        m_team1GuildHeader = BuildGuildHeader("1");
+        m_team2GuildHeader = BuildGuildHeader("2");
+
+        // Build NPC + Spirit team lists for Allies section
+        auto NpcSortOrder = [](const std::string& cat) -> int {
+            if (cat == "Guild Lord")    return 0;
+            if (cat == "Bodyguard")     return 1;
+            if (cat == "Knight")        return 2;
+            if (cat == "Archer")        return 3;
+            if (cat == "Footman")       return 4;
+            return 5; // Pets, Spirits, other NPCs
+        };
+
+        for (int id : m_npcIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            ard.partyBarLabel = ard.categoryName;
+            if (ard.teamId == 1)      m_team1NpcIds.push_back(id);
+            else if (ard.teamId == 2) m_team2NpcIds.push_back(id);
+        }
+        for (int id : m_spiritIds)
+        {
+            auto& ard = m_replayCtx.agents[id];
+            ard.partyBarLabel = ard.categoryName;
+            if (ard.teamId == 1)      m_team1NpcIds.push_back(id);
+            else if (ard.teamId == 2) m_team2NpcIds.push_back(id);
+        }
+
+        auto sortNpcs = [&](std::vector<int>& ids) {
+            std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+                auto& aa = m_replayCtx.agents[a];
+                auto& bb = m_replayCtx.agents[b];
+                int oa = NpcSortOrder(aa.categoryName);
+                int ob = NpcSortOrder(bb.categoryName);
+                if (oa != ob) return oa < ob;
+                return aa.agent_id < bb.agent_id;
+            });
+        };
+        sortNpcs(m_team1NpcIds);
+        sortNpcs(m_team2NpcIds);
+
         m_agentsClassified = true;
     }
 
@@ -1024,6 +1239,10 @@ void ReplayWindow::Tick()
         m_castIntervalsBuilt = true;
     }
 
+    // Build flag state timeline (needs both agents and StoC for jumbo events)
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
+        BuildFlagStateTimeline();
+
     // Auto-load saved calibration transform for this map, or fall back to
     // WebGL-derived defaults if no saved data exists.
     if (!m_calibrationLoaded && m_replayCtx.mapLoaded)
@@ -1039,6 +1258,24 @@ void ReplayWindow::Tick()
         if (m_loadingPhase == LoadingPhase::Ready)
             Update(m_timer.GetElapsedSeconds() * 1000.0);
     });
+
+    // Playback engine: advance timeline when playing
+    if (m_replayCtx.isPlaying && m_loadingPhase == LoadingPhase::Ready)
+    {
+        float dt = static_cast<float>(m_timer.GetElapsedSeconds());
+        float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+        m_debugTimeline += dt * m_replayCtx.playbackSpeed;
+
+        if (m_debugTimeline >= maxT)
+        {
+            if (m_replayCtx.loopPlayback) {
+                m_debugTimeline = 0.f;
+            } else {
+                m_debugTimeline = maxT;
+                m_replayCtx.isPlaying = false;
+            }
+        }
+    }
 
     switch (m_loadingPhase)
     {
@@ -1075,7 +1312,9 @@ void ReplayWindow::Tick()
 
 void ReplayWindow::Update(double elapsedMs)
 {
-    m_mapRenderer->Update(elapsedMs / 1000.0);
+    float dt = static_cast<float>(elapsedMs / 1000.0);
+    UpdateFollowCamera(dt);
+    m_mapRenderer->Update(dt);
 }
 
 void ReplayWindow::Render()
@@ -1180,6 +1419,13 @@ void ReplayWindow::DrawImGuiOverlay()
     {
         if (ImGui::BeginMenu("File"))
         {
+            if (ImGui::BeginMenu("Preferences"))
+            {
+                if (ImGui::MenuItem("Shortcuts"))
+                    m_showShortcutPreferences = true;
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Close Replay"))
             {
                 PostMessage(m_hwnd, WM_CLOSE, 0, 0);
@@ -1190,6 +1436,9 @@ void ReplayWindow::DrawImGuiOverlay()
         if (ImGui::BeginMenu("View"))
         {
             ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
+            ImGui::Separator();
+            ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
+            ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::EndMenu();
         }
 
@@ -1220,6 +1469,8 @@ void ReplayWindow::DrawImGuiOverlay()
         ImGui::EndMainMenuBar();
     }
 
+    DrawTimelineController();
+
     if (m_showAgentDataWindow)
         DrawAgentDataWindow();
 
@@ -1232,7 +1483,61 @@ void ReplayWindow::DrawImGuiOverlay()
     if (m_showStoCWindow)
         DrawStoCWindow();
 
+    if (m_showShortcutPreferences)
+    {
+        ImGui::OpenPopup("Shortcut Preferences");
+        m_showShortcutPreferences = false;
+    }
+    DrawShortcutPreferences();
+
+    DrawPartyWindows();
+
     DrawAgentOverlay();
+    DrawFlags();
+
+    // Commit deferred left-click to pan if no agent was clicked
+    if (m_leftClickPending)
+    {
+        m_leftClickPending = false;
+        m_leftMouseDown = true;
+        if (!m_rightMouseDown)
+        {
+            ShowCursor(FALSE);
+            SetCapture(m_hwnd);
+        }
+        else
+        {
+            ClipCursor(nullptr);
+            ShowCursor(FALSE);
+        }
+    }
+
+    // Keyboard shortcuts (checked after all windows so WantCaptureKeyboard is accurate)
+    if (!ImGui::GetIO().WantCaptureKeyboard)
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape) && m_cameraMode == CameraMode::FollowAgent)
+            ExitFollowMode();
+
+        const auto& hk = ReplayHotkeys::Get();
+        float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+
+        if (ImGui::IsKeyPressed((ImGuiKey)hk.rewind5s))
+            m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
+
+        if (ImGui::IsKeyPressed((ImGuiKey)hk.forward5s))
+            m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
+
+        if (ImGui::IsKeyPressed((ImGuiKey)hk.playPause))
+            m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
+    }
+
+    // Determine cursor mode, then apply drag overrides before committing
+    UpdateCursorMode();
+    if (m_leftMouseDown)
+        g_CurrentCursor = CursorMode::Hidden;
+    else if (m_rightMouseDown)
+        g_CurrentCursor = CursorMode::Precision;
+    ApplyCursor();
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -1352,6 +1657,11 @@ static void SnapAgentPosition(const AgentReplayData& ard, float t,
     outX = snaps[idx].x; outY = snaps[idx].y; outZ = snaps[idx].z;
 }
 
+// Stationary threshold: if both bracketing snapshots are within this distance
+// per axis (game units), skip interpolation to avoid micro-jitter from data noise.
+// Matches the RAW_COORDINATE_EPSILON from the working website implementation.
+static constexpr float kStationaryEpsilon = 1.0f;
+
 // Original linear interpolation (legacy behavior).
 static void LinearInterpolatePosition(const AgentReplayData& ard, float t,
                                       float& outX, float& outY, float& outZ)
@@ -1368,6 +1678,14 @@ static void LinearInterpolatePosition(const AgentReplayData& ard, float t,
     auto& s0 = snaps[lo];
     if (lo + 1 < static_cast<int>(snaps.size())) {
         auto& s1 = snaps[lo + 1];
+
+        if (fabsf(s1.x - s0.x) <= kStationaryEpsilon &&
+            fabsf(s1.y - s0.y) <= kStationaryEpsilon &&
+            fabsf(s1.z - s0.z) <= kStationaryEpsilon) {
+            outX = s0.x; outY = s0.y; outZ = s0.z;
+            return;
+        }
+
         float dt = s1.time - s0.time;
         float a = (dt > 0.001f) ? (t - s0.time) / dt : 0.f;
         outX = s0.x + (s1.x - s0.x) * a;
@@ -1418,6 +1736,14 @@ static void ImprovedInterpolatePosition(const AgentReplayData& ard, float t,
         return;
     }
     auto& next = snaps[lo + 1];
+
+    if (fabsf(next.x - prev.x) <= kStationaryEpsilon &&
+        fabsf(next.y - prev.y) <= kStationaryEpsilon &&
+        fabsf(next.z - prev.z) <= kStationaryEpsilon) {
+        outX = prev.x; outY = prev.y; outZ = prev.z;
+        return;
+    }
+
     float gap = next.time - prev.time;
     float alpha = (gap > 0.001f) ? (t - prev.time) / gap : 0.f;
 
@@ -1471,8 +1797,32 @@ static void ImprovedInterpolatePosition(const AgentReplayData& ard, float t,
     outZ = lz;
 }
 
+// Internal dispatch: run the active interpolation mode (or snap when disabled).
+static void DispatchInterpolation(const AgentReplayData& ard, float t,
+                                  const InterpolationSettings& is,
+                                  float& outX, float& outY, float& outZ)
+{
+    if (!is.enabled) {
+        SnapAgentPosition(ard, t, outX, outY, outZ);
+        return;
+    }
+    if (is.mode == InterpolationMode::OriginalLinear)
+        LinearInterpolatePosition(ard, t, outX, outY, outZ);
+    else
+        ImprovedInterpolatePosition(ard, t, is, outX, outY, outZ);
+}
+
 // Unified entry point: routes through flag snap / disabled snap /
 // original linear / improved, based on agent type and settings.
+//
+// Casting freeze is intentionally NOT applied here.  The snapshot data
+// already reflects the game's movement freeze during casts — consecutive
+// snapshots during a cast have nearly identical positions, so the
+// stationary-detection epsilon in the lerp functions keeps the agent
+// still without introducing a position discontinuity at cast boundaries.
+//
+// Death freeze interpolates to the moment the agent died instead of
+// snapping to a raw snapshot, avoiding a teleport at the alive→dead edge.
 static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
                                      const InterpolationSettings& is,
                                      float& outX, float& outY, float& outZ)
@@ -1483,28 +1833,15 @@ static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
         return;
     }
 
-    // Death freeze: dead agents stay fixed at their last known position
+    // Death freeze: interpolate to the moment of death so there is no
+    // position jump at the alive→dead boundary.
     if (ard.isDeadAtTime(t)) {
-        SnapAgentPosition(ard, t, outX, outY, outZ);
+        float deathT = ard.deathTransitionTime(t);
+        DispatchInterpolation(ard, deathT, is, outX, outY, outZ);
         return;
     }
 
-    // Casting freeze: agent must not move while casting a skill
-    if (ard.isCastingAtTime(t)) {
-        SnapAgentPosition(ard, t, outX, outY, outZ);
-        return;
-    }
-
-    // Master toggle off → snap to nearest
-    if (!is.enabled) {
-        SnapAgentPosition(ard, t, outX, outY, outZ);
-        return;
-    }
-
-    if (is.mode == InterpolationMode::OriginalLinear)
-        LinearInterpolatePosition(ard, t, outX, outY, outZ);
-    else
-        ImprovedInterpolatePosition(ard, t, is, outX, outY, outZ);
+    DispatchInterpolation(ard, t, is, outX, outY, outZ);
 }
 
 static std::string GetAgentLabel(const AgentReplayData& ard)
@@ -1576,6 +1913,224 @@ static bool ProjectToScreen(XMMATRIX viewProj, float vpW, float vpH,
             scrY > -200.f && scrY < vpH + 200.f);
 }
 
+// ---------------------------------------------------------------------------
+// Flag state machine — pre-compute a timeline of flag events per team
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::BuildFlagStateTimeline()
+{
+    m_flagStateBuilt = true;
+    m_flagState[0] = {};
+    m_flagState[1] = {};
+    m_flagStandFound = false;
+    m_captureEvents.clear();
+
+    // 1. Find Guild Lord positions per team
+    float gl1x = 0, gl1y = 0, gl2x = 0, gl2y = 0;
+    bool gl1found = false, gl2found = false;
+    for (int id : m_npcIds)
+    {
+        auto& ard = m_replayCtx.agents[id];
+        if (ard.categoryName != "Guild Lord" || ard.snapshots.empty()) continue;
+        const auto& s = ard.snapshots.front();
+        if (ard.teamId == 1 && !gl1found) { gl1x = s.x; gl1y = s.y; gl1found = true; }
+        if (ard.teamId == 2 && !gl2found) { gl2x = s.x; gl2y = s.y; gl2found = true; }
+    }
+    if (!gl1found || !gl2found) return;
+
+    // 2. Find Tower Flag Stand gadget position
+    for (int id : m_gadgetIds)
+    {
+        auto& ard = m_replayCtx.agents[id];
+        if (ard.categoryName == "Tower Flag Stand" && !ard.snapshots.empty())
+        {
+            const auto& s = ard.snapshots.front();
+            m_flagStandX = s.x;
+            m_flagStandY = s.y;
+            m_flagStandZ = s.z;
+            m_flagStandFound = true;
+            break;
+        }
+    }
+
+    // 3. Assign flag agents to teams via Guild Lord proximity
+    for (int id : m_flagIds)
+    {
+        auto& ard = m_replayCtx.agents[id];
+        if (ard.snapshots.empty()) continue;
+        float fx = ard.snapshots.front().x;
+        float fy = ard.snapshots.front().y;
+        float d1 = (fx - gl1x) * (fx - gl1x) + (fy - gl1y) * (fy - gl1y);
+        float d2 = (fx - gl2x) * (fx - gl2x) + (fy - gl2y) * (fy - gl2y);
+        int teamIdx = (d1 < d2) ? 0 : 1;
+        m_flagState[teamIdx].flagAgentIds.push_back(id);
+    }
+
+    // 4. Build timeline per team
+    constexpr float kBaseDistSq  = 300.f * 300.f;
+    constexpr float kStandDistSq = 300.f * 300.f;
+
+    for (int ti = 0; ti < 2; ti++)
+    {
+        auto& fs = m_flagState[ti];
+        if (fs.flagAgentIds.empty()) continue;
+        fs.valid = true;
+
+        // Sort flag agents by first snapshot time
+        std::sort(fs.flagAgentIds.begin(), fs.flagAgentIds.end(),
+                  [&](int a, int b) {
+                      return m_replayCtx.agents[a].snapshots.front().time <
+                             m_replayCtx.agents[b].snapshots.front().time;
+                  });
+
+        // Base position = first snapshot of the team's first flag agent
+        {
+            auto& first = m_replayCtx.agents[fs.flagAgentIds[0]];
+            fs.baseX = first.snapshots.front().x;
+            fs.baseY = first.snapshots.front().y;
+            fs.baseZ = first.snapshots.front().z;
+        }
+
+        // For each flag agent, emit appear/disappear events
+        for (int flagId : fs.flagAgentIds)
+        {
+            auto& ard = m_replayCtx.agents[flagId];
+            float t0 = ard.snapshots.front().time;
+            float t1 = ard.snapshots.back().time;
+            float sx = ard.snapshots.front().x;
+            float sy = ard.snapshots.front().y;
+            float sz = ard.snapshots.front().z;
+
+            // Classify the appear location
+            float dBaseSq = (sx - fs.baseX) * (sx - fs.baseX) + (sy - fs.baseY) * (sy - fs.baseY);
+            FlagLocationType loc = FlagLocationType::Ground;
+            if (dBaseSq < kBaseDistSq)
+                loc = FlagLocationType::Base;
+            else if (m_flagStandFound)
+            {
+                float dStandSq = (sx - m_flagStandX) * (sx - m_flagStandX) + (sy - m_flagStandY) * (sy - m_flagStandY);
+                if (dStandSq < kStandDistSq)
+                    loc = FlagLocationType::Stand;
+            }
+
+            // Flag appears — store flagAgentId so we use its live position (moves with carrier)
+            FlagEvent appearEv = { t0, loc, sx, sy, sz, -1, flagId };
+            fs.timeline.push_back(appearEv);
+
+            // Flag disappears — try to find carrier (same-team player with weapon_type 0)
+            float ex = ard.snapshots.back().x;
+            float ey = ard.snapshots.back().y;
+            float ez = ard.snapshots.back().z;
+
+            int carrierId = -1;
+            float bestDistSq = FLT_MAX;
+            int teamId = ti + 1;
+            constexpr float kCarrierDistSqBuild = 1500.f * 1500.f;
+            auto tryPlayerSnapshot = [&](const AgentReplayData& pard, const AgentSnapshot* psnap, int playerId) {
+                if (!psnap || psnap->weapon_type != 0 || psnap->is_dead) return;
+                if (pard.teamId != teamId) return;
+                float dx = psnap->x - ex;
+                float dy = psnap->y - ey;
+                float dsq = dx * dx + dy * dy;
+                if (dsq < bestDistSq && dsq < kCarrierDistSqBuild)
+                {
+                    bestDistSq = dsq;
+                    carrierId = playerId;
+                }
+            };
+
+            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
+            for (int pid : *teamPlayers)
+            {
+                auto it = m_replayCtx.agents.find(pid);
+                if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+                auto& pard = it->second;
+
+                const AgentSnapshot* psnap = nullptr;
+                {
+                    int lo = 0, hi = static_cast<int>(pard.snapshots.size()) - 1;
+                    if (t1 >= pard.snapshots.back().time) psnap = &pard.snapshots.back();
+                    else if (t1 <= pard.snapshots.front().time) psnap = &pard.snapshots.front();
+                    else {
+                        while (lo < hi) {
+                            int mid = lo + (hi - lo + 1) / 2;
+                            if (pard.snapshots[mid].time <= t1) lo = mid; else hi = mid - 1;
+                        }
+                        psnap = &pard.snapshots[lo];
+                    }
+                }
+                tryPlayerSnapshot(pard, psnap, pid);
+
+                if (carrierId < 0 && t1 < pard.snapshots.back().time)
+                {
+                    int idx = 0;
+                    while (idx < static_cast<int>(pard.snapshots.size()) && pard.snapshots[idx].time <= t1)
+                        idx++;
+                    if (idx < static_cast<int>(pard.snapshots.size()) &&
+                        pard.snapshots[idx].time <= t1 + 0.5f)
+                    {
+                        tryPlayerSnapshot(pard, &pard.snapshots[idx], pid);
+                    }
+                }
+            }
+
+            // Always add Carried event when flag disappears (so it doesn't stay at base)
+            fs.timeline.push_back({ t1 + 0.001f, FlagLocationType::Carried, ex, ey, ez, carrierId });
+        }
+
+        // 5. CAPTURED_TOWER: flag stays on stand until other team captures; new flag spawns at base
+        int teamPartyValue = (ti == 0) ? 1635021873 : 1635021874;
+        for (auto& ev : m_replayCtx.stocData.jumbo)
+        {
+            if (ev.message != "CAPTURED_TOWER") continue;
+            if (ev.party_value != teamPartyValue) continue;
+            m_captureEvents.push_back({ ev.time, ti });
+            // New flag spawns at base (the respawned one) — at capture time
+            fs.timeline.push_back({ ev.time, FlagLocationType::Base,
+                                    fs.baseX, fs.baseY, fs.baseZ, -1, -1 });
+        }
+
+        // Sort the final timeline by time
+        std::sort(fs.timeline.begin(), fs.timeline.end(),
+                  [](const FlagEvent& a, const FlagEvent& b) {
+                      return a.time < b.time;
+                  });
+    }
+
+    // Sort capture events by time (only one team's flag on stand at a time)
+    std::sort(m_captureEvents.begin(), m_captureEvents.end(),
+              [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                  return a.first < b.first;
+              });
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame flag state evaluation — binary search into pre-computed timeline
+// ---------------------------------------------------------------------------
+
+ReplayWindow::FlagEvent ReplayWindow::EvaluateFlagState(int teamIdx, float time) const
+{
+    const auto& fs = m_flagState[teamIdx];
+    if (!fs.valid || fs.timeline.empty())
+        return { time, FlagLocationType::Base, fs.baseX, fs.baseY, fs.baseZ, -1 };
+
+    // Before first event → flag at base
+    if (time < fs.timeline.front().time)
+        return { time, FlagLocationType::Base, fs.baseX, fs.baseY, fs.baseZ, -1 };
+
+    // Binary search for the latest event with time <= current
+    int lo = 0, hi = static_cast<int>(fs.timeline.size()) - 1;
+    while (lo < hi)
+    {
+        int mid = lo + (hi - lo + 1) / 2;
+        if (fs.timeline[mid].time <= time)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    return fs.timeline[lo];
+}
+
 void ReplayWindow::DrawAgentOverlay()
 {
     if (!m_showAgentOverlay) return;
@@ -1591,6 +2146,12 @@ void ReplayWindow::DrawAgentOverlay()
     const float dotRadius = 6.f;
     const float labelOffY = 8.f;
     const MapTransform& t = m_replayCtx.mapTransform;
+
+    const bool canClickAgents = !ImGui::GetIO().WantCaptureMouse
+                                && !m_rightMouseDown;
+    const ImVec2 mousePos = ImGui::GetIO().MousePos;
+    const float clickRadius = 14.f;
+    m_hoveredAgentId = -1;
 
     // Map boundary clamping: use terrain bounds if available.
     // Bounds are in GWMB mesh coordinates (post-transform), so we clamp after
@@ -1662,7 +2223,7 @@ void ReplayWindow::DrawAgentOverlay()
                 if (!entries.empty()) {
                     auto& a = m_replayCtx.agents[entries[0].agentId];
                     a.overlapIsNewest  = true;
-                    a.overlapThreshold = 2.7f * GetSpiritRadius(a.modelId);
+                    a.overlapThreshold = GetSpiritOverwriteDist(a.modelId);
                 }
                 continue;
             }
@@ -1675,8 +2236,7 @@ void ReplayWindow::DrawAgentOverlay()
 
             auto& newest = entries[0];
             auto& newestArd = m_replayCtx.agents[newest.agentId];
-            float radius = GetSpiritRadius(newestArd.modelId);
-            float threshold = 2.7f * radius;
+            float threshold = GetSpiritOverwriteDist(newestArd.modelId);
 
             newestArd.overlapIsNewest  = true;
             newestArd.overlapThreshold = threshold;
@@ -1700,17 +2260,24 @@ void ReplayWindow::DrawAgentOverlay()
     {
         if (ard.snapshots.empty()) continue;
 
-        // Flags and Spirits only exist within their snapshot time range
-        if (ard.type == AgentType::Flag || ard.type == AgentType::Spirit)
+        // Flags are drawn by DrawFlags() using the state machine
+        if (ard.type == AgentType::Flag) continue;
+
+        // Spirits only exist within their snapshot time range
+        if (ard.type == AgentType::Spirit)
         {
             if (m_debugTimeline < ard.snapshots.front().time ||
                 m_debugTimeline > ard.snapshots.back().time)
                 continue;
         }
 
-        // Spirit overlap rule: hide older spirits too close to the newest
-        if (ard.type == AgentType::Spirit && ard.overlapHidden)
-            continue;
+        // Spirit visibility: hide overwritten, dead, or not-alive spirits immediately
+        if (ard.type == AgentType::Spirit)
+        {
+            if (ard.overlapHidden) continue;
+            if (ard.isDeadAtTime(m_debugTimeline) || !ard.isAliveAtTime(m_debugTimeline))
+                continue;
+        }
 
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
@@ -1781,9 +2348,7 @@ void ReplayWindow::DrawAgentOverlay()
         bool dead    = ard.isDeadAtTime(m_debugTimeline);
 
         ImU32 dotColor;
-        if (ard.type == AgentType::Flag)
-            dotColor = IM_COL32(0xFF, 0xD7, 0x00, 0xFF);      // gold
-        else if (ard.type == AgentType::Spirit)
+        if (ard.type == AgentType::Spirit)
             dotColor = IM_COL32(0x80, 0xFF, 0x80, 0xFF);      // light green
         else if (ard.type == AgentType::Item)
             dotColor = IM_COL32(0xFF, 0xA5, 0x00, 0xFF);      // orange
@@ -1811,6 +2376,29 @@ void ReplayWindow::DrawAgentOverlay()
                           IM_COL32(180, 60, 255, 220), 0, 2.f);
         }
 
+        // Follow-camera highlight for the currently followed agent
+        if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId)
+        {
+            dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 5.f,
+                          IM_COL32(77, 142, 240, 200), 0, 2.5f);
+        }
+
+        // Hover detection + click-to-follow (only for Players and NPCs)
+        if (canClickAgents && (ard.type == AgentType::Player || ard.type == AgentType::NPC))
+        {
+            float dx = mousePos.x - scrX;
+            float dy = mousePos.y - scrY;
+            if (dx * dx + dy * dy <= clickRadius * clickRadius)
+            {
+                m_hoveredAgentId = agentId;
+                dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 4.f,
+                              IM_COL32(255, 255, 255, 100), 0, 1.5f);
+
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    EnterFollowMode(agentId);
+            }
+        }
+
         std::string label = GetAgentLabel(ard);
         ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
         float lx = scrX - textSize.x * 0.5f;
@@ -1818,6 +2406,311 @@ void ReplayWindow::DrawAgentOverlay()
         dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
         dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
     }
+}
+
+// Forward declarations for functions defined later in this file
+static ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
+static const AgentSnapshot* FindSnapshotAtTime(const AgentReplayData& ard, float t);
+
+// ---------------------------------------------------------------------------
+// Flag rendering — draw team-colored flag PNG icons based on state machine
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawFlags()
+{
+    if (!m_flagStateBuilt) return;
+    if (!m_agentsClassified) return;
+
+    const auto& t = m_replayCtx.mapTransform;
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x;
+    float vpH = vp->Size.y;
+
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
+    ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
+
+    const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);
+
+    // Helper: which team's flag is on the stand at time t, and when was it captured?
+    int standTeam = -1;
+    float standCaptureTime = 0.f;
+    if (!m_captureEvents.empty() && m_debugTimeline >= m_captureEvents.front().first)
+    {
+        int lo = 0, hi = static_cast<int>(m_captureEvents.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (m_captureEvents[mid].first <= m_debugTimeline) lo = mid; else hi = mid - 1;
+        }
+        if (m_captureEvents[lo].first <= m_debugTimeline)
+        {
+            standTeam = m_captureEvents[lo].second;
+            standCaptureTime = m_captureEvents[lo].first;
+        }
+    }
+    if (m_flagStandFound && standTeam >= 0)
+    {
+        ImTextureID standTex = (standTeam == 0) ? texBlue : texRed;
+        if (standTex)
+        {
+            XMFLOAT3 standPos = ApplyMapTransformToPos(m_flagStandX, m_flagStandY, m_flagStandZ, t);
+            float standScrX, standScrY;
+            if (ProjectToScreen(viewProj, vpW, vpH, standPos, standScrX, standScrY))
+            {
+                float offsetY = iconSz * 0.8f;
+                ImVec2 iconTL(standScrX - iconSz * 0.5f, standScrY - offsetY - iconSz);
+                ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+                dl->AddImage(standTex, iconTL, iconBR);
+            }
+        }
+    }
+
+    for (int ti = 0; ti < 2; ti++)
+    {
+        if (!m_flagState[ti].valid) continue;
+
+        ImTextureID tex = (ti == 0) ? texBlue : texRed;
+        if (!tex) continue;
+
+        // 2. Draw active flag (Base / Carried / Ground / Stand)
+        FlagEvent ev = EvaluateFlagState(ti, m_debugTimeline);
+        float worldX = ev.x, worldY = ev.y, worldZ = ev.z;
+        bool isCarried = false;
+
+        // Check if any same-team player has weapon_type == 0 (carrying the flag).
+        {
+            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
+            int carrierId = -1;
+            float carrierX = 0, carrierY = 0, carrierZ = 0;
+            for (int pid : *teamPlayers)
+            {
+                auto it = m_replayCtx.agents.find(pid);
+                if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+                const auto& pard = it->second;
+                const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
+                if (!psnap || psnap->weapon_type != 0 || psnap->is_dead) continue;
+
+                // After this team captures (jumbo CAPTURED_TOWER), skip carrier
+                // detection for 5s — the player just delivered, weapon_type lags
+                if (standTeam == ti && (m_debugTimeline - standCaptureTime) < 5.f)
+                    continue;
+
+                float cx, cy, cz;
+                InterpolateAgentPosition(pard, m_debugTimeline,
+                                         m_replayCtx.interpSettings, cx, cy, cz);
+                carrierId = pid;
+                carrierX = cx; carrierY = cy; carrierZ = cz;
+                break;
+            }
+            if (carrierId >= 0)
+            {
+                worldX = carrierX;
+                worldY = carrierY;
+                worldZ = carrierZ;
+                isCarried = true;
+            }
+        }
+
+        // If not carried, use the flag agent's live position when available
+        if (!isCarried && ev.flagAgentId >= 0)
+        {
+            auto it = m_replayCtx.agents.find(ev.flagAgentId);
+            if (it != m_replayCtx.agents.end() && !it->second.snapshots.empty())
+            {
+                const auto& fard = it->second;
+                float curT = m_debugTimeline;
+                if (curT >= fard.snapshots.front().time && curT <= fard.snapshots.back().time)
+                {
+                    float fx, fy, fz;
+                    SnapAgentPosition(fard, curT, fx, fy, fz);
+                    worldX = fx;
+                    worldY = fy;
+                    worldZ = fz;
+                }
+                else
+                {
+                    // Flag agent snapshots ended — find the drop location by
+                    // detecting the weapon_type transition: 0 → non-0 means drop.
+                    const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
+                    float bestDropTime = -1.f;
+                    for (int pid : *teamPlayers)
+                    {
+                        auto pit = m_replayCtx.agents.find(pid);
+                        if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) continue;
+                        const auto& pard = pit->second;
+                        const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
+                        if (!psnap || psnap->is_dead) continue;
+                        if (psnap->weapon_type == 0) continue; // still carrying, not a drop
+                        int idx = static_cast<int>(psnap - &pard.snapshots[0]);
+                        for (int k = idx - 1; k >= 0 && pard.snapshots[k].time > m_debugTimeline - 15.f; --k)
+                        {
+                            if (pard.snapshots[k].weapon_type == 0 && !pard.snapshots[k].is_dead)
+                            {
+                                // k+1 is the first snapshot with weapon back = drop moment
+                                float dropT = pard.snapshots[k + 1].time;
+                                if (dropT > bestDropTime)
+                                {
+                                    bestDropTime = dropT;
+                                    worldX = pard.snapshots[k + 1].x;
+                                    worldY = pard.snapshots[k + 1].y;
+                                    worldZ = pard.snapshots[k + 1].z;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Same fallback when no flag agent at all (event position is stale)
+        else if (!isCarried && ev.flagAgentId < 0 && ev.location != FlagLocationType::Base)
+        {
+            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
+            float bestDropTime = -1.f;
+            for (int pid : *teamPlayers)
+            {
+                auto pit = m_replayCtx.agents.find(pid);
+                if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) continue;
+                const auto& pard = pit->second;
+                const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
+                if (!psnap || psnap->is_dead) continue;
+                if (psnap->weapon_type == 0) continue; // still carrying
+                int idx = static_cast<int>(psnap - &pard.snapshots[0]);
+                for (int k = idx - 1; k >= 0 && pard.snapshots[k].time > m_debugTimeline - 15.f; --k)
+                {
+                    if (pard.snapshots[k].weapon_type == 0 && !pard.snapshots[k].is_dead)
+                    {
+                        float dropT = pard.snapshots[k + 1].time;
+                        if (dropT > bestDropTime)
+                        {
+                            bestDropTime = dropT;
+                            worldX = pard.snapshots[k + 1].x;
+                            worldY = pard.snapshots[k + 1].y;
+                            worldZ = pard.snapshots[k + 1].z;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
+
+        float scrX, scrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
+
+        // Draw the flag icon centered above the position
+        float offsetY = iconSz * 0.8f;
+        ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
+        ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+        dl->AddImage(tex, iconTL, iconBR);
+
+        // Only show a label for non-obvious states (Carried / Dropped)
+        const char* locLabel = nullptr;
+        if (isCarried)
+            locLabel = "Flag (Carried)";
+        else if (ev.location == FlagLocationType::Ground)
+            locLabel = "Flag (Dropped)";
+
+        if (locLabel)
+        {
+            ImFont* font = ImGui::GetFont();
+            ImVec2 textSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, locLabel);
+            float tx = scrX - textSz.x * 0.5f;
+            float ty = iconBR.y + 2.f;
+            dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), locLabel);
+            dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), locLabel);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Follow-agent camera
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::EnterFollowMode(int agentId)
+{
+    auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return;
+
+    const auto& ard = it->second;
+    if (ard.snapshots.empty()) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMFLOAT3 camPos = cam->GetPosition3f();
+
+    float sx, sy, sz;
+    InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
+    XMFLOAT3 agentWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+
+    float dx = camPos.x - agentWorld.x;
+    float dy = camPos.y - agentWorld.y;
+    float dz = camPos.z - agentWorld.z;
+
+    m_followDist = sqrtf(dx * dx + dy * dy + dz * dz);
+    m_followYaw  = atan2f(dx, dz);
+    m_followPitch = (m_followDist > 0.001f) ? asinf(std::clamp(dy / m_followDist, -1.f, 1.f)) : 0.3f;
+    m_followDistTarget = std::clamp(m_followDist * kFollowZoomFactor, kFollowMinDist, kFollowMaxDist);
+
+    m_followedAgentId = agentId;
+    m_cameraMode = CameraMode::FollowAgent;
+    m_mapRenderer->m_disableMovementInput = true;
+    m_leftClickPending = false;
+}
+
+void ReplayWindow::ExitFollowMode()
+{
+    m_cameraMode = CameraMode::Free;
+    m_followedAgentId = -1;
+    m_mapRenderer->m_disableMovementInput = false;
+}
+
+void ReplayWindow::UpdateFollowCamera(float dt)
+{
+    if (m_cameraMode != CameraMode::FollowAgent) return;
+
+    auto it = m_replayCtx.agents.find(m_followedAgentId);
+    if (it == m_replayCtx.agents.end()) { ExitFollowMode(); return; }
+
+    const auto& ard = it->second;
+    if (ard.snapshots.empty()) { ExitFollowMode(); return; }
+
+    if (ard.isDeadAtTime(m_debugTimeline) &&
+        m_debugTimeline > ard.snapshots.back().time)
+    {
+        ExitFollowMode();
+        return;
+    }
+
+    // Smooth zoom toward target distance
+    float t = 1.0f - expf(-kFollowLerpSpeed * dt);
+    m_followDist += (m_followDistTarget - m_followDist) * t;
+    m_followDist = std::clamp(m_followDist, kFollowMinDist, kFollowMaxDist);
+
+    float sx, sy, sz;
+    InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
+    XMFLOAT3 agentWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+
+    // Spherical offset from agent
+    float cosP = cosf(m_followPitch);
+    float offX = m_followDist * sinf(m_followYaw) * cosP;
+    float offY = m_followDist * sinf(m_followPitch);
+    float offZ = m_followDist * cosf(m_followYaw) * cosP;
+
+    // Set camera position and orientation BEFORE MapRenderer::Update()
+    // so the constant buffer gets the correct view/projection matrices.
+    Camera* cam = m_mapRenderer->GetCamera();
+    cam->SetPosition(agentWorld.x + offX, agentWorld.y + offY, agentWorld.z + offZ);
+
+    // Camera looks from offset toward agent: orientation is the inverse of the orbit angles
+    cam->SetOrientation(-m_followPitch, m_followYaw + XM_PI);
 }
 
 // ---------------------------------------------------------------------------
@@ -1956,6 +2849,439 @@ void ReplayWindow::DrawInterpolationWindow()
 }
 
 // ---------------------------------------------------------------------------
+// Shortcut Preferences modal
+// ---------------------------------------------------------------------------
+
+static bool HotkeyInput(const char* label, int* key)
+{
+    ImGui::Text("%s", label);
+    ImGui::SameLine(200);
+
+    char buf[64];
+    if (*key != 0)
+        snprintf(buf, sizeof(buf), "%s", ImGui::GetKeyName((ImGuiKey)*key));
+    else
+        snprintf(buf, sizeof(buf), "Press a key...");
+
+    ImGui::PushID(label);
+    ImGui::Button(buf, ImVec2(150, 0));
+
+    if (ImGui::IsItemActive())
+    {
+        for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++)
+        {
+            if (ImGui::IsKeyPressed((ImGuiKey)k))
+            {
+                *key = k;
+                ImGui::PopID();
+                return true;
+            }
+        }
+    }
+    ImGui::PopID();
+    return false;
+}
+
+void ReplayWindow::DrawShortcutPreferences()
+{
+    ImGui::SetNextWindowSize(ImVec2(420, 260), ImGuiCond_FirstUseEver);
+    if (!ImGui::BeginPopupModal("Shortcut Preferences", nullptr, ImGuiWindowFlags_NoResize))
+        return;
+
+    static ReplayHotkeys editing;
+    static bool needsInit = true;
+    if (needsInit) { editing = ReplayHotkeys::Get(); needsInit = false; }
+
+    ImGui::Text("Replay Controls");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    HotkeyInput("Rewind 5 seconds",  &editing.rewind5s);
+    HotkeyInput("Forward 5 seconds", &editing.forward5s);
+    HotkeyInput("Play / Pause",      &editing.playPause);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Save", ImVec2(120, 0)))
+    {
+        ReplayHotkeys::Get() = editing;
+        ReplayHotkeys::Get().Save();
+        needsInit = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)))
+    {
+        needsInit = true;
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
+// Timeline Controller — fixed bottom playback bar
+// Styled to match the GW Observer design system:
+//   bg1 #111213  bg2 #161718  bg3 #1c1d1e  bg4 #212324
+//   line #252627  line2 #2e2f30  line3 #3a3b3c
+//   t1 #e2e3e4  t2 #909294  t3 #55575a  t4 #363739
+//   acc #4d8ef0
+// ---------------------------------------------------------------------------
+
+static std::string GetSvgIconBasePath()
+{
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "timebar_UI"))
+        {
+            cached = (dir / "Textures" / "timebar_UI").string();
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path().string();
+    return cached;
+}
+
+// Rasterize an SVG to a white-on-transparent RGBA texture for use on a dark bar.
+// Cached after first load.
+static std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> s_svgIconCache;
+static ID3D11Device* s_svgIconCacheDevice = nullptr;
+
+static ImTextureID LoadSvgIcon(ID3D11Device* device, const char* filename, int rasterSize = 64)
+{
+    // Invalidate cache when the device changes (new replay window)
+    if (device != s_svgIconCacheDevice)
+    {
+        s_svgIconCache.clear();
+        s_svgIconCacheDevice = device;
+    }
+
+    auto it = s_svgIconCache.find(filename);
+    if (it != s_svgIconCache.end())
+        return (ImTextureID)it->second.Get();
+
+    if (!device) return nullptr;
+
+    std::string fullPath = GetSvgIconBasePath() + "\\" + filename;
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    NSVGimage* svg = nsvgParseFromFile(fullPath.c_str(), "px", 96.0f);
+    if (!svg) return nullptr;
+
+    NSVGrasterizer* rast = nsvgCreateRasterizer();
+    if (!rast) { nsvgDelete(svg); return nullptr; }
+
+    float scale = (float)rasterSize / std::max(svg->width, svg->height);
+    int w = rasterSize;
+    int h = rasterSize;
+
+    std::vector<uint8_t> rgba(w * h * 4, 0);
+    nsvgRasterize(rast, svg, 0, 0, scale, rgba.data(), w, h, w * 4);
+    nsvgDeleteRasterizer(rast);
+    nsvgDelete(svg);
+
+    // Recolor: any visible pixel → white, preserving its alpha.
+    // The original SVG fill is dark (#1C274C), but we want white icons on dark bg.
+    for (int i = 0; i < w * h; i++)
+    {
+        uint8_t a = rgba[i * 4 + 3];
+        if (a > 0)
+        {
+            rgba[i * 4 + 0] = 255;
+            rgba[i * 4 + 1] = 255;
+            rgba[i * 4 + 2] = 255;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width     = w;
+    texDesc.Height    = h;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format    = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage     = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem     = rgba.data();
+    initData.SysMemPitch = w * 4;
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+    HRESULT hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ID3D11ShaderResourceView* srv = nullptr;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, &srv);
+    if (FAILED(hr)) return nullptr;
+
+    s_svgIconCache[filename].Attach(srv);
+    return (ImTextureID)srv;
+}
+
+static void FormatTime(float seconds, char* buf, size_t bufSize)
+{
+    int totalSec = static_cast<int>(seconds);
+    if (totalSec < 0) totalSec = 0;
+    int m = totalSec / 60;
+    int s = totalSec % 60;
+    snprintf(buf, bufSize, "%02d:%02d", m, s);
+}
+
+void ReplayWindow::DrawTimelineController()
+{
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float vpW = vp->Size.x;
+    const float vpH = vp->Size.y;
+    const float barH = std::clamp(vpH * 0.038f, 28.0f, 40.0f);
+
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vpH - barH));
+    ImGui::SetNextWindowSize(ImVec2(vpW, barH));
+
+    constexpr ImGuiWindowFlags kBarFlags =
+        ImGuiWindowFlags_NoTitleBar      | ImGuiWindowFlags_NoResize       |
+        ImGuiWindowFlags_NoMove          | ImGuiWindowFlags_NoScrollbar    |
+        ImGuiWindowFlags_NoCollapse      | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBackground    | ImGuiWindowFlags_NoFocusOnAppearing;
+
+    const float spacing = std::max(vpW * 0.003f, 2.0f);
+    const float pad     = std::max(vpW * 0.006f, 8.0f);
+
+    // Design system colors
+    const ImU32 cBg1   = IM_COL32(17,  18,  19,  230);
+    const ImU32 cLine2 = IM_COL32(46,  47,  48,  255);
+    const ImU32 cBg3   = IM_COL32(28,  29,  30,  255);
+    const ImU32 cT1    = IM_COL32(226, 227, 228, 255);
+    const ImU32 cT2    = IM_COL32(144, 146, 148, 255);
+    const ImU32 cT3    = IM_COL32(85,  87,  90,  255);
+    const ImU32 cAcc   = IM_COL32(77,  142, 240, 255);
+    const ImU32 cAccDim= IM_COL32(77,  142, 240, 31);
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(spacing, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  3.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,   ImVec2(6, 2));
+
+    ImGui::PushStyleColor(ImGuiCol_Text,           ImVec4(0.56f, 0.57f, 0.58f, 1.0f));  // t2
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.09f, 0.09f, 0.09f, 1.0f));  // bg2
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));  // bg3
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.13f, 0.14f, 0.14f, 1.0f));  // bg4
+    ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.07f, 0.07f, 0.07f, 0.97f)); // bg1
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.18f, 0.18f, 0.19f, 1.0f));  // line2
+    ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.13f, 0.14f, 0.14f, 1.0f));
+
+    if (!ImGui::Begin("PlaybackBar", nullptr, kBarFlags))
+    {
+        ImGui::End();
+        ImGui::PopStyleColor(8);
+        ImGui::PopStyleVar(4);
+        return;
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 wPos = ImGui::GetWindowPos();
+    ImVec2 wEnd(wPos.x + vpW, wPos.y + barH);
+
+    dl->AddRectFilled(wPos, wEnd, cBg1);
+    dl->AddLine(wPos, ImVec2(wEnd.x, wPos.y), cLine2, 1.0f);
+
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    auto& ctx  = m_replayCtx;
+
+    static const float  speeds[]      = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
+    static const char*  speedLabels[] = { "0.25x","0.5x","1x","2x","4x","8x" };
+    constexpr int       speedCount    = 6;
+
+    const float btn = barH * 0.65f;
+
+    auto VCenter = [&](float h) {
+        float curY = ImGui::GetCursorScreenPos().y;
+        float offset = (barH - h) * 0.5f - (curY - wPos.y);
+        if (offset > 0.f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + offset);
+    };
+
+    // SVG icon textures (rasterized to white-on-transparent, cached after first call)
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texStop  = LoadSvgIcon(dev, "stop.svg");
+    ImTextureID texBk30  = LoadSvgIcon(dev, "backward.svg");
+    ImTextureID texBk5   = LoadSvgIcon(dev, "rewind-5-seconds-svgrepo-com.svg");
+    ImTextureID texPlay  = LoadSvgIcon(dev, "play.svg");
+    ImTextureID texPause = LoadSvgIcon(dev, "pause.svg");
+    ImTextureID texFw5   = LoadSvgIcon(dev, "forward-5-seconds-svgrepo-com.svg");
+    ImTextureID texFw30  = LoadSvgIcon(dev, "forward.svg");
+
+    // SVG icon button: InvisibleButton + AddImage + hover highlight
+    auto IconButton = [&](const char* id, ImTextureID tex, float size) -> bool {
+        VCenter(size);
+        ImGui::InvisibleButton(id, ImVec2(size, size));
+        bool clicked = ImGui::IsItemClicked();
+        ImVec2 mn = ImGui::GetItemRectMin();
+        ImVec2 mx = ImGui::GetItemRectMax();
+        if (ImGui::IsItemHovered())
+            dl->AddRectFilled(mn, mx, cBg3, 3.0f);
+        if (tex) {
+            float inset = size * 0.08f;
+            ImU32 tint = ImGui::IsItemHovered() ? cT1 : cT2;
+            dl->AddImage(tex,
+                ImVec2(mn.x + inset, mn.y + inset),
+                ImVec2(mx.x - inset, mx.y - inset),
+                ImVec2(0, 0), ImVec2(1, 1), tint);
+        }
+        return clicked;
+    };
+
+    // --- 1. Stop ---
+    if (IconButton("##Stop", texStop, btn)) { m_debugTimeline = 0.0f; ctx.isPlaying = false; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop");
+    ImGui::SameLine();
+
+    // --- 2. Back 30s ---
+    if (IconButton("##Bk30", texBk30, btn)) m_debugTimeline = std::max(0.f, m_debugTimeline - 30.f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back 30s");
+    ImGui::SameLine();
+
+    // --- 3. Back 5s ---
+    if (IconButton("##Bk5", texBk5, btn)) m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back 5s");
+    ImGui::SameLine();
+
+    // --- 4. Play / Pause ---
+    if (IconButton("##PP", ctx.isPlaying ? texPause : texPlay, btn)) ctx.isPlaying = !ctx.isPlaying;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(ctx.isPlaying ? "Pause" : "Play");
+    ImGui::SameLine();
+
+    // --- 5. Forward 5s ---
+    if (IconButton("##Fw5", texFw5, btn)) m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forward 5s");
+    ImGui::SameLine();
+
+    // --- 6. Forward 30s ---
+    if (IconButton("##Fw30", texFw30, btn)) m_debugTimeline = std::min(maxT, m_debugTimeline + 30.f);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forward 30s");
+    ImGui::SameLine();
+
+    // --- 7. Speed dropdown ---
+    {
+        float fh = ImGui::GetFrameHeight();
+        VCenter(fh);
+        ImGui::SetNextItemWidth(ImGui::CalcTextSize("0.25x").x + 28.0f);
+        if (ImGui::Combo("##Speed", &ctx.speedIndex, speedLabels, speedCount))
+            ctx.playbackSpeed = speeds[ctx.speedIndex];
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Playback speed");
+    }
+    ImGui::SameLine();
+
+    // --- 8. Loop checkbox ---
+    {
+        float cbH = ImGui::GetFrameHeight();
+        float boxSz = cbH * 0.60f;
+        float totalW = boxSz + 5.0f + ImGui::CalcTextSize("Loop").x;
+        VCenter(cbH);
+        ImGui::InvisibleButton("##Loop", ImVec2(totalW, cbH));
+        if (ImGui::IsItemClicked()) ctx.loopPlayback = !ctx.loopPlayback;
+        if (ImGui::IsItemHovered()) {
+            ImVec2 mn2 = ImGui::GetItemRectMin();
+            ImVec2 mx2 = ImGui::GetItemRectMax();
+            dl->AddRectFilled(mn2, mx2, cBg3, 3.0f);
+        }
+
+        ImVec2 mn = ImGui::GetItemRectMin();
+        float bx = mn.x;
+        float by = mn.y + (cbH - boxSz) * 0.5f;
+
+        ImU32 boxCol = ImGui::IsItemHovered() ? cT2 : cT3;
+        dl->AddRect(ImVec2(bx, by), ImVec2(bx + boxSz, by + boxSz), boxCol, 2.0f, 0, 1.2f);
+
+        if (ctx.loopPlayback) {
+            ImU32 chk = ctx.loopPlayback && ImGui::IsItemHovered() ? cAcc : cT2;
+            float m = boxSz * 0.22f;
+            dl->AddLine(ImVec2(bx + m, by + boxSz * 0.52f), ImVec2(bx + boxSz * 0.40f, by + boxSz - m), chk, 1.5f);
+            dl->AddLine(ImVec2(bx + boxSz * 0.40f, by + boxSz - m), ImVec2(bx + boxSz - m, by + m), chk, 1.5f);
+        }
+
+        float textY = mn.y + (cbH - ImGui::GetFontSize()) * 0.5f;
+        dl->AddText(ImVec2(bx + boxSz + 5.0f, textY), cT3, "Loop");
+    }
+    ImGui::SameLine();
+
+    // --- 9. Time label ---
+    {
+        char curBuf[16], totBuf[16];
+        FormatTime(m_debugTimeline, curBuf, sizeof(curBuf));
+        FormatTime(maxT,            totBuf, sizeof(totBuf));
+        char timeBuf[40];
+        snprintf(timeBuf, sizeof(timeBuf), "%s / %s", curBuf, totBuf);
+
+        float tw = ImGui::CalcTextSize(timeBuf).x;
+        float th = ImGui::GetFontSize();
+        VCenter(th);
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        dl->AddText(pos, cT2, timeBuf);
+        ImGui::Dummy(ImVec2(tw, th));
+    }
+    ImGui::SameLine();
+
+    // --- 10. Timeline scrubber ---
+    {
+        float sliderW = ImGui::GetContentRegionAvail().x;
+        if (sliderW < 30.f) sliderW = 30.f;
+
+        const float trackH  = 2.0f;
+        const float handleR = barH * 0.11f;
+
+        VCenter(btn);
+        ImVec2 cursor = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##TimelineScrub", ImVec2(sliderW, btn));
+        bool active = ImGui::IsItemActive();
+
+        if (active)
+        {
+            float mouseX = ImGui::GetIO().MousePos.x;
+            float t = (mouseX - cursor.x) / sliderW;
+            m_debugTimeline = std::clamp(t, 0.0f, 1.0f) * maxT;
+        }
+
+        float progress = maxT > 0.f ? std::clamp(m_debugTimeline / maxT, 0.0f, 1.0f) : 0.0f;
+
+        float trackY = cursor.y + btn * 0.5f - trackH * 0.5f;
+        ImVec2 trackMin(cursor.x, trackY);
+        ImVec2 trackMax(cursor.x + sliderW, trackY + trackH);
+
+        dl->AddRectFilled(trackMin, trackMax, cLine2, 1.0f);
+
+        ImVec2 fillMax(trackMin.x + sliderW * progress, trackMax.y);
+        dl->AddRectFilled(trackMin, fillMax, IM_COL32(77, 142, 240, 128), 1.0f);
+
+        float hx = cursor.x + sliderW * progress;
+        float hy = cursor.y + btn * 0.5f;
+        dl->AddCircleFilled(ImVec2(hx, hy), handleR, cAcc);
+        dl->AddCircle(ImVec2(hx, hy), handleR, IM_COL32(17, 18, 19, 200), 0, 1.5f);
+    }
+
+    m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
+
+
+    ImGui::End();
+    ImGui::PopStyleColor(8);
+    ImGui::PopStyleVar(4);
+}
+
+// ---------------------------------------------------------------------------
 // Debug window: Agent Data Viewer
 // ---------------------------------------------------------------------------
 
@@ -2015,6 +3341,547 @@ static const AgentSnapshot* FindSnapshotAtTime(const AgentReplayData& ard, float
     return &ard.snapshots[lo];
 }
 
+// ---------------------------------------------------------------------------
+// Party Windows (Phase 5+6) — dockable health bar panels
+// ---------------------------------------------------------------------------
+
+struct Gradient5 { ImU32 c[5]; };
+
+static constexpr Gradient5 kAliveBlue   = {{ IM_COL32(0x4A,0x6B,0xA3,0xFF), IM_COL32(0x3D,0x5F,0x98,0xFF), IM_COL32(0x30,0x5A,0x90,0xFF), IM_COL32(0x29,0x4E,0x7A,0xFF), IM_COL32(0x22,0x42,0x65,0xFF) }};
+static constexpr Gradient5 kDeadBlue    = {{ IM_COL32(0x3A,0x4A,0x66,0xFF), IM_COL32(0x33,0x42,0x59,0xFF), IM_COL32(0x2C,0x3A,0x4D,0xFF), IM_COL32(0x25,0x32,0x40,0xFF), IM_COL32(0x1E,0x29,0x33,0xFF) }};
+static constexpr Gradient5 kAliveRed    = {{ IM_COL32(0xCE,0x0C,0x0C,0xFF), IM_COL32(0xD6,0x34,0x34,0xFF), IM_COL32(0xD9,0x43,0x43,0xFF), IM_COL32(0xB2,0x00,0x00,0xFF), IM_COL32(0x7E,0x00,0x00,0xFF) }};
+static constexpr Gradient5 kDeadRed     = {{ IM_COL32(0x47,0x1C,0x17,0xFF), IM_COL32(0x53,0x24,0x1B,0xFF), IM_COL32(0x52,0x24,0x1C,0xFF), IM_COL32(0x3C,0x19,0x14,0xFF), IM_COL32(0x2F,0x13,0x0F,0xFF) }};
+static constexpr Gradient5 kDegenHex    = {{ IM_COL32(0xC9,0x47,0x9E,0xFF), IM_COL32(0xCE,0x5A,0xA8,0xFF), IM_COL32(0xD3,0x6C,0xB1,0xFF), IM_COL32(0xB5,0x33,0x8A,0xFF), IM_COL32(0x86,0x26,0x66,0xFF) }};
+static constexpr Gradient5 kPoison      = {{ IM_COL32(0x7F,0x7F,0x3F,0xFF), IM_COL32(0x8B,0x8B,0x50,0xFF), IM_COL32(0x94,0x94,0x5F,0xFF), IM_COL32(0x66,0x66,0x2B,0xFF), IM_COL32(0x4E,0x4E,0x1D,0xFF) }};
+static constexpr Gradient5 kBleeding    = {{ IM_COL32(0xDF,0x71,0x70,0xFF), IM_COL32(0xE1,0x7B,0x7B,0xFF), IM_COL32(0xE2,0x7E,0x7E,0xFF), IM_COL32(0xBC,0x59,0x59,0xFF), IM_COL32(0xA9,0x4F,0x50,0xFF) }};
+static constexpr Gradient5 kDeepWound   = {{ IM_COL32(0x92,0x92,0x92,0xFF), IM_COL32(0x9F,0x9F,0x9F,0xFF), IM_COL32(0xAB,0xAB,0xAB,0xFF), IM_COL32(0x84,0x84,0x84,0xFF), IM_COL32(0x73,0x73,0x73,0xFF) }};
+
+static void DrawGradientRect(ImDrawList* dl, ImVec2 tl, ImVec2 br, const Gradient5& g)
+{
+    float h = br.y - tl.y;
+    float segH = h * 0.25f;
+    for (int i = 0; i < 4; ++i)
+    {
+        float y0 = tl.y + segH * i;
+        float y1 = (i == 3) ? br.y : (y0 + segH);
+        dl->AddRectFilledMultiColor(
+            ImVec2(tl.x, y0), ImVec2(br.x, y1),
+            g.c[i], g.c[i], g.c[i + 1], g.c[i + 1]);
+    }
+}
+
+static std::filesystem::path GetGameUIBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Game_UI"))
+        {
+            cached = dir / "Textures" / "Game_UI";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "Game_UI";
+    return cached;
+}
+
+static ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetGameUIBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+static std::filesystem::path GetOthersUIBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Others_UI"))
+        {
+            cached = dir / "Textures" / "Others_UI";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "Others_UI";
+    return cached;
+}
+
+static ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetOthersUIBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+struct PartyIcons {
+    ImTextureID weaponSpell = nullptr;
+    ImTextureID enchanted   = nullptr;
+    ImTextureID condition   = nullptr;
+    ImTextureID hexed       = nullptr;
+};
+
+static PartyIcons LoadAllPartyIcons(ID3D11Device* dev)
+{
+    PartyIcons icons;
+    icons.weaponSpell = LoadPartyIcon(dev, "WeaponSpell.png");
+    icons.enchanted   = LoadPartyIcon(dev, "Enchanted.png");
+    icons.condition   = LoadPartyIcon(dev, "Condition.png");
+    icons.hexed       = LoadPartyIcon(dev, "Hexed.png");
+    return icons;
+}
+
+static void DrawPartyHealthBar(
+    ImDrawList* dl, ImVec2 barTL, float barW, float barH,
+    const AgentSnapshot* snap, uint8_t teamId, bool isDead,
+    const char* name, const PartyIcons& icons,
+    int followedAgentId, int agentId)
+{
+    ImVec2 barBR(barTL.x + barW, barTL.y + barH);
+
+    // Border
+    bool isHovered = ImGui::IsMouseHoveringRect(barTL, barBR);
+    bool isFollowed = (followedAgentId == agentId);
+    ImU32 borderCol = IM_COL32(0x4E, 0x4D, 0x48, 0xFF);
+    if (isFollowed)
+        borderCol = IM_COL32(0xCB, 0xAA, 0x09, 0xFF);
+    else if (isHovered)
+        borderCol = IM_COL32(0x9A, 0x8A, 0x3E, 0xFF);
+
+    dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 1.0f);
+
+    if (isFollowed)
+        dl->AddRect(ImVec2(barTL.x - 1, barTL.y - 1), ImVec2(barBR.x + 1, barBR.y + 1),
+                    IM_COL32(0xD8, 0xD0, 0x73, 0x80), 0.f, 0, 1.0f);
+
+    // Inner area (1px inset from border)
+    ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
+    ImVec2 innerBR(barBR.x - 1, barBR.y - 1);
+    float innerW = innerBR.x - innerTL.x;
+    float innerH = innerBR.y - innerTL.y;
+
+    if (!snap) return;
+
+    float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
+    bool hasDeepWound = snap->has_deep_wound && !isDead;
+
+    // Choose gradient by priority
+    const Gradient5* fillGrad = nullptr;
+    if (isDead)
+        fillGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+    else if (snap->has_degen_hex)
+        fillGrad = &kDegenHex;
+    else if (snap->has_poison)
+        fillGrad = &kPoison;
+    else if (snap->has_bleeding)
+        fillGrad = &kBleeding;
+    else
+        fillGrad = (teamId == 1) ? &kAliveBlue : &kAliveRed;
+
+    // Dead background fills full width
+    if (isDead)
+    {
+        DrawGradientRect(dl, innerTL, innerBR, *fillGrad);
+    }
+    else
+    {
+        // Background: dark fill for empty portion
+        const Gradient5* deadGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+        DrawGradientRect(dl, innerTL, innerBR, *deadGrad);
+
+        // Health fill
+        float fillPct = hasDeepWound ? std::min(healthPct, 0.80f) : healthPct;
+        if (fillPct > 0.f)
+        {
+            float fillW = innerW * fillPct;
+            DrawGradientRect(dl, innerTL, ImVec2(innerTL.x + fillW, innerBR.y), *fillGrad);
+        }
+
+        // Deep wound overlay on rightmost 20%
+        if (hasDeepWound)
+        {
+            float dwStart = innerTL.x + innerW * 0.80f;
+            DrawGradientRect(dl, ImVec2(dwStart, innerTL.y), innerBR, kDeepWound);
+        }
+    }
+
+    // Weapon spell icon (left side)
+    if (snap->has_weapon_spell && !isDead && icons.weaponSpell)
+    {
+        float iconSz = std::min(innerH, 20.f);
+        ImVec2 iconTL(innerTL.x + 2, innerTL.y + (innerH - iconSz) * 0.5f);
+        ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+        dl->AddImage(icons.weaponSpell, iconTL, iconBR);
+    }
+
+    // Player name (text with shadow)
+    if (name && name[0])
+    {
+        float textOffsetX = (snap->has_weapon_spell && !isDead && icons.weaponSpell)
+                            ? 24.f : 4.f;
+        ImVec2 textPos(innerTL.x + textOffsetX, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
+        ImU32 textCol = isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+        dl->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 0xCC), name);
+        dl->AddText(textPos, textCol, name);
+    }
+
+    // Status icons (right-aligned, hidden when dead)
+    // Order right-to-left: Enchanted, Condition, Hexed
+    if (!isDead)
+    {
+        const float iconSz = std::min(innerH - 2.f, 18.f);
+        float iconX = innerBR.x - 2.f;
+        float iconY = innerTL.y + (innerH - iconSz) * 0.5f;
+
+        if (snap->has_enchantment && icons.enchanted)
+        {
+            iconX -= iconSz;
+            dl->AddImage(icons.enchanted, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if ((snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) && icons.condition)
+        {
+            iconX -= iconSz;
+            dl->AddImage(icons.condition, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if (snap->has_hex && icons.hexed)
+        {
+            iconX -= iconSz;
+            dl->AddImage(icons.hexed, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+        }
+    }
+}
+
+void ReplayWindow::DrawPartyWindows()
+{
+    if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    PartyIcons icons = LoadAllPartyIcons(dev);
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x;
+    float vpH = vp->Size.y;
+
+    constexpr float kBarHeight    = 23.f;
+    constexpr float kNpcBarHeight = 17.f;
+    constexpr float kBarSpacing   = 4.f;
+    constexpr float kDeathGraceSec = 5.f;
+    float padY = ImGui::GetStyle().WindowPadding.y;
+    float titleBarH = ImGui::GetFrameHeight();
+    float treeNodeH = ImGui::GetFrameHeight() + kBarSpacing;
+    float curTime = m_debugTimeline;
+
+    auto IsSpiritHidden = [&](const AgentReplayData& ard) -> bool {
+        if (ard.type != AgentType::Spirit) return false;
+        if (ard.overlapHidden) return true;
+        if (ard.snapshots.empty()) return true;
+
+        // Spirit outside its snapshot time range is gone
+        if (curTime < ard.snapshots.front().time ||
+            curTime > ard.snapshots.back().time)
+            return true;
+
+        const AgentSnapshot* snap = FindSnapshotAtTime(ard, curTime);
+        if (!snap) return true;
+
+        // Primary check: is_alive == false means the spirit no longer exists
+        if (!snap->is_alive)
+        {
+            float goneStart = ard.notAliveTransitionTime(curTime);
+            if (curTime - goneStart > kDeathGraceSec)
+                return true;
+        }
+
+        // Secondary check: is_dead flag (covers explicit kills)
+        if (snap->is_dead)
+        {
+            float deathStart = ard.deathTransitionTime(curTime);
+            if (curTime - deathStart > kDeathGraceSec)
+                return true;
+        }
+
+        return false;
+    };
+
+    auto DrawBars = [&](ImDrawList* dl, float availW,
+                        const std::vector<int>& ids, float barH,
+                        bool filterSpirits)
+    {
+        int n = static_cast<int>(ids.size());
+        for (int i = 0; i < n; ++i)
+        {
+            int agentId = ids[i];
+            auto it = m_replayCtx.agents.find(agentId);
+            if (it == m_replayCtx.agents.end()) continue;
+
+            const AgentReplayData& ard = it->second;
+            if (filterSpirits && IsSpiritHidden(ard))
+                continue;
+
+            const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
+            bool isDead = snap ? snap->is_dead : false;
+
+            ImVec2 cursor = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(availW, barH));
+
+            DrawPartyHealthBar(dl, cursor, availW, barH,
+                               snap, ard.teamId, isDead,
+                               ard.partyBarLabel.c_str(), icons,
+                               m_followedAgentId, agentId);
+        }
+    };
+
+    auto CountVisibleNpcs = [&](const std::vector<int>& npcIds) -> int {
+        int count = 0;
+        for (int id : npcIds)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end()) continue;
+            const AgentReplayData& ard = it->second;
+            if (IsSpiritHidden(ard)) continue;
+            ++count;
+        }
+        return count;
+    };
+
+    static bool s_alliesOpenTeam1 = false;
+    static bool s_alliesOpenTeam2 = false;
+
+    auto DrawTeamPanel = [&](const char* title, bool* show,
+                             const std::vector<int>& playerIds,
+                             const std::vector<int>& npcIds,
+                             ImVec4 bgCol, bool leftSide,
+                             bool* prevAlliesOpen)
+    {
+        if (!*show || playerIds.empty()) return;
+
+        int nPlayers = static_cast<int>(playerIds.size());
+        bool hasNpcs = !npcIds.empty();
+        float panelW = std::clamp(vpW * 0.18f, 220.f, 350.f);
+
+        float playersH = nPlayers * kBarHeight + (nPlayers - 1) * kBarSpacing;
+        float alliesHeaderH = hasNpcs ? treeNodeH + kBarSpacing : 0.f;
+        float collapsedH = titleBarH + padY * 2 + playersH + alliesHeaderH + 4.f;
+
+        if (!m_partyWindowsPositioned)
+        {
+            float midY = vp->Pos.y + vpH * 0.5f;
+            float marginX = vpW * 0.02f;
+            ImVec2 pos;
+            if (leftSide)
+                pos = ImVec2(vp->Pos.x + marginX, midY - collapsedH * 0.5f);
+            else
+                pos = ImVec2(vp->Pos.x + vpW - panelW - marginX, midY - collapsedH * 0.5f);
+            ImGui::SetNextWindowPos(pos);
+            ImGui::SetNextWindowSize(ImVec2(panelW, collapsedH));
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, bgCol);
+        ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.06f, 0.06f, 0.08f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.08f, 0.08f, 0.10f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.89f, 0.71f, 1.0f));
+
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, kBarSpacing));
+
+        if (ImGui::Begin(title, show))
+        {
+            ImGui::PopStyleColor();
+
+            // Clamp window within viewport
+            ImVec2 wPos = ImGui::GetWindowPos();
+            ImVec2 wSize = ImGui::GetWindowSize();
+            bool clamped = false;
+            if (wPos.x < vp->Pos.x) { wPos.x = vp->Pos.x; clamped = true; }
+            if (wPos.y < vp->Pos.y) { wPos.y = vp->Pos.y; clamped = true; }
+            if (wPos.x + wSize.x > vp->Pos.x + vpW) { wPos.x = vp->Pos.x + vpW - wSize.x; clamped = true; }
+            if (wPos.y + wSize.y > vp->Pos.y + vpH) { wPos.y = vp->Pos.y + vpH - wSize.y; clamped = true; }
+            if (clamped) ImGui::SetWindowPos(wPos);
+
+            float availW = ImGui::GetContentRegionAvail().x;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
+            DrawBars(dl, availW, playerIds, kBarHeight, false);
+
+            // Allies collapsible section
+            if (hasNpcs)
+            {
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 2));
+                ImGui::Spacing();
+                ImGui::PopStyleVar();
+
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.72f, 0.60f, 1.0f));
+                bool alliesOpen = ImGui::TreeNodeEx("Allies",
+                    ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_NoAutoOpenOnLog);
+                ImGui::PopStyleColor();
+
+                // Auto-resize on open/close transition
+                if (alliesOpen != *prevAlliesOpen)
+                {
+                    *prevAlliesOpen = alliesOpen;
+                    if (alliesOpen)
+                    {
+                        int visNpcs = CountVisibleNpcs(npcIds);
+                        float npcsH = visNpcs * kNpcBarHeight + std::max(0, visNpcs - 1) * kBarSpacing;
+                        float expandedH = collapsedH + npcsH + kBarSpacing;
+                        ImGui::SetWindowSize(ImVec2(wSize.x, expandedH));
+                    }
+                    else
+                    {
+                        ImGui::SetWindowSize(ImVec2(wSize.x, collapsedH));
+                    }
+                }
+
+                if (alliesOpen)
+                {
+                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true);
+                }
+            }
+        }
+        else
+        {
+            ImGui::PopStyleColor();
+        }
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+    };
+
+    DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PlayerIds,
+                  m_team1NpcIds,
+                  ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), true,
+                  &s_alliesOpenTeam1);
+
+    DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PlayerIds,
+                  m_team2NpcIds,
+                  ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), false,
+                  &s_alliesOpenTeam2);
+
+    if (!m_partyWindowsPositioned)
+        m_partyWindowsPositioned = true;
+}
+
 void ReplayWindow::DrawAgentDataWindow()
 {
     if (!m_replayCtx.agentsLoaded || m_replayCtx.agents.empty())
@@ -2040,10 +3907,14 @@ void ReplayWindow::DrawAgentDataWindow()
 
     // ---- Top bar: timeline + stats ----
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
-    ImGui::Text("Timeline:");
+    char curBuf[16], totBuf[16];
+    FormatTime(m_debugTimeline, curBuf, sizeof(curBuf));
+    FormatTime(maxT, totBuf, sizeof(totBuf));
+    ImGui::Text("%s / %s", curBuf, totBuf);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
-    ImGui::SliderFloat("##timeline", &m_debugTimeline, 0.f, maxT, "%.1fs");
+    if (ImGui::SliderFloat("##timeline", &m_debugTimeline, 0.f, maxT, ""))
+        m_replayCtx.isPlaying = false;
 
     ImGui::Text("Players:%d  Flags:%d  NPCs:%d  Spirits:%d  Gadgets:%d  Items:%d  Unknown:%d  Total:%d",
                 static_cast<int>(m_playerIds.size()),
@@ -3107,27 +4978,169 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_INPUT:
-        if (mouseAllowed && rw->m_inputManager)
-            rw->m_inputManager->ProcessRawInput(lParam);
+        if (mouseAllowed && rw->m_mapRenderer)
+        {
+            bool dragging = rw->m_rightMouseDown || rw->m_leftMouseDown;
+            if (dragging)
+            {
+                UINT dwSize = sizeof(RAWINPUT);
+                BYTE lpb[sizeof(RAWINPUT)];
+                GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER));
+                auto* raw = reinterpret_cast<RAWINPUT*>(lpb);
+                if (raw->header.dwType == RIM_TYPEMOUSE)
+                {
+                    float dx = static_cast<float>(raw->data.mouse.lLastX);
+                    float dy = static_cast<float>(raw->data.mouse.lLastY);
+                    Camera* cam = rw->m_mapRenderer->GetCamera();
+
+                    if (rw->m_leftMouseDown)
+                    {
+                        XMFLOAT3 right = cam->GetRight3f();
+                        XMFLOAT3 up    = cam->GetUp3f();
+                        XMFLOAT3 pos   = cam->GetPosition3f();
+                        float s = rw->m_panSpeed;
+                        pos.x += (-dx * right.x + dy * up.x) * s;
+                        pos.y += (-dx * right.y + dy * up.y) * s;
+                        pos.z += (-dx * right.z + dy * up.z) * s;
+                        cam->SetPosition(pos.x, pos.y, pos.z);
+                    }
+
+                    if (rw->m_rightMouseDown)
+                    {
+                        float radX = DirectX::XMConvertToRadians(0.25f * dx);
+                        float radY = DirectX::XMConvertToRadians(0.25f * dy);
+
+                        if (rw->m_cameraMode == CameraMode::FollowAgent)
+                        {
+                            rw->m_followYaw   += radX;
+                            rw->m_followPitch  = std::clamp(rw->m_followPitch + radY,
+                                                            rw->kFollowMinPitch, rw->kFollowMaxPitch);
+                        }
+                        else
+                        {
+                            cam->OnMouseMove(radX, radY);
+                        }
+                    }
+                }
+                if (rw->m_leftMouseDown)
+                    SetCursorPos(rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y);
+            }
+        }
         break;
 
     case WM_LBUTTONDOWN:
-    case WM_MBUTTONDOWN:
+        if (mouseAllowed && rw && rw->m_cameraMode != CameraMode::FollowAgent)
+        {
+            rw->m_leftClickPending = true;
+            GetCursorPos(&rw->m_mouseDragOrigin);
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (rw)
+        {
+            if (rw->m_leftClickPending)
+                rw->m_leftClickPending = false;
+
+            if (rw->m_leftMouseDown)
+            {
+                rw->m_leftMouseDown = false;
+                if (!rw->m_rightMouseDown)
+                {
+                    SetCursorPos(rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y);
+                    ShowCursor(TRUE);
+                    ReleaseCapture();
+                }
+                else
+                {
+                    ShowCursor(TRUE);
+                    RECT clip = { rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y,
+                                  rw->m_mouseDragOrigin.x + 1, rw->m_mouseDragOrigin.y + 1 };
+                    ClipCursor(&clip);
+                }
+            }
+        }
+        break;
+
     case WM_RBUTTONDOWN:
+        if (mouseAllowed && rw)
+        {
+            rw->m_rightMouseDown = true;
+            if (!rw->m_leftMouseDown)
+            {
+                GetCursorPos(&rw->m_mouseDragOrigin);
+                RECT clip = { rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y,
+                              rw->m_mouseDragOrigin.x + 1, rw->m_mouseDragOrigin.y + 1 };
+                ClipCursor(&clip);
+                SetCapture(hWnd);
+            }
+        }
+        break;
+
+    case WM_RBUTTONUP:
+        if (rw && rw->m_rightMouseDown)
+        {
+            rw->m_rightMouseDown = false;
+            ClipCursor(nullptr);
+            if (!rw->m_leftMouseDown)
+                ReleaseCapture();
+        }
+        break;
+
+    case WM_MBUTTONDOWN:
         if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         break;
 
-    case WM_LBUTTONUP:
     case WM_MBUTTONUP:
-    case WM_RBUTTONUP:
         if (mouseAllowed && rw->m_inputManager)
             rw->m_inputManager->OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         break;
 
     case WM_MOUSEWHEEL:
-        if (mouseAllowed && rw->m_inputManager)
-            rw->m_inputManager->OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam), hWnd);
+        if (mouseAllowed && rw->m_mapRenderer)
+        {
+            float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+
+            if (rw->m_cameraMode == CameraMode::FollowAgent)
+            {
+                float factor = (delta > 0) ? 0.85f : 1.18f;
+                rw->m_followDistTarget = std::clamp(
+                    rw->m_followDistTarget * factor,
+                    rw->kFollowMinDist, rw->kFollowMaxDist);
+            }
+            else
+            {
+                Camera* cam = rw->m_mapRenderer->GetCamera();
+                XMFLOAT3 look = cam->GetLook3f();
+                XMFLOAT3 pos  = cam->GetPosition3f();
+                float z = delta * rw->m_zoomSpeed;
+                pos.x += look.x * z;
+                pos.y += look.y * z;
+                pos.z += look.z * z;
+                cam->SetPosition(pos.x, pos.y, pos.z);
+            }
+        }
+        break;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && g_Cursors.loaded)
+        {
+            if (rw && rw->m_leftMouseDown)
+                return TRUE;  // cursor hidden during left-drag pan
+            if (rw && rw->m_rightMouseDown)
+            {
+                ::SetCursor(g_Cursors.Get(CursorMode::Precision));
+                return TRUE;
+            }
+            if (g_DraggingWindow)
+            {
+                ::SetCursor(g_Cursors.Get(CursorMode::Move));
+                return TRUE;
+            }
+            HCURSOR cur = g_Cursors.Get(g_CurrentCursor);
+            if (cur) { ::SetCursor(cur); return TRUE; }
+        }
         break;
 
     case WM_MOUSELEAVE:
