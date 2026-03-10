@@ -74,6 +74,65 @@ void ReplayHotkeys::Load()
 }
 
 // ---------------------------------------------------------------------------
+// UI Layout persistence (JSON)
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetUILayoutFilePath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    auto settingsDir = dir / "settings";
+    if (!std::filesystem::exists(settingsDir))
+        std::filesystem::create_directories(settingsDir);
+    return settingsDir / "ui_layout.json";
+}
+
+void ReplayWindow::SaveUILayout()
+{
+    auto path = GetUILayoutFilePath();
+    std::ofstream f(path);
+    if (!f.is_open()) return;
+    f << "{\n"
+      << "  \"useCustom\": "  << (m_uiLayout.useCustom ? "true" : "false") << ",\n"
+      << "  \"jumboX\": "     << m_uiLayout.jumboX   << ",\n"
+      << "  \"jumboY\": "     << m_uiLayout.jumboY   << ",\n"
+      << "  \"moBlueX\": "    << m_uiLayout.moBlueX  << ",\n"
+      << "  \"moBlueY\": "    << m_uiLayout.moBlueY  << ",\n"
+      << "  \"moRedX\": "     << m_uiLayout.moRedX   << ",\n"
+      << "  \"moRedY\": "     << m_uiLayout.moRedY   << ",\n"
+      << "  \"timerX\": "     << m_uiLayout.timerX   << ",\n"
+      << "  \"timerY\": "     << m_uiLayout.timerY   << ",\n"
+      << "  \"lodEnabled\": " << (m_uiLayout.lodEnabled ? "true" : "false") << ",\n"
+      << "  \"lodDotDist\": " << m_uiLayout.lodDotDist << ",\n"
+      << "  \"lodPillarDist\": " << m_uiLayout.lodPillarDist << "\n"
+      << "}\n";
+}
+
+void ReplayWindow::LoadUILayout()
+{
+    auto path = GetUILayoutFilePath();
+    std::ifstream f(path);
+    if (!f.is_open()) return;
+    try {
+        nlohmann::json j;
+        f >> j;
+        if (j.contains("useCustom")) m_uiLayout.useCustom = j["useCustom"].get<bool>();
+        if (j.contains("jumboX"))    m_uiLayout.jumboX   = j["jumboX"].get<float>();
+        if (j.contains("jumboY"))    m_uiLayout.jumboY   = j["jumboY"].get<float>();
+        if (j.contains("moBlueX"))   m_uiLayout.moBlueX  = j["moBlueX"].get<float>();
+        if (j.contains("moBlueY"))   m_uiLayout.moBlueY  = j["moBlueY"].get<float>();
+        if (j.contains("moRedX"))    m_uiLayout.moRedX   = j["moRedX"].get<float>();
+        if (j.contains("moRedY"))    m_uiLayout.moRedY   = j["moRedY"].get<float>();
+        if (j.contains("timerX"))    m_uiLayout.timerX   = j["timerX"].get<float>();
+        if (j.contains("timerY"))    m_uiLayout.timerY   = j["timerY"].get<float>();
+        if (j.contains("lodEnabled"))    m_uiLayout.lodEnabled    = j["lodEnabled"].get<bool>();
+        if (j.contains("lodDotDist"))    m_uiLayout.lodDotDist    = j["lodDotDist"].get<float>();
+        if (j.contains("lodPillarDist")) m_uiLayout.lodPillarDist = j["lodPillarDist"].get<float>();
+    } catch (...) {}
+}
+
+// ---------------------------------------------------------------------------
 
 bool ReplayWindow::s_classRegistered = false;
 
@@ -410,6 +469,23 @@ void ReplayWindow::InitImGui()
     if (!fontLoaded)
         io.Fonts->AddFontDefault();
 
+    // Load Lato fonts for scene overlays (timer, jumbo, morale)
+    {
+        std::string base = GetReplayFontBasePath();
+        if (!base.empty())
+        {
+            std::string latoRegPath = base + "\\Lato-Regular.ttf";
+            std::string latoBoldPath = base + "\\Lato-Bold.ttf";
+            if (std::filesystem::exists(latoRegPath))
+                m_latoRegular = io.Fonts->AddFontFromFileTTF(latoRegPath.c_str(), 19.f);
+            if (std::filesystem::exists(latoBoldPath))
+            {
+                m_latoBold    = io.Fonts->AddFontFromFileTTF(latoBoldPath.c_str(), 18.f);
+                m_latoBoldBig = io.Fonts->AddFontFromFileTTF(latoBoldPath.c_str(), 40.f);
+            }
+        }
+    }
+
     io.Fonts->Build();
 
     ImGui_ImplWin32_Init(m_hwnd);
@@ -417,6 +493,7 @@ void ReplayWindow::InitImGui()
                         m_deviceResources->GetD3DDeviceContext());
 
     m_imguiInitialized = true;
+    LoadUILayout();
 
     ImGui::SetCurrentContext(prevCtx);
 }
@@ -1239,6 +1316,135 @@ void ReplayWindow::Tick()
         m_castIntervalsBuilt = true;
     }
 
+    // Build per-agent skill use timeline for icon display + laser lines
+    if (m_castIntervalsBuilt && !m_skillUseTimelineBuilt)
+    {
+        auto resolveTarget = [](int tid, int cid) { return (tid == 0) ? cid : tid; };
+
+        // Track open casts to pair ACTIVATED→FINISHED with their target
+        struct OpenCast { float start; int skillId; int targetId; };
+        std::unordered_map<int, OpenCast> openCasts;
+
+        // 1) Process StoC skill events (activated, instant, finished, stopped)
+        for (auto& ev : m_replayCtx.stocData.skill)
+        {
+            if (ev.type == "SKILL_ACTIVATED" && ev.skill_id > 0)
+            {
+                int tid = resolveTarget(ev.target_id, ev.caster_id);
+                openCasts[ev.caster_id] = { ev.time, ev.skill_id, tid };
+            }
+            else if (ev.type == "SKILL_FINISHED" || ev.type == "SKILL_STOPPED")
+            {
+                auto oc = openCasts.find(ev.caster_id);
+                if (oc != openCasts.end())
+                {
+                    bool stopped = (ev.type == "SKILL_STOPPED");
+                    auto it = m_replayCtx.agents.find(ev.caster_id);
+                    if (it != m_replayCtx.agents.end())
+                        it->second.skillUseHistory.push_back(
+                            { oc->second.start, ev.time, 0.f, oc->second.skillId,
+                              oc->second.targetId, false, stopped });
+                    openCasts.erase(oc);
+                }
+            }
+            else if (ev.type == "INSTANT_SKILL_USED" && ev.skill_id > 0)
+            {
+                int tid = resolveTarget(ev.target_id, ev.caster_id);
+                auto it = m_replayCtx.agents.find(ev.caster_id);
+                if (it != m_replayCtx.agents.end())
+                    it->second.skillUseHistory.push_back(
+                        { ev.time, ev.time, 0.f, ev.skill_id, tid, true, false });
+            }
+        }
+
+        // 2) Process StoC attack skill events
+        openCasts.clear();
+        for (auto& ev : m_replayCtx.stocData.attackSkill)
+        {
+            if (ev.type == "ATTACK_SKILL_ACTIVATED" && ev.skill_id > 0)
+            {
+                int tid = resolveTarget(ev.target_id, ev.caster_id);
+                openCasts[ev.caster_id] = { ev.time, ev.skill_id, tid };
+            }
+            else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
+            {
+                bool stopped = (ev.type == "ATTACK_SKILL_STOPPED");
+                auto oc = openCasts.find(ev.caster_id);
+                if (oc != openCasts.end())
+                {
+                    auto it = m_replayCtx.agents.find(ev.caster_id);
+                    if (it != m_replayCtx.agents.end())
+                        it->second.skillUseHistory.push_back(
+                            { oc->second.start, ev.time, 0.f, oc->second.skillId,
+                              oc->second.targetId, false, stopped });
+                    openCasts.erase(oc);
+                }
+            }
+        }
+
+        // 3) Sort each agent's timeline by startTime
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+                      [](const SkillUseEvent& a, const SkillUseEvent& b) {
+                          return a.startTime < b.startTime;
+                      });
+        }
+
+        // 4) Compute fullCastDuration per skillId from successful (non-cancelled) casts
+        std::unordered_map<int, float> skillFullDur;
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            for (auto& ev : ard.skillUseHistory)
+            {
+                if (ev.isInstant || ev.wasCancelled) continue;
+                float d = ev.endTime - ev.startTime;
+                if (d > 0.001f)
+                {
+                    auto it = skillFullDur.find(ev.skillId);
+                    if (it == skillFullDur.end() || d > it->second)
+                        skillFullDur[ev.skillId] = d;
+                }
+            }
+        }
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            for (auto& ev : ard.skillUseHistory)
+            {
+                if (ev.isInstant) continue;
+                auto it = skillFullDur.find(ev.skillId);
+                if (it != skillFullDur.end())
+                    ev.fullCastDuration = it->second;
+                else
+                    ev.fullCastDuration = ev.endTime - ev.startTime;
+            }
+        }
+
+        m_skillUseTimelineBuilt = true;
+    }
+
+    // Build knockdown intervals from snapshot is_knocked transitions
+    if (m_agentsClassified && !m_knockdownIntervalsBuilt)
+    {
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            ard.knockdownIntervals.clear();
+            bool wasKnocked = false;
+            float kdStart = 0.f;
+            for (auto& snap : ard.snapshots)
+            {
+                if (snap.is_knocked && !wasKnocked)
+                    kdStart = snap.time;
+                else if (!snap.is_knocked && wasKnocked)
+                    ard.knockdownIntervals.push_back({ kdStart, snap.time });
+                wasKnocked = snap.is_knocked;
+            }
+            if (wasKnocked && !ard.snapshots.empty())
+                ard.knockdownIntervals.push_back({ kdStart, ard.snapshots.back().time });
+        }
+        m_knockdownIntervalsBuilt = true;
+    }
+
     // Build flag state timeline (needs both agents and StoC for jumbo events)
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
         BuildFlagStateTimeline();
@@ -1325,6 +1531,8 @@ void ReplayWindow::Render()
         m_deviceResources->GetRenderTargetView(),
         nullptr,
         m_deviceResources->GetDepthStencilView());
+
+    DrawAgentCylinders();
 
     DrawImGuiOverlay();
 
@@ -1423,6 +1631,8 @@ void ReplayWindow::DrawImGuiOverlay()
             {
                 if (ImGui::MenuItem("Shortcuts"))
                     m_showShortcutPreferences = true;
+                if (ImGui::MenuItem("Interface"))
+                    m_showInterfacePrefs = true;
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -1436,7 +1646,17 @@ void ReplayWindow::DrawImGuiOverlay()
         if (ImGui::BeginMenu("View"))
         {
             ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
+
+            if (ImGui::MenuItem("Distance LOD (dots/cylinders)",
+                                nullptr, m_uiLayout.lodEnabled))
+            {
+                m_uiLayout.lodEnabled = !m_uiLayout.lodEnabled;
+                SaveUILayout();
+            }
+
             ImGui::Separator();
+            ImGui::MenuItem("Skill Icons", nullptr, &m_showSkillIcons);
+            ImGui::MenuItem("Skill Lasers", nullptr, &m_showSkillLasers);
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::EndMenu();
@@ -1490,10 +1710,22 @@ void ReplayWindow::DrawImGuiOverlay()
     }
     DrawShortcutPreferences();
 
+    if (m_showInterfacePrefs)
+    {
+        ImGui::OpenPopup("Interface Preferences");
+        m_showInterfacePrefs = false;
+    }
+    DrawInterfacePreferences();
+
     DrawPartyWindows();
 
     DrawAgentOverlay();
     DrawFlags();
+    DrawSkillLasers();
+
+    DrawMatchTimer();
+    DrawJumboMessages();
+    DrawMoraleBoostTimers();
 
     // Commit deferred left-click to pan if no agent was clicked
     if (m_leftClickPending)
@@ -2131,6 +2363,485 @@ ReplayWindow::FlagEvent ReplayWindow::EvaluateFlagState(int teamIdx, float time)
     return fs.timeline[lo];
 }
 
+// ---------------------------------------------------------------------------
+// Cylinder agent marker — 3D renderer
+// ---------------------------------------------------------------------------
+
+static const char kCylinderHLSL[] = R"(
+cbuffer CBPerFrame : register(b0)
+{
+    float4x4 gViewProj;
+    float4   gCamPos;
+};
+cbuffer CBPerInstance : register(b1)
+{
+    float4x4 gWorld;
+    float4   gTeamColor;
+};
+
+struct VS_IN  { float3 pos : POSITION; float3 nrm : NORMAL; float height01 : HEIGHT; };
+struct VS_OUT { float4 pos : SV_Position; float3 worldPos : TEXCOORD0;
+                float3 worldNrm : TEXCOORD1; float  height01 : TEXCOORD2; };
+
+VS_OUT VSMain(VS_IN i)
+{
+    VS_OUT o;
+    float4 wp = mul(float4(i.pos, 1), gWorld);
+    o.pos      = mul(wp, gViewProj);
+    o.worldPos = wp.xyz;
+    o.worldNrm = normalize(mul(float4(i.nrm, 0), gWorld).xyz);
+    o.height01 = i.height01;
+    return o;
+}
+
+float4 PSMain(VS_OUT i) : SV_Target
+{
+    float3 baseColor = gTeamColor.rgb;
+
+    // Ambient light from above (Y is up in GWMB render space)
+    float3 lightDir = normalize(float3(0.2, 1.0, 0.3));
+    float ndl = saturate(dot(i.worldNrm, lightDir));
+
+    // View direction for specular on top cap
+    float3 viewDir = normalize(gCamPos.xyz - i.worldPos);
+    float3 halfVec = normalize(lightDir + viewDir);
+    float spec = pow(saturate(dot(i.worldNrm, halfVec)), 32.0);
+
+    // Vertical gradient: darker at bottom, brighter toward top
+    float vertBright = lerp(0.55, 1.0, i.height01);
+
+    // Facing camera brightness (body sides brighter at center)
+    float facing = saturate(dot(i.worldNrm, viewDir));
+    float faceBright = lerp(0.6, 1.0, facing * facing);
+
+    // Top cap gets extra brightness + specular (Y is up)
+    float isTop = saturate(i.worldNrm.y * 4.0 - 3.0);
+    float topBright = lerp(1.0, 1.3, isTop);
+
+    float3 color = baseColor * (0.35 + 0.65 * ndl) * vertBright * faceBright * topBright;
+    color += spec * isTop * 0.4;
+
+    // Base glow: additive team color emission at the very bottom
+    float baseGlow = saturate(1.0 - i.height01 * 8.0) * 0.35;
+    color += baseColor * baseGlow;
+
+    return float4(saturate(color), 1.0);
+}
+)";
+
+void ReplayWindow::InitCylinderRenderer()
+{
+    if (m_cylInitialized) return;
+    m_cylInitialized = true;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+
+    // --- Compile shaders ---
+    Microsoft::WRL::ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifdef _DEBUG
+    flags |= D3DCOMPILE_DEBUG;
+#endif
+
+    HRESULT hr = D3DCompile(kCylinderHLSL, sizeof(kCylinderHLSL), nullptr, nullptr, nullptr,
+                            "VSMain", "vs_5_0", flags, 0, vsBlob.GetAddressOf(), errBlob.GetAddressOf());
+    if (FAILED(hr)) return;
+
+    hr = D3DCompile(kCylinderHLSL, sizeof(kCylinderHLSL), nullptr, nullptr, nullptr,
+                    "PSMain", "ps_5_0", flags, 0, psBlob.GetAddressOf(), errBlob.GetAddressOf());
+    if (FAILED(hr)) return;
+
+    dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, m_cylVS.GetAddressOf());
+    dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, m_cylPS.GetAddressOf());
+
+    // --- Input layout ---
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "HEIGHT",   0, DXGI_FORMAT_R32_FLOAT,           0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+    dev->CreateInputLayout(layout, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), m_cylIL.GetAddressOf());
+
+    // --- Generate cylinder geometry ---
+    constexpr int   SEG = 16;
+    constexpr float R   = 30.f;
+    constexpr float H   = 120.f;
+    constexpr float PI2 = 6.2831853f;
+
+    // Vertices: bottom ring + top ring + bottom center + top center
+    // bottom ring: SEG verts, top ring: SEG verts
+    // Each side quad uses 2 bottom + 2 top (shared normals per segment)
+    // Plus 2 cap centers
+    // Total: SEG*2 (body) + 1 (bottom center) + SEG (bottom fan) + 1 (top center) + SEG (top fan)
+    // Simplify: body ring duplicated for caps to have different normals
+
+    std::vector<CylVertex> verts;
+    std::vector<uint16_t> indices;
+
+    // Body vertices — Y is UP in GWMB render space (ApplyMapTransformToPos already converts)
+    int bodyBase = 0;
+    for (int i = 0; i <= SEG; ++i)
+    {
+        float a = (float(i) / SEG) * PI2;
+        float cs = cosf(a), sn = sinf(a);
+        float nx = cs, nz = sn;
+        // Bottom (y=0)
+        verts.push_back({ R * cs, 0.f, R * sn,  nx, 0, nz,  0.f });
+        // Top (y=H)
+        verts.push_back({ R * cs, H,   R * sn,  nx, 0, nz,  1.f });
+    }
+
+    // Body indices (triangle strip as quads)
+    for (int i = 0; i < SEG; ++i)
+    {
+        int b0 = bodyBase + i * 2;
+        int b1 = bodyBase + i * 2 + 1;
+        int b2 = bodyBase + (i + 1) * 2;
+        int b3 = bodyBase + (i + 1) * 2 + 1;
+        indices.push_back((uint16_t)b0); indices.push_back((uint16_t)b1); indices.push_back((uint16_t)b2);
+        indices.push_back((uint16_t)b2); indices.push_back((uint16_t)b1); indices.push_back((uint16_t)b3);
+    }
+
+    // Bottom cap (normal pointing down: -Y)
+    int botCenter = (int)verts.size();
+    verts.push_back({ 0, 0, 0,  0, -1, 0,  0.f });
+    int botRing = (int)verts.size();
+    for (int i = 0; i < SEG; ++i)
+    {
+        float a = (float(i) / SEG) * PI2;
+        verts.push_back({ R * cosf(a), 0, R * sinf(a),  0, -1, 0,  0.f });
+    }
+    for (int i = 0; i < SEG; ++i)
+    {
+        indices.push_back((uint16_t)botCenter);
+        indices.push_back((uint16_t)(botRing + (i + 1) % SEG));
+        indices.push_back((uint16_t)(botRing + i));
+    }
+
+    // Top cap (normal pointing up: +Y)
+    int topCenter = (int)verts.size();
+    verts.push_back({ 0, H, 0,  0, 1, 0,  1.f });
+    int topRing = (int)verts.size();
+    for (int i = 0; i < SEG; ++i)
+    {
+        float a = (float(i) / SEG) * PI2;
+        verts.push_back({ R * cosf(a), H, R * sinf(a),  0, 1, 0,  1.f });
+    }
+    for (int i = 0; i < SEG; ++i)
+    {
+        indices.push_back((uint16_t)topCenter);
+        indices.push_back((uint16_t)(topRing + i));
+        indices.push_back((uint16_t)(topRing + (i + 1) % SEG));
+    }
+
+    m_cylIndexCount = (UINT)indices.size();
+
+    // Vertex buffer
+    D3D11_BUFFER_DESC vbd = {};
+    vbd.ByteWidth = (UINT)(verts.size() * sizeof(CylVertex));
+    vbd.Usage = D3D11_USAGE_IMMUTABLE;
+    vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA vsd = { verts.data(), 0, 0 };
+    dev->CreateBuffer(&vbd, &vsd, m_cylVB.GetAddressOf());
+
+    // Index buffer
+    D3D11_BUFFER_DESC ibd = {};
+    ibd.ByteWidth = (UINT)(indices.size() * sizeof(uint16_t));
+    ibd.Usage = D3D11_USAGE_IMMUTABLE;
+    ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    D3D11_SUBRESOURCE_DATA isd = { indices.data(), 0, 0 };
+    dev->CreateBuffer(&ibd, &isd, m_cylIB.GetAddressOf());
+
+    // Constant buffers
+    D3D11_BUFFER_DESC cbd = {};
+    cbd.Usage = D3D11_USAGE_DYNAMIC;
+    cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+    cbd.ByteWidth = sizeof(CylPerFrame);
+    dev->CreateBuffer(&cbd, nullptr, m_cylCBFrame.GetAddressOf());
+
+    cbd.ByteWidth = sizeof(CylPerInst);
+    dev->CreateBuffer(&cbd, nullptr, m_cylCBInst.GetAddressOf());
+
+    // Rasterizer: solid, no culling (overlay cylinders visible from all angles)
+    D3D11_RASTERIZER_DESC rd = {};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.FrontCounterClockwise = FALSE;
+    rd.DepthBias = 0;
+    rd.DepthBiasClamp = 0.f;
+    rd.SlopeScaledDepthBias = 0.f;
+    rd.DepthClipEnable = TRUE;
+    dev->CreateRasterizerState(&rd, m_cylRS.GetAddressOf());
+
+    // Depth-stencil: depth disabled — cylinders render as 3D overlay, always visible
+    D3D11_DEPTH_STENCIL_DESC dsd = {};
+    dsd.DepthEnable = FALSE;
+    dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    dev->CreateDepthStencilState(&dsd, m_cylDSS.GetAddressOf());
+
+    // Blend: disabled — cylinders are fully opaque
+    D3D11_BLEND_DESC bld = {};
+    bld.RenderTarget[0].BlendEnable = FALSE;
+    bld.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    dev->CreateBlendState(&bld, m_cylBS.GetAddressOf());
+
+    // --- Generate pillar geometry (thin cylinder for medium LOD) ---
+    {
+        constexpr int   P_SEG = 8;
+        constexpr float P_R   = 6.f;
+        constexpr float P_H   = 120.f;
+
+        std::vector<CylVertex> pv;
+        std::vector<uint16_t>  pi;
+
+        int pBase = 0;
+        for (int i = 0; i <= P_SEG; ++i)
+        {
+            float a = (float(i) / P_SEG) * PI2;
+            float cs = cosf(a), sn = sinf(a);
+            pv.push_back({ P_R * cs, 0.f,  P_R * sn,  cs, 0, sn,  0.f });
+            pv.push_back({ P_R * cs, P_H,  P_R * sn,  cs, 0, sn,  1.f });
+        }
+        for (int i = 0; i < P_SEG; ++i)
+        {
+            int b0 = pBase + i * 2, b1 = b0 + 1, b2 = pBase + (i + 1) * 2, b3 = b2 + 1;
+            pi.push_back((uint16_t)b0); pi.push_back((uint16_t)b1); pi.push_back((uint16_t)b2);
+            pi.push_back((uint16_t)b2); pi.push_back((uint16_t)b1); pi.push_back((uint16_t)b3);
+        }
+
+        int pBotC = (int)pv.size();
+        pv.push_back({ 0, 0, 0,  0, -1, 0,  0.f });
+        int pBotR = (int)pv.size();
+        for (int i = 0; i < P_SEG; ++i) {
+            float a = (float(i) / P_SEG) * PI2;
+            pv.push_back({ P_R * cosf(a), 0, P_R * sinf(a),  0, -1, 0,  0.f });
+        }
+        for (int i = 0; i < P_SEG; ++i) {
+            pi.push_back((uint16_t)pBotC);
+            pi.push_back((uint16_t)(pBotR + (i + 1) % P_SEG));
+            pi.push_back((uint16_t)(pBotR + i));
+        }
+
+        int pTopC = (int)pv.size();
+        pv.push_back({ 0, P_H, 0,  0, 1, 0,  1.f });
+        int pTopR = (int)pv.size();
+        for (int i = 0; i < P_SEG; ++i) {
+            float a = (float(i) / P_SEG) * PI2;
+            pv.push_back({ P_R * cosf(a), P_H, P_R * sinf(a),  0, 1, 0,  1.f });
+        }
+        for (int i = 0; i < P_SEG; ++i) {
+            pi.push_back((uint16_t)pTopC);
+            pi.push_back((uint16_t)(pTopR + i));
+            pi.push_back((uint16_t)(pTopR + (i + 1) % P_SEG));
+        }
+
+        m_pillarIndexCount = (UINT)pi.size();
+
+        D3D11_BUFFER_DESC pvbd = {};
+        pvbd.ByteWidth = (UINT)(pv.size() * sizeof(CylVertex));
+        pvbd.Usage = D3D11_USAGE_IMMUTABLE;
+        pvbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA pvsd = { pv.data(), 0, 0 };
+        dev->CreateBuffer(&pvbd, &pvsd, m_pillarVB.GetAddressOf());
+
+        D3D11_BUFFER_DESC pibd = {};
+        pibd.ByteWidth = (UINT)(pi.size() * sizeof(uint16_t));
+        pibd.Usage = D3D11_USAGE_IMMUTABLE;
+        pibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA pisd = { pi.data(), 0, 0 };
+        dev->CreateBuffer(&pibd, &pisd, m_pillarIB.GetAddressOf());
+    }
+}
+
+void ReplayWindow::DrawAgentCylinders()
+{
+    if (!m_showAgentOverlay) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    InitCylinderRenderer();
+    if (!m_cylVS || !m_cylPS) return;
+
+    ID3D11DeviceContext* ctx = m_deviceResources->GetD3DDeviceContext();
+
+    // ---- Save ALL D3D11 state so we don't corrupt MapRenderer / ImGui ----
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>   oldVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>    oldPS;
+    Microsoft::WRL::ComPtr<ID3D11InputLayout>    oldIL;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         oldVB;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         oldIB;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> oldRS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> oldDSS;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>     oldBS;
+    UINT oldStencilRef = 0;
+    float oldBlendFactor[4]; UINT oldSampleMask = 0;
+    UINT oldVBStride = 0, oldVBOffset = 0;
+    DXGI_FORMAT oldIBFormat = DXGI_FORMAT_UNKNOWN; UINT oldIBOffset = 0;
+    D3D11_PRIMITIVE_TOPOLOGY oldTopo = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> oldVSCB0, oldVSCB1, oldPSCB0, oldPSCB1;
+
+    ctx->VSGetShader(oldVS.GetAddressOf(), nullptr, nullptr);
+    ctx->PSGetShader(oldPS.GetAddressOf(), nullptr, nullptr);
+    ctx->IAGetInputLayout(oldIL.GetAddressOf());
+    ctx->IAGetVertexBuffers(0, 1, oldVB.GetAddressOf(), &oldVBStride, &oldVBOffset);
+    ctx->IAGetIndexBuffer(oldIB.GetAddressOf(), &oldIBFormat, &oldIBOffset);
+    ctx->IAGetPrimitiveTopology(&oldTopo);
+    ctx->RSGetState(oldRS.GetAddressOf());
+    ctx->OMGetDepthStencilState(oldDSS.GetAddressOf(), &oldStencilRef);
+    ctx->OMGetBlendState(oldBS.GetAddressOf(), oldBlendFactor, &oldSampleMask);
+    ctx->VSGetConstantBuffers(0, 1, oldVSCB0.GetAddressOf());
+    ctx->VSGetConstantBuffers(1, 1, oldVSCB1.GetAddressOf());
+    ctx->PSGetConstantBuffers(0, 1, oldPSCB0.GetAddressOf());
+    ctx->PSGetConstantBuffers(1, 1, oldPSCB1.GetAddressOf());
+
+    // ---- Set up cylinder pipeline ----
+    Camera* cam = m_mapRenderer->GetCamera();
+    const MapTransform& t = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+
+    XMMATRIX vp = cam->GetView() * cam->GetProj();
+    XMFLOAT3 camP = cam->GetPosition3f();
+
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        ctx->Map(m_cylCBFrame.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        CylPerFrame* cb = (CylPerFrame*)mapped.pData;
+        XMStoreFloat4x4(&cb->viewProj, XMMatrixTranspose(vp));
+        cb->camPos = { camP.x, camP.y, camP.z, 1.f };
+        ctx->Unmap(m_cylCBFrame.Get(), 0);
+    }
+
+    UINT stride = sizeof(CylVertex), offset = 0;
+    ctx->IASetVertexBuffers(0, 1, m_cylVB.GetAddressOf(), &stride, &offset);
+    ctx->IASetIndexBuffer(m_cylIB.Get(), DXGI_FORMAT_R16_UINT, 0);
+    ctx->IASetInputLayout(m_cylIL.Get());
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    ctx->VSSetShader(m_cylVS.Get(), nullptr, 0);
+    ctx->PSSetShader(m_cylPS.Get(), nullptr, 0);
+
+    ID3D11Buffer* cbs[] = { m_cylCBFrame.Get(), m_cylCBInst.Get() };
+    ctx->VSSetConstantBuffers(0, 2, cbs);
+    ctx->PSSetConstantBuffers(0, 2, cbs);
+
+    ctx->RSSetState(m_cylRS.Get());
+    ctx->OMSetDepthStencilState(m_cylDSS.Get(), 0);
+    float blendFactor[4] = { 0, 0, 0, 0 };
+    ctx->OMSetBlendState(m_cylBS.Get(), blendFactor, 0xFFFFFFFF);
+
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+    bool hasBounds = (terrain != nullptr);
+    float bMinX = 0, bMaxX = 0, bMinZ = 0, bMaxZ = 0;
+    if (hasBounds) {
+        bMinX = terrain->m_bounds.map_min_x;
+        bMaxX = terrain->m_bounds.map_max_x;
+        bMinZ = terrain->m_bounds.map_min_z;
+        bMaxZ = terrain->m_bounds.map_max_z;
+    }
+
+    const bool lodOn = m_uiLayout.lodEnabled;
+    const float lodDot = m_uiLayout.lodDotDist;
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+        XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, t);
+
+        if (hasBounds) {
+            pos.x = std::clamp(pos.x, bMinX, bMaxX);
+            pos.z = std::clamp(pos.z, bMinZ, bMaxZ);
+        }
+
+        // LOD: beyond lodDot distance → dot only (skip 3D draw)
+        bool isDot = false;
+        if (lodOn) {
+            float dx = pos.x - camP.x, dy = pos.y - camP.y, dz = pos.z - camP.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            isDot = (dist > lodDot);
+        }
+        ard.currentLOD = isDot ? 0 : 2;  // 0=Dot, 2=Cylinder
+
+        if (isDot) continue;
+
+        float tiltDeg = ard.knockdownTiltAtTime(m_debugTimeline);
+        XMMATRIX world;
+        if (tiltDeg > 0.01f)
+        {
+            float tiltRad = XMConvertToRadians(tiltDeg);
+            world = XMMatrixRotationZ(tiltRad) * XMMatrixTranslation(pos.x, pos.y, pos.z);
+        }
+        else
+        {
+            world = XMMatrixTranslation(pos.x, pos.y, pos.z);
+        }
+
+        XMFLOAT4 color;
+        if (ard.teamId == 1)       color = { 0.290f, 0.565f, 0.847f, 1.f };
+        else if (ard.teamId == 2)  color = { 0.816f, 0.282f, 0.282f, 1.f };
+        else                       color = { 0.7f, 0.7f, 0.7f, 1.f };
+
+        if (ard.isDeadAtTime(m_debugTimeline))
+            color = { color.x * 0.3f, color.y * 0.3f, color.z * 0.3f, 1.f };
+
+        {
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            ctx->Map(m_cylCBInst.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            CylPerInst* cb = (CylPerInst*)mapped.pData;
+            XMStoreFloat4x4(&cb->world, XMMatrixTranspose(world));
+            cb->teamColor = color;
+            ctx->Unmap(m_cylCBInst.Get(), 0);
+        }
+        ctx->DrawIndexed(m_cylIndexCount, 0, 0);
+    }
+
+    // ---- Restore ALL saved D3D11 state ----
+    ctx->VSSetShader(oldVS.Get(), nullptr, 0);
+    ctx->PSSetShader(oldPS.Get(), nullptr, 0);
+    ctx->IASetInputLayout(oldIL.Get());
+    ctx->IASetVertexBuffers(0, 1, oldVB.GetAddressOf(), &oldVBStride, &oldVBOffset);
+    ctx->IASetIndexBuffer(oldIB.Get(), oldIBFormat, oldIBOffset);
+    ctx->IASetPrimitiveTopology(oldTopo);
+    ctx->RSSetState(oldRS.Get());
+    ctx->OMSetDepthStencilState(oldDSS.Get(), oldStencilRef);
+    ctx->OMSetBlendState(oldBS.Get(), oldBlendFactor, oldSampleMask);
+    ID3D11Buffer* restoreVSCBs[] = { oldVSCB0.Get(), oldVSCB1.Get() };
+    ctx->VSSetConstantBuffers(0, 2, restoreVSCBs);
+    ID3D11Buffer* restorePSCBs[] = { oldPSCB0.Get(), oldPSCB1.Get() };
+    ctx->PSSetConstantBuffers(0, 2, restorePSCBs);
+}
+
+// Forward declarations for icon loaders (defined later)
+static ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
+static ImTextureID LoadProfStylized(ID3D11Device* device, int profId);
+static ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
+                                 int skillId,
+                                 std::unordered_map<int, std::string>& index,
+                                 std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache);
+
+// Gradient helpers (used by cast bar rendering + texture building)
+struct GradStop { float pos; uint8_t r, g, b; };
+static float LerpGradChannel(float a, float b, float t) { return a + (b - a) * t; }
+static void SampleGradient(const GradStop* stops, int n, float t,
+                            float& outR, float& outG, float& outB)
+{
+    const GradStop* a = &stops[0];
+    const GradStop* b = &stops[n - 1];
+    for (int i = 0; i < n - 1; ++i)
+    {
+        if (t >= stops[i].pos && t <= stops[i + 1].pos)
+        { a = &stops[i]; b = &stops[i + 1]; break; }
+    }
+    float lt = (b->pos - a->pos > 0.0001f) ? (t - a->pos) / (b->pos - a->pos) : 0.f;
+    outR = LerpGradChannel(a->r, b->r, lt);
+    outG = LerpGradChannel(a->g, b->g, lt);
+    outB = LerpGradChannel(a->b, b->b, lt);
+}
+
 void ReplayWindow::DrawAgentOverlay()
 {
     if (!m_showAgentOverlay) return;
@@ -2347,18 +3058,209 @@ void ReplayWindow::DrawAgentOverlay()
         bool casting = ard.isCastingAtTime(m_debugTimeline);
         bool dead    = ard.isDeadAtTime(m_debugTimeline);
 
-        ImU32 dotColor;
-        if (ard.type == AgentType::Spirit)
-            dotColor = IM_COL32(0x80, 0xFF, 0x80, 0xFF);      // light green
-        else if (ard.type == AgentType::Item)
-            dotColor = IM_COL32(0xFF, 0xA5, 0x00, 0xFF);      // orange
-        else
-            dotColor = GetAgentTeamColor(ard.teamId);
-        dl->AddCircleFilled(ImVec2(scrX, scrY), dotRadius, dotColor);
-        dl->AddCircle(ImVec2(scrX, scrY), dotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+        // Determine if this agent has a 3D representation or needs a 2D dot
+        bool is3DAgent = (ard.type == AgentType::Player || ard.type == AgentType::NPC);
+        bool showDot = !is3DAgent;
 
-        // Dead freeze indicator: black X over the dot
-        if (is.showDeadFreeze && dead &&
+        // For players/NPCs, check LOD: if Dot mode, use stylized profession icon for players
+        if (is3DAgent && ard.currentLOD == 0)
+            showDot = true;
+
+        // For players with cylinders (not dot LOD), draw floating profession icon above cylinder
+        if (ard.type == AgentType::Player && !showDot && ard.primaryProf >= 1)
+        {
+            constexpr float CYL_H = 120.f;
+            XMFLOAT3 abovePos = { pos.x, pos.y + CYL_H + 60.f, pos.z };
+            float abvX, abvY;
+            if (ProjectToScreen(viewProj, vpW, vpH, abovePos, abvX, abvY))
+            {
+                ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+                ImTextureID profTex = LoadProfIcon(dev, ard.primaryProf);
+                if (profTex)
+                {
+                    float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
+                    ImVec2 iconTL(abvX - iconSz * 0.5f, abvY - iconSz * 0.5f);
+                    ImVec2 iconBR(abvX + iconSz * 0.5f, abvY + iconSz * 0.5f);
+                    dl->AddImage(profTex, iconTL, iconBR);
+                }
+            }
+        }
+
+        // Floating skill icon + cast bar above agent (players/NPCs, alive only)
+        if (m_showSkillIcons && !dead && (ard.type == AgentType::Player || ard.type == AgentType::NPC))
+        {
+            auto sv = ard.skillVisualAtTime(m_debugTimeline);
+            if (sv.skillId > 0 && sv.alpha > 0.f)
+            {
+                EnsureSkillIconIndex();
+                ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+                ImTextureID skillTex = LoadSkillIcon(this, dev, sv.skillId,
+                                                     m_skillIconIndex, m_skillIconCache);
+                constexpr float SKILL_WORLD_OFFSET = 250.f;
+                XMFLOAT3 skillPos = { pos.x, pos.y + SKILL_WORLD_OFFSET, pos.z };
+                float skX, skY;
+                if (ProjectToScreen(viewProj, vpW, vpH, skillPos, skX, skY))
+                {
+                    float dpiScale = std::max(1.f, vpH / 1080.f);
+                    ImU8 alpha = (ImU8)(sv.alpha * 255.f);
+                    float iconSz = std::clamp(vpH * 0.028f, 20.f, 32.f);
+
+                    // Skill icon
+                    if (skillTex)
+                    {
+                        ImVec2 iconTL(skX - iconSz * 0.5f, skY - iconSz * 0.5f);
+                        ImVec2 iconBR(skX + iconSz * 0.5f, skY + iconSz * 0.5f);
+                        dl->AddImage(skillTex, iconTL, iconBR,
+                                     ImVec2(0, 0), ImVec2(1, 1),
+                                     IM_COL32(255, 255, 255, alpha));
+                    }
+
+                    // Cast bar (non-instant skills: casting, cancelled, or just completed)
+                    bool showBar = sv.isCasting || sv.cancelled;
+                    if (showBar)
+                    {
+                        float barW = iconSz * 1.6f;
+                        float barH = 6.f  * dpiScale;
+                        float gap  = 2.f  * dpiScale;
+
+                        ImVec2 barMin(skX - barW * 0.5f, skY + iconSz * 0.5f + gap);
+                        ImVec2 barMax(barMin.x + barW, barMin.y + barH);
+                        float pct   = sv.progress;
+                        float midY  = barMin.y + barH * 0.5f;
+
+                        // Background: procedural vertical gradient (black→gray→black)
+                        {
+                            ImU32 bgD = IM_COL32(0, 0, 0, alpha);
+                            ImU32 bgM = IM_COL32(36, 36, 36, alpha);
+                            dl->AddRectFilledMultiColor(barMin, ImVec2(barMax.x, midY),
+                                bgD, bgD, bgM, bgM);
+                            dl->AddRectFilledMultiColor(ImVec2(barMin.x, midY), barMax,
+                                bgM, bgM, bgD, bgD);
+                        }
+
+                        // Fill: procedural horizontal gradient + vertical vignette
+                        float fillW = barW * pct;
+                        if (pct > 0.005f)
+                        {
+                            static const GradStop sGreenH[] = {
+                                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
+                                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
+                                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
+                            };
+                            static const GradStop sOrangeH[] = {
+                                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
+                                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
+                                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
+                                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
+                            };
+                            const GradStop* hS = sv.cancelled ? sOrangeH  : sGreenH;
+                            int              nH = sv.cancelled ? 8         : 6;
+                            float         topV = sv.cancelled ? 0.58f     : 0.55f;
+                            float         botV = sv.cancelled ? 0.52f     : 0.50f;
+
+                            int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
+                            for (int si = 0; si < nSegs; ++si)
+                            {
+                                float u0 = (float)si / nSegs;
+                                float u1 = (float)(si + 1) / nSegs;
+                                float r0, g0, b0, r1, g1, b1;
+                                SampleGradient(hS, nH, u0 * pct, r0, g0, b0);
+                                SampleGradient(hS, nH, u1 * pct, r1, g1, b1);
+
+                                float x0 = barMin.x + fillW * u0;
+                                float x1 = barMin.x + fillW * u1;
+
+                                auto vig = [&](float r, float g, float b, float d) -> ImU32 {
+                                    float m = 1.f - d;
+                                    return IM_COL32((ImU8)(r * m), (ImU8)(g * m), (ImU8)(b * m), alpha);
+                                };
+                                ImU32 tl = vig(r0,g0,b0, topV);
+                                ImU32 tr = vig(r1,g1,b1, topV);
+                                ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, alpha);
+                                ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, alpha);
+                                ImU32 bl = vig(r0,g0,b0, botV);
+                                ImU32 br = vig(r1,g1,b1, botV);
+
+                                dl->AddRectFilledMultiColor(
+                                    ImVec2(x0, barMin.y), ImVec2(x1, midY),
+                                    tl, tr, mr, ml);
+                                dl->AddRectFilledMultiColor(
+                                    ImVec2(x0, midY), ImVec2(x1, barMax.y),
+                                    ml, mr, br, bl);
+                            }
+                        }
+
+                        // Outer glow at leading edge
+                        float fillX = barMin.x + fillW;
+                        if (pct > 0.01f)
+                        {
+                            float gw = 6.f * dpiScale;
+                            ImU8 glA1 = (ImU8)(140 * sv.alpha);
+                            ImU8 glA2 = (ImU8)( 60 * sv.alpha);
+                            ImU32 gc1, gc2;
+                            if (sv.cancelled)
+                            {
+                                gc1 = IM_COL32(192,120,  0, glA1);
+                                gc2 = IM_COL32(192,120,  0, glA2);
+                            }
+                            else
+                            {
+                                gc1 = IM_COL32( 96,208, 32, glA1);
+                                gc2 = IM_COL32( 96,208, 32, glA2);
+                            }
+                            dl->AddRectFilled(
+                                ImVec2(fillX - gw * 0.5f, barMin.y),
+                                ImVec2(fillX + gw * 0.5f, barMax.y), gc1);
+                            dl->AddRectFilled(
+                                ImVec2(fillX - gw, barMin.y - 1.f * dpiScale),
+                                ImVec2(fillX + gw, barMax.y + 1.f * dpiScale), gc2);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showDot)
+        {
+            // For players in dot LOD, use stylized profession icon instead of plain dot
+            bool usedProfIcon = false;
+            if (ard.type == AgentType::Player && ard.primaryProf >= 1)
+            {
+                ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+                ImTextureID stylTex = LoadProfStylized(dev, ard.primaryProf);
+                if (stylTex)
+                {
+                    float iconSz = std::clamp(vpH * 0.020f, 12.f, 22.f);
+                    ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - iconSz * 0.5f);
+                    ImVec2 iconBR(scrX + iconSz * 0.5f, scrY + iconSz * 0.5f);
+                    dl->AddImage(stylTex, iconTL, iconBR);
+                    usedProfIcon = true;
+                }
+            }
+            if (!usedProfIcon)
+            {
+                bool isSpecialGadget = (ard.categoryName == "Repair Kit" ||
+                                        ard.categoryName == "Tower Flag Stand" ||
+                                        ard.categoryName == "Obelisk Flag Stand" ||
+                                        ard.categoryName == "Resurrection Shrine" ||
+                                        ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                        ard.categoryName == "Lever");
+                ImU32 dotColor;
+                if (isSpecialGadget)
+                    dotColor = IM_COL32(220, 200, 120, 255);
+                else if (ard.type == AgentType::Spirit)
+                    dotColor = IM_COL32(0x80, 0xFF, 0x80, 0xFF);
+                else if (ard.type == AgentType::Item)
+                    dotColor = IM_COL32(0xFF, 0xA5, 0x00, 0xFF);
+                else
+                    dotColor = GetAgentTeamColor(ard.teamId);
+                dl->AddCircleFilled(ImVec2(scrX, scrY), dotRadius, dotColor);
+                dl->AddCircle(ImVec2(scrX, scrY), dotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+            }
+        }
+
+        // Dead freeze indicator: black X over the dot (dot-mode agents only)
+        if (showDot && is.showDeadFreeze && dead &&
             ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
         {
             float r = dotRadius + 2.f;
@@ -2368,23 +3270,80 @@ void ReplayWindow::DrawAgentOverlay()
                         IM_COL32(0, 0, 0, 240), 2.f);
         }
 
-        // Casting freeze indicator: purple ring around frozen agents
-        if (is.showCastingFreeze && casting && !dead &&
+        // Casting freeze indicator: purple ring (dot-mode agents only)
+        if (showDot && is.showCastingFreeze && casting && !dead &&
             ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
         {
             dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 3.f,
                           IM_COL32(180, 60, 255, 220), 0, 2.f);
         }
 
-        // Follow-camera highlight for the currently followed agent
+        // Neon-green dashed ring + glow at cylinder base for followed agent (counter-clockwise spin)
         if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId)
         {
-            dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 5.f,
-                          IM_COL32(77, 142, 240, 200), 0, 2.5f);
+            constexpr int   NUM_DASHES = 16;
+            constexpr float DASH_FRAC  = 0.70f;   // 70% visible, 30% gap
+            constexpr float CYL_R      = 30.f;
+            constexpr float RING_R     = CYL_R + 4.f;
+            constexpr float PI2        = 6.2831853f;
+            constexpr int   PTS_PER_DASH = 8;      // smooth arc per dash
+            const ImU32 ringCol = IM_COL32(0, 255, 120, 255);
+            const ImU32 glowCol = IM_COL32(0, 255, 120, 80);
+
+            float baseY = pos.y + 0.05f;
+            float spinOffset = -fmodf((float)ImGui::GetTime() / 15.f, 1.f) * PI2;
+            float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.5f);
+            float pulseR = RING_R + pulse * 3.f;
+            ImU8  pulseA = (ImU8)(200 + (int)(55.f * pulse));
+
+            auto projectRingPt = [&](float angle, float r, float& ox, float& oy) -> bool {
+                XMFLOAT3 wp = { pos.x + r * cosf(angle), baseY, pos.z + r * sinf(angle) };
+                return ProjectToScreen(viewProj, vpW, vpH, wp, ox, oy);
+            };
+
+            // Glow layers (pulsating)
+            for (int g = 1; g <= 3; ++g)
+            {
+                float gr = pulseR + g * 3.f;
+                ImU32 gc = IM_COL32(0, 255, 120, (ImU8)((int)(80 * (0.5f + 0.5f * pulse)) / g));
+                float prevX, prevY;
+                bool first = true;
+                for (int i = 0; i <= 64; ++i)
+                {
+                    float a = (float(i) / 64) * PI2;
+                    float rx, ry;
+                    if (!projectRingPt(a, gr, rx, ry)) { first = true; continue; }
+                    if (!first)
+                        dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), gc, 2.f);
+                    prevX = rx; prevY = ry;
+                    first = false;
+                }
+            }
+
+            // Dashed ring with counter-clockwise rotation (pulsating)
+            ImU32 pulseRingCol = IM_COL32(0, 255, 120, pulseA);
+            float dashArc = (PI2 / NUM_DASHES) * DASH_FRAC;
+            float segStep = PI2 / NUM_DASHES;
+            for (int d = 0; d < NUM_DASHES; ++d)
+            {
+                float dashStart = spinOffset + d * segStep;
+                float prevX, prevY;
+                bool first = true;
+                for (int p = 0; p <= PTS_PER_DASH; ++p)
+                {
+                    float a = dashStart + (float(p) / PTS_PER_DASH) * dashArc;
+                    float rx, ry;
+                    if (!projectRingPt(a, pulseR, rx, ry)) { first = true; continue; }
+                    if (!first)
+                        dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), pulseRingCol, 2.5f);
+                    prevX = rx; prevY = ry;
+                    first = false;
+                }
+            }
         }
 
-        // Hover detection + click-to-follow (only for Players and NPCs)
-        if (canClickAgents && (ard.type == AgentType::Player || ard.type == AgentType::NPC))
+        // Hover detection + click-to-follow
+        if (canClickAgents)
         {
             float dx = mousePos.x - scrX;
             float dy = mousePos.y - scrY;
@@ -2403,8 +3362,26 @@ void ReplayWindow::DrawAgentOverlay()
         ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
         float lx = scrX - textSize.x * 0.5f;
         float ly = scrY + dotRadius + labelOffY;
-        dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
-        dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+
+        bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
+                               ard.categoryName == "Tower Flag Stand" ||
+                               ard.categoryName == "Obelisk Flag Stand" ||
+                               ard.categoryName == "Resurrection Shrine" ||
+                               ard.categoryName == "Dwarven Resurrection Shrine" ||
+                               ard.categoryName == "Lever");
+        float pad = 2.f;
+        dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                          ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
+                          IM_COL32(0, 0, 0, 13), 3.f);
+        if (isSpecialLabel)
+        {
+            dl->AddText(ImVec2(lx, ly), IM_COL32(245, 228, 180, 255), label.c_str());
+        }
+        else
+        {
+            dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
+            dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+        }
     }
 }
 
@@ -2467,6 +3444,16 @@ void ReplayWindow::DrawFlags()
                 float offsetY = iconSz * 0.8f;
                 ImVec2 iconTL(standScrX - iconSz * 0.5f, standScrY - offsetY - iconSz);
                 ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+
+                // Subtle pulsing glow behind the captured flag
+                ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
+                float glowRadius = iconSz * 0.75f;
+                float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
+                ImU32 glowCol = (standTeam == 0)
+                    ? IM_COL32(60, 130, 255, (int)(50 * pulse))
+                    : IM_COL32(255, 60, 50,  (int)(50 * pulse));
+                dl->AddCircleFilled(center, glowRadius, glowCol, 32);
+
                 dl->AddImage(standTex, iconTL, iconBR);
             }
         }
@@ -2499,7 +3486,7 @@ void ReplayWindow::DrawFlags()
 
                 // After this team captures (jumbo CAPTURED_TOWER), skip carrier
                 // detection for 5s — the player just delivered, weapon_type lags
-                if (standTeam == ti && (m_debugTimeline - standCaptureTime) < 5.f)
+                if (standTeam == ti && (m_debugTimeline - standCaptureTime) < 1.f)
                     continue;
 
                 float cx, cy, cz;
@@ -2629,6 +3616,464 @@ void ReplayWindow::DrawFlags()
             dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), locLabel);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Skill Lasers: animated dashed line from caster → target
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawSkillLasers()
+{
+    if (!m_showSkillLasers) return;
+    if (!m_skillUseTimelineBuilt) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    auto vp = m_deviceResources->GetScreenViewport();
+    float vpW = vp.Width, vpH = vp.Height;
+    const auto& t = m_replayCtx.mapTransform;
+
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    float dpi = std::max(1.f, vpH / 1080.f);
+    float curTime = (float)ImGui::GetTime();
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+        if (ard.isDeadAtTime(m_debugTimeline)) continue;
+
+        auto laser = ard.skillLaserAtTime(m_debugTimeline);
+        if (laser.targetId <= 0 || laser.alpha <= 0.f) continue;
+
+        auto tit = m_replayCtx.agents.find(laser.targetId);
+        if (tit == m_replayCtx.agents.end()) continue;
+        auto& targ = tit->second;
+
+        // Caster position
+        float cx, cy, cz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, cx, cy, cz);
+        XMFLOAT3 casterWorld = ApplyMapTransformToPos(cx, cy, cz, t);
+        casterWorld.y += 60.f;
+
+        float cScrX, cScrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, casterWorld, cScrX, cScrY)) continue;
+
+        // Target position
+        float txp, typ, tzp;
+        InterpolateAgentPosition(targ, m_debugTimeline, is, txp, typ, tzp);
+        XMFLOAT3 targetWorld = ApplyMapTransformToPos(txp, typ, tzp, t);
+        targetWorld.y += 60.f;
+
+        float tScrX, tScrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, targetWorld, tScrX, tScrY)) continue;
+
+        // LOD check: skip if caster is far and in dot LOD
+        if (m_uiLayout.lodEnabled && ard.currentLOD == 0)
+        {
+            XMFLOAT3 camPos;
+            XMStoreFloat3(&camPos, cam->GetPosition());
+            float dx = casterWorld.x - camPos.x;
+            float dy = casterWorld.y - camPos.y;
+            float dz2 = casterWorld.z - camPos.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz2 * dz2);
+            if (dist > m_uiLayout.lodDotDist * 1.5f) continue;
+        }
+
+        // Determine ally vs enemy
+        bool isEnemy = (ard.teamId != targ.teamId);
+        ImU32 laserCol, glowCol;
+        int lR, lG, lB;
+        if (isEnemy)
+        {
+            lR = 255; lG = 60; lB = 60;
+            laserCol = IM_COL32(255, 60, 60, (ImU8)(255 * laser.alpha));
+            glowCol  = IM_COL32(255, 60, 60, (ImU8)(120 * laser.alpha));
+        }
+        else
+        {
+            lR = 60; lG = 255; lB = 120;
+            laserCol = IM_COL32(60, 255, 120, (ImU8)(255 * laser.alpha));
+            glowCol  = IM_COL32(60, 255, 120, (ImU8)(120 * laser.alpha));
+        }
+
+        ImVec2 A(cScrX, cScrY), B(tScrX, tScrY);
+        float lineLen = sqrtf((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
+        if (lineLen < 2.f) continue;
+
+        ImVec2 dir((B.x - A.x) / lineLen, (B.y - A.y) / lineLen);
+
+        // Glow layers (continuous line behind dashes)
+        for (int g = 1; g <= 3; ++g)
+        {
+            float thick = (1.0f + g * 0.8f) * dpi;
+            ImU32 gc = IM_COL32(lR, lG, lB, (ImU8)(std::max(0.f, 30.f / g * laser.alpha)));
+            dl->AddLine(A, B, gc, thick);
+        }
+
+        // Flowing dashes (caster → target direction)
+        float dashLen = 14.f * dpi;
+        float gapLen  = 8.f * dpi;
+        float period  = dashLen + gapLen;
+        float anim    = fmodf(curTime * 0.8f, 1.f);
+        float offset  = anim * period;
+
+        for (float d = offset - period; d < lineLen; d += period)
+        {
+            float s0 = std::clamp(d, 0.f, lineLen);
+            float s1 = std::clamp(d + dashLen, 0.f, lineLen);
+            if (s1 - s0 < 1.f) continue;
+            ImVec2 p0(A.x + dir.x * s0, A.y + dir.y * s0);
+            ImVec2 p1(A.x + dir.x * s1, A.y + dir.y * s1);
+            dl->AddLine(p0, p1, laserCol, 1.2f * dpi);
+        }
+
+        // Arrowhead at target
+        float arrowSz = 10.f * dpi;
+        ImVec2 perp(-dir.y, dir.x);
+        ImVec2 tip = B;
+        ImVec2 left(B.x - dir.x * arrowSz + perp.x * arrowSz * 0.6f,
+                     B.y - dir.y * arrowSz + perp.y * arrowSz * 0.6f);
+        ImVec2 right(B.x - dir.x * arrowSz - perp.x * arrowSz * 0.6f,
+                      B.y - dir.y * arrowSz - perp.y * arrowSz * 0.6f);
+        dl->AddTriangleFilled(tip, left, right, laserCol);
+
+        // Breathing target highlight ring at cylinder base (3D projected)
+        constexpr float CYL_R       = 30.f;
+        constexpr float RING_R      = CYL_R + 5.f;
+        constexpr int   RING_SEGS   = 48;
+        constexpr float DASH_RATIO  = 0.35f;
+        constexpr float PI2         = 6.2831853f;
+
+        float pulse = 0.5f + 0.5f * sinf(curTime * 4.f);
+        ImU32 ringCol = IM_COL32(
+            (int)(lR * (0.7f + 0.3f * pulse)),
+            (int)(lG * (0.7f + 0.3f * pulse)),
+            (int)(lB * (0.7f + 0.3f * pulse)),
+            (ImU8)(220 * laser.alpha));
+
+        // Base of the cylinder (targetWorld.y was offset +60, remove it and add small lift)
+        float baseY = targetWorld.y - 60.f + 0.05f;
+
+        for (int i = 0; i < RING_SEGS; ++i)
+        {
+            float a0 = (float(i) / RING_SEGS) * PI2;
+            float a1 = (float(i + 1) / RING_SEGS) * PI2;
+            float mid = (a0 + a1) * 0.5f;
+            float sa = a0 + (mid - a0) * (1.f - DASH_RATIO);
+            float ea = mid + (a1 - mid) * DASH_RATIO;
+
+            XMFLOAT3 wp0 = { targetWorld.x + RING_R * cosf(sa), baseY, targetWorld.z + RING_R * sinf(sa) };
+            XMFLOAT3 wp1 = { targetWorld.x + RING_R * cosf(ea), baseY, targetWorld.z + RING_R * sinf(ea) };
+            float sx0, sy0, sx1, sy1;
+            if (ProjectToScreen(viewProj, vpW, vpH, wp0, sx0, sy0) &&
+                ProjectToScreen(viewProj, vpW, vpH, wp1, sx1, sy1))
+            {
+                dl->AddLine(ImVec2(sx0, sy0), ImVec2(sx1, sy1), ringCol, 1.5f * dpi);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scene overlays: Match Timer, Jumbo Messages, Morale Boost Timers
+// ---------------------------------------------------------------------------
+
+static float sVw(float pct) { return ImGui::GetMainViewport()->Size.x * pct; }
+static float sVh(float pct) { return ImGui::GetMainViewport()->Size.y * pct; }
+
+static void FormatMMSS(char* buf, size_t bufSz, float seconds)
+{
+    int s = std::max(0, static_cast<int>(seconds));
+    int m = s / 60;
+    int ss = s % 60;
+    snprintf(buf, bufSz, "%02d:%02d", m, ss);
+}
+
+static int JumboPartyToTeam(int partyValue)
+{
+    if (partyValue == 1635021873) return 1;
+    if (partyValue == 1635021874) return 2;
+    return 0;
+}
+
+static const char* JumboMessageDisplayText(const std::string& msgType, int team)
+{
+    const char* side = (team == 1) ? "Blue" : "Red";
+    static char buf[128];
+    if      (msgType == "BASE_UNDER_ATTACK")       snprintf(buf, sizeof(buf), "%s Base Under Attack",       side);
+    else if (msgType == "GUILD_LORD_UNDER_ATTACK")  snprintf(buf, sizeof(buf), "%s Guild Lord Under Attack",  side);
+    else if (msgType == "CAPTURED_SHRINE")          snprintf(buf, sizeof(buf), "%s Captured Shrine",          side);
+    else if (msgType == "CAPTURED_TOWER")           snprintf(buf, sizeof(buf), "%s Captured Tower",           side);
+    else if (msgType == "PARTY_DEFEATED")           snprintf(buf, sizeof(buf), "%s Party Defeated",           side);
+    else if (msgType == "MORALE_BOOST")             snprintf(buf, sizeof(buf), "%s Morale Boost",             side);
+    else if (msgType == "VICTORY")                  snprintf(buf, sizeof(buf), "%s Victory!",                 side);
+    else if (msgType == "FLAWLESS_VICTORY")         snprintf(buf, sizeof(buf), "%s Flawless Victory!",        side);
+    else                                            snprintf(buf, sizeof(buf), "%s %s",                       side, msgType.c_str());
+    return buf;
+}
+
+// Helper: handle drag mode for an overlay element.
+// Returns true if currently being dragged; updates the fraction-based position.
+bool ReplayWindow::HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
+                                      ImVec2 boxTL, ImVec2 boxBR)
+{
+    if (m_draggingUIElement != elementIdx) return false;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    dl->AddRect(ImVec2(boxTL.x - 2, boxTL.y - 2), ImVec2(boxBR.x + 2, boxBR.y + 2),
+                IM_COL32(0xF5, 0xE4, 0x5A, 180), 4.f, 0, 2.f);
+    dl->AddRectFilled(boxTL, boxBR, IM_COL32(0xF5, 0xE4, 0x5A, 30), 4.f);
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+    {
+        ImVec2 delta = ImGui::GetIO().MouseDelta;
+        *fracX += delta.x / vp->Size.x;
+        *fracY += delta.y / vp->Size.y;
+        *fracX = std::clamp(*fracX, 0.f, 1.f);
+        *fracY = std::clamp(*fracY, 0.f, 1.f);
+    }
+
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+    {
+        m_draggingUIElement = -1;
+        SaveUILayout();
+    }
+    return true;
+}
+
+void ReplayWindow::DrawMatchTimer()
+{
+    ImFont* font = m_latoRegular ? m_latoRegular : ImGui::GetFont();
+    float fontSize = font->FontSize;
+
+    float curTime = m_debugTimeline;
+    float matchTime = curTime - m_matchStartOffset;
+
+    bool isCountdown = matchTime < 0.f;
+    float absTime = fabsf(matchTime);
+    FormatMMSS(m_timerBuf, sizeof(m_timerBuf), absTime);
+
+    const char* label = isCountdown ? "Time to start:" : "Time Elapsed:";
+
+    float labelFs = fontSize;
+    float timeFs  = fontSize;
+
+    ImVec2 labelSize = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, label);
+    ImVec2 timeSize  = font->CalcTextSizeA(timeFs, FLT_MAX, 0.f, m_timerBuf);
+    float boxW = std::max(labelSize.x, timeSize.x);
+    float lineH = labelFs + 2.f;
+    float boxH = lineH * 2.f;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float posX = m_uiLayout.useCustom ? m_uiLayout.timerX : 0.50f;
+    float posY = m_uiLayout.useCustom ? m_uiLayout.timerY : 0.12f;
+    float cx   = vp->Pos.x + vp->Size.x * posX;
+    float topY = vp->Pos.y + vp->Size.y * posY;
+
+    float padX, padY;
+    if (isCountdown) { padX = 12.f; padY = 10.f; }
+    else             { padX = 8.f;  padY = 4.f; }
+
+    ImVec2 boxTL(cx - boxW * 0.5f - padX, topY);
+    ImVec2 boxBR(cx + boxW * 0.5f + padX, topY + boxH + padY * 2.f);
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+    if (isCountdown)
+    {
+        dl->AddRectFilled(boxTL, boxBR, IM_COL32(0, 0, 0, 204), 8.f);
+        dl->AddRect(boxTL, boxBR, IM_COL32(0xB7, 0xB8, 0xB3, 0xFF), 8.f, 0, 1.f);
+    }
+
+    ImU32 goldCol = IM_COL32(0xF5, 0xE4, 0xB4, 0xFF);
+    ImU32 shA     = IM_COL32(0, 0, 0, 204);
+    ImU32 shB     = IM_COL32(0, 0, 0, 230);
+
+    auto drawShadowedText = [&](ImFont* f, float fs, ImVec2 pos, ImU32 col, const char* txt)
+    {
+        dl->AddText(f, fs, ImVec2(pos.x, pos.y + 1), shA, txt);
+        dl->AddText(f, fs, ImVec2(pos.x, pos.y + 1), shB, txt);
+        dl->AddText(f, fs, pos, col, txt);
+    };
+
+    float labelX = cx - labelSize.x * 0.5f;
+    float labelY = boxTL.y + padY;
+    drawShadowedText(font, labelFs, ImVec2(labelX, labelY), goldCol, label);
+
+    float timeX = cx - timeSize.x * 0.5f;
+    float timeY = labelY + lineH;
+    drawShadowedText(font, timeFs, ImVec2(timeX, timeY), goldCol, m_timerBuf);
+
+    HandleOverlayDrag(3, &m_uiLayout.timerX, &m_uiLayout.timerY, boxTL, boxBR);
+}
+
+void ReplayWindow::DrawJumboMessages()
+{
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float posX = m_uiLayout.useCustom ? m_uiLayout.jumboX : 0.50f;
+    float posY = m_uiLayout.useCustom ? m_uiLayout.jumboY : 0.30f;
+
+    // Show drag preview even without an active jumbo message
+    if (m_draggingUIElement == 0)
+    {
+        ImFont* font = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
+        float fontSize = font->FontSize;
+        const char* preview = "Blue Captured Tower";
+        ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, preview);
+
+        float cx = vp->Pos.x + vp->Size.x * posX;
+        float ty = vp->Pos.y + vp->Size.y * posY;
+        float tx = cx - textSize.x * 0.5f;
+
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->AddText(font, fontSize, ImVec2(tx, ty + 1), IM_COL32(0, 0, 0, 150), preview);
+        dl->AddText(font, fontSize, ImVec2(tx, ty), IM_COL32(0x99, 0xCB, 0xFD, 180), preview);
+
+        ImVec2 boxTL(tx - 4, ty - 4);
+        ImVec2 boxBR(tx + textSize.x + 4, ty + textSize.y + 4);
+        HandleOverlayDrag(0, &m_uiLayout.jumboX, &m_uiLayout.jumboY, boxTL, boxBR);
+        return;
+    }
+
+    if (!m_replayCtx.stocLoaded) return;
+
+    const auto& jumbos = m_replayCtx.stocData.jumbo;
+    if (jumbos.empty()) return;
+
+    float curTime = m_debugTimeline;
+
+    const JumboMessageEvent* best = nullptr;
+    float bestAge = 999.f;
+    for (auto& ev : jumbos)
+    {
+        float age = curTime - ev.time;
+        if (age < 0.f || age > 6.f) continue;
+        if (!best || ev.time > best->time)
+        {
+            best = &ev;
+            bestAge = age;
+        }
+    }
+
+    if (!best) return;
+
+    float alpha = 1.f;
+    if (bestAge > 5.f)
+        alpha = std::clamp(6.f - bestAge, 0.f, 1.f);
+    if (alpha <= 0.f) return;
+
+    int team = JumboPartyToTeam(best->party_value);
+    const char* text = JumboMessageDisplayText(best->message, team);
+
+    int a = static_cast<int>(alpha * 255);
+    ImU32 teamCol;
+    if (team == 1)      teamCol = IM_COL32(0x99, 0xCB, 0xFD, a);
+    else if (team == 2) teamCol = IM_COL32(0xFF, 0x99, 0x9A, a);
+    else                teamCol = IM_COL32(0xFF, 0xFF, 0xFF, a);
+
+    ImFont* font = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
+    float fontSize = font->FontSize;
+    ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, text);
+
+    float cx = vp->Pos.x + vp->Size.x * posX;
+    float topY = vp->Pos.y + vp->Size.y * posY;
+
+    float tx = cx - textSize.x * 0.5f;
+    float ty = topY;
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(alpha * 230));
+    dl->AddText(font, fontSize, ImVec2(tx, ty + 1), shadow, text);
+    dl->AddText(font, fontSize, ImVec2(tx, ty), teamCol, text);
+}
+
+void ReplayWindow::DrawMoraleBoostTimers()
+{
+    if (m_captureEvents.empty() && m_draggingUIElement != 1 && m_draggingUIElement != 2)
+        return;
+
+    float curTime = m_debugTimeline;
+
+    float lastCapTime[2] = { -1.f, -1.f };
+    int   lastCapTeam = -1;
+
+    for (auto& [t, teamIdx] : m_captureEvents)
+    {
+        if (t > curTime) break;
+        lastCapTime[teamIdx] = t;
+        lastCapTeam = teamIdx;
+    }
+
+    ImFont* font = m_latoBold ? m_latoBold : ImGui::GetFont();
+    float fontSize = font->FontSize;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+
+    ImU32 shA     = IM_COL32(0, 0, 0, 204);
+    ImU32 shB     = IM_COL32(0, 0, 0, 230);
+
+    auto drawShadowed = [&](ImVec2 pos, ImU32 col, const char* txt)
+    {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 2), shA, txt);
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1), shB, txt);
+        dl->AddText(font, fontSize, pos, col, txt);
+    };
+
+    auto DrawOneMorale = [&](int teamIdx01, int dragIdx, float* fracX, float* fracY,
+                             float defaultX, float defaultY)
+    {
+        int team = teamIdx01 + 1;
+        float px = m_uiLayout.useCustom ? *fracX : defaultX;
+        float py = m_uiLayout.useCustom ? *fracY : defaultY;
+
+        bool hasCap = (lastCapTeam >= 0 && lastCapTeam == teamIdx01);
+
+        if (!hasCap && m_draggingUIElement != dragIdx)
+            return;
+
+        const char* teamLabel = (team == 1) ? "Blue Morale Boost" : "Red Morale Boost";
+        char buf[32] = "02:00";
+
+        if (hasCap)
+        {
+            float secondsSince = curTime - lastCapTime[teamIdx01];
+            if (secondsSince < 0.f && m_draggingUIElement != dragIdx) return;
+            int cyclePos = static_cast<int>(floorf(std::max(0.f, secondsSince))) % 120;
+            int remaining = 120 - cyclePos;
+            FormatMMSS(buf, sizeof(buf), static_cast<float>(remaining));
+        }
+
+        ImVec2 labelSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, teamLabel);
+        ImVec2 timerSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, buf);
+        float blockW = std::max(labelSize.x, timerSize.x);
+        float lineH = fontSize + 4.f;
+
+        float anchorX = vp->Pos.x + vp->Size.x * px;
+        float anchorY = vp->Pos.y + vp->Size.y * py;
+        float x = anchorX - blockW * 0.5f;
+
+        ImU32 teamCol = (team == 1) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
+                                    : IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+        ImU32 goldCol = IM_COL32(0xF5, 0xE4, 0xB4, 0xFF);
+
+        float labelX = x + (blockW - labelSize.x) * 0.5f;
+        float timerX = x + (blockW - timerSize.x) * 0.5f;
+
+        drawShadowed(ImVec2(labelX, anchorY), teamCol, teamLabel);
+        drawShadowed(ImVec2(timerX, anchorY + lineH), goldCol, buf);
+
+        ImVec2 boxTL(x - 2, anchorY - 2);
+        ImVec2 boxBR(x + blockW + 2, anchorY + lineH * 2 + 2);
+        HandleOverlayDrag(dragIdx, fracX, fracY, boxTL, boxBR);
+    };
+
+    DrawOneMorale(0, 1, &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 0.65f, 0.22f);
+    DrawOneMorale(1, 2, &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  0.35f, 0.22f);
 }
 
 // ---------------------------------------------------------------------------
@@ -2922,6 +4367,106 @@ void ReplayWindow::DrawShortcutPreferences()
 }
 
 // ---------------------------------------------------------------------------
+// Interface Preferences modal — reposition scene overlays
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawInterfacePreferences()
+{
+    ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
+    if (!ImGui::BeginPopupModal("Interface Preferences", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::Text("Scene Overlay Positions");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(stored as viewport %%)");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    bool changed = false;
+
+    if (ImGui::Checkbox("Enable custom positions", &m_uiLayout.useCustom))
+        changed = true;
+
+    ImGui::Spacing();
+
+    if (!m_uiLayout.useCustom)
+        ImGui::BeginDisabled();
+
+    auto PositionRow = [&](const char* label, float* px, float* py, int dragIdx)
+    {
+        ImGui::PushID(label);
+        float vals[2] = { *px * 100.f, *py * 100.f };
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::DragFloat2("##pos", vals, 0.1f, 0.f, 100.f, "%.1f%%"))
+        {
+            *px = vals[0] / 100.f;
+            *py = vals[1] / 100.f;
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Move"))
+        {
+            m_draggingUIElement = dragIdx;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::PopID();
+    };
+
+    PositionRow("Match Timer",      &m_uiLayout.timerX,  &m_uiLayout.timerY,  3);
+    PositionRow("Jumbo Message",    &m_uiLayout.jumboX,  &m_uiLayout.jumboY,  0);
+    PositionRow("Morale (Blue)",    &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 1);
+    PositionRow("Morale (Red)",     &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  2);
+
+    if (!m_uiLayout.useCustom)
+        ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Text("Agent LOD System");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(distance-based detail levels)");
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Enable LOD system", &m_uiLayout.lodEnabled))
+        changed = true;
+
+    if (!m_uiLayout.lodEnabled)
+        ImGui::BeginDisabled();
+
+    ImGui::SetNextItemWidth(200);
+    if (ImGui::SliderFloat("Cylinder distance", &m_uiLayout.lodDotDist, 1000.f, 10000.f, "%.0f"))
+        changed = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(beyond -> dots)");
+
+    if (!m_uiLayout.lodEnabled)
+        ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Reset to Defaults", ImVec2(160, 0)))
+    {
+        m_uiLayout = UILayoutConfig{};
+        changed = true;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(120, 0)))
+        ImGui::CloseCurrentPopup();
+
+    if (changed)
+        SaveUILayout();
+
+    ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------------------
 // Timeline Controller — fixed bottom playback bar
 // Styled to match the GW Observer design system:
 //   bg1 #111213  bg2 #161718  bg3 #1c1d1e  bg4 #212324
@@ -3047,7 +4592,19 @@ void ReplayWindow::DrawTimelineController()
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float vpW = vp->Size.x;
     const float vpH = vp->Size.y;
-    const float barH = std::clamp(vpH * 0.038f, 28.0f, 40.0f);
+
+    const float sf = 1.f;
+
+    const float barH     = 76.f;
+    const float PAD      = 12.f;
+    const float PADY     = 6.f;
+    const float TRKH     = 4.f;
+    const float BTN_H    = 30.f;
+    const float PLAY_SZ  = 36.f;
+    const float BGAP     = 2.f;
+    const float GDIV     = 10.f;
+    const float ROW2_OFS = 28.f;
+    const float d2r      = IM_PI / 180.f;
 
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + vpH - barH));
     ImGui::SetNextWindowSize(ImVec2(vpW, barH));
@@ -3058,227 +4615,403 @@ void ReplayWindow::DrawTimelineController()
         ImGuiWindowFlags_NoCollapse      | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoBackground    | ImGuiWindowFlags_NoFocusOnAppearing;
 
-    const float spacing = std::max(vpW * 0.003f, 2.0f);
-    const float pad     = std::max(vpW * 0.006f, 8.0f);
-
-    // Design system colors
-    const ImU32 cBg1   = IM_COL32(17,  18,  19,  230);
-    const ImU32 cLine2 = IM_COL32(46,  47,  48,  255);
-    const ImU32 cBg3   = IM_COL32(28,  29,  30,  255);
-    const ImU32 cT1    = IM_COL32(226, 227, 228, 255);
-    const ImU32 cT2    = IM_COL32(144, 146, 148, 255);
-    const ImU32 cT3    = IM_COL32(85,  87,  90,  255);
-    const ImU32 cAcc   = IM_COL32(77,  142, 240, 255);
-    const ImU32 cAccDim= IM_COL32(77,  142, 240, 31);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(spacing, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  3.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,   ImVec2(6, 2));
-
-    ImGui::PushStyleColor(ImGuiCol_Text,           ImVec4(0.56f, 0.57f, 0.58f, 1.0f));  // t2
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.09f, 0.09f, 0.09f, 1.0f));  // bg2
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));  // bg3
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.13f, 0.14f, 0.14f, 1.0f));  // bg4
-    ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.07f, 0.07f, 0.07f, 0.97f)); // bg1
-    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.18f, 0.18f, 0.19f, 1.0f));  // line2
-    ImGui::PushStyleColor(ImGuiCol_Header,         ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.13f, 0.14f, 0.14f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.07f, 0.06f, 0.04f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.78f, 0.66f, 0.29f, 0.08f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.78f, 0.66f, 0.29f, 0.20f));
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.60f, 0.54f, 0.41f, 1.0f));
 
     if (!ImGui::Begin("PlaybackBar", nullptr, kBarFlags))
     {
         ImGui::End();
-        ImGui::PopStyleColor(8);
-        ImGui::PopStyleVar(4);
+        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar();
         return;
     }
 
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 wPos = ImGui::GetWindowPos();
-    ImVec2 wEnd(wPos.x + vpW, wPos.y + barH);
+    ImDrawList* dl   = ImGui::GetWindowDrawList();
+    const ImVec2 O   = ImGui::GetWindowPos();
+    ImFont* font     = ImGui::GetFont();
+    const float fs   = font->FontSize;
+    const float fsSm = fs * 0.82f;
 
-    dl->AddRectFilled(wPos, wEnd, cBg1);
-    dl->AddLine(wPos, ImVec2(wEnd.x, wPos.y), cLine2, 1.0f);
+    // ── GW1 Dark-Glass Gold Palette ──────────────────────────────────────
+    const ImU32 cBg         = IM_COL32(  8,   9,  12, 140);
+    const ImU32 cGlass      = IM_COL32( 18,  16,  10, 150);
+    const ImU32 cBorder     = IM_COL32(160, 120,  40,  46);
+    const ImU32 cBorderHi   = IM_COL32(200, 168,  75,  82);
+    const ImU32 cBorderGlow = IM_COL32(200, 168,  75, 140);
+    const ImU32 cGold       = IM_COL32(200, 168,  75, 255);
+    const ImU32 cGoldBright = IM_COL32(226, 194, 106, 255);
+    const ImU32 cGoldDim    = IM_COL32(122,  96,  32, 255);
+    const ImU32 cGoldFill   = IM_COL32(200, 168,  75,  20);
+    const ImU32 cText       = IM_COL32(232, 223, 200, 255);
+    const ImU32 cTextMid    = IM_COL32(154, 138, 104, 255);
+    const ImU32 cTextDim    = IM_COL32(120, 108,  80, 255);
+    const ImU32 cDanger     = IM_COL32(192,  80,  74, 255);
+    const ImU32 cGreen      = IM_COL32( 90, 170, 120, 255);
+    const ImU32 cGreenDim   = IM_COL32( 90, 170, 120,  80);
+    const ImU32 cTrackBg    = IM_COL32(200, 168,  75,  18);
 
+    // ── Background: dark bg + glass panel + border + shimmer ─────────────
+    dl->AddRectFilled(O, ImVec2(O.x + vpW, O.y + barH), cBg);
+
+    const float px = O.x + 2.f, py = O.y + 2.f;
+    const float pw = vpW - 4.f, ph = barH - 4.f;
+    dl->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + ph), cGlass, 8.f);
+    dl->AddRect(ImVec2(px, py), ImVec2(px + pw, py + ph), cBorderHi, 8.f);
+
+    {
+        float sx = px + 12.f * sf, sw = pw - 24.f * sf, sy = py;
+        float mx = sx + sw * 0.5f;
+        dl->AddRectFilledMultiColor(
+            ImVec2(sx, sy), ImVec2(mx, sy + 1.f),
+            IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100),
+            IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0));
+        dl->AddRectFilledMultiColor(
+            ImVec2(mx, sy), ImVec2(sx + sw, sy + 1.f),
+            IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0),
+            IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100));
+    }
+
+    // ── State ────────────────────────────────────────────────────────────
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     auto& ctx  = m_replayCtx;
 
-    static const float  speeds[]      = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
-    static const char*  speedLabels[] = { "0.25x","0.5x","1x","2x","4x","8x" };
-    constexpr int       speedCount    = 6;
+    static const float  speeds[]      = { 0.25f, 0.5f, 1.0f, 1.5f, 2.0f, 4.0f, 8.0f };
+    static const char*  speedLabels[] = { "0.25x","0.5x","1x","1.5x","2x","4x","8x" };
+    constexpr int       speedCount    = 7;
 
-    const float btn = barH * 0.65f;
+    const float x0 = px + PAD;
+    const float y0 = py + PADY;
 
-    auto VCenter = [&](float h) {
-        float curY = ImGui::GetCursorScreenPos().y;
-        float offset = (barH - h) * 0.5f - (curY - wPos.y);
-        if (offset > 0.f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + offset);
-    };
-
-    // SVG icon textures (rasterized to white-on-transparent, cached after first call)
-    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-    ImTextureID texStop  = LoadSvgIcon(dev, "stop.svg");
-    ImTextureID texBk30  = LoadSvgIcon(dev, "backward.svg");
-    ImTextureID texBk5   = LoadSvgIcon(dev, "rewind-5-seconds-svgrepo-com.svg");
-    ImTextureID texPlay  = LoadSvgIcon(dev, "play.svg");
-    ImTextureID texPause = LoadSvgIcon(dev, "pause.svg");
-    ImTextureID texFw5   = LoadSvgIcon(dev, "forward-5-seconds-svgrepo-com.svg");
-    ImTextureID texFw30  = LoadSvgIcon(dev, "forward.svg");
-
-    // SVG icon button: InvisibleButton + AddImage + hover highlight
-    auto IconButton = [&](const char* id, ImTextureID tex, float size) -> bool {
-        VCenter(size);
-        ImGui::InvisibleButton(id, ImVec2(size, size));
-        bool clicked = ImGui::IsItemClicked();
-        ImVec2 mn = ImGui::GetItemRectMin();
-        ImVec2 mx = ImGui::GetItemRectMax();
-        if (ImGui::IsItemHovered())
-            dl->AddRectFilled(mn, mx, cBg3, 3.0f);
-        if (tex) {
-            float inset = size * 0.08f;
-            ImU32 tint = ImGui::IsItemHovered() ? cT1 : cT2;
-            dl->AddImage(tex,
-                ImVec2(mn.x + inset, mn.y + inset),
-                ImVec2(mx.x - inset, mx.y - inset),
-                ImVec2(0, 0), ImVec2(1, 1), tint);
-        }
-        return clicked;
-    };
-
-    // --- 1. Stop ---
-    if (IconButton("##Stop", texStop, btn)) { m_debugTimeline = 0.0f; ctx.isPlaying = false; }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop");
-    ImGui::SameLine();
-
-    // --- 2. Back 30s ---
-    if (IconButton("##Bk30", texBk30, btn)) m_debugTimeline = std::max(0.f, m_debugTimeline - 30.f);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back 30s");
-    ImGui::SameLine();
-
-    // --- 3. Back 5s ---
-    if (IconButton("##Bk5", texBk5, btn)) m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Back 5s");
-    ImGui::SameLine();
-
-    // --- 4. Play / Pause ---
-    if (IconButton("##PP", ctx.isPlaying ? texPause : texPlay, btn)) ctx.isPlaying = !ctx.isPlaying;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip(ctx.isPlaying ? "Pause" : "Play");
-    ImGui::SameLine();
-
-    // --- 5. Forward 5s ---
-    if (IconButton("##Fw5", texFw5, btn)) m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forward 5s");
-    ImGui::SameLine();
-
-    // --- 6. Forward 30s ---
-    if (IconButton("##Fw30", texFw30, btn)) m_debugTimeline = std::min(maxT, m_debugTimeline + 30.f);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Forward 30s");
-    ImGui::SameLine();
-
-    // --- 7. Speed dropdown ---
-    {
-        float fh = ImGui::GetFrameHeight();
-        VCenter(fh);
-        ImGui::SetNextItemWidth(ImGui::CalcTextSize("0.25x").x + 28.0f);
-        if (ImGui::Combo("##Speed", &ctx.speedIndex, speedLabels, speedCount))
-            ctx.playbackSpeed = speeds[ctx.speedIndex];
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Playback speed");
-    }
-    ImGui::SameLine();
-
-    // --- 8. Loop checkbox ---
-    {
-        float cbH = ImGui::GetFrameHeight();
-        float boxSz = cbH * 0.60f;
-        float totalW = boxSz + 5.0f + ImGui::CalcTextSize("Loop").x;
-        VCenter(cbH);
-        ImGui::InvisibleButton("##Loop", ImVec2(totalW, cbH));
-        if (ImGui::IsItemClicked()) ctx.loopPlayback = !ctx.loopPlayback;
-        if (ImGui::IsItemHovered()) {
-            ImVec2 mn2 = ImGui::GetItemRectMin();
-            ImVec2 mx2 = ImGui::GetItemRectMax();
-            dl->AddRectFilled(mn2, mx2, cBg3, 3.0f);
-        }
-
-        ImVec2 mn = ImGui::GetItemRectMin();
-        float bx = mn.x;
-        float by = mn.y + (cbH - boxSz) * 0.5f;
-
-        ImU32 boxCol = ImGui::IsItemHovered() ? cT2 : cT3;
-        dl->AddRect(ImVec2(bx, by), ImVec2(bx + boxSz, by + boxSz), boxCol, 2.0f, 0, 1.2f);
-
-        if (ctx.loopPlayback) {
-            ImU32 chk = ctx.loopPlayback && ImGui::IsItemHovered() ? cAcc : cT2;
-            float m = boxSz * 0.22f;
-            dl->AddLine(ImVec2(bx + m, by + boxSz * 0.52f), ImVec2(bx + boxSz * 0.40f, by + boxSz - m), chk, 1.5f);
-            dl->AddLine(ImVec2(bx + boxSz * 0.40f, by + boxSz - m), ImVec2(bx + boxSz - m, by + m), chk, 1.5f);
-        }
-
-        float textY = mn.y + (cbH - ImGui::GetFontSize()) * 0.5f;
-        dl->AddText(ImVec2(bx + boxSz + 5.0f, textY), cT3, "Loop");
-    }
-    ImGui::SameLine();
-
-    // --- 9. Time label ---
+    // ══════════════════════════════════════════════════════════════════════
+    // ROW 1: SCRUBBER
+    // ══════════════════════════════════════════════════════════════════════
     {
         char curBuf[16], totBuf[16];
         FormatTime(m_debugTimeline, curBuf, sizeof(curBuf));
-        FormatTime(maxT,            totBuf, sizeof(totBuf));
-        char timeBuf[40];
-        snprintf(timeBuf, sizeof(timeBuf), "%s / %s", curBuf, totBuf);
+        FormatTime(maxT, totBuf, sizeof(totBuf));
 
-        float tw = ImGui::CalcTextSize(timeBuf).x;
-        float th = ImGui::GetFontSize();
-        VCenter(th);
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        dl->AddText(pos, cT2, timeBuf);
-        ImGui::Dummy(ImVec2(tw, th));
+        dl->AddText(font, fs, ImVec2(x0, y0 + 1.f), cText, curBuf);
+        float curW = font->CalcTextSizeA(fs, FLT_MAX, 0.f, curBuf).x;
+
+        float sepY = y0 + (fs - fsSm) * 0.5f + 1.f;
+        dl->AddText(font, fsSm, ImVec2(x0 + curW + 2.f, sepY), cBorderHi, " / ");
+        float sepW = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, " / ").x;
+        dl->AddText(font, fsSm, ImVec2(x0 + curW + 2.f + sepW, sepY), cTextMid, totBuf);
     }
-    ImGui::SameLine();
 
-    // --- 10. Timeline scrubber ---
+    const float timeW     = 80.f * sf;
+    const float badgeW    = 64.f * sf;
+    const float trackX    = x0 + timeW + 6.f * sf;
+    const float trackW    = pw - PAD * 2.f - timeW - 6.f * sf - badgeW - 6.f * sf;
+    const float trackMidY = y0 + 10.f * sf;
+    const float trackBarY = trackMidY - TRKH * 0.5f;
+
+    dl->AddRectFilled(
+        ImVec2(trackX, trackBarY), ImVec2(trackX + trackW, trackBarY + TRKH), cTrackBg, 2.f);
+    dl->AddRect(
+        ImVec2(trackX, trackBarY), ImVec2(trackX + trackW, trackBarY + TRKH), cBorder, 2.f);
+
+    float pct  = maxT > 0.f ? std::clamp(m_debugTimeline / maxT, 0.f, 1.f) : 0.f;
+    float fillW = trackW * pct;
+    if (fillW > 2.f)
     {
-        float sliderW = ImGui::GetContentRegionAvail().x;
-        if (sliderW < 30.f) sliderW = 30.f;
+        dl->AddRectFilledMultiColor(
+            ImVec2(trackX, trackBarY), ImVec2(trackX + fillW, trackBarY + TRKH),
+            cGoldDim, cGold, cGold, cGoldDim);
+    }
 
-        const float trackH  = 2.0f;
-        const float handleR = barH * 0.11f;
+    float hx   = std::clamp(trackX + fillW, trackX + 5.f * sf, trackX + trackW - 5.f * sf);
+    float dotR = 5.f * sf;
+    dl->AddCircleFilled(ImVec2(hx, trackMidY), dotR, cGoldBright);
+    dl->AddCircle(ImVec2(hx, trackMidY), dotR, IM_COL32(255,255,220,100), 0, 1.5f);
 
-        VCenter(btn);
-        ImVec2 cursor = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##TimelineScrub", ImVec2(sliderW, btn));
-        bool active = ImGui::IsItemActive();
+    for (int m = 1; (float)m * 60.f <= maxT; m++)
+    {
+        float tx = trackX + trackW * ((float)m * 60.f / maxT);
+        bool  maj = (m % 5 == 0);
+        float th  = (maj ? 7.f : 5.f) * sf;
+        dl->AddLine(
+            ImVec2(tx, trackBarY + TRKH + 2.f * sf),
+            ImVec2(tx, trackBarY + TRKH + 2.f * sf + th),
+            maj ? cGoldDim : cBorder, 1.f);
+    }
 
-        if (active)
+    ImGui::SetCursorScreenPos(ImVec2(trackX, y0));
+    ImGui::InvisibleButton("##Scrub", ImVec2(trackW, 20.f * sf));
+    if (ImGui::IsItemActive())
+    {
+        float mouseX = ImGui::GetIO().MousePos.x;
+        float t = (mouseX - trackX) / trackW;
+        m_debugTimeline = std::clamp(t, 0.f, 1.f) * maxT;
+    }
+
+    // ── Frame badge (right of track) ─────────────────────────────────────
+    {
+        long frame = (long)(m_debugTimeline * 30.0);
+        char fBuf[24];
+        snprintf(fBuf, sizeof(fBuf), "F %ld", frame);
+        float bx = trackX + trackW + 6.f * sf;
+        float by = y0;
+        float bh = 16.f * sf;
+        dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + badgeW, by + bh),
+                          IM_COL32(0,0,0,100), 3.f);
+        dl->AddRect(ImVec2(bx, by), ImVec2(bx + badgeW, by + bh), cBorder, 3.f);
+        dl->AddText(font, fsSm,
+            ImVec2(bx + 5.f * sf, by + (bh - fsSm) * 0.5f), cTextMid, fBuf);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ROW 2: CONTROLS  (transport buttons centered, chip left, speed right)
+    // ══════════════════════════════════════════════════════════════════════
+    const float cy = y0 + ROW2_OFS;
+
+    auto FillBtn = [&](float bx, float by, float bw, float bh, bool hov,
+                       ImU32 bg0, ImU32 bdr0) {
+        ImU32 bg  = hov ? cGoldFill : bg0;
+        ImU32 bdr = hov ? cBorderHi : bdr0;
+        if ((bg >> 24) > 0)
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bg, 5.f);
+        if ((bdr >> 24) > 0)
+            dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bdr, 5.f);
+    };
+
+    auto Divider = [&](float dx) {
+        dl->AddLine(ImVec2(dx, cy + 3.f * sf), ImVec2(dx, cy + BTN_H - 3.f * sf), cBorder);
+    };
+
+    // Pre-compute transport group width to center it
+    const float bk30W = 40.f * sf, bk5W = 34.f * sf;
+    const float fw5W  = 34.f * sf, fw30W = 40.f * sf;
+    const float stopW = 24.f * sf;
+    const float transportW = bk30W + BGAP + bk5W + GDIV + PLAY_SZ + BGAP + stopW
+                           + GDIV + fw5W + BGAP + fw30W;
+    const float transportX = O.x + (vpW - transportW) * 0.5f;
+
+    // ── Status chip (left-aligned) ───────────────────────────────────────
+    {
+        float chipW = 66.f;
+        float chipX = x0;
+        dl->AddRectFilled(ImVec2(chipX, cy), ImVec2(chipX + chipW, cy + BTN_H),
+                          IM_COL32(0,0,0,76), 5.f);
+        dl->AddRect(ImVec2(chipX, cy), ImVec2(chipX + chipW, cy + BTN_H), cBorder, 5.f);
+
+        bool blinkOn = ((int)(ImGui::GetTime() / 0.65) % 2 == 0);
+        ImU32 dotCol = ctx.isPlaying ? (blinkOn ? cGreen : cGreenDim) : cTextDim;
+        dl->AddCircleFilled(ImVec2(chipX + 8.f, cy + BTN_H*0.5f), 2.5f, dotCol);
+
+        const char* stLabel = ctx.isPlaying ? "PLAYING" : "STOPPED";
+        dl->PushClipRect(ImVec2(chipX, cy), ImVec2(chipX + chipW, cy + BTN_H), true);
+        dl->AddText(font, fsSm,
+            ImVec2(chipX + 16.f, cy + (BTN_H - fsSm)*0.5f), cTextDim, stLabel);
+        dl->PopClipRect();
+    }
+
+    // ── Centered transport group ─────────────────────────────────────────
+    float cx = transportX;
+
+    auto DrawStepBtn = [&](const char* id, float bw, const char* label,
+                           float stepSec, bool forward) {
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton(id, ImVec2(bw, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+        FillBtn(cx, cy, bw, BTN_H, hov, 0, 0);
+
+        ImU32 fg    = hov ? cGoldBright : cTextMid;
+        float thick = 1.3f * sf;
+        float rad   = 4.f * sf;
+
+        if (!forward)
         {
-            float mouseX = ImGui::GetIO().MousePos.x;
-            float t = (mouseX - cursor.x) / sliderW;
-            m_debugTimeline = std::clamp(t, 0.0f, 1.0f) * maxT;
+            float icx = cx + bw - 10.f * sf;
+            float icy = cy + BTN_H * 0.5f;
+            dl->PathArcTo(ImVec2(icx, icy), rad, 270.f*d2r, (270.f+300.f)*d2r, 24);
+            dl->PathStroke(fg, false, thick);
+            float tipX = icx + rad - 0.5f*sf, tipY = icy - 1.f*sf;
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX-2.5f*sf, tipY-2.f*sf), fg, thick);
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX+0.8f*sf, tipY-2.5f*sf), fg, thick);
+            dl->AddText(font, fsSm,
+                ImVec2(cx + 4.f*sf, cy + (BTN_H - fsSm)*0.5f), fg, label);
+        }
+        else
+        {
+            float icx = cx + 10.f * sf;
+            float icy = cy + BTN_H * 0.5f;
+            dl->PathArcTo(ImVec2(icx, icy), rad, 30.f*d2r, (30.f+300.f)*d2r, 24);
+            dl->PathStroke(fg, false, thick);
+            float tipX = icx - rad + 0.5f*sf, tipY = icy - 1.f*sf;
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX+2.5f*sf, tipY-2.f*sf), fg, thick);
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX-0.8f*sf, tipY-2.5f*sf), fg, thick);
+            dl->AddText(font, fsSm,
+                ImVec2(cx + 16.f*sf, cy + (BTN_H - fsSm)*0.5f), fg, label);
         }
 
-        float progress = maxT > 0.f ? std::clamp(m_debugTimeline / maxT, 0.0f, 1.0f) : 0.0f;
+        if (clk) m_debugTimeline = std::clamp(m_debugTimeline + stepSec, 0.f, maxT);
+        if (hov) ImGui::SetTooltip(forward ? "Forward %s" : "Back %s", label);
+        cx += bw + BGAP;
+    };
 
-        float trackY = cursor.y + btn * 0.5f - trackH * 0.5f;
-        ImVec2 trackMin(cursor.x, trackY);
-        ImVec2 trackMax(cursor.x + sliderW, trackY + trackH);
+    DrawStepBtn("##Bk30", bk30W, "30s", -30.f, false);
+    DrawStepBtn("##Bk5",  bk5W,  "5s",  -5.f,  false);
 
-        dl->AddRectFilled(trackMin, trackMax, cLine2, 1.0f);
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
 
-        ImVec2 fillMax(trackMin.x + sliderW * progress, trackMax.y);
-        dl->AddRectFilled(trackMin, fillMax, IM_COL32(77, 142, 240, 128), 1.0f);
+    // ── Play / Pause ─────────────────────────────────────────────────────
+    {
+        float plaY = cy - (PLAY_SZ - BTN_H) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(cx, plaY));
+        ImGui::InvisibleButton("##PlayPause", ImVec2(PLAY_SZ, PLAY_SZ));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
 
-        float hx = cursor.x + sliderW * progress;
-        float hy = cursor.y + btn * 0.5f;
-        dl->AddCircleFilled(ImVec2(hx, hy), handleR, cAcc);
-        dl->AddCircle(ImVec2(hx, hy), handleR, IM_COL32(17, 18, 19, 200), 0, 1.5f);
+        ImU32 bg  = hov ? IM_COL32(200,168,75, 33) : IM_COL32(200,168,75, 18);
+        ImU32 bdr = hov ? cBorderGlow : cBorderHi;
+        ImU32 fg  = hov ? cGoldBright : cGold;
+
+        dl->AddRectFilled(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), bg, 6.f);
+        dl->AddRect(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), bdr, 6.f);
+
+        float pcx = cx + PLAY_SZ * 0.5f;
+        float pcy = plaY + PLAY_SZ * 0.5f;
+
+        if (!ctx.isPlaying)
+        {
+            dl->AddTriangleFilled(
+                ImVec2(pcx - 4.f*sf, pcy - 5.f*sf),
+                ImVec2(pcx + 5.f*sf, pcy),
+                ImVec2(pcx - 4.f*sf, pcy + 5.f*sf), fg);
+        }
+        else
+        {
+            dl->AddRectFilled(
+                ImVec2(pcx - 4.5f*sf, pcy - 5.f*sf),
+                ImVec2(pcx - 1.5f*sf, pcy + 5.f*sf), fg);
+            dl->AddRectFilled(
+                ImVec2(pcx + 1.5f*sf, pcy - 5.f*sf),
+                ImVec2(pcx + 4.5f*sf, pcy + 5.f*sf), fg);
+        }
+
+        if (clk) ctx.isPlaying = !ctx.isPlaying;
+        if (hov) ImGui::SetTooltip(ctx.isPlaying ? "Pause" : "Play");
+        cx += PLAY_SZ + BGAP;
+    }
+
+    // ── Stop ─────────────────────────────────────────────────────────────
+    {
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##Stop", ImVec2(stopW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        ImU32 fg  = hov ? cDanger : cTextMid;
+        ImU32 bdr = hov ? IM_COL32(192,80,74,100) : IM_COL32(0,0,0,0);
+        FillBtn(cx, cy, stopW, BTN_H, hov, 0, bdr);
+
+        float sq  = 8.f * sf;
+        float scx = cx + (stopW - sq) * 0.5f;
+        float scy = cy + (BTN_H - sq) * 0.5f;
+        dl->AddRectFilled(ImVec2(scx, scy), ImVec2(scx+sq, scy+sq), fg);
+
+        if (clk) { m_debugTimeline = 0.f; ctx.isPlaying = false; }
+        if (hov) ImGui::SetTooltip("Stop");
+        cx += stopW + BGAP;
+    }
+
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+
+    DrawStepBtn("##Fw5",  fw5W,  "5s",  +5.f,  true);
+    DrawStepBtn("##Fw30", fw30W, "30s", +30.f, true);
+
+    // ── Loop (right of transport) ────────────────────────────────────────
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    {
+        float loopW = 46.f * sf;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##Loop", ImVec2(loopW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        bool on   = ctx.loopPlayback;
+        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
+        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
+        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
+        FillBtn(cx, cy, loopW, BTN_H, hov, bg, bdr);
+
+        float thick = 1.3f * sf;
+        float ox = cx + 4.f*sf, oy = cy + BTN_H * 0.5f;
+        dl->AddLine(ImVec2(ox,          oy-3.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
+        dl->AddLine(ImVec2(ox+6.f*sf,   oy-6.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
+        dl->AddLine(ImVec2(ox+6.f*sf,   oy-0.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
+        dl->AddLine(ImVec2(ox+8.f*sf,   oy+3.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
+        dl->AddLine(ImVec2(ox+2.f*sf,   oy+0.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
+        dl->AddLine(ImVec2(ox+2.f*sf,   oy+6.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
+
+        dl->AddText(font, fsSm,
+            ImVec2(cx + 17.f*sf, cy + (BTN_H - fsSm)*0.5f), fg, "Loop");
+
+        if (clk) ctx.loopPlayback = !ctx.loopPlayback;
+        if (hov) ImGui::SetTooltip(ctx.loopPlayback ? "Loop: ON" : "Loop: OFF");
+    }
+
+    // ── Speed (right-aligned) ────────────────────────────────────────────
+    {
+        float speedW = 54.f * sf;
+        float speedX = px + pw - PAD - speedW;
+
+        dl->AddText(font, fsSm,
+            ImVec2(speedX - 34.f*sf, cy + (BTN_H - fsSm)*0.5f + 1.f), cTextDim, "SPEED");
+
+        ImGui::SetCursorScreenPos(ImVec2(speedX, cy));
+        ImGui::InvisibleButton("##Speed", ImVec2(speedW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        FillBtn(speedX, cy, speedW, BTN_H, hov, 0, cBorderHi);
+
+        ImU32 sfg = hov ? cGoldBright : cTextMid;
+        const char* sLbl = speedLabels[ctx.speedIndex];
+        ImVec2 tsz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, sLbl);
+        float tx = speedX + (speedW - tsz.x - 8.f*sf) * 0.5f;
+        float ty = cy + (BTN_H - fs) * 0.5f;
+        dl->AddText(font, fs, ImVec2(tx, ty), sfg, sLbl);
+
+        float arX = tx + tsz.x + 3.f*sf;
+        float arY = ty + fs * 0.35f;
+        dl->AddTriangleFilled(
+            ImVec2(arX, arY), ImVec2(arX + 4.f*sf, arY),
+            ImVec2(arX + 2.f*sf, arY + 3.f*sf), sfg);
+
+        if (clk) ImGui::OpenPopup("SpeedMenu");
+        float popupH = speedCount * ImGui::GetFrameHeightWithSpacing() + 8.f;
+        ImGui::SetNextWindowPos(ImVec2(speedX, cy - popupH));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(speedW, 0), ImVec2(speedW * 2.f, FLT_MAX));
+        if (ImGui::BeginPopup("SpeedMenu"))
+        {
+            for (int i = 0; i < speedCount; i++)
+            {
+                bool sel = (i == ctx.speedIndex);
+                if (ImGui::Selectable(speedLabels[i], sel))
+                {
+                    ctx.speedIndex    = i;
+                    ctx.playbackSpeed = speeds[i];
+                }
+            }
+            ImGui::EndPopup();
+        }
+        if (hov) ImGui::SetTooltip("Playback speed");
     }
 
     m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
 
-
     ImGui::End();
-    ImGui::PopStyleColor(8);
-    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(4);
+    ImGui::PopStyleVar();
 }
 
 // ---------------------------------------------------------------------------
@@ -3391,6 +5124,400 @@ static std::filesystem::path GetGameUIBasePath()
     return cached;
 }
 
+static std::filesystem::path GetEffectsBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "effects"))
+        {
+            cached = dir / "Textures" / "effects";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "effects";
+    return cached;
+}
+
+// ---------------------------------------------------------------------------
+// Cast bar gradient textures (1-pixel wide, built once)
+// ---------------------------------------------------------------------------
+
+static ComPtr<ID3D11ShaderResourceView> BuildGradientTex1xN(
+    ID3D11Device* device, int height, const GradStop* stops, int nStops)
+{
+    std::vector<uint32_t> pixels(height);
+    for (int y = 0; y < height; ++y)
+    {
+        float t = (height > 1) ? float(y) / float(height - 1) : 0.f;
+        float R, G, B;
+        SampleGradient(stops, nStops, t, R, G, B);
+        pixels[y] = IM_COL32((uint8_t)R, (uint8_t)G, (uint8_t)B, 255);
+    }
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = 1;
+    td.Height = (UINT)height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sd = {};
+    sd.pSysMem = pixels.data();
+    sd.SysMemPitch = sizeof(uint32_t);
+
+    ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(device->CreateTexture2D(&td, &sd, &tex))) return nullptr;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) return nullptr;
+    return srv;
+}
+
+static ComPtr<ID3D11ShaderResourceView> BuildCastBarFillTex2D(
+    ID3D11Device* device, int width, int height,
+    const GradStop* hStops, int nH,
+    float topBlackAlpha, float botBlackAlpha)
+{
+    std::vector<uint32_t> pixels(width * height);
+    for (int y = 0; y < height; ++y)
+    {
+        float v = (height > 1) ? float(y) / float(height - 1) : 0.5f;
+        float dark;
+        if (v < 0.5f)
+            dark = topBlackAlpha * (1.0f - v * 2.0f);
+        else
+            dark = botBlackAlpha * ((v - 0.5f) * 2.0f);
+
+        for (int x = 0; x < width; ++x)
+        {
+            float u = (width > 1) ? float(x) / float(width - 1) : 0.f;
+            float R, G, B;
+            SampleGradient(hStops, nH, u, R, G, B);
+            R *= (1.0f - dark);
+            G *= (1.0f - dark);
+            B *= (1.0f - dark);
+            pixels[y * width + x] = IM_COL32(
+                (uint8_t)std::clamp(R, 0.f, 255.f),
+                (uint8_t)std::clamp(G, 0.f, 255.f),
+                (uint8_t)std::clamp(B, 0.f, 255.f), 255);
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = (UINT)width;
+    td.Height = (UINT)height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sd = {};
+    sd.pSysMem = pixels.data();
+    sd.SysMemPitch = (UINT)(width * sizeof(uint32_t));
+
+    ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(device->CreateTexture2D(&td, &sd, &tex))) return nullptr;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) return nullptr;
+    return srv;
+}
+
+void ReplayWindow::EnsureCastBarTextures()
+{
+    if (m_castBarBgTex) return;
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    if (!dev) return;
+
+    constexpr int H = 64;
+    constexpr int W = 512;
+    m_castBarTexH = H;
+
+    // Background: symmetric black vignette (1xN, vertical only)
+    static const GradStop bgStops[] = {
+        { 0.00f,  0,  0,  0 },
+        { 0.25f, 18, 18, 18 },
+        { 0.50f, 36, 36, 36 },
+        { 0.75f, 18, 18, 18 },
+        { 1.00f,  0,  0,  0 }
+    };
+    m_castBarBgTex = BuildGradientTex1xN(dev, H, bgStops, 5);
+
+    // Green casting fill (horizontal gradient + vertical vignette 55%/50%)
+    static const GradStop greenH[] = {
+        { 0.000f,  10, 10, 10 },
+        { 0.200f,  26, 58, 10 },
+        { 0.400f,  64,176, 32 },
+        { 0.600f, 168,240, 80 },
+        { 0.800f, 200,255,112 },
+        { 1.000f, 144,224, 64 }
+    };
+    m_castBarFillTex = BuildCastBarFillTex2D(dev, W, H, greenH, 6, 0.55f, 0.50f);
+
+    // Orange cancelled fill (horizontal gradient + vertical vignette 58%/52%)
+    static const GradStop orangeH[] = {
+        { 0.000f,  10,  8,  0 },
+        { 0.143f,  58, 30,  0 },
+        { 0.286f, 122, 58,  0 },
+        { 0.429f, 192, 96,  0 },
+        { 0.571f, 232,144, 16 },
+        { 0.714f, 255,184, 32 },
+        { 0.857f, 255,208, 64 },
+        { 1.000f, 232,160, 16 }
+    };
+    m_castBarCancelTex = BuildCastBarFillTex2D(dev, W, H, orangeH, 8, 0.58f, 0.52f);
+}
+
+// ---------------------------------------------------------------------------
+// Skill icon index & loader (Textures/Skill_Icons/[ID] - Name.jpg)
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetSkillIconsBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Skill_Icons"))
+        {
+            cached = dir / "Textures" / "Skill_Icons";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "Skill_Icons";
+    return cached;
+}
+
+void ReplayWindow::EnsureSkillIconIndex()
+{
+    if (m_skillIconIndexBuilt) return;
+    m_skillIconIndexBuilt = true;
+
+    auto folder = GetSkillIconsBasePath();
+    if (!std::filesystem::exists(folder)) return;
+
+    for (const auto& entry : std::filesystem::directory_iterator(folder))
+    {
+        if (!entry.is_regular_file()) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.size() < 4 || name[0] != '[') continue;
+        size_t closeBracket = name.find(']', 1);
+        if (closeBracket == std::string::npos) continue;
+        int skillId = 0;
+        try { skillId = std::stoi(name.substr(1, closeBracket - 1)); }
+        catch (...) { continue; }
+        m_skillIconIndex[skillId] = entry.path().string();
+    }
+}
+
+static ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
+                                 int skillId,
+                                 std::unordered_map<int, std::string>& index,
+                                 std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache)
+{
+    auto cit = cache.find(skillId);
+    if (cit != cache.end()) return (ImTextureID)cit->second.Get();
+
+    auto iit = index.find(skillId);
+    if (iit == index.end()) return nullptr;
+
+    std::wstring wpath(iit->second.begin(), iit->second.end());
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImages(), DXGI_FORMAT_R8G8B8A8_UNORM,
+                              DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::Image* src = (converted.GetImageCount() > 0) ? converted.GetImages() : image.GetImages();
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = (UINT)src->width;
+    td.Height = (UINT)src->height;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sd = {};
+    sd.pSysMem = src->pixels;
+    sd.SysMemPitch = (UINT)src->rowPitch;
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&td, &sd, &tex);
+    if (FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) return nullptr;
+
+    cache[skillId] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+// ---------------------------------------------------------------------------
+// Profession icon paths & loaders
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetProfIconsBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Professions_Icons"))
+        {
+            cached = dir / "Textures" / "Professions_Icons";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "Professions_Icons";
+    return cached;
+}
+
+static std::filesystem::path GetProfStylizedBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "professions" / "Profession stylized"))
+        {
+            cached = dir / "Textures" / "professions" / "Profession stylized";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "professions" / "Profession stylized";
+    return cached;
+}
+
+static const char* ProfIconFileName(int profId)
+{
+    switch (profId) {
+    case 1:  return "[1] - Warrior.png";
+    case 2:  return "[2] - Ranger.png";
+    case 3:  return "[3] - Monk.png";
+    case 4:  return "[4] - Necromancer.png";
+    case 5:  return "[5] - Mesmer.png";
+    case 6:  return "[6] - Elementalist.png";
+    case 7:  return "[7] - Assassin.png";
+    case 8:  return "[8] - Ritualist.png";
+    case 9:  return "[9] - Paragon.png";
+    case 10: return "[10] - Dervish.png";
+    default: return nullptr;
+    }
+}
+
+static ImTextureID LoadProfIconGeneric(ID3D11Device* device,
+                                       const std::filesystem::path& basePath,
+                                       const std::string& key)
+{
+    static ID3D11Device* s_dev = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_dev) { s_cache.clear(); s_dev = device; }
+
+    auto it = s_cache.find(key);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = basePath / std::filesystem::path(key);
+    if (!std::filesystem::exists(fullPath)) { s_cache[key] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) { s_cache[key] = nullptr; return nullptr; }
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) { s_cache[key] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) { s_cache[key] = nullptr; return nullptr; }
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) { s_cache[key] = nullptr; return nullptr; }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(hr)) { s_cache[key] = nullptr; return nullptr; }
+
+    s_cache[key] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+static ImTextureID LoadProfIcon(ID3D11Device* device, int profId)
+{
+    const char* fn = ProfIconFileName(profId);
+    if (!fn) return nullptr;
+    return LoadProfIconGeneric(device, GetProfIconsBasePath(), fn);
+}
+
+static ImTextureID LoadProfStylized(ID3D11Device* device, int profId)
+{
+    if (profId < 1 || profId > 10) return nullptr;
+    char fn[16]; snprintf(fn, sizeof(fn), "%d.png", profId);
+    return LoadProfIconGeneric(device, GetProfStylizedBasePath(), fn);
+}
+
 static ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename)
 {
     static ID3D11Device* s_cachedDevice = nullptr;
@@ -3401,6 +5528,66 @@ static ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename)
     if (it != s_cache.end()) return (ImTextureID)it->second.Get();
 
     auto fullPath = GetGameUIBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+static ImTextureID LoadEffectIcon(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetEffectsBasePath() / std::filesystem::path(filename);
     if (!std::filesystem::exists(fullPath)) return nullptr;
 
     DirectX::ScratchImage image;
@@ -3542,7 +5729,7 @@ struct PartyIcons {
 static PartyIcons LoadAllPartyIcons(ID3D11Device* dev)
 {
     PartyIcons icons;
-    icons.weaponSpell = LoadPartyIcon(dev, "WeaponSpell.png");
+    icons.weaponSpell = LoadEffectIcon(dev, "WeaponSpell.png");
     icons.enchanted   = LoadPartyIcon(dev, "Enchanted.png");
     icons.condition   = LoadPartyIcon(dev, "Condition.png");
     icons.hexed       = LoadPartyIcon(dev, "Hexed.png");
@@ -3566,11 +5753,18 @@ static void DrawPartyHealthBar(
     else if (isHovered)
         borderCol = IM_COL32(0x9A, 0x8A, 0x3E, 0xFF);
 
-    dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 1.0f);
-
     if (isFollowed)
+    {
+        dl->AddRectFilled(ImVec2(barTL.x - 2, barTL.y - 2), ImVec2(barBR.x + 2, barBR.y + 2),
+                          IM_COL32(0xD8, 0xD0, 0x73, 0x3C), 3.f);
+        dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 2.0f);
         dl->AddRect(ImVec2(barTL.x - 1, barTL.y - 1), ImVec2(barBR.x + 1, barBR.y + 1),
                     IM_COL32(0xD8, 0xD0, 0x73, 0x80), 0.f, 0, 1.0f);
+    }
+    else
+    {
+        dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 1.0f);
+    }
 
     // Inner area (1px inset from border)
     ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
@@ -3623,33 +5817,49 @@ static void DrawPartyHealthBar(
         }
     }
 
-    // Weapon spell icon (left side)
-    if (snap->has_weapon_spell && !isDead && icons.weaponSpell)
-    {
-        float iconSz = std::min(innerH, 20.f);
-        ImVec2 iconTL(innerTL.x + 2, innerTL.y + (innerH - iconSz) * 0.5f);
-        ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-        dl->AddImage(icons.weaponSpell, iconTL, iconBR);
-    }
-
-    // Player name (text with shadow)
+    // Player name (text with shadow) + eye icon when followed
     if (name && name[0])
     {
-        float textOffsetX = (snap->has_weapon_spell && !isDead && icons.weaponSpell)
-                            ? 24.f : 4.f;
+        float textOffsetX = 4.f;
         ImVec2 textPos(innerTL.x + textOffsetX, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
         ImU32 textCol = isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+        if (isFollowed)
+            textCol = IM_COL32(0xF5, 0xE4, 0x5A, 0xFF);
         dl->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 0xCC), name);
         dl->AddText(textPos, textCol, name);
+
+        if (isFollowed)
+        {
+            ImVec2 nameSize = ImGui::CalcTextSize(name);
+            float eyeCx = textPos.x + nameSize.x + 10.f;
+            float eyeCy = textPos.y + ImGui::GetFontSize() * 0.5f;
+            float sz = 5.f;
+            ImU32 eyeCol = IM_COL32(0xCB, 0xAA, 0x09, 0xFF);
+            // Diamond / crosshair-style focus icon
+            ImVec2 top(eyeCx, eyeCy - sz);
+            ImVec2 right(eyeCx + sz, eyeCy);
+            ImVec2 bottom(eyeCx, eyeCy + sz);
+            ImVec2 left(eyeCx - sz, eyeCy);
+            dl->AddQuadFilled(top, right, bottom, left, IM_COL32(0xCB, 0xAA, 0x09, 0x60));
+            dl->AddQuad(top, right, bottom, left, eyeCol, 1.5f);
+            dl->AddCircleFilled(ImVec2(eyeCx, eyeCy), 1.5f, eyeCol, 8);
+        }
     }
 
     // Status icons (right-aligned, hidden when dead)
-    // Order right-to-left: Enchanted, Condition, Hexed
+    // Order right-to-left: WeaponSpell, Enchanted, Condition, Hexed
     if (!isDead)
     {
         const float iconSz = std::min(innerH - 2.f, 18.f);
         float iconX = innerBR.x - 2.f;
         float iconY = innerTL.y + (innerH - iconSz) * 0.5f;
+
+        if (snap->has_weapon_spell && icons.weaponSpell)
+        {
+            iconX -= iconSz;
+            dl->AddImage(icons.weaponSpell, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
 
         if (snap->has_enchantment && icons.enchanted)
         {
@@ -3744,7 +5954,12 @@ void ReplayWindow::DrawPartyWindows()
             bool isDead = snap ? snap->is_dead : false;
 
             ImVec2 cursor = ImGui::GetCursorScreenPos();
-            ImGui::Dummy(ImVec2(availW, barH));
+
+            char btnId[32];
+            snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
+            ImGui::InvisibleButton(btnId, ImVec2(availW, barH));
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+                EnterFollowMode(agentId);
 
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,

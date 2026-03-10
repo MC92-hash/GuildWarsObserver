@@ -343,6 +343,19 @@ struct CastInterval
     int   skillId = 0;
 };
 
+// A single skill use event for driving the floating skill icon display.
+// Covers both cast (activated→finished) and instant skills.
+struct SkillUseEvent
+{
+    float startTime = 0.f;
+    float endTime   = 0.f;   // same as startTime for instant skills
+    float fullCastDuration = 0.f; // theoretical full cast time (from successful casts)
+    int   skillId   = 0;
+    int   targetId  = -1;    // resolved target agent id (-1 = self/none)
+    bool  isInstant    = false;
+    bool  wasCancelled = false;  // true if SKILL_STOPPED / ATTACK_SKILL_STOPPED
+};
+
 struct AgentReplayData
 {
     int agent_id = 0;
@@ -373,8 +386,50 @@ struct AgentReplayData
     float overlapThreshold    = 0.f;   // 2.7 × spirit radius
     bool  overlapIsNewest     = false;  // true if this is the newest of its group
 
+    // Transient LOD state (set by DrawAgentCylinders, read by DrawAgentOverlay)
+    // 0=Dot, 1=Pillar, 2=Cylinder
+    int currentLOD = 2;
+
     // Per-agent casting intervals (built from StoC skill events)
     std::vector<CastInterval> castHistory;
+
+    // Per-agent skill use timeline for floating icon display (includes instants)
+    std::vector<SkillUseEvent> skillUseHistory;
+
+    // Knockdown intervals (built from is_knocked snapshot transitions)
+    struct KnockdownInterval { float start; float end; };
+    std::vector<KnockdownInterval> knockdownIntervals;
+
+    float knockdownTiltAtTime(float t) const
+    {
+        constexpr float FALL = 0.15f;
+        constexpr float RISE = 0.15f;
+        if (knockdownIntervals.empty()) return 0.f;
+        // Binary search for the interval closest to t
+        int lo = 0, hi = static_cast<int>(knockdownIntervals.size()) - 1, best = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (knockdownIntervals[mid].start <= t + FALL) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (best < 0) return 0.f;
+        const auto& kd = knockdownIntervals[best];
+        if (t < kd.start) return 0.f;
+        if (t > kd.end + RISE) return 0.f;
+        float elapsed = t - kd.start;
+        if (elapsed < FALL) {
+            float p = elapsed / FALL;
+            p = p * p * (3.f - 2.f * p);
+            return 90.f * p;
+        }
+        if (t <= kd.end) return 90.f;
+        float riseT = (t - kd.end) / RISE;
+        if (riseT < 1.f) {
+            riseT = riseT * riseT * (3.f - 2.f * riseT);
+            return 90.f * (1.f - riseT);
+        }
+        return 0.f;
+    }
 
     bool isCastingAtTime(float t) const
     {
@@ -388,6 +443,103 @@ struct AgentReplayData
         for (auto& ci : castHistory)
             if (t >= ci.start && t <= ci.end) return ci.skillId;
         return 0;
+    }
+
+    // Combined visual state for skill icon + cast bar (always in sync).
+    struct SkillVisual {
+        int   skillId    = 0;
+        float alpha      = 0.f;   // shared icon+bar opacity
+        bool  isCasting  = false;  // currently filling the bar
+        float progress   = 0.f;   // 0..1 bar fill
+        bool  cancelled  = false;  // purple recolor
+    };
+
+    SkillVisual skillVisualAtTime(float t) const
+    {
+        constexpr float LINGER = 2.0f;
+        constexpr float FADE   = 0.8f;
+        if (skillUseHistory.empty()) return {};
+        int lo = 0, hi = static_cast<int>(skillUseHistory.size()) - 1, best = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (skillUseHistory[mid].startTime <= t) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (best < 0) return {};
+        const auto& ev = skillUseHistory[best];
+        float showEnd = ev.endTime + LINGER;
+        float fadeEnd = showEnd + FADE;
+        if (t < ev.startTime) return {};
+        if (t > fadeEnd) return {};
+
+        SkillVisual sv;
+        sv.skillId = ev.skillId;
+
+        // Alpha (shared by icon + bar)
+        if (t <= showEnd) sv.alpha = 1.0f;
+        else              sv.alpha = 1.0f - (t - showEnd) / FADE;
+
+        // Cast bar progress + state
+        float dur     = ev.endTime - ev.startTime;   // actual cast time
+        float fullDur = (ev.fullCastDuration > 0.001f) ? ev.fullCastDuration : dur;
+        if (!ev.isInstant && dur > 0.001f) {
+            if (t < ev.endTime) {
+                sv.isCasting = true;
+                sv.cancelled = false;
+                sv.progress  = std::min((t - ev.startTime) / dur, 1.f);
+            } else {
+                sv.isCasting = false;
+                sv.cancelled = ev.wasCancelled;
+                sv.progress  = ev.wasCancelled
+                    ? std::min(dur / fullDur, 1.f)
+                    : 1.0f;
+            }
+        } else {
+            // Instant skill — no cast bar
+            sv.isCasting = false;
+            sv.cancelled = false;
+            sv.progress  = 1.0f;
+        }
+        return sv;
+    }
+
+    // Convenience wrapper for code that only needs skillId + alpha
+    std::pair<int, float> skillIconAtTime(float t) const
+    {
+        auto sv = skillVisualAtTime(t);
+        return { sv.skillId, sv.alpha };
+    }
+
+    // Returns {targetId, alpha} for the laser line.
+    // Laser visible during cast time only (+ 0.3s fade after cast end for non-instant).
+    // For instant skills: 0.5s flash then 0.3s fade.
+    struct LaserInfo { int targetId; float alpha; };
+    LaserInfo skillLaserAtTime(float t) const
+    {
+        if (skillUseHistory.empty()) return { -1, 0.f };
+        int lo = 0, hi = static_cast<int>(skillUseHistory.size()) - 1, best = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (skillUseHistory[mid].startTime <= t) { best = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (best < 0) return { -1, 0.f };
+        const auto& ev = skillUseHistory[best];
+        if (ev.targetId <= 0 || ev.targetId == agent_id) return { -1, 0.f };
+        if (t < ev.startTime) return { -1, 0.f };
+
+        constexpr float FADE = 0.3f;
+        if (ev.isInstant) {
+            constexpr float FLASH = 0.5f;
+            float age = t - ev.startTime;
+            if (age < FLASH) return { ev.targetId, 1.0f };
+            if (age < FLASH + FADE) return { ev.targetId, 1.0f - (age - FLASH) / FADE };
+            return { -1, 0.f };
+        }
+        if (t <= ev.endTime) return { ev.targetId, 1.0f };
+        float age = t - ev.endTime;
+        if (age < FADE) return { ev.targetId, 1.0f - age / FADE };
+        return { -1, 0.f };
     }
 
     // Returns true if the agent is dead at time t, based on the nearest

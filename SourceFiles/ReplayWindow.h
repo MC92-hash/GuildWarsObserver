@@ -77,11 +77,16 @@ private:
     void DrawAgentDataWindow();
     void DrawStoCWindow();
     void DrawAgentOverlay();
+    void DrawAgentCylinders();
+    void InitCylinderRenderer();
     void DrawMapCalibrationWindow();
     void DrawInterpolationWindow();
     void DrawTimelineController();
     void DrawShortcutPreferences();
     void DrawPartyWindows();
+    void DrawMatchTimer();
+    void DrawJumboMessages();
+    void DrawMoraleBoostTimers();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -137,6 +142,14 @@ private:
     bool m_agentsClassified    = false;
     bool m_moveEventsBuilt     = false;
     bool m_castIntervalsBuilt  = false;
+    bool m_skillUseTimelineBuilt = false;
+    bool m_knockdownIntervalsBuilt = false;
+
+    // Skill icon index: skill_id → full file path (populated once from Textures/Skill_Icons)
+    std::unordered_map<int, std::string> m_skillIconIndex;
+    bool m_skillIconIndexBuilt = false;
+    void EnsureSkillIconIndex();
+    std::unordered_map<int, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_skillIconCache;
 
     // --- Flag state machine ---
     enum class FlagLocationType { Base, Carried, Ground, Stand };
@@ -166,6 +179,37 @@ private:
     void BuildFlagStateTimeline();
     void DrawFlags();
 
+    // --- Scene overlays (timer, jumbo, morale) ---
+    float m_matchStartOffset = 60.f;
+    char  m_timerBuf[32] = {};
+    char  m_moraleBuf[2][32] = {};
+    ImFont* m_latoRegular = nullptr;
+    ImFont* m_latoBold    = nullptr;
+    ImFont* m_latoBoldBig = nullptr;
+
+    // UI layout (positions stored as viewport fractions 0..1)
+    struct UILayoutConfig
+    {
+        float jumboX = 0.50f,  jumboY = 0.30f;
+        float moBlueX = 0.65f, moBlueY = 0.22f;
+        float moRedX  = 0.35f, moRedY  = 0.22f;
+        float timerX  = 0.50f, timerY  = 0.12f;
+        bool  useCustom = false;
+
+        bool  lodEnabled  = false;
+        float lodDotDist  = 6000.f;
+        float lodPillarDist = 1800.f;
+    };
+    UILayoutConfig m_uiLayout;
+    bool m_showInterfacePrefs = false;
+    int  m_draggingUIElement  = -1;   // -1=none, 0=jumbo, 1=moBlue, 2=moRed, 3=timer
+
+    void DrawInterfacePreferences();
+    void SaveUILayout();
+    void LoadUILayout();
+    bool HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
+                           ImVec2 boxTL, ImVec2 boxBR);
+
     // --- Playback bar (always visible, bottom-anchored) ---
 
     // --- Party windows (Phase 5+6) ---
@@ -181,6 +225,16 @@ private:
 
     // --- Agent overlay & calibration (Phase 2) ---
     bool m_showAgentOverlay = true;
+    bool m_showSkillIcons   = true;
+    bool m_showSkillLasers  = true;
+    void DrawSkillLasers();
+
+    // Cast bar gradient textures (1-pixel wide, N-pixel tall)
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarBgTex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarFillTex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarCancelTex;
+    int  m_castBarTexH = 0;
+    void EnsureCastBarTextures();
     bool m_showMapCalibrationWindow = false;
     bool m_showInterpolationWindow = false;
     bool m_showRawPositions = false;
@@ -224,6 +278,33 @@ private:
     int  m_selectedStoCEventIdx = -1;
     float m_stocListWidth = 180.f;
     bool m_stocShowRaw = false;
+
+    // --- LOD levels for agent rendering ---
+    enum class AgentLOD { Dot, Pillar, Cylinder };
+
+    // --- Cylinder/Pillar agent renderer (3D) ---
+    struct CylVertex { float x, y, z; float nx, ny, nz; float height01; };
+
+    struct CylPerFrame { DirectX::XMFLOAT4X4 viewProj; DirectX::XMFLOAT4 camPos; };
+    struct CylPerInst  { DirectX::XMFLOAT4X4 world; DirectX::XMFLOAT4 teamColor; };
+
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>   m_cylVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>    m_cylPS;
+    Microsoft::WRL::ComPtr<ID3D11InputLayout>    m_cylIL;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         m_cylVB;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         m_cylIB;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         m_cylCBFrame;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>         m_cylCBInst;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_cylRS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_cylDSS;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>     m_cylBS;
+    UINT m_cylIndexCount = 0;
+    bool m_cylInitialized = false;
+
+    // Pillar geometry (thin cylinder for medium LOD)
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_pillarVB;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_pillarIB;
+    UINT m_pillarIndexCount = 0;
 
     // --- Loading overlay GPU resources ---
     struct OverlayVertex { float x, y, r, g, b, a; };
