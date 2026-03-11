@@ -603,6 +603,29 @@ struct AgentReplayData
 };
 
 // ---------------------------------------------------------------------------
+// Combat log row (built from merged StoC streams)
+// ---------------------------------------------------------------------------
+
+enum class CombatLogCategory : uint8_t {
+    Skill, Damage, Heal, Interrupt, KnockDown, Death, Block, BasicAttack, Jumbo, Other
+};
+
+struct CombatLogRow {
+    float       time        = 0.f;
+    int         casterId    = 0;
+    int         targetId    = 0;
+    int         skillId     = 0;
+    bool        cancelled   = false;
+    bool        interrupted = false;
+    int         interrupterId = 0;
+    float       valuePct    = 0.f;
+    int         valueAbs    = 0;
+    int         jumboTeam   = 0;
+    CombatLogCategory category = CombatLogCategory::Skill;
+    std::string eventType;
+};
+
+// ---------------------------------------------------------------------------
 // StoC event structures
 // ---------------------------------------------------------------------------
 

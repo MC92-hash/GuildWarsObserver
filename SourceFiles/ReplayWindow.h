@@ -14,6 +14,7 @@
 #include <string>
 #include <memory>
 #include <variant>
+#include <unordered_set>
 
 struct ReplayHotkeys
 {
@@ -145,6 +146,31 @@ private:
     bool m_skillUseTimelineBuilt = false;
     bool m_knockdownIntervalsBuilt = false;
 
+    // --- Combat Log ---
+    bool m_showCombatLog     = false;
+    bool m_combatLogBuilt    = false;
+    std::vector<CombatLogRow> m_combatLog;
+    bool m_clFilterDamage     = true;
+    bool m_clFilterHeals      = true;
+    bool m_clFilterSkills     = true;
+    bool m_clFilterInterrupt  = true;
+    bool m_clFilterCancel     = true;
+    bool m_clFilterDeaths     = true;
+    bool m_clFilterAttacks    = false;
+    bool m_clFilterJumbo      = true;
+    int  m_clFilterPlayerId   = -1;
+    bool m_clAutoScroll       = true;
+    int  m_clSelectedRowIdx   = -1;
+    bool m_clScrollToSelected = false;
+
+    // Skill name filter (multi-select with autocomplete)
+    char m_clSkillSearchBuf[128] = {};
+    bool m_clSkillSearchFocused  = false;
+    std::vector<int> m_clFilterSkillIds;
+    std::unordered_set<int> m_clFilterSkillSet;
+
+    void DrawCombatLog();
+
     // Skill icon index: skill_id → full file path (populated once from Textures/Skill_Icons)
     std::unordered_map<int, std::string> m_skillIconIndex;
     bool m_skillIconIndexBuilt = false;
@@ -228,6 +254,9 @@ private:
     bool m_showSkillIcons   = true;
     bool m_showSkillLasers  = true;
     void DrawSkillLasers();
+
+    ImTextureID m_deathIconTex = nullptr;
+    bool m_deathIconLoaded = false;
 
     // Cast bar gradient textures (1-pixel wide, N-pixel tall)
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarBgTex;

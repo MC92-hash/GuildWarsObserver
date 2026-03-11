@@ -133,6 +133,8 @@ void InputManager::TrackMouseLeave(HWND hWnd)
 
 bool InputManager::IsKeyDown(UINT key) const
 {
+    if (m_suppressKeyPolling)
+        return false;
     if (m_hWnd && GetForegroundWindow() != m_hWnd)
         return false;
     return (GetAsyncKeyState(key) & 0x8000) != 0;

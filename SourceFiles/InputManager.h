@@ -24,6 +24,8 @@ public:
 
     bool IsKeyDown(UINT key) const;
 
+    void SetSuppressKeyPolling(bool v) { m_suppressKeyPolling = v; }
+
     void TrackMouseLeave(HWND hWnd);
 	void OnMouseLeave(HWND hWnd);
 
@@ -45,4 +47,5 @@ private:
 
 
     bool m_isCursorShown = true;
+    bool m_suppressKeyPolling = false;
 };

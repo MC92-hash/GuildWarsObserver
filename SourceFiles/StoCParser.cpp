@@ -656,6 +656,11 @@ static void ParseCombatEvents(const std::string& content, StoCData& data)
                         ev.value     = static_cast<float>(ToInt(tok[2].begin, tok[2].end));
                         ev.target_id = ToInt(tok[3].begin, tok[3].end);
                     }
+                    else if (n >= 3)
+                    {
+                        ev.caster_id = ToInt(tok[1].begin, tok[1].end);
+                        ev.target_id = (n >= 4) ? ToInt(tok[2].begin, tok[2].end) : 0;
+                    }
 
                     data.combat.push_back(std::move(ev));
                 }

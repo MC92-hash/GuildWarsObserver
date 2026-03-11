@@ -168,7 +168,7 @@ bool ReplayWindow::RegisterWindowClass(HINSTANCE hInstance)
     wcex.lpfnWndProc   = ReplayWindow::WndProc;
     wcex.hInstance     = hInstance;
     wcex.hIcon         = LoadIconW(hInstance, L"IDI_ICON");
-    wcex.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wcex.hCursor       = nullptr;
     wcex.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wcex.lpszClassName = kWindowClassName;
     wcex.hIconSm       = LoadIconW(hInstance, L"IDI_ICON");
@@ -468,6 +468,33 @@ void ReplayWindow::InitImGui()
     }
     if (!fontLoaded)
         io.Fonts->AddFontDefault();
+
+    // Merge symbol glyphs so arrows (U+2190-21FF) and misc symbols render
+    {
+        ImFontConfig mergeConfig;
+        mergeConfig.MergeMode = true;
+        mergeConfig.PixelSnapH = true;
+        static const ImWchar symbolRanges[] = {
+            0x2190, 0x21FF,   // Arrows (includes → U+2192)
+            0x2500, 0x257F,   // Box Drawing
+            0x25A0, 0x25FF,   // Geometric Shapes
+            0x2600, 0x26FF,   // Miscellaneous Symbols (includes ⚔ U+2694)
+            0, 0
+        };
+        const char* symbolFonts[] = {
+            "C:\\Windows\\Fonts\\seguisym.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+        };
+        for (const char* path : symbolFonts)
+        {
+            if (std::filesystem::exists(path))
+            {
+                io.Fonts->AddFontFromFileTTF(path, fontSize, &mergeConfig, symbolRanges);
+                break;
+            }
+        }
+    }
 
     // Load Lato fonts for scene overlays (timer, jumbo, morale)
     {
@@ -1445,6 +1472,273 @@ void ReplayWindow::Tick()
         m_knockdownIntervalsBuilt = true;
     }
 
+    // Build combat log from merged StoC streams
+    if (m_skillUseTimelineBuilt && m_replayCtx.stocLoaded && !m_combatLogBuilt)
+    {
+        m_combatLog.clear();
+
+        auto findMaxHp = [&](int agentId, float t) -> uint32_t {
+            auto it = m_replayCtx.agents.find(agentId);
+            if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return 0;
+            auto& snaps = it->second.snapshots;
+            if (t <= snaps.front().time) return snaps.front().max_hp;
+            if (t >= snaps.back().time)  return snaps.back().max_hp;
+            int lo = 0, hi = (int)snaps.size() - 1;
+            while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
+            return snaps[lo].max_hp;
+        };
+
+        // Pass 1: skill events -> primary rows
+        {
+            struct OpenCast { float start; int skillId; int targetId; };
+            std::unordered_map<int, OpenCast> open;
+
+            for (auto& ev : m_replayCtx.stocData.skill)
+            {
+                if (ev.type == "SKILL_ACTIVATED" && ev.skill_id > 0)
+                {
+                    open[ev.caster_id] = { ev.time, ev.skill_id, ev.target_id };
+                }
+                else if (ev.type == "SKILL_FINISHED" || ev.type == "SKILL_STOPPED")
+                {
+                    auto oc = open.find(ev.caster_id);
+                    if (oc != open.end())
+                    {
+                        CombatLogRow r;
+                        r.time = oc->second.start;
+                        r.casterId = ev.caster_id;
+                        r.targetId = oc->second.targetId;
+                        r.skillId = oc->second.skillId;
+                        r.cancelled = (ev.type == "SKILL_STOPPED");
+                        r.category = CombatLogCategory::Skill;
+                        m_combatLog.push_back(std::move(r));
+                        open.erase(oc);
+                    }
+                }
+                else if (ev.type == "INSTANT_SKILL_USED" && ev.skill_id > 0)
+                {
+                    CombatLogRow r;
+                    r.time = ev.time;
+                    r.casterId = ev.caster_id;
+                    r.targetId = ev.target_id;
+                    r.skillId = ev.skill_id;
+                    r.category = CombatLogCategory::Skill;
+                    m_combatLog.push_back(std::move(r));
+                }
+            }
+
+            open.clear();
+            for (auto& ev : m_replayCtx.stocData.attackSkill)
+            {
+                if (ev.type == "ATTACK_SKILL_ACTIVATED" && ev.skill_id > 0)
+                {
+                    open[ev.caster_id] = { ev.time, ev.skill_id, ev.target_id };
+                }
+                else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
+                {
+                    auto oc = open.find(ev.caster_id);
+                    if (oc != open.end())
+                    {
+                        CombatLogRow r;
+                        r.time = oc->second.start;
+                        r.casterId = ev.caster_id;
+                        r.targetId = oc->second.targetId;
+                        r.skillId = oc->second.skillId;
+                        r.cancelled = (ev.type == "ATTACK_SKILL_STOPPED");
+                        r.category = CombatLogCategory::Skill;
+                        m_combatLog.push_back(std::move(r));
+                        open.erase(oc);
+                    }
+                }
+            }
+        }
+
+        // Sort skill rows from Pass 1 so backward search reliably finds
+        // the most recent cast when merging damage events.
+        std::sort(m_combatLog.begin(), m_combatLog.end(),
+            [](const CombatLogRow& a, const CombatLogRow& b) { return a.time < b.time; });
+
+        // Pass 2: combat events -> enrich skill rows or create standalone rows
+        {
+            std::vector<bool> matched(m_combatLog.size(), false);
+            const int skillCount = (int)m_combatLog.size();
+
+            for (auto& ce : m_replayCtx.stocData.combat)
+            {
+                if (ce.type == "DAMAGE")
+                {
+                    int bestIdx = -1;
+                    float bestDt = 99.f;
+
+                    for (int i = skillCount - 1; i >= 0; --i)
+                    {
+                        if (matched[i]) continue;
+                        auto& r = m_combatLog[i];
+                        if (r.category != CombatLogCategory::Skill) continue;
+                        if (r.cancelled) continue;
+                        if (r.casterId != ce.caster_id) continue;
+
+                        bool targetMatch = (r.targetId == ce.target_id);
+                        bool targetOpen  = (r.targetId <= 0 || r.targetId == r.casterId);
+                        if (!targetMatch && !targetOpen) continue;
+
+                        float dt = ce.time - r.time;
+                        if (dt < -0.1f || dt > 1.5f) continue;
+
+                        if (targetMatch && dt < bestDt) {
+                            bestDt = dt;
+                            bestIdx = i;
+                        } else if (bestIdx < 0 && targetOpen && dt < bestDt) {
+                            bestDt = dt;
+                            bestIdx = i;
+                        }
+                    }
+
+                    if (bestIdx >= 0)
+                    {
+                        auto& r = m_combatLog[bestIdx];
+                        if (r.targetId <= 0 || r.targetId == r.casterId)
+                            r.targetId = ce.target_id;
+                        r.valuePct = ce.value;
+                        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
+                        r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
+                        r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
+                                                      : CombatLogCategory::Heal;
+                        matched[bestIdx] = true;
+                    }
+                    else
+                    {
+                        CombatLogRow r;
+                        r.time = ce.time;
+                        r.casterId = ce.caster_id;
+                        r.targetId = ce.target_id;
+                        r.valuePct = ce.value;
+                        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
+                        r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
+                        r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
+                                                      : CombatLogCategory::Heal;
+                        m_combatLog.push_back(std::move(r));
+                    }
+                }
+                else if (ce.type == "INTERRUPTED")
+                {
+                    // ce.caster_id = the victim (whose cast was interrupted)
+                    // ce.target_id = the interrupter
+                    // ce.value     = skill ID of the interrupted spell
+                    int interruptedSkillId = (int)ce.value;
+                    bool merged = false;
+                    bool passedNewerCast = false;
+                    for (int i = skillCount - 1; i >= 0; --i)
+                    {
+                        auto& r = m_combatLog[i];
+                        float dt = ce.time - r.time;
+                        if (dt > 4.0f) break;  // too old, stop scanning
+
+                        if (r.casterId != ce.caster_id) continue;
+                        if (r.category != CombatLogCategory::Skill) continue;
+
+                        // If we already passed a newer cast from this caster
+                        // (cancelled or not), any older cancelled row is stale.
+                        if (passedNewerCast) continue;
+
+                        if (!r.cancelled || r.interrupted) {
+                            passedNewerCast = true;
+                            continue;
+                        }
+
+                        if (interruptedSkillId > 0 && r.skillId != interruptedSkillId) {
+                            passedNewerCast = true;
+                            continue;
+                        }
+
+                        if (dt < -0.2f || dt > 3.0f) continue;
+
+                        r.interrupted = true;
+                        r.interrupterId = ce.target_id;
+                        merged = true;
+                        break;
+                    }
+                    if (!merged)
+                    {
+                        CombatLogRow r;
+                        r.time = ce.time;
+                        r.casterId = ce.caster_id;
+                        r.targetId = ce.target_id;
+                        r.skillId = interruptedSkillId;
+                        r.category = CombatLogCategory::Interrupt;
+                        m_combatLog.push_back(std::move(r));
+                    }
+                }
+                else if (ce.type == "KNOCKED_DOWN")
+                {
+                    CombatLogRow r;
+                    r.time = ce.time;
+                    r.casterId = ce.caster_id;
+                    r.targetId = ce.target_id;
+                    r.category = CombatLogCategory::KnockDown;
+                    m_combatLog.push_back(std::move(r));
+                }
+                else
+                {
+                    CombatLogRow r;
+                    r.time = ce.time;
+                    r.casterId = ce.caster_id;
+                    r.targetId = ce.target_id;
+                    r.category = CombatLogCategory::Other;
+                    r.eventType = ce.type;
+                    m_combatLog.push_back(std::move(r));
+                }
+            }
+        }
+
+        // Pass 3: basic attacks
+        for (auto& ev : m_replayCtx.stocData.basicAttack)
+        {
+            if (ev.type == "ATTACK_STARTED")
+            {
+                CombatLogRow r;
+                r.time = ev.time;
+                r.casterId = ev.caster_id;
+                r.targetId = ev.target_id;
+                r.category = CombatLogCategory::BasicAttack;
+                m_combatLog.push_back(std::move(r));
+            }
+        }
+
+        // Pass 4: death events from snapshot is_dead transitions
+        for (auto& [agentId, ard] : m_replayCtx.agents)
+        {
+            if (ard.type != AgentType::Player) continue;
+            for (size_t si = 1; si < ard.snapshots.size(); ++si)
+            {
+                if (ard.snapshots[si].is_dead && !ard.snapshots[si - 1].is_dead)
+                {
+                    CombatLogRow r;
+                    r.time = ard.snapshots[si].time;
+                    r.casterId = agentId;
+                    r.category = CombatLogCategory::Death;
+                    m_combatLog.push_back(std::move(r));
+                }
+            }
+        }
+
+        // Pass 5: jumbo messages (flag captures, morale boosts, etc.)
+        for (auto& ev : m_replayCtx.stocData.jumbo)
+        {
+            CombatLogRow r;
+            r.time = ev.time;
+            r.jumboTeam = (ev.party_value == 1635021873) ? 1
+                        : (ev.party_value == 1635021874) ? 2 : 0;
+            r.eventType = ev.message;
+            r.category = CombatLogCategory::Jumbo;
+            m_combatLog.push_back(std::move(r));
+        }
+
+        std::sort(m_combatLog.begin(), m_combatLog.end(),
+            [](const CombatLogRow& a, const CombatLogRow& b) { return a.time < b.time; });
+        m_combatLogBuilt = true;
+    }
+
     // Build flag state timeline (needs both agents and StoC for jumbo events)
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
         BuildFlagStateTimeline();
@@ -1519,6 +1813,8 @@ void ReplayWindow::Tick()
 void ReplayWindow::Update(double elapsedMs)
 {
     float dt = static_cast<float>(elapsedMs / 1000.0);
+    if (m_inputManager)
+        m_inputManager->SetSuppressKeyPolling(m_clSkillSearchFocused);
     UpdateFollowCamera(dt);
     m_mapRenderer->Update(dt);
 }
@@ -1659,6 +1955,8 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Skill Lasers", nullptr, &m_showSkillLasers);
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
+            ImGui::Separator();
+            ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
             ImGui::EndMenu();
         }
 
@@ -1718,6 +2016,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawInterfacePreferences();
 
     DrawPartyWindows();
+    DrawCombatLog();
 
     DrawAgentOverlay();
     DrawFlags();
@@ -1745,7 +2044,7 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     // Keyboard shortcuts (checked after all windows so WantCaptureKeyboard is accurate)
-    if (!ImGui::GetIO().WantCaptureKeyboard)
+    if (!ImGui::GetIO().WantCaptureKeyboard && !m_clSkillSearchFocused)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) && m_cameraMode == CameraMode::FollowAgent)
             ExitFollowMode();
@@ -2425,7 +2724,7 @@ float4 PSMain(VS_OUT i) : SV_Target
     float baseGlow = saturate(1.0 - i.height01 * 8.0) * 0.35;
     color += baseColor * baseGlow;
 
-    return float4(saturate(color), 1.0);
+    return float4(saturate(color), gTeamColor.a);
 }
 )";
 
@@ -2583,7 +2882,13 @@ void ReplayWindow::InitCylinderRenderer()
 
     // Blend: disabled — cylinders are fully opaque
     D3D11_BLEND_DESC bld = {};
-    bld.RenderTarget[0].BlendEnable = FALSE;
+    bld.RenderTarget[0].BlendEnable = TRUE;
+    bld.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bld.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bld.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bld.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bld.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+    bld.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
     bld.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     dev->CreateBlendState(&bld, m_cylBS.GetAddressOf());
 
@@ -2768,7 +3073,10 @@ void ReplayWindow::DrawAgentCylinders()
 
         if (isDot) continue;
 
-        float tiltDeg = ard.knockdownTiltAtTime(m_debugTimeline);
+        bool dead = ard.isDeadAtTime(m_debugTimeline);
+
+        // Cylinder rotation: dead = collapsed (90 deg), alive = knockdown tilt or upright
+        float tiltDeg = dead ? 90.f : ard.knockdownTiltAtTime(m_debugTimeline);
         XMMATRIX world;
         if (tiltDeg > 0.01f)
         {
@@ -2785,8 +3093,17 @@ void ReplayWindow::DrawAgentCylinders()
         else if (ard.teamId == 2)  color = { 0.816f, 0.282f, 0.282f, 1.f };
         else                       color = { 0.7f, 0.7f, 0.7f, 1.f };
 
-        if (ard.isDeadAtTime(m_debugTimeline))
-            color = { color.x * 0.3f, color.y * 0.3f, color.z * 0.3f, 1.f };
+        if (dead)
+        {
+            float deathTime = ard.deathTransitionTime(m_debugTimeline);
+            float fadeIn = std::clamp((m_debugTimeline - deathTime) / 0.25f, 0.f, 1.f);
+            fadeIn = fadeIn * fadeIn * (3.f - 2.f * fadeIn);
+            float lum = color.x * 0.299f + color.y * 0.587f + color.z * 0.114f;
+            float desatR = lum + (color.x - lum) * 0.35f;
+            float desatG = lum + (color.y - lum) * 0.35f;
+            float desatB = lum + (color.z - lum) * 0.35f;
+            color = { desatR * 0.45f, desatG * 0.45f, desatB * 0.45f, 0.6f * fadeIn };
+        }
 
         {
             D3D11_MAPPED_SUBRESOURCE mapped;
@@ -2822,6 +3139,8 @@ static ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
                                  int skillId,
                                  std::unordered_map<int, std::string>& index,
                                  std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache);
+static ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
+static std::string GetSkillDisplayName(int skillId);
 
 // Gradient helpers (used by cast bar rendering + texture building)
 struct GradStop { float pos; uint8_t r, g, b; };
@@ -3219,6 +3538,7 @@ void ReplayWindow::DrawAgentOverlay()
                 }
             }
         }
+
 
         if (showDot)
         {
@@ -5308,20 +5628,46 @@ void ReplayWindow::EnsureSkillIconIndex()
     if (m_skillIconIndexBuilt) return;
     m_skillIconIndexBuilt = true;
 
+    // Primary folder: Textures/Skill_Icons/ with "[ID] - Name.jpg" naming
     auto folder = GetSkillIconsBasePath();
-    if (!std::filesystem::exists(folder)) return;
-
-    for (const auto& entry : std::filesystem::directory_iterator(folder))
+    if (std::filesystem::exists(folder))
     {
-        if (!entry.is_regular_file()) continue;
-        const std::string name = entry.path().filename().string();
-        if (name.size() < 4 || name[0] != '[') continue;
-        size_t closeBracket = name.find(']', 1);
-        if (closeBracket == std::string::npos) continue;
-        int skillId = 0;
-        try { skillId = std::stoi(name.substr(1, closeBracket - 1)); }
-        catch (...) { continue; }
-        m_skillIconIndex[skillId] = entry.path().string();
+        for (const auto& entry : std::filesystem::directory_iterator(folder))
+        {
+            if (!entry.is_regular_file()) continue;
+            const std::string name = entry.path().filename().string();
+            if (name.size() < 4 || name[0] != '[') continue;
+            size_t closeBracket = name.find(']', 1);
+            if (closeBracket == std::string::npos) continue;
+            int skillId = 0;
+            try { skillId = std::stoi(name.substr(1, closeBracket - 1)); }
+            catch (...) { continue; }
+            m_skillIconIndex[skillId] = entry.path().string();
+        }
+    }
+
+    // Fallback folder: Textures/skills/ with "{id}.jpg" naming
+    wchar_t exeBuf[MAX_PATH];
+    GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    auto exeDir = std::filesystem::path(exeBuf).parent_path();
+    for (auto dir = exeDir; ; dir = dir.parent_path())
+    {
+        auto alt = dir / "Textures" / "skills";
+        if (std::filesystem::exists(alt))
+        {
+            for (const auto& entry : std::filesystem::directory_iterator(alt))
+            {
+                if (!entry.is_regular_file()) continue;
+                auto stem = entry.path().stem().string();
+                int skillId = 0;
+                try { skillId = std::stoi(stem); }
+                catch (...) { continue; }
+                if (m_skillIconIndex.find(skillId) == m_skillIconIndex.end())
+                    m_skillIconIndex[skillId] = entry.path().string();
+            }
+            break;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
     }
 }
 
@@ -5516,6 +5862,78 @@ static ImTextureID LoadProfStylized(ID3D11Device* device, int profId)
     if (profId < 1 || profId > 10) return nullptr;
     char fn[16]; snprintf(fn, sizeof(fn), "%d.png", profId);
     return LoadProfIconGeneric(device, GetProfStylizedBasePath(), fn);
+}
+
+static ImTextureID LoadProfIconCL(ID3D11Device* device, int profId)
+{
+    if (profId < 1 || profId > 10) return nullptr;
+
+    static ID3D11Device* s_dev = nullptr;
+    static std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_dev) { s_cache.clear(); s_dev = device; }
+
+    auto it = s_cache.find(profId);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    static std::filesystem::path basePath;
+    if (basePath.empty())
+    {
+        wchar_t exeBuf[MAX_PATH];
+        GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+        auto dir = std::filesystem::path(exeBuf).parent_path();
+        for (int i = 0; i < 5; i++)
+        {
+            if (std::filesystem::exists(dir / "Textures" / "professions"))
+            { basePath = dir / "Textures" / "professions"; break; }
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+        if (basePath.empty())
+            basePath = std::filesystem::path(exeBuf).parent_path() / "Textures" / "professions";
+    }
+
+    char fn[16];
+    snprintf(fn, sizeof(fn), "%d.png", profId);
+    auto fullPath = basePath / fn;
+    if (!std::filesystem::exists(fullPath)) { s_cache[profId] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) { s_cache[profId] = nullptr; return nullptr; }
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) { s_cache[profId] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) { s_cache[profId] = nullptr; return nullptr; }
+    }
+    const auto* img = (converted.GetImageCount() > 0 ? converted : image).GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = (UINT)img->width; td.Height = (UINT)img->height;
+    td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA sd = {};
+    sd.pSysMem = img->pixels; sd.SysMemPitch = (UINT)img->rowPitch;
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&td, &sd, &tex);
+    if (FAILED(hr)) { s_cache[profId] = nullptr; return nullptr; }
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) { s_cache[profId] = nullptr; return nullptr; }
+
+    s_cache[profId] = srv;
+    return (ImTextureID)srv.Get();
 }
 
 static ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename)
@@ -5882,6 +6300,862 @@ static void DrawPartyHealthBar(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Combat Log panel
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawCombatLog()
+{
+    if (!m_showCombatLog || !m_combatLogBuilt) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    float vpW = io.DisplaySize.x;
+    float vpH = io.DisplaySize.y;
+
+    float minW = 360.f;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(minW, 200.f), ImVec2(vpW, vpH));
+    ImGui::SetNextWindowSize(ImVec2(720.f, 440.f), ImGuiCond_FirstUseEver);
+
+    // Gold-accented dark panel styling
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,        ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,      ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,    ImVec4(1.f, 1.f, 1.f, 0.04f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,  ImVec4(0.80f, 0.68f, 0.30f, 0.60f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(1.f, 0.84f, 0.39f, 0.80f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive,  ImVec4(1.f, 0.84f, 0.39f, 1.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 4.f);
+
+    if (!ImGui::Begin("Combat Log", &m_showCombatLog))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(9);
+        return;
+    }
+
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, 0.f, std::max(0.f, vpW - sz.x));
+        float cy = std::clamp(pos.y, 0.f, std::max(0.f, vpH - sz.y));
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    const ImU32 uBlue    = IM_COL32(74, 200, 255, 255);
+    const ImU32 uRed     = IM_COL32(255, 107, 107, 255);
+    const ImU32 uGray    = IM_COL32(154, 164, 177, 255);
+    const ImU32 uWhite   = IM_COL32(232, 236, 242, 255);
+    const ImU32 uGreen   = IM_COL32(64, 224, 128, 255);
+    const ImU32 uOrange  = IM_COL32(255, 159, 64, 255);
+    const ImU32 uPurple  = IM_COL32(191, 97, 255, 255);
+    const ImU32 uMuted   = IM_COL32(200, 176, 128, 255);
+    const ImU32 uKillRed = IM_COL32(255, 80, 80, 255);
+    const ImU32 uKillBg  = IM_COL32(208, 72, 72, 31);
+    const ImU32 uKillBdr = IM_COL32(204, 48, 48, 255);
+    const ImU32 uHoverBg   = IM_COL32(255, 215, 100, 15);
+    const ImU32 uSelectBg  = IM_COL32(255, 230, 120, 38);
+    const ImU32 uSelectBdr = IM_COL32(255, 215, 100, 200);
+    const ImU32 uGoldDim   = IM_COL32(255, 215, 100, 60);
+    const ImU32 uTsCol     = IM_COL32(200, 176, 128, 255);
+    const ImU32 uDmgRed    = IM_COL32(255, 128, 128, 255);
+
+    auto teamColorU32 = [&](int agentId) -> ImU32 {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return uGray;
+        if (it->second.teamId == 1) return uBlue;
+        if (it->second.teamId == 2) return uRed;
+        return uGray;
+    };
+
+    auto agentNameStr = [&](int agentId) -> std::string {
+        if (agentId <= 0) return "";
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return std::format("#{}", agentId);
+        auto& a = it->second;
+        if (a.type == AgentType::Player) return a.playerName;
+        if (!a.categoryName.empty()) return a.categoryName;
+        return std::format("#{}", agentId);
+    };
+
+    // --- Filter bar ---
+    {
+        // Snapshot to detect changes
+        bool prevDmg = m_clFilterDamage, prevHeal = m_clFilterHeals;
+        bool prevSkill = m_clFilterSkills, prevIntr = m_clFilterInterrupt, prevCanc = m_clFilterCancel;
+        bool prevDeath = m_clFilterDeaths, prevAtk = m_clFilterAttacks, prevJumbo = m_clFilterJumbo;
+        int  prevPlayer = m_clFilterPlayerId;
+
+        auto FilterPill = [](const char* label, bool active) -> bool {
+            ImVec4 bg  = active ? ImVec4(0.14f, 0.11f, 0.04f, 1.f)
+                                : ImVec4(1.f, 1.f, 1.f, 0.05f);
+            ImVec4 tx  = active ? ImVec4(1.f, 0.91f, 0.69f, 1.f)
+                                : ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+            ImVec4 hov = active ? ImVec4(0.20f, 0.16f, 0.06f, 1.f)
+                                : ImVec4(1.f, 1.f, 1.f, 0.12f);
+            ImVec4 bdr = active ? ImVec4(1.f, 0.84f, 0.39f, 0.80f)
+                                : ImVec4(1.f, 1.f, 1.f, 0.08f);
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 4));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, active ? 1.f : 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        float availW = ImGui::GetContentRegionAvail().x;
+        float lineX = 0.f;
+
+        auto MaybeSameLine = [&](const char* nextLabel) {
+            float est = ImGui::CalcTextSize(nextLabel).x + 24.f;
+            if (lineX + est < availW) {
+                ImGui::SameLine();
+            } else {
+                lineX = 0.f;
+            }
+        };
+
+        // ALL is visually active when every category filter is on
+        bool allOn = m_clFilterDamage && m_clFilterHeals && m_clFilterSkills &&
+                     m_clFilterInterrupt && m_clFilterCancel &&
+                     m_clFilterDeaths && m_clFilterAttacks && m_clFilterJumbo;
+        if (FilterPill("All", allOn))
+        {
+            bool target = !allOn;
+            m_clFilterDamage = m_clFilterHeals = m_clFilterSkills = target;
+            m_clFilterInterrupt = m_clFilterCancel = m_clFilterDeaths = m_clFilterAttacks = m_clFilterJumbo = target;
+        }
+        lineX = ImGui::GetItemRectSize().x;
+
+        MaybeSameLine("Damage");
+        if (FilterPill("Damage", m_clFilterDamage)) m_clFilterDamage = !m_clFilterDamage;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Heals");
+        if (FilterPill("Heals", m_clFilterHeals)) m_clFilterHeals = !m_clFilterHeals;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Skills");
+        if (FilterPill("Skills", m_clFilterSkills)) m_clFilterSkills = !m_clFilterSkills;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Interrupt");
+        if (FilterPill("Interrupt", m_clFilterInterrupt)) m_clFilterInterrupt = !m_clFilterInterrupt;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Cancel");
+        if (FilterPill("Cancel", m_clFilterCancel)) m_clFilterCancel = !m_clFilterCancel;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Deaths");
+        if (FilterPill("Deaths", m_clFilterDeaths)) m_clFilterDeaths = !m_clFilterDeaths;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Attacks");
+        if (FilterPill("Attacks", m_clFilterAttacks)) m_clFilterAttacks = !m_clFilterAttacks;
+        lineX += ImGui::GetItemRectSize().x;
+        MaybeSameLine("Jumbo");
+        if (FilterPill("Jumbo", m_clFilterJumbo)) m_clFilterJumbo = !m_clFilterJumbo;
+
+        if (m_clFilterPlayerId >= 0)
+        {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.85f, 0.f, 1.f));
+            std::string filterLabel = std::format("Filtering: {} [x]",
+                agentNameStr(m_clFilterPlayerId));
+            if (ImGui::SmallButton(filterLabel.c_str()))
+                m_clFilterPlayerId = -1;
+            ImGui::PopStyleColor();
+        }
+
+        bool filterChanged =
+            m_clFilterDamage != prevDmg || m_clFilterHeals != prevHeal ||
+            m_clFilterSkills != prevSkill || m_clFilterInterrupt != prevIntr ||
+            m_clFilterCancel != prevCanc || m_clFilterDeaths != prevDeath ||
+            m_clFilterAttacks != prevAtk || m_clFilterJumbo != prevJumbo ||
+            m_clFilterPlayerId != prevPlayer;
+        if (filterChanged)
+            m_clScrollToSelected = true;
+    }
+
+    // --- Skill name filter (autocomplete multi-select) ---
+    bool inputFocused = false, inputHovered = false;
+    {
+        EnsureSkillIconIndex();
+        ID3D11Device* sDev = m_deviceResources ? m_deviceResources->GetD3DDevice() : nullptr;
+
+        // Show selected skill chips
+        if (!m_clFilterSkillIds.empty())
+        {
+            for (int idx = 0; idx < (int)m_clFilterSkillIds.size(); ++idx)
+            {
+                int sid = m_clFilterSkillIds[idx];
+                std::string chipLabel = GetSkillDisplayName(sid) + " x##sk" + std::to_string(idx);
+
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.82f, 1.f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+                if (ImGui::SmallButton(chipLabel.c_str()))
+                {
+                    m_clFilterSkillIds.erase(m_clFilterSkillIds.begin() + idx);
+                    m_clFilterSkillSet.erase(sid);
+                    --idx;
+                }
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(2);
+                ImGui::SameLine();
+            }
+            if (ImGui::SmallButton("Clear all##clsk"))
+            {
+                m_clFilterSkillIds.clear();
+                m_clFilterSkillSet.clear();
+            }
+        }
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::InputTextWithHint("##skillsearch",
+            "Filter by skill name...", m_clSkillSearchBuf, sizeof(m_clSkillSearchBuf));
+        inputFocused = ImGui::IsItemActive();
+        inputHovered = ImGui::IsItemHovered();
+        ImVec2 inputMin = ImGui::GetItemRectMin();
+        ImVec2 inputMax = ImGui::GetItemRectMax();
+        float dropdownW = inputMax.x - inputMin.x;
+
+        if (inputHovered || inputFocused)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+
+        if (ImGui::IsItemActivated()) m_clSkillSearchFocused = true;
+
+        bool showDropdown = m_clSkillSearchFocused && m_clSkillSearchBuf[0] != '\0';
+        bool dropdownHovered = false;
+
+        if (showDropdown)
+        {
+            std::string query(m_clSkillSearchBuf);
+            for (auto& c : query) c = (char)std::tolower((unsigned char)c);
+
+            struct Match { int id; std::string name; };
+            std::vector<Match> matches;
+
+            auto& db = GetSkillDatabase();
+            if (db.IsLoaded())
+            {
+                db.ForEachSkill([&](const SkillInfo& si) {
+                    if (si.name.empty()) return;
+                    if (m_clFilterSkillSet.count(si.id)) return;
+                    std::string lower = si.name;
+                    for (auto& c : lower) c = (char)std::tolower((unsigned char)c);
+                    if (lower.find(query) != std::string::npos)
+                        matches.push_back({si.id, si.name});
+                });
+            }
+
+            for (auto& row : m_combatLog)
+            {
+                if (row.skillId <= 0) continue;
+                if (m_clFilterSkillSet.count(row.skillId)) continue;
+                if (db.IsLoaded() && db.Get(row.skillId)) continue;
+                std::string sn = GetSkillDisplayName(row.skillId);
+                if (sn.empty() || sn.rfind("Skill ", 0) == 0) continue;
+                std::string lower = sn;
+                for (auto& c : lower) c = (char)std::tolower((unsigned char)c);
+                if (lower.find(query) != std::string::npos)
+                {
+                    bool dup = false;
+                    for (auto& m : matches) if (m.id == row.skillId) { dup = true; break; }
+                    if (!dup) matches.push_back({row.skillId, sn});
+                }
+            }
+
+            std::sort(matches.begin(), matches.end(),
+                [](const Match& a, const Match& b) { return a.name < b.name; });
+
+            if (!matches.empty())
+            {
+                int maxShow = std::min((int)matches.size(), 10);
+                float rowH = ImGui::GetTextLineHeightWithSpacing();
+                float popH = rowH * (float)maxShow + 12.f;
+                if ((int)matches.size() > maxShow) popH += rowH;
+
+                ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMax.y + 2.f));
+                ImGui::SetNextWindowSize(ImVec2(dropdownW, popH));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 4));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.f);
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.12f, 0.12f, 0.14f, 0.97f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.3f, 0.3f, 0.35f, 1.f));
+
+                ImGui::Begin("##skill_dropdown", nullptr,
+                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoFocusOnAppearing);
+
+                ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+
+                dropdownHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+
+                int shown = 0;
+                for (auto& m : matches)
+                {
+                    if (shown >= 10) { ImGui::TextDisabled("... %d more", (int)matches.size() - 10); break; }
+                    ImGui::PushID(m.id);
+
+                    if (sDev)
+                    {
+                        ImTextureID tex = LoadSkillIcon(this, sDev, m.id,
+                            m_skillIconIndex, m_skillIconCache);
+                        if (tex)
+                        {
+                            ImGui::Image(tex, ImVec2(16, 16));
+                            ImGui::SameLine();
+                        }
+                    }
+
+                    if (ImGui::Selectable(m.name.c_str()))
+                    {
+                        m_clFilterSkillIds.push_back(m.id);
+                        m_clFilterSkillSet.insert(m.id);
+                        m_clSkillSearchBuf[0] = '\0';
+                        m_clSkillSearchFocused = false;
+                    }
+
+                    ImGui::PopID();
+                    ++shown;
+                }
+
+                ImGui::End();
+                ImGui::PopStyleColor(2);
+                ImGui::PopStyleVar(2);
+            }
+        }
+
+        if (!inputFocused && !dropdownHovered)
+            m_clSkillSearchFocused = false;
+    }
+
+    ImGui::Separator();
+
+    // --- Pre-filter visible rows ---
+    bool skillFilterActive = !m_clFilterSkillSet.empty();
+    std::vector<int> filtered;
+    filtered.reserve(m_combatLog.size());
+    for (int i = 0; i < (int)m_combatLog.size(); ++i)
+    {
+        auto& row = m_combatLog[i];
+        if (row.time > m_debugTimeline) break;
+
+        if (row.category != CombatLogCategory::Jumbo &&
+            m_clFilterPlayerId >= 0 &&
+            row.casterId != m_clFilterPlayerId &&
+            row.targetId != m_clFilterPlayerId)
+            continue;
+
+        if (row.category != CombatLogCategory::Jumbo &&
+            skillFilterActive && !m_clFilterSkillSet.count(row.skillId))
+            continue;
+
+        // No filters active → show everything
+        bool noFilter = !m_clFilterDamage && !m_clFilterHeals && !m_clFilterSkills &&
+                        !m_clFilterInterrupt && !m_clFilterCancel &&
+                        !m_clFilterDeaths && !m_clFilterAttacks && !m_clFilterJumbo;
+        bool show = noFilter;
+        if (!show) {
+            if (row.category == CombatLogCategory::Skill && row.interrupted)
+                show = m_clFilterInterrupt || m_clFilterSkills;
+            else if (row.category == CombatLogCategory::Skill && row.cancelled)
+                show = m_clFilterCancel || m_clFilterSkills;
+            else switch (row.category) {
+            case CombatLogCategory::Damage:      show = m_clFilterDamage || (row.skillId > 0 && m_clFilterSkills); break;
+            case CombatLogCategory::Heal:        show = m_clFilterHeals;  break;
+            case CombatLogCategory::Skill:       show = m_clFilterSkills; break;
+            case CombatLogCategory::Death:       show = m_clFilterDeaths; break;
+            case CombatLogCategory::Interrupt:   show = m_clFilterInterrupt; break;
+            case CombatLogCategory::KnockDown:   show = m_clFilterSkills; break;
+            case CombatLogCategory::Block:       show = m_clFilterSkills; break;
+            case CombatLogCategory::BasicAttack: show = m_clFilterAttacks; break;
+            case CombatLogCategory::Jumbo:       show = m_clFilterJumbo;  break;
+            case CombatLogCategory::Other:       show = true;             break;
+            }
+        }
+        if (show) filtered.push_back(i);
+    }
+
+    // --- Column layout ---
+    constexpr float kRowH      = 20.f;
+    constexpr float kColTs     = 0.f;
+    constexpr float kTsW       = 92.f;
+    constexpr float kColCProf  = 92.f;    // caster profession icon
+    constexpr float kProfSz    = 16.f;
+    constexpr float kColCast   = 110.f;   // 92 + 16 + 2 gap
+    constexpr float kCastW     = 130.f;
+    constexpr float kColArr1   = 240.f;
+    constexpr float kArr1W     = 16.f;
+    constexpr float kColIcon   = 256.f;
+    constexpr float kIconSz    = 18.f;
+    constexpr float kColSkill  = 278.f;   // 256 + 18 + 4 gap
+    constexpr float kSkillW    = 140.f;
+    constexpr float kColArr2   = 418.f;
+    constexpr float kArr2W     = 16.f;
+    constexpr float kColTProf  = 434.f;   // target profession icon
+    constexpr float kColTgt    = 452.f;   // 434 + 16 + 2 gap
+    constexpr float kTgtW      = 130.f;
+    constexpr float kColVal    = 582.f;
+    constexpr float kValW      = 100.f;
+    constexpr float kRowW      = 682.f;
+
+    // --- Column headers ---
+    {
+        ImDrawList* hdl = ImGui::GetWindowDrawList();
+        float hx = ImGui::GetCursorScreenPos().x;
+        float hy = ImGui::GetCursorScreenPos().y;
+        const ImU32 hdrCol = IM_COL32(200, 176, 128, 220);
+        float hdrY = hy + 1.f;
+
+        hdl->AddText(ImVec2(hx + kColTs,    hdrY), hdrCol, "Time");
+        hdl->AddText(ImVec2(hx + kColCast,  hdrY), hdrCol, "Caster");
+        hdl->AddText(ImVec2(hx + kColSkill, hdrY), hdrCol, "Skill");
+        hdl->AddText(ImVec2(hx + kColTgt,   hdrY), hdrCol, "Target");
+        hdl->AddText(ImVec2(hx + kColVal,   hdrY), hdrCol, "Value");
+
+        float lineY = hy + ImGui::GetTextLineHeightWithSpacing();
+        hdl->AddLine(ImVec2(hx, lineY), ImVec2(hx + kRowW, lineY),
+            IM_COL32(255, 215, 100, 40));
+
+        ImGui::Dummy(ImVec2(0, ImGui::GetTextLineHeightWithSpacing() + 2.f));
+    }
+
+    // --- Scrolling log region ---
+    float footerH = ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("##logscroll", ImVec2(0, -footerH), false,
+        ImGuiWindowFlags_HorizontalScrollbar);
+
+    EnsureSkillIconIndex();
+    ID3D11Device* dev = m_deviceResources ? m_deviceResources->GetD3DDevice() : nullptr;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    float fontSize = ImGui::GetFontSize();
+
+    ImGuiListClipper clipper;
+    clipper.Begin((int)filtered.size(), kRowH);
+    while (clipper.Step())
+    {
+        for (int idx = clipper.DisplayStart; idx < clipper.DisplayEnd; ++idx)
+        {
+            auto& row = m_combatLog[filtered[idx]];
+            ImGui::PushID(idx);
+
+            float startX = ImGui::GetCursorScreenPos().x;
+            float startY = ImGui::GetCursorScreenPos().y;
+
+            if (ImGui::InvisibleButton("##r", ImVec2(kRowW, kRowH)))
+            {
+                m_clSelectedRowIdx = filtered[idx];
+                float relX = io.MousePos.x - startX;
+                if (relX >= kColCast && relX < kColCast + kCastW)
+                    m_clFilterPlayerId = row.casterId;
+                else
+                {
+                    m_debugTimeline = row.time;
+                    if (row.casterId > 0)
+                        EnterFollowMode(row.casterId);
+                }
+            }
+            bool hovered = ImGui::IsItemHovered();
+            bool selected = (filtered[idx] == m_clSelectedRowIdx);
+
+            if (row.category == CombatLogCategory::Death)
+            {
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + kRowW, startY + kRowH), uKillBg);
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + 2.f, startY + kRowH), uKillBdr);
+            }
+            else if (row.category == CombatLogCategory::Jumbo)
+            {
+                ImU32 jbBg = (row.jumboTeam == 1)
+                    ? IM_COL32(74, 200, 255, 20)
+                    : (row.jumboTeam == 2)
+                        ? IM_COL32(255, 107, 107, 20)
+                        : IM_COL32(255, 215, 100, 20);
+                ImU32 jbBdr = (row.jumboTeam == 1)
+                    ? IM_COL32(74, 200, 255, 160)
+                    : (row.jumboTeam == 2)
+                        ? IM_COL32(255, 107, 107, 160)
+                        : IM_COL32(255, 215, 100, 160);
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + kRowW, startY + kRowH), jbBg);
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + 2.f, startY + kRowH), jbBdr);
+            }
+
+            if (selected)
+            {
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + kRowW, startY + kRowH), uSelectBg);
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + 2.f, startY + kRowH), uSelectBdr);
+            }
+
+            if (hovered)
+                dl->AddRectFilled(
+                    ImVec2(startX, startY),
+                    ImVec2(startX + kRowW, startY + kRowH), uHoverBg);
+
+            float textY = startY + (kRowH - fontSize) * 0.5f;
+
+            // Timestamp (left-aligned, bracketed)
+            {
+                float matchTime = row.time - 60.f;
+                int totalMs = (int)(std::abs(matchTime) * 1000.f);
+                char tsBuf[20];
+                snprintf(tsBuf, sizeof(tsBuf), "[%02d:%02d.%03d]",
+                         totalMs / 60000, (totalMs / 1000) % 60, totalMs % 1000);
+                dl->PushClipRect(
+                    ImVec2(startX + kColTs, startY),
+                    ImVec2(startX + kColTs + kTsW, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColTs, textY), uTsCol, tsBuf);
+                dl->PopClipRect();
+            }
+
+            // --- Death row: special layout ---
+            if (row.category == CombatLogCategory::Death)
+            {
+                auto cIt = m_replayCtx.agents.find(row.casterId);
+                if (cIt != m_replayCtx.agents.end() && cIt->second.primaryProf > 0 && dev)
+                {
+                    ImTextureID pTex = LoadProfIcon(dev, cIt->second.primaryProf);
+                    if (pTex)
+                    {
+                        float iy = startY + (kRowH - kProfSz) * 0.5f;
+                        dl->AddImage(pTex,
+                            ImVec2(startX + kColCProf, iy),
+                            ImVec2(startX + kColCProf + kProfSz, iy + kProfSz));
+                    }
+                }
+
+                std::string name = agentNameStr(row.casterId);
+                ImU32 col = teamColorU32(row.casterId);
+                std::string deathText = name + " died";
+                dl->PushClipRect(
+                    ImVec2(startX + kColCast, startY),
+                    ImVec2(startX + kColVal + kValW, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColCast, textY), col, deathText.c_str());
+                dl->PopClipRect();
+
+                ImTextureID skullTex = LoadFlagIcon(dev, "death.png");
+                if (skullTex)
+                {
+                    float tw = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, deathText.c_str()).x;
+                    float ix = startX + kColCast + tw + 6.f;
+                    float iy = startY + (kRowH - kIconSz) * 0.5f;
+                    dl->AddImage(skullTex,
+                        ImVec2(ix, iy),
+                        ImVec2(ix + kIconSz, iy + kIconSz));
+                }
+
+                ImGui::PopID();
+                continue;
+            }
+
+            // --- Jumbo row: special layout ---
+            if (row.category == CombatLogCategory::Jumbo)
+            {
+                ImU32 jCol = (row.jumboTeam == 1) ? uBlue
+                           : (row.jumboTeam == 2) ? uRed
+                           : uTsCol;
+                const char* jText = JumboMessageDisplayText(row.eventType, row.jumboTeam);
+
+                dl->PushClipRect(
+                    ImVec2(startX + kColCast, startY),
+                    ImVec2(startX + kColVal + kValW, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColCast, textY), jCol, jText);
+                dl->PopClipRect();
+
+                ImGui::PopID();
+                continue;
+            }
+
+            // Caster profession icon (16x16)
+            {
+                auto cIt = m_replayCtx.agents.find(row.casterId);
+                if (cIt != m_replayCtx.agents.end() && cIt->second.primaryProf > 0 && dev)
+                {
+                    ImTextureID pTex = LoadProfIcon(dev, cIt->second.primaryProf);
+                    if (pTex)
+                    {
+                        float iy = startY + (kRowH - kProfSz) * 0.5f;
+                        dl->AddImage(pTex,
+                            ImVec2(startX + kColCProf, iy),
+                            ImVec2(startX + kColCProf + kProfSz, iy + kProfSz));
+                    }
+                }
+            }
+
+            // Caster name (team-colored, 130px)
+            {
+                std::string name = agentNameStr(row.casterId);
+                ImU32 col = teamColorU32(row.casterId);
+                dl->PushClipRect(
+                    ImVec2(startX + kColCast, startY),
+                    ImVec2(startX + kColCast + kCastW, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColCast, textY), col, name.c_str());
+                dl->PopClipRect();
+            }
+
+            // Arrow 1 (16px)
+            {
+                dl->PushClipRect(
+                    ImVec2(startX + kColArr1, startY),
+                    ImVec2(startX + kColArr1 + kArr1W, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColArr1, textY), uMuted,
+                    "\xe2\x86\x92");
+                dl->PopClipRect();
+            }
+
+            // Skill icon (18x18) with gold border
+            if (row.skillId > 0 && dev)
+            {
+                ImTextureID tex = LoadSkillIcon(this, dev, row.skillId,
+                    m_skillIconIndex, m_skillIconCache);
+                if (tex)
+                {
+                    float iy = startY + (kRowH - kIconSz) * 0.5f;
+                    dl->AddImage(tex,
+                        ImVec2(startX + kColIcon, iy),
+                        ImVec2(startX + kColIcon + kIconSz, iy + kIconSz));
+                    dl->AddRect(
+                        ImVec2(startX + kColIcon - 0.5f, iy - 0.5f),
+                        ImVec2(startX + kColIcon + kIconSz + 0.5f, iy + kIconSz + 0.5f),
+                        uGoldDim);
+                }
+            }
+            else if (row.category == CombatLogCategory::BasicAttack)
+            {
+                dl->PushClipRect(
+                    ImVec2(startX + kColIcon, startY),
+                    ImVec2(startX + kColIcon + kIconSz, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColIcon, textY), uGray,
+                    "\xe2\x9a\x94");
+                dl->PopClipRect();
+            }
+
+            bool selfCast = (row.targetId <= 0 || row.targetId == row.casterId);
+            float skillColW = selfCast
+                ? (kColVal - kColSkill)
+                : kSkillW;
+
+            // Skill name (140px, or extended for self-cast)
+            {
+                const char* snText = nullptr;
+                std::string snBuf;
+                ImU32 snCol = uWhite;
+                if (row.skillId > 0) {
+                    snBuf = GetSkillDisplayName(row.skillId);
+                    snText = snBuf.c_str();
+                    if (row.interrupted)     snCol = uOrange;
+                    else if (row.cancelled)  snCol = uPurple;
+                } else if (row.category == CombatLogCategory::BasicAttack) {
+                    snText = "Attack";
+                    snCol = uGray;
+                } else if (!row.eventType.empty()) {
+                    snText = row.eventType.c_str();
+                    snCol = uGray;
+                }
+                if (snText) {
+                    dl->PushClipRect(
+                        ImVec2(startX + kColSkill, startY),
+                        ImVec2(startX + kColSkill + skillColW, startY + kRowH),
+                        true);
+                    dl->AddText(
+                        ImVec2(startX + kColSkill, textY), snCol, snText);
+                    dl->PopClipRect();
+                }
+            }
+
+            if (!selfCast)
+            {
+                // Arrow 2 (16px)
+                dl->PushClipRect(
+                    ImVec2(startX + kColArr2, startY),
+                    ImVec2(startX + kColArr2 + kArr2W, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColArr2, textY), uMuted,
+                    "\xe2\x86\x92");
+                dl->PopClipRect();
+
+                // Target profession icon (16x16)
+                {
+                    auto tIt = m_replayCtx.agents.find(row.targetId);
+                    if (tIt != m_replayCtx.agents.end() && tIt->second.primaryProf > 0 && dev)
+                    {
+                        ImTextureID pTex = LoadProfIcon(dev, tIt->second.primaryProf);
+                        if (pTex)
+                        {
+                            float iy = startY + (kRowH - kProfSz) * 0.5f;
+                            dl->AddImage(pTex,
+                                ImVec2(startX + kColTProf, iy),
+                                ImVec2(startX + kColTProf + kProfSz, iy + kProfSz));
+                        }
+                    }
+                }
+
+                // Target name (team-colored, 130px)
+                std::string tn = agentNameStr(row.targetId);
+                ImU32 tCol = teamColorU32(row.targetId);
+                dl->PushClipRect(
+                    ImVec2(startX + kColTgt, startY),
+                    ImVec2(startX + kColTgt + kTgtW, startY + kRowH), true);
+                dl->AddText(
+                    ImVec2(startX + kColTgt, textY), tCol, tn.c_str());
+                dl->PopClipRect();
+            }
+
+            // Value (right-aligned, 60px)
+            {
+                char valBuf[32] = {};
+                ImU32 valCol = uWhite;
+
+                switch (row.category) {
+                case CombatLogCategory::Damage:
+                    snprintf(valBuf, sizeof(valBuf), "-%d%%",
+                        (int)(std::abs(row.valuePct) * 100.f));
+                    valCol = uDmgRed;
+                    break;
+                case CombatLogCategory::Heal:
+                    snprintf(valBuf, sizeof(valBuf), "+%d%%",
+                        (int)(std::abs(row.valuePct) * 100.f));
+                    valCol = uGreen;
+                    break;
+                case CombatLogCategory::Interrupt:
+                    snprintf(valBuf, sizeof(valBuf), "INTERRUPTED");
+                    valCol = uKillRed;
+                    break;
+                case CombatLogCategory::KnockDown:
+                    snprintf(valBuf, sizeof(valBuf), "KNOCKED DOWN");
+                    valCol = uOrange;
+                    break;
+                case CombatLogCategory::Death:
+                    snprintf(valBuf, sizeof(valBuf), "KILLED");
+                    valCol = uKillRed;
+                    break;
+                case CombatLogCategory::Block:
+                    snprintf(valBuf, sizeof(valBuf), "BLOCKED");
+                    valCol = uGray;
+                    break;
+                case CombatLogCategory::Skill:
+                    if (row.interrupted) {
+                        snprintf(valBuf, sizeof(valBuf), "INTERRUPTED");
+                        valCol = uKillRed;
+                    } else if (row.cancelled) {
+                        snprintf(valBuf, sizeof(valBuf), "CANCELLED");
+                        valCol = uOrange;
+                    }
+                    break;
+                default:
+                    break;
+                }
+
+                if (valBuf[0])
+                {
+                    float tw = font->CalcTextSizeA(
+                        fontSize, FLT_MAX, 0.f, valBuf).x;
+                    float tx = (tw <= kValW)
+                        ? (startX + kColVal + kValW - tw)
+                        : (startX + kColVal);
+                    dl->PushClipRect(
+                        ImVec2(startX + kColVal, startY),
+                        ImVec2(startX + kColVal + kValW, startY + kRowH),
+                        true);
+                    dl->AddText(ImVec2(tx, textY), valCol, valBuf);
+                    dl->PopClipRect();
+                }
+            }
+
+            ImGui::PopID();
+        }
+    }
+    clipper.End();
+
+    // Scroll to selected row when filters change
+    if (m_clScrollToSelected)
+    {
+        bool found = false;
+        if (m_clSelectedRowIdx >= 0)
+        {
+            for (int i = 0; i < (int)filtered.size(); ++i)
+            {
+                if (filtered[i] == m_clSelectedRowIdx)
+                {
+                    float targetY = (float)i * kRowH;
+                    float viewH = ImGui::GetWindowHeight();
+                    ImGui::SetScrollY(targetY - viewH * 0.5f);
+                    m_clAutoScroll = false;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                m_clSelectedRowIdx = -1;
+        }
+        m_clScrollToSelected = false;
+    }
+
+    // Re-enable auto-scroll whenever playback is active
+    if (m_replayCtx.isPlaying)
+        m_clAutoScroll = true;
+
+    // Auto-scroll to bottom
+    if (m_clAutoScroll)
+        ImGui::SetScrollHereY(1.0f);
+
+    // Pause auto-scroll when user scrolls up while NOT playing
+    if (!m_replayCtx.isPlaying &&
+        ImGui::GetScrollMaxY() > 0.f &&
+        ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 20.f)
+        m_clAutoScroll = false;
+
+    bool scrollHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+    ImGui::EndChild();
+
+    if (scrollHovered && !inputHovered && !inputFocused)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
+
+    // Footer: resume button when auto-scroll paused
+    if (!m_clAutoScroll)
+    {
+        if (ImGui::Button("Resume"))
+            m_clAutoScroll = true;
+    }
+    else
+    {
+        ImGui::TextDisabled("Auto-scrolling...");
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(9);
+}
+
+// ---------------------------------------------------------------------------
 
 void ReplayWindow::DrawPartyWindows()
 {
@@ -6584,6 +7858,14 @@ static std::string GetSkillDisplayName(int skillId)
         if (si && !si->name.empty())
             return si->name;
     }
+
+    // NPC / Guild Lord skills missing from the skill database
+    static const std::unordered_map<int, const char*> s_overrides = {
+        {3205, "Entourage"},
+    };
+    auto ov = s_overrides.find(skillId);
+    if (ov != s_overrides.end()) return ov->second;
+
     return std::format("Skill {}", skillId);
 }
 
@@ -7172,7 +8454,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         }
 
         imguiCaptureMouse = ImGui::GetIO().WantCaptureMouse;
-        imguiCaptureKeys  = ImGui::GetIO().WantTextInput;
+        imguiCaptureKeys  = ImGui::GetIO().WantTextInput || rw->m_clSkillSearchFocused;
         ImGui::SetCurrentContext(prevCtx);
     }
 

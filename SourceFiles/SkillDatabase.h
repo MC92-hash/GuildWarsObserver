@@ -31,6 +31,9 @@ public:
     const SkillInfo* Get(int skillId) const;
     bool IsLoaded() const { return m_loaded; }
 
+    template<typename Fn>
+    void ForEachSkill(Fn&& fn) const { for (auto& [id, si] : m_skills) fn(si); }
+
     static const char* GetTypeName(int typeId);
     static const char* GetAttributeName(int attrId);
 
