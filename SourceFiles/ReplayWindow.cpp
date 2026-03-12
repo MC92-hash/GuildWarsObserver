@@ -1828,6 +1828,8 @@ void ReplayWindow::Render()
         nullptr,
         m_deviceResources->GetDepthStencilView());
 
+    DrawFogOfWar();
+
     DrawAgentCylinders();
 
     DrawImGuiOverlay();
@@ -1953,6 +1955,15 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::Separator();
             ImGui::MenuItem("Skill Icons", nullptr, &m_showSkillIcons);
             ImGui::MenuItem("Skill Lasers", nullptr, &m_showSkillLasers);
+            ImGui::MenuItem("Range Rings (R)", nullptr, &m_showRangeRings);
+            {
+                bool fogOn = (m_fogPerspective > 0);
+                if (ImGui::MenuItem("Fog of War (F)", nullptr, &fogOn)) {
+                    if (fogOn) m_fogPerspective = m_fogLastActive;
+                    else { m_fogLastActive = m_fogPerspective; m_fogPerspective = 0; m_fogPlayerAgent = -1; }
+                }
+            }
+            ImGui::MenuItem("Morale (M)", nullptr, &m_showMoralePanel);
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::Separator();
@@ -2021,6 +2032,10 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawAgentOverlay();
     DrawFlags();
     DrawSkillLasers();
+    DrawRangeRings();
+    DrawRangeRingToolbar();
+    DrawFogOfWarToolbar();
+    DrawMoralePanel();
 
     DrawMatchTimer();
     DrawJumboMessages();
@@ -2060,6 +2075,27 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::IsKeyPressed((ImGuiKey)hk.playPause))
             m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_R))
+        {
+            m_showRangeRings = !m_showRangeRings;
+            if (!m_showRangeRings)
+                m_ringAgentFilter = -1;
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_M))
+            m_showMoralePanel = !m_showMoralePanel;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_F))
+        {
+            if (m_fogPerspective > 0) {
+                m_fogLastActive = m_fogPerspective;
+                m_fogPerspective = 0;
+                m_fogPlayerAgent = -1;
+            } else {
+                m_fogPerspective = m_fogLastActive;
+            }
+        }
     }
 
     // Determine cursor mode, then apply drag overrides before committing
@@ -2663,6 +2699,318 @@ ReplayWindow::FlagEvent ReplayWindow::EvaluateFlagState(int teamIdx, float time)
 }
 
 // ---------------------------------------------------------------------------
+// Fog of War — full-screen shader overlay
+// ---------------------------------------------------------------------------
+
+static const char kFogHLSL[] = R"(
+cbuffer FogCB : register(b0)
+{
+    float4x4 invViewProj;
+    float4 playerPos[8];
+    float  compassRadius;
+    float  fogOpacity;
+    float  edgeSoftness;
+    float  refHeight;
+    float  viewportW;
+    float  viewportH;
+    int    playerCount;
+    float  pad;
+};
+
+struct VS_OUT
+{
+    float4 pos : SV_Position;
+    float2 uv  : TEXCOORD0;
+};
+
+VS_OUT VSMain(uint id : SV_VertexID)
+{
+    VS_OUT o;
+    float2 uv = float2((id << 1) & 2, id & 2);
+    o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0.5, 1);
+    o.uv  = uv;
+    return o;
+}
+
+float4 PSMain(VS_OUT i) : SV_Target
+{
+    float2 ndc;
+    ndc.x =  (i.pos.x / viewportW) * 2.0 - 1.0;
+    ndc.y = 1.0 - (i.pos.y / viewportH) * 2.0;
+
+    float4 nearH = mul(float4(ndc, 0, 1), invViewProj);
+    float4 farH  = mul(float4(ndc, 1, 1), invViewProj);
+
+    if (abs(nearH.w) < 1e-6 || abs(farH.w) < 1e-6)
+        return float4(0, 0, 0, fogOpacity);
+
+    float3 nearW = nearH.xyz / nearH.w;
+    float3 farW  = farH.xyz / farH.w;
+
+    float3 dir = farW - nearW;
+    if (abs(dir.y) < 1e-6)
+        return float4(0, 0, 0, fogOpacity);
+
+    float t = (refHeight - nearW.y) / dir.y;
+    if (t < 0)
+        return float4(0, 0, 0, fogOpacity);
+
+    float3 hit = nearW + dir * t;
+
+    float minDist = 1e6;
+    [loop] for (int p = 0; p < playerCount; ++p)
+    {
+        float dx = hit.x - playerPos[p].x;
+        float dz = hit.z - playerPos[p].z;
+        minDist = min(minDist, sqrt(dx * dx + dz * dz));
+    }
+
+    float edge = max(edgeSoftness, 0.1);
+    float fog = smoothstep(compassRadius - edge, compassRadius, minDist);
+    return float4(0, 0, 0, fogOpacity * saturate(fog));
+}
+)";
+
+void ReplayWindow::InitFogRenderer()
+{
+    if (m_fogInitialized) return;
+    m_fogInitialized = true;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+
+    Microsoft::WRL::ComPtr<ID3DBlob> vsBlob, psBlob, errBlob;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#ifdef _DEBUG
+    flags |= D3DCOMPILE_DEBUG;
+#endif
+
+    HRESULT hr = D3DCompile(kFogHLSL, sizeof(kFogHLSL), nullptr, nullptr, nullptr,
+                            "VSMain", "vs_5_0", flags, 0, vsBlob.GetAddressOf(), errBlob.GetAddressOf());
+    if (FAILED(hr)) return;
+
+    hr = D3DCompile(kFogHLSL, sizeof(kFogHLSL), nullptr, nullptr, nullptr,
+                    "PSMain", "ps_5_0", flags, 0, psBlob.GetAddressOf(), errBlob.GetAddressOf());
+    if (FAILED(hr)) return;
+
+    dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, m_fogVS.GetAddressOf());
+    dev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, m_fogPS.GetAddressOf());
+
+    D3D11_BUFFER_DESC cbd = {};
+    cbd.ByteWidth = sizeof(FogCBData);
+    cbd.Usage = D3D11_USAGE_DYNAMIC;
+    cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    dev->CreateBuffer(&cbd, nullptr, m_fogCB.GetAddressOf());
+
+    D3D11_DEPTH_STENCIL_DESC dsd = {};
+    dsd.DepthEnable = FALSE;
+    dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    dev->CreateDepthStencilState(&dsd, m_fogDSS.GetAddressOf());
+
+    D3D11_BLEND_DESC bld = {};
+    bld.RenderTarget[0].BlendEnable = TRUE;
+    bld.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bld.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bld.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bld.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
+    bld.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    bld.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bld.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    dev->CreateBlendState(&bld, m_fogBS.GetAddressOf());
+
+    D3D11_RASTERIZER_DESC rd = {};
+    rd.FillMode = D3D11_FILL_SOLID;
+    rd.CullMode = D3D11_CULL_NONE;
+    rd.DepthClipEnable = TRUE;
+    dev->CreateRasterizerState(&rd, m_fogRS.GetAddressOf());
+}
+
+static constexpr float kFogCompassRadius = 5020.f;
+
+void ReplayWindow::DrawFogOfWar()
+{
+    if (m_fogPerspective == 0) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    InitFogRenderer();
+    if (!m_fogVS || !m_fogPS) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+
+    auto dvp = m_deviceResources->GetScreenViewport();
+    float vpW = dvp.Width;
+    float vpH = dvp.Height;
+
+    const MapTransform& mt = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+
+    FogCBData cb = {};
+
+    XMVECTOR det;
+    XMMATRIX invVP = XMMatrixInverse(&det, viewProj);
+    XMStoreFloat4x4(&cb.invViewProj, XMMatrixTranspose(invVP));
+
+    XMFLOAT3 origin = ApplyMapTransformToPos(0, 0, 0, mt);
+    XMFLOAT3 xOff   = ApplyMapTransformToPos(kFogCompassRadius, 0, 0, mt);
+    float wdx = xOff.x - origin.x, wdz = xOff.z - origin.z;
+    float worldCompassRadius = sqrtf(wdx * wdx + wdz * wdz);
+
+    constexpr float kFogEdgeSoftness = 200.f;
+    XMFLOAT3 eOff = ApplyMapTransformToPos(kFogEdgeSoftness, 0, 0, mt);
+    float edx = eOff.x - origin.x, edz = eOff.z - origin.z;
+    float worldEdgeSoftness = sqrtf(edx * edx + edz * edz);
+
+    float avgHeight = 0.f;
+    int playerCount = 0;
+    bool isPlayerMode = (m_fogPlayerAgent >= 0);
+
+    if (isPlayerMode)
+    {
+        auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
+        if (pit != m_replayCtx.agents.end() && !pit->second.snapshots.empty()
+            && !pit->second.isDeadAtTime(m_debugTimeline))
+        {
+            float sx, sy, sz;
+            InterpolateAgentPosition(pit->second, m_debugTimeline, is, sx, sy, sz);
+            XMFLOAT3 wpos = ApplyMapTransformToPos(sx, sy, sz, mt);
+            if (terrain) wpos.y = terrain->get_height_at(wpos.x, wpos.z);
+            cb.playerPos[0] = { wpos.x, wpos.y, wpos.z, 0.f };
+            avgHeight = wpos.y;
+            playerCount = 1;
+        }
+    }
+    else
+    {
+        for (auto& [agentId, ard] : m_replayCtx.agents)
+        {
+            if (playerCount >= 8) break;
+            if (ard.teamId != m_fogPerspective) continue;
+            if (ard.type != AgentType::Player) continue;
+            if (ard.snapshots.empty()) continue;
+            if (ard.isDeadAtTime(m_debugTimeline)) continue;
+
+            float sx, sy, sz;
+            InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+            XMFLOAT3 wpos = ApplyMapTransformToPos(sx, sy, sz, mt);
+            if (terrain) wpos.y = terrain->get_height_at(wpos.x, wpos.z);
+
+            cb.playerPos[playerCount] = { wpos.x, wpos.y, wpos.z, 0.f };
+            avgHeight += wpos.y;
+            playerCount++;
+        }
+    }
+
+    float fogOpacity = isPlayerMode ? 0.82f : 0.72f;
+
+    cb.playerCount    = playerCount;
+    cb.compassRadius  = worldCompassRadius;
+    cb.fogOpacity     = (playerCount > 0) ? fogOpacity : 1.0f;
+    cb.edgeSoftness   = worldEdgeSoftness;
+    cb.refHeight      = (playerCount > 0) ? (avgHeight / playerCount) : 0.f;
+    cb.viewportW      = vpW;
+    cb.viewportH      = vpH;
+
+    auto* ctx = m_deviceResources->GetD3DDeviceContext();
+
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState>   prevRS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> prevDSS;
+    UINT prevStencilRef;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        prevBS;
+    FLOAT prevBF[4]; UINT prevSM;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>      prevVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>       prevPS;
+    Microsoft::WRL::ComPtr<ID3D11InputLayout>       prevIL;
+    D3D11_PRIMITIVE_TOPOLOGY prevTopo;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> prevPSCB0;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> prevVSCB0;
+
+    ctx->RSGetState(prevRS.GetAddressOf());
+    ctx->OMGetDepthStencilState(prevDSS.GetAddressOf(), &prevStencilRef);
+    ctx->OMGetBlendState(prevBS.GetAddressOf(), prevBF, &prevSM);
+    ctx->VSGetShader(prevVS.GetAddressOf(), nullptr, nullptr);
+    ctx->PSGetShader(prevPS.GetAddressOf(), nullptr, nullptr);
+    ctx->IAGetInputLayout(prevIL.GetAddressOf());
+    ctx->IAGetPrimitiveTopology(&prevTopo);
+    ctx->PSGetConstantBuffers(0, 1, prevPSCB0.GetAddressOf());
+    ctx->VSGetConstantBuffers(0, 1, prevVSCB0.GetAddressOf());
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    ctx->Map(m_fogCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, &cb, sizeof(cb));
+    ctx->Unmap(m_fogCB.Get(), 0);
+
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    ctx->VSSetShader(m_fogVS.Get(), nullptr, 0);
+    ctx->PSSetShader(m_fogPS.Get(), nullptr, 0);
+    ctx->PSSetConstantBuffers(0, 1, m_fogCB.GetAddressOf());
+
+    ctx->RSSetState(m_fogRS.Get());
+    ctx->OMSetDepthStencilState(m_fogDSS.Get(), 0);
+    float blendFactor[4] = { 0, 0, 0, 0 };
+    ctx->OMSetBlendState(m_fogBS.Get(), blendFactor, 0xFFFFFFFF);
+
+    ctx->Draw(3, 0);
+
+    ctx->RSSetState(prevRS.Get());
+    ctx->OMSetDepthStencilState(prevDSS.Get(), prevStencilRef);
+    ctx->OMSetBlendState(prevBS.Get(), prevBF, prevSM);
+    ctx->VSSetShader(prevVS.Get(), nullptr, 0);
+    ctx->PSSetShader(prevPS.Get(), nullptr, 0);
+    ctx->IASetInputLayout(prevIL.Get());
+    ctx->IASetPrimitiveTopology(prevTopo);
+    ctx->PSSetConstantBuffers(0, 1, prevPSCB0.GetAddressOf());
+    ctx->VSSetConstantBuffers(0, 1, prevVSCB0.GetAddressOf());
+}
+
+bool ReplayWindow::IsAgentInFog(int agentId) const
+{
+    if (m_fogPerspective == 0) return false;
+
+    auto eit = m_replayCtx.agents.find(agentId);
+    if (eit == m_replayCtx.agents.end()) return true;
+    const auto& enemyArd = eit->second;
+
+    if (m_fogPlayerAgent < 0 && enemyArd.teamId == m_fogPerspective) return false;
+
+    float ex, ey, ez;
+    InterpolateAgentPosition(enemyArd, m_debugTimeline, m_replayCtx.interpSettings, ex, ey, ez);
+
+    if (m_fogPlayerAgent >= 0)
+    {
+        if (agentId == m_fogPlayerAgent) return false;
+        auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
+        if (pit == m_replayCtx.agents.end()) return true;
+        if (pit->second.snapshots.empty() || pit->second.isDeadAtTime(m_debugTimeline))
+            return true;
+        float fx, fy, fz;
+        InterpolateAgentPosition(pit->second, m_debugTimeline, m_replayCtx.interpSettings, fx, fy, fz);
+        float dx = ex - fx, dy = ey - fy;
+        return (dx * dx + dy * dy > kFogCompassRadius * kFogCompassRadius);
+    }
+
+    for (auto& [fid, fard] : m_replayCtx.agents)
+    {
+        if (fard.teamId != m_fogPerspective) continue;
+        if (fard.type != AgentType::Player) continue;
+        if (fard.snapshots.empty()) continue;
+        if (fard.isDeadAtTime(m_debugTimeline)) continue;
+
+        float fx, fy, fz;
+        InterpolateAgentPosition(fard, m_debugTimeline, m_replayCtx.interpSettings, fx, fy, fz);
+
+        float dx = ex - fx, dy = ey - fy;
+        if (dx * dx + dy * dy <= kFogCompassRadius * kFogCompassRadius)
+            return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Cylinder agent marker — 3D renderer
 // ---------------------------------------------------------------------------
 
@@ -3073,9 +3421,11 @@ void ReplayWindow::DrawAgentCylinders()
 
         if (isDot) continue;
 
+        bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
+        if (inFog && !m_fogGhostMode) continue;
+
         bool dead = ard.isDeadAtTime(m_debugTimeline);
 
-        // Cylinder rotation: dead = collapsed (90 deg), alive = knockdown tilt or upright
         float tiltDeg = dead ? 90.f : ard.knockdownTiltAtTime(m_debugTimeline);
         XMMATRIX world;
         if (tiltDeg > 0.01f)
@@ -3089,7 +3439,11 @@ void ReplayWindow::DrawAgentCylinders()
         }
 
         XMFLOAT4 color;
-        if (ard.teamId == 1)       color = { 0.290f, 0.565f, 0.847f, 1.f };
+        if (inFog)
+        {
+            color = { 0.4f, 0.4f, 0.4f, 0.30f };
+        }
+        else if (ard.teamId == 1)  color = { 0.290f, 0.565f, 0.847f, 1.f };
         else if (ard.teamId == 2)  color = { 0.816f, 0.282f, 0.282f, 1.f };
         else                       color = { 0.7f, 0.7f, 0.7f, 1.f };
 
@@ -3290,8 +3644,12 @@ void ReplayWindow::DrawAgentOverlay()
     {
         if (ard.snapshots.empty()) continue;
 
-        // Flags are drawn by DrawFlags() using the state machine
         if (ard.type == AgentType::Flag) continue;
+
+        if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
+        {
+            if (!m_fogGhostMode) continue;
+        }
 
         // Spirits only exist within their snapshot time range
         if (ard.type == AgentType::Spirit)
@@ -3674,7 +4032,13 @@ void ReplayWindow::DrawAgentOverlay()
                               IM_COL32(255, 255, 255, 100), 0, 1.5f);
 
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
                     EnterFollowMode(agentId);
+                    if (m_showRangeRings)
+                        m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
+                    if (m_fogPerspective > 0)
+                        m_fogPlayerAgent = (m_fogPlayerAgent == agentId) ? -1 : agentId;
+                }
             }
         }
 
@@ -4095,6 +4459,874 @@ void ReplayWindow::DrawSkillLasers()
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Range Ring Rendering
+// ---------------------------------------------------------------------------
+
+static const ReplayWindow::RingDef kRingDefs[ReplayWindow::kRingTypeCount] = {
+    //                                                    thick  solid  dash       fillA
+    { "Touch",      144.f,  IM_COL32(255, 64, 64, 255),  1.5f, true,  0,0,       0.15f },
+    { "Adjacent",   166.f,  IM_COL32(255,112, 32, 255),  1.5f, true,  0,0,       0.15f },
+    { "Nearby",     240.f,  IM_COL32(255,176, 32, 255),  1.0f, true,  0,0,       0.12f },
+    { "In Area",    322.f,  IM_COL32(255,255, 64, 255),  1.0f, true,  0,0,       0.10f },
+    { "Earshot",   1000.f,  IM_COL32( 64,255,128, 255),  1.0f, true,  0,0,       0.06f },
+    { "Cast Range",1248.f,  IM_COL32( 64,192,255, 255),  2.0f, true,  0,0,       0.05f },
+    { "Passive",   2512.f,  IM_COL32(192, 64,255, 255),  1.0f, true,  0,0,       0.03f },
+    { "Compass",   5020.f,  IM_COL32(128,128,128, 255),  0.5f, false, 8,4,       0.02f },
+};
+
+static constexpr float kRingFillAlpha    = 0.15f;
+static constexpr float kRingSelectFill   = 0.22f;
+static constexpr float kRingDimFactor    = 0.50f;
+static const ImU32 kRingSelectEdge = IM_COL32(128, 255, 128, 255);
+
+static ImU32 ScaleAlpha(ImU32 col, float factor)
+{
+    ImU8 a = (ImU8)((col >> 24) & 0xFF);
+    a = (ImU8)(a * factor);
+    return (col & 0x00FFFFFF) | ((ImU32)a << 24);
+}
+
+void ReplayWindow::DrawRangeRings()
+{
+    if (!m_showRangeRings) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x;
+    float vpH = vp->Size.y;
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const MapTransform& t = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+
+    constexpr int kSamples = 64;
+    constexpr float kPI2 = 6.28318530718f;
+    constexpr float kZOffset = 2.f;
+
+    bool hasSelection = (m_ringAgentFilter >= 0);
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player) continue;
+        if (ard.snapshots.empty()) continue;
+        if (ard.isDeadAtTime(m_debugTimeline)) continue;
+
+        if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
+            continue;
+
+        bool isSelected = (m_ringAgentFilter == agentId);
+
+        if (!isSelected)
+        {
+            if (hasSelection)
+            {
+                bool teamEnabled = (ard.teamId == 1 && m_ringShowBlue)
+                                || (ard.teamId == 2 && m_ringShowRed);
+                if (!teamEnabled) continue;
+            }
+            else
+            {
+                if (ard.teamId == 1 && !m_ringShowBlue) continue;
+                if (ard.teamId == 2 && !m_ringShowRed)  continue;
+            }
+        }
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+
+        for (int ri = 0; ri < kRingTypeCount; ++ri)
+        {
+            bool showRing = m_ringType[ri];
+            bool isHoverPreview = (!showRing && m_ringHoveredType == ri);
+            if (!showRing && !isHoverPreview) continue;
+
+            const auto& def = kRingDefs[ri];
+            float radius = def.radius;
+
+            float dimFactor = (!isSelected && hasSelection) ? 0.25f : 1.f;
+            float thickMul  = (isSelected && hasSelection) ? 1.6f : 1.f;
+            ImU32 edgeCol = def.color;
+            if (dimFactor < 1.f) edgeCol = ScaleAlpha(edgeCol, dimFactor);
+            if (isHoverPreview) edgeCol = ScaleAlpha(def.color, 0.40f);
+
+            ImVec2 pts[kSamples];
+            bool vis[kSamples];
+            int visCount = 0;
+
+            for (int i = 0; i < kSamples; ++i)
+            {
+                float angle = (float(i) / kSamples) * kPI2;
+                float wx = sx + cosf(angle) * radius;
+                float wy = sy + sinf(angle) * radius;
+
+                XMFLOAT3 mp = ApplyMapTransformToPos(wx, wy, sz, t);
+
+                if (terrain)
+                    mp.y = terrain->get_height_at(mp.x, mp.z) + kZOffset;
+
+                float scrX, scrY;
+                vis[i] = ProjectToScreen(viewProj, vpW, vpH, mp, scrX, scrY);
+                pts[i] = ImVec2(scrX, scrY);
+                if (vis[i]) visCount++;
+            }
+
+            if (visCount < 3) continue;
+
+            // Fill pass (brighter when selected, heavily dimmed for teammates)
+            {
+                float fa = isHoverPreview ? 0.10f : (isSelected ? def.fillAlpha * 2.0f : def.fillAlpha);
+                if (dimFactor < 1.f) fa *= dimFactor;
+                ImU32 baseRGB = def.color;
+                ImU32 fillCol = (baseRGB & 0x00FFFFFF) | ((ImU32)(fa * 255.f) << 24);
+                ImVector<ImVec2> polyPts;
+                for (int i = 0; i < kSamples; ++i)
+                    if (vis[i]) polyPts.push_back(pts[i]);
+                if (polyPts.Size >= 3)
+                    dl->AddConvexPolyFilled(polyPts.Data, polyPts.Size, fillCol);
+            }
+
+            // Ring edge pass
+            float thick = def.thickness * thickMul;
+            if (def.solid)
+            {
+                for (int i = 0; i < kSamples; ++i)
+                {
+                    int j = (i + 1) % kSamples;
+                    if (vis[i] && vis[j])
+                        dl->AddLine(pts[i], pts[j], edgeCol, thick);
+                }
+            }
+            else
+            {
+                float dashOn  = def.dashOn;
+                float dashOff = def.dashOff;
+                float cycle = dashOn + dashOff;
+                float accum = 0.f;
+                for (int i = 0; i < kSamples; ++i)
+                {
+                    int j = (i + 1) % kSamples;
+                    float dx = pts[j].x - pts[i].x;
+                    float dy = pts[j].y - pts[i].y;
+                    float segLen = sqrtf(dx * dx + dy * dy);
+
+                    if (vis[i] && vis[j])
+                    {
+                        float pos = fmodf(accum, cycle);
+                        if (pos < dashOn)
+                            dl->AddLine(pts[i], pts[j], edgeCol, thick);
+                    }
+                    accum += segLen;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Range Ring Toolbar UI
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawRangeRingToolbar()
+{
+    if (!m_showRangeRings) return;
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,        ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,      ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+
+    auto* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300.f, 0.f), ImVec2(vp->Size.x, vp->Size.y));
+    ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Always);
+    if (ImGui::Begin("Range Rings", &m_showRangeRings,
+        ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - sz.x);
+        float cy = std::clamp(pos.y, vp->Pos.y, vp->Pos.y + vp->Size.y - sz.y);
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+        auto RingPill = [](const char* label, bool active, ImU32 accent = 0) -> bool {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
+                tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
+                hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
+                bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        auto TeamPill = [](const char* label, bool active, int team) -> bool {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                if (team == 1) {
+                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
+                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
+                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
+                } else if (team == 2) {
+                    bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
+                    tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                    hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
+                    bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
+                } else {
+                    bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
+                    tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
+                    hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
+                    bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
+                }
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        // None / All buttons
+        if (RingPill("None", false))
+            for (int i = 0; i < kRingTypeCount; ++i) m_ringType[i] = false;
+        ImGui::SameLine();
+        if (RingPill("All", false))
+            for (int i = 0; i < kRingTypeCount; ++i) m_ringType[i] = true;
+
+        ImGui::Separator();
+
+        // Ring type pills (two rows: 4 + 4)
+        m_ringHoveredType = -1;
+        for (int i = 0; i < kRingTypeCount; ++i)
+        {
+            if (i == 4) {} // new line
+            else if (i > 0) ImGui::SameLine();
+
+            ImGui::PushID(i);
+            bool clicked = RingPill(kRingDefs[i].name, m_ringType[i], kRingDefs[i].color);
+
+            if (ImGui::IsItemHovered())
+            {
+                m_ringHoveredType = i;
+                ImGui::SetTooltip("%s \xe2\x80\x94 %.0f units", kRingDefs[i].name, kRingDefs[i].radius);
+            }
+
+            if (clicked)
+            {
+                if (ImGui::GetIO().MouseDoubleClicked[0])
+                {
+                    if (m_ringSoloActive && m_ringType[i])
+                    {
+                        for (int k = 0; k < kRingTypeCount; ++k)
+                            m_ringType[k] = m_ringSoloPrev[k];
+                        m_ringSoloActive = false;
+                    }
+                    else
+                    {
+                        for (int k = 0; k < kRingTypeCount; ++k)
+                            m_ringSoloPrev[k] = m_ringType[k];
+                        for (int k = 0; k < kRingTypeCount; ++k)
+                            m_ringType[k] = (k == i);
+                        m_ringSoloActive = true;
+                    }
+                }
+                else
+                {
+                    m_ringType[i] = !m_ringType[i];
+                    m_ringSoloActive = false;
+                }
+            }
+            ImGui::PopID();
+        }
+
+        ImGui::Separator();
+
+        // Team filter (independent toggles)
+        if (TeamPill("Blue", m_ringShowBlue, 1))
+            m_ringShowBlue = !m_ringShowBlue;
+        ImGui::SameLine();
+        if (TeamPill("Red", m_ringShowRed, 2))
+            m_ringShowRed = !m_ringShowRed;
+
+        if (m_ringAgentFilter >= 0)
+        {
+            ImGui::SameLine();
+            auto it = m_replayCtx.agents.find(m_ringAgentFilter);
+            ImVec4 agentCol(1.f, 0.91f, 0.69f, 1.f);
+            if (it != m_replayCtx.agents.end()) {
+                if (it->second.teamId == 1) agentCol = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                else if (it->second.teamId == 2) agentCol = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, agentCol);
+            std::string lbl = (it != m_replayCtx.agents.end())
+                ? std::format("Agent: {} [x]", it->second.playerName)
+                : std::format("Agent: #{} [x]", m_ringAgentFilter);
+            if (ImGui::SmallButton(lbl.c_str()))
+                m_ringAgentFilter = -1;
+            ImGui::PopStyleColor();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(5);
+}
+
+// ---------------------------------------------------------------------------
+// Fog of War Toolbar UI
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawFogOfWarToolbar()
+{
+    if (m_fogPerspective == 0) return;
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,        ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,      ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+
+    auto* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(240.f, 0.f), ImVec2(240.f, vp->Size.y));
+    static bool fogFirstOpen = true;
+    if (fogFirstOpen) {
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 8.f, vp->Pos.y + 8.f), ImGuiCond_Once);
+        fogFirstOpen = false;
+    }
+
+    bool fogOpen = true;
+    if (ImGui::Begin("Fog of War", &fogOpen,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize))
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - sz.x);
+        float cy = std::clamp(pos.y, vp->Pos.y, vp->Pos.y + vp->Size.y - sz.y);
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+
+        auto FogPill = [](const char* label, bool active, int team) -> bool {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                if (team == 1) {
+                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
+                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
+                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
+                } else if (team == 2) {
+                    bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
+                    tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                    hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
+                    bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
+                } else {
+                    bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
+                    tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
+                    hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
+                    bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
+                }
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        ImGui::TextColored(ImVec4(0.78f, 0.72f, 0.55f, 1.f), "Perspective");
+        ImGui::SameLine();
+        if (FogPill("Off", m_fogPerspective == 0 && m_fogPlayerAgent < 0, 0))
+        { m_fogPerspective = 0; m_fogPlayerAgent = -1; }
+        ImGui::SameLine();
+        if (FogPill("Blue", m_fogPerspective == 1 && m_fogPlayerAgent < 0, 1))
+        { m_fogPerspective = (m_fogPerspective == 1 && m_fogPlayerAgent < 0) ? 0 : 1; m_fogPlayerAgent = -1; }
+        ImGui::SameLine();
+        if (FogPill("Red", m_fogPerspective == 2 && m_fogPlayerAgent < 0, 2))
+        { m_fogPerspective = (m_fogPerspective == 2 && m_fogPlayerAgent < 0) ? 0 : 2; m_fogPlayerAgent = -1; }
+
+        if (m_fogPlayerAgent >= 0)
+        {
+            auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
+            std::string pname = (pit != m_replayCtx.agents.end())
+                ? pit->second.partyBarLabel : std::format("#{}", m_fogPlayerAgent);
+            std::string pillLabel = pname + "  \xc3\x97";
+            if (FogPill(pillLabel.c_str(), true, 0))
+                m_fogPlayerAgent = -1;
+        }
+
+        ImGui::Separator();
+
+        ImGui::TextColored(ImVec4(0.78f, 0.72f, 0.55f, 1.f), "Enemies");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.12f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.15f, 0.14f, 0.10f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(1.f, 0.84f, 0.39f, 1.f));
+        if (ImGui::RadioButton("Hide", !m_fogGhostMode)) m_fogGhostMode = false;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Ghost", m_fogGhostMode)) m_fogGhostMode = true;
+        ImGui::PopStyleColor(3);
+
+        ImGui::Separator();
+
+        bool inPlayerMode = (m_fogPlayerAgent >= 0);
+        int sourceCount = 0;
+        bool playerDead = false;
+        std::string playerDeadName;
+
+        if (inPlayerMode)
+        {
+            auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
+            if (pit != m_replayCtx.agents.end() && !pit->second.snapshots.empty())
+            {
+                if (pit->second.isDeadAtTime(m_debugTimeline))
+                {
+                    playerDead = true;
+                    playerDeadName = pit->second.partyBarLabel;
+                }
+                else
+                    sourceCount = 1;
+            }
+        }
+        else
+        {
+            for (auto& [aid, ard] : m_replayCtx.agents) {
+                if (ard.teamId != m_fogPerspective) continue;
+                if (ard.type != AgentType::Player) continue;
+                if (ard.snapshots.empty()) continue;
+                if (!ard.isDeadAtTime(m_debugTimeline)) sourceCount++;
+            }
+        }
+
+        ImU32 dotCol;
+        if (playerDead || sourceCount == 0)
+            dotCol = IM_COL32(220, 60, 60, 255);
+        else if (inPlayerMode)
+            dotCol = IM_COL32(64, 220, 80, 255);
+        else if (sourceCount >= 8)
+            dotCol = IM_COL32(64, 220, 80, 255);
+        else if (sourceCount >= 5)
+            dotCol = IM_COL32(230, 180, 40, 255);
+        else
+            dotCol = IM_COL32(220, 60, 60, 255);
+
+        ImVec2 cur = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float dotR = 4.f;
+        float textH = ImGui::GetTextLineHeight();
+        dl->AddCircleFilled(ImVec2(cur.x + dotR, cur.y + textH * 0.5f), dotR, dotCol);
+        ImGui::Dummy(ImVec2(dotR * 2.f + 4.f, 0));
+        ImGui::SameLine();
+
+        if (playerDead)
+            ImGui::Text("0 / 8 -- %s is dead", playerDeadName.c_str());
+        else if (inPlayerMode)
+            ImGui::Text("1 / 8 players as source");
+        else
+            ImGui::Text("%d / 8 players visible", sourceCount);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(5);
+
+    if (!fogOpen)
+        m_fogPerspective = 0;
+
+    if (m_fogPerspective > 0 && m_fogPlayerAgent >= 0)
+    {
+        auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
+        if (pit != m_replayCtx.agents.end() && !pit->second.snapshots.empty()
+            && pit->second.isDeadAtTime(m_debugTimeline))
+        {
+            std::string msg = pit->second.partyBarLabel + " \xe2\x80\x94 No vision";
+            ImVec2 txtSz = ImGui::CalcTextSize(msg.c_str());
+            auto* fgDl = ImGui::GetForegroundDrawList();
+            auto* mvp  = ImGui::GetMainViewport();
+            ImVec2 center(mvp->Pos.x + mvp->Size.x * 0.5f, mvp->Pos.y + mvp->Size.y * 0.5f);
+            fgDl->AddText(nullptr, 13.f,
+                ImVec2(center.x - txtSz.x * 0.5f, center.y - txtSz.y * 0.5f),
+                IM_COL32(255, 255, 255, 102), msg.c_str());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Morale Panel
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawMoralePanel()
+{
+    if (!m_showMoralePanel) return;
+
+    const float curTime = m_debugTimeline;
+    const auto* vp = ImGui::GetMainViewport();
+
+    struct PlayerMorale {
+        int    agentId = 0;
+        std::string name;
+        int    primaryProf = 0;
+        int    secondaryProf = 0;
+        int    morale = 0;
+        int    deathCount = 0;
+        bool   dead = false;
+    };
+
+    std::vector<PlayerMorale> blueTeam, redTeam;
+
+    int blueBoosts = 0, redBoosts = 0;
+    for (auto& ev : m_replayCtx.stocData.jumbo) {
+        if (ev.time > curTime) break;
+        if (ev.message == "MORALE_BOOST") {
+            if (ev.party_value == 1635021873) ++blueBoosts;
+            else if (ev.party_value == 1635021874) ++redBoosts;
+        }
+    }
+
+    auto countDeaths = [&](const AgentReplayData& ard) -> int {
+        int count = 0;
+        for (size_t i = 1; i < ard.snapshots.size(); ++i) {
+            if (ard.snapshots[i].time > curTime) break;
+            if (ard.snapshots[i].is_dead && !ard.snapshots[i - 1].is_dead)
+                ++count;
+        }
+        return count;
+    };
+
+    auto buildTeam = [&](const std::vector<int>& ids, int boosts) {
+        std::vector<PlayerMorale> result;
+        for (int id : ids) {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end()) continue;
+            const auto& ard = it->second;
+            if (ard.type != AgentType::Player) continue;
+
+            PlayerMorale pm;
+            pm.agentId = id;
+            pm.name = ard.playerName;
+            pm.primaryProf = ard.primaryProf;
+            pm.secondaryProf = ard.secondaryProf;
+            pm.deathCount = countDeaths(ard);
+            pm.morale = std::clamp(boosts * 10 - pm.deathCount * 15, -60, 10);
+            pm.dead = ard.isDeadAtTime(curTime);
+            result.push_back(std::move(pm));
+        }
+        return result;
+    };
+
+    blueTeam = buildTeam(m_team1PlayerIds, blueBoosts);
+    redTeam  = buildTeam(m_team2PlayerIds, redBoosts);
+
+    auto getGuildLabel = [&](const std::string& partyId) -> std::string {
+        auto pit = m_matchMeta.parties.find(partyId);
+        if (pit == m_matchMeta.parties.end()) return "?";
+        std::map<int, int> guildCounts;
+        for (const auto& p : pit->second.players)
+            if (p.guild_id > 0) guildCounts[p.guild_id]++;
+        int bestId = 0, bestCnt = 0;
+        for (const auto& [gid, cnt] : guildCounts)
+            if (cnt > bestCnt) { bestId = gid; bestCnt = cnt; }
+        if (bestId == 0) return "?";
+        auto git = m_matchMeta.guilds.find(std::to_string(bestId));
+        if (git != m_matchMeta.guilds.end())
+            return git->second.name + " [" + git->second.tag + "]";
+        return "?";
+    };
+
+    std::string blueLabel = getGuildLabel("1");
+    std::string redLabel  = getGuildLabel("2");
+
+    constexpr float kPanelW = 520.f;
+    constexpr float kRowH = 22.f;
+    constexpr float kIconSz = 16.f;
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,        ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,      ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->Pos.x + (vp->Size.x - kPanelW) * 0.5f,
+               vp->Pos.y + vp->Size.y - 300.f),
+        ImGuiCond_Once);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(kPanelW, 0.f), ImVec2(kPanelW, vp->Size.y));
+
+    if (!ImGui::Begin("Morale##morale_panel", &m_showMoralePanel,
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(5);
+        return;
+    }
+
+    {
+        ImVec2 wPos = ImGui::GetWindowPos();
+        ImVec2 wSz  = ImGui::GetWindowSize();
+        float cx = std::clamp(wPos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - wSz.x);
+        float cy = std::clamp(wPos.y, vp->Pos.y, vp->Pos.y + vp->Size.y - wSz.y);
+        if (cx != wPos.x || cy != wPos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float fontSize = ImGui::GetFontSize();
+    ID3D11Device* dev = m_deviceResources ? m_deviceResources->GetD3DDevice() : nullptr;
+
+    constexpr ImU32 kBlueTeam = IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
+    constexpr ImU32 kRedTeam  = IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+    constexpr ImU32 kGreen    = IM_COL32(0x40, 0xE0, 0x80, 0xFF);
+    constexpr ImU32 kMuted    = IM_COL32(0x70, 0x7D, 0x88, 0xFF);
+    constexpr ImU32 kAmber    = IM_COL32(0xFF, 0xA0, 0x30, 0xFF);
+    constexpr ImU32 kRed      = IM_COL32(0xFF, 0x50, 0x50, 0xFF);
+    constexpr ImU32 kText     = IM_COL32(0xE8, 0xEC, 0xF2, 0xFF);
+    constexpr ImU32 kTextDead = IM_COL32(0x60, 0x60, 0x60, 0xFF);
+
+    auto moraleColor = [&](int m) -> ImU32 {
+        if (m > 0)    return kGreen;
+        if (m == 0)   return kMuted;
+        if (m >= -15) return kAmber;
+        if (m >= -30) return IM_COL32(0xFF, 0x80, 0x30, 0xFF);
+        return kRed;
+    };
+
+    auto avgColor = [&](float avg) -> ImU32 {
+        if (avg > 0.f)    return kGreen;
+        if (avg >= -5.f)  return kMuted;
+        if (avg >= -15.f) return kAmber;
+        return kRed;
+    };
+
+    const float contentW = kPanelW - 20.f;
+    const float colW = (contentW - 1.f) * 0.5f;
+    const float startX = ImGui::GetCursorScreenPos().x;
+    const float startY = ImGui::GetCursorScreenPos().y;
+
+    size_t maxRows = std::max(blueTeam.size(), redTeam.size());
+
+    // Column headers: guild name [tag] in team color, standard font
+    {
+        ImVec2 p(startX, startY);
+        dl->AddText(ImVec2(p.x + 2.f, p.y), kBlueTeam, blueLabel.c_str());
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), kRedTeam, redLabel.c_str());
+        ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
+    }
+
+    float rowStartY = ImGui::GetCursorScreenPos().y;
+
+    auto drawPlayerRow = [&](const PlayerMorale& pm, float x, float y) {
+        float cx = x;
+
+        // Primary profession icon
+        if (dev && pm.primaryProf >= 1) {
+            ImTextureID tex = LoadProfIcon(dev, pm.primaryProf);
+            if (tex) {
+                float iy = y + (kRowH - kIconSz) * 0.5f;
+                dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+            }
+        }
+        cx += kIconSz + 1.f;
+
+        // Secondary profession icon
+        if (dev && pm.secondaryProf >= 1) {
+            ImTextureID tex = LoadProfIcon(dev, pm.secondaryProf);
+            if (tex) {
+                float iy = y + (kRowH - kIconSz) * 0.5f;
+                dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+            }
+        }
+        cx += kIconSz + 3.f;
+
+        // Player name in standard white/grey
+        ImU32 nameCol = pm.dead ? kTextDead : kText;
+        dl->AddText(ImVec2(cx, y + (kRowH - fontSize) * 0.5f), nameCol, pm.name.c_str());
+
+        // Right side: morale value + dots or star
+        float rightEdge = x + colW;
+        char valBuf[16];
+
+        if (pm.morale > 0) {
+            snprintf(valBuf, sizeof(valBuf), "+%d%%", pm.morale);
+            ImVec2 valSz = ImGui::CalcTextSize(valBuf);
+            float valX = rightEdge - valSz.x - 2.f;
+            dl->AddText(ImVec2(valX, y + (kRowH - fontSize) * 0.5f), kGreen, valBuf);
+            float starX = valX - fontSize;
+            dl->AddText(ImVec2(starX, y + (kRowH - fontSize) * 0.5f), kGreen, "\xe2\x98\x85");
+        }
+        else if (pm.morale == 0) {
+            ImVec2 zSz = ImGui::CalcTextSize("0%");
+            dl->AddText(ImVec2(rightEdge - zSz.x - 2.f, y + (kRowH - fontSize) * 0.5f), kMuted, "0%");
+        }
+        else {
+            snprintf(valBuf, sizeof(valBuf), "%d%%", pm.morale);
+            ImU32 valCol = moraleColor(pm.morale);
+            ImVec2 valSz = ImGui::CalcTextSize(valBuf);
+
+            int dots = std::min(4, pm.deathCount);
+            float dotSpacing = 10.f;
+            float dotsWidth = dots > 0 ? (dots * dotSpacing) : 0.f;
+
+            float totalW = valSz.x + 4.f + dotsWidth + 2.f;
+            float vx = rightEdge - totalW;
+
+            dl->AddText(ImVec2(vx, y + (kRowH - fontSize) * 0.5f), valCol, valBuf);
+            vx += valSz.x + 4.f;
+
+            for (int d = 0; d < dots; ++d) {
+                dl->AddCircleFilled(
+                    ImVec2(vx + d * dotSpacing + 3.f, y + kRowH * 0.5f),
+                    3.f, valCol);
+            }
+        }
+    };
+
+    for (size_t i = 0; i < maxRows; ++i) {
+        float rowY = rowStartY + i * kRowH;
+        if (i < blueTeam.size())
+            drawPlayerRow(blueTeam[i], startX, rowY);
+        if (i < redTeam.size())
+            drawPlayerRow(redTeam[i], startX + colW + 1.f, rowY);
+    }
+
+    float divX = startX + colW;
+    float divTop = rowStartY;
+    float divBot = rowStartY + maxRows * kRowH;
+    dl->AddLine(ImVec2(divX, divTop), ImVec2(divX, divBot),
+                IM_COL32(0xFF, 0xD7, 0x64, 0x30), 1.f);
+
+    ImGui::Dummy(ImVec2(0.f, maxRows * kRowH + 4.f));
+
+    // Footer divider
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + contentW, p.y),
+                    IM_COL32(0xFF, 0xD7, 0x64, 0x20), 1.f);
+        ImGui::Dummy(ImVec2(0.f, 4.f));
+    }
+
+    auto computeAvg = [](const std::vector<PlayerMorale>& team) -> float {
+        if (team.empty()) return 0.f;
+        float sum = 0.f;
+        for (auto& pm : team) sum += static_cast<float>(pm.morale);
+        return sum / static_cast<float>(team.size());
+    };
+
+    float blueAvg = computeAvg(blueTeam);
+    float redAvg  = computeAvg(redTeam);
+
+    // Footer: team averages
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        char buf[32];
+
+        snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
+        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(blueAvg), buf);
+
+        snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(redAvg), buf);
+
+        ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
+    }
+
+    // Bottom bar
+    {
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float barW = contentW;
+        float barH = 8.f;
+        float halfW = barW * 0.5f;
+
+        dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + barW, p.y + barH),
+                          IM_COL32(255, 255, 255, 15), 3.f);
+
+        float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
+        if (blueLen > 1.f) {
+            dl->AddRectFilled(
+                ImVec2(p.x + halfW - blueLen, p.y),
+                ImVec2(p.x + halfW, p.y + barH),
+                IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
+        }
+
+        float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
+        if (redLen > 1.f) {
+            dl->AddRectFilled(
+                ImVec2(p.x + halfW, p.y),
+                ImVec2(p.x + halfW + redLen, p.y + barH),
+                IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
+        }
+
+        dl->AddLine(ImVec2(p.x + halfW, p.y), ImVec2(p.x + halfW, p.y + barH),
+                    IM_COL32(0xFF, 0xD7, 0x64, 0x60), 1.f);
+
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.0f%%", blueAvg);
+        dl->AddText(ImVec2(p.x + 2.f, p.y + barH + 2.f), avgColor(blueAvg), buf);
+
+        snprintf(buf, sizeof(buf), "%.0f%%", redAvg);
+        ImVec2 rSz = ImGui::CalcTextSize(buf);
+        dl->AddText(ImVec2(p.x + barW - rSz.x - 2.f, p.y + barH + 2.f), avgColor(redAvg), buf);
+
+        ImGui::Dummy(ImVec2(0.f, barH + fontSize + 4.f));
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(5);
 }
 
 // ---------------------------------------------------------------------------
@@ -6158,7 +7390,7 @@ static void DrawPartyHealthBar(
     ImDrawList* dl, ImVec2 barTL, float barW, float barH,
     const AgentSnapshot* snap, uint8_t teamId, bool isDead,
     const char* name, const PartyIcons& icons,
-    int followedAgentId, int agentId)
+    int followedAgentId, int agentId, bool fogHidden = false)
 {
     ImVec2 barBR(barTL.x + barW, barTL.y + barH);
 
@@ -6191,6 +7423,17 @@ static void DrawPartyHealthBar(
     float innerH = innerBR.y - innerTL.y;
 
     if (!snap) return;
+
+    if (fogHidden)
+    {
+        dl->AddRectFilled(innerTL, innerBR, IM_COL32(0x18, 0x18, 0x1C, 0xFF));
+        const char* fogText = "???";
+        ImVec2 ts = ImGui::CalcTextSize(fogText);
+        ImVec2 tp(innerTL.x + (innerW - ts.x) * 0.5f, innerTL.y + (innerH - ts.y) * 0.5f);
+        dl->AddText(ImVec2(tp.x + 1, tp.y + 1), IM_COL32(0, 0, 0, 0xCC), fogText);
+        dl->AddText(tp, IM_COL32(0x80, 0x80, 0x80, 0xFF), fogText);
+        return;
+    }
 
     float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
     bool hasDeepWound = snap->has_deep_wound && !isDead;
@@ -6831,9 +8074,21 @@ void ReplayWindow::DrawCombatLog()
                 dl->PopClipRect();
             }
 
-            // --- Death row: special layout ---
+            // --- Death row: [Skull] [ProfIcon] PlayerName died ---
             if (row.category == CombatLogCategory::Death)
             {
+                float cx = startX + kColCProf;
+
+                ImTextureID skullTex = LoadFlagIcon(dev, "death.png");
+                if (skullTex)
+                {
+                    float iy = startY + (kRowH - kIconSz) * 0.5f;
+                    dl->AddImage(skullTex,
+                        ImVec2(cx, iy),
+                        ImVec2(cx + kIconSz, iy + kIconSz));
+                    cx += kIconSz + 4.f;
+                }
+
                 auto cIt = m_replayCtx.agents.find(row.casterId);
                 if (cIt != m_replayCtx.agents.end() && cIt->second.primaryProf > 0 && dev)
                 {
@@ -6842,8 +8097,9 @@ void ReplayWindow::DrawCombatLog()
                     {
                         float iy = startY + (kRowH - kProfSz) * 0.5f;
                         dl->AddImage(pTex,
-                            ImVec2(startX + kColCProf, iy),
-                            ImVec2(startX + kColCProf + kProfSz, iy + kProfSz));
+                            ImVec2(cx, iy),
+                            ImVec2(cx + kProfSz, iy + kProfSz));
+                        cx += kProfSz + 4.f;
                     }
                 }
 
@@ -6851,40 +8107,59 @@ void ReplayWindow::DrawCombatLog()
                 ImU32 col = teamColorU32(row.casterId);
                 std::string deathText = name + " died";
                 dl->PushClipRect(
-                    ImVec2(startX + kColCast, startY),
+                    ImVec2(cx, startY),
                     ImVec2(startX + kColVal + kValW, startY + kRowH), true);
-                dl->AddText(
-                    ImVec2(startX + kColCast, textY), col, deathText.c_str());
+                dl->AddText(ImVec2(cx, textY), col, deathText.c_str());
                 dl->PopClipRect();
-
-                ImTextureID skullTex = LoadFlagIcon(dev, "death.png");
-                if (skullTex)
-                {
-                    float tw = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, deathText.c_str()).x;
-                    float ix = startX + kColCast + tw + 6.f;
-                    float iy = startY + (kRowH - kIconSz) * 0.5f;
-                    dl->AddImage(skullTex,
-                        ImVec2(ix, iy),
-                        ImVec2(ix + kIconSz, iy + kIconSz));
-                }
 
                 ImGui::PopID();
                 continue;
             }
 
-            // --- Jumbo row: special layout ---
+            // --- Jumbo row: [Icon] Message ---
             if (row.category == CombatLogCategory::Jumbo)
             {
+                float cx = startX + kColCProf;
+
+                const char* jIcon = nullptr;
+                if (row.eventType == "BASE_UNDER_ATTACK")
+                    jIcon = "damagedone.png";
+                else if (row.eventType == "GUILD_LORD_UNDER_ATTACK")
+                    jIcon = "kill.png";
+                else if (row.eventType == "CAPTURED_SHRINE")
+                    jIcon = "Health_Shrine_Bonus.jpg";
+                else if (row.eventType == "CAPTURED_TOWER")
+                    jIcon = (row.jumboTeam == 1) ? "Blue_flag_waving.svg.png"
+                                                 : "Red_flag_waving.svg.png";
+                else if (row.eventType == "PARTY_DEFEATED")
+                    jIcon = "death2.png";
+                else if (row.eventType == "MORALE_BOOST")
+                    jIcon = "Morale_10.png";
+                else if (row.eventType == "VICTORY" || row.eventType == "FLAWLESS_VICTORY")
+                    jIcon = "cup.webp";
+
+                if (jIcon)
+                {
+                    ImTextureID jTex = LoadFlagIcon(dev, jIcon);
+                    if (jTex)
+                    {
+                        float iy = startY + (kRowH - kIconSz) * 0.5f;
+                        dl->AddImage(jTex,
+                            ImVec2(cx, iy),
+                            ImVec2(cx + kIconSz, iy + kIconSz));
+                        cx += kIconSz + 6.f;
+                    }
+                }
+
                 ImU32 jCol = (row.jumboTeam == 1) ? uBlue
                            : (row.jumboTeam == 2) ? uRed
                            : uTsCol;
                 const char* jText = JumboMessageDisplayText(row.eventType, row.jumboTeam);
 
                 dl->PushClipRect(
-                    ImVec2(startX + kColCast, startY),
+                    ImVec2(cx, startY),
                     ImVec2(startX + kColVal + kValW, startY + kRowH), true);
-                dl->AddText(
-                    ImVec2(startX + kColCast, textY), jCol, jText);
+                dl->AddText(ImVec2(cx, textY), jCol, jText);
                 dl->PopClipRect();
 
                 ImGui::PopID();
@@ -7233,12 +8508,19 @@ void ReplayWindow::DrawPartyWindows()
             snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
             ImGui::InvisibleButton(btnId, ImVec2(availW, barH));
             if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+            {
                 EnterFollowMode(agentId);
+                if (m_showRangeRings)
+                    m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
+                if (m_fogPerspective > 0)
+                    m_fogPlayerAgent = (m_fogPlayerAgent == agentId) ? -1 : agentId;
+            }
 
+            bool isFogHidden = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,
                                ard.partyBarLabel.c_str(), icons,
-                               m_followedAgentId, agentId);
+                               m_followedAgentId, agentId, isFogHidden);
         }
     };
 

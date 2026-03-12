@@ -258,6 +258,66 @@ private:
     ImTextureID m_deathIconTex = nullptr;
     bool m_deathIconLoaded = false;
 
+public:
+    // --- Fog of War ---
+    int   m_fogPerspective  = 0;     // 0=Off, 1=Blue, 2=Red
+    bool  m_fogGhostMode    = false;
+    int   m_fogLastActive   = 1;
+    int   m_fogPlayerAgent  = -1;    // -1=team mode, else single-player agent id
+    bool  m_fogInitialized  = false;
+
+    struct FogCBData {
+        DirectX::XMFLOAT4X4 invViewProj;
+        DirectX::XMFLOAT4   playerPos[8];
+        float compassRadius;
+        float fogOpacity;
+        float edgeSoftness;
+        float refHeight;
+        float viewportW;
+        float viewportH;
+        int   playerCount;
+        float pad;
+    };
+
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>      m_fogVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>       m_fogPS;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>            m_fogCB;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        m_fogBS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_fogDSS;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState>   m_fogRS;
+
+    void InitFogRenderer();
+    void DrawFogOfWar();
+    void DrawFogOfWarToolbar();
+    bool IsAgentInFog(int agentId) const;
+
+    // --- Morale Panel ---
+    bool m_showMoralePanel = false;
+    void DrawMoralePanel();
+
+    // --- Range Rings ---
+    struct RingDef {
+        const char* name;
+        float radius;
+        ImU32 color;
+        float thickness;
+        bool solid;
+        float dashOn, dashOff;
+        float fillAlpha;
+    };
+    static constexpr int kRingTypeCount = 8;
+    bool m_showRangeRings = false;
+    bool m_ringType[kRingTypeCount] = { false, false, false, false, false, true, false, false };
+    bool m_ringShowBlue    = true;
+    bool m_ringShowRed     = true;
+    int  m_ringAgentFilter = -1;
+    int  m_ringHoveredType = -1;
+    bool m_ringSoloActive  = false;
+    bool m_ringSoloPrev[kRingTypeCount] = {};
+    void DrawRangeRings();
+    void DrawRangeRingToolbar();
+
+private:
     // Cast bar gradient textures (1-pixel wide, N-pixel tall)
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarBgTex;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarFillTex;
