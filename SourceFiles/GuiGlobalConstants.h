@@ -43,6 +43,18 @@ public:
 	inline static bool is_debug_match_metadata_open = false;
 	inline static bool is_replay_browser_open = true;
 
+	// Auto Camera settings (persisted)
+	inline static float  autocam_lookahead   = 3.f;
+	inline static int    autocam_hp_thresh   = 70;   // percent 10-80
+	inline static float  autocam_dwell       = 5.f;
+	inline static bool   autocam_death       = true;
+	inline static bool   autocam_low_hp      = true;
+	inline static bool   autocam_lord        = true;
+	inline static bool   autocam_flag        = true;
+	inline static bool   autocam_rez         = true;
+	inline static bool   autocam_isolated    = true;
+	inline static bool   autocam_flag_carry  = true;
+
 	// Font settings
 	inline static int saved_font_index = 2;
 	inline static float saved_font_size = 15.0f;
@@ -262,6 +274,18 @@ public:
 		file << "replay_filter_width=" << replay_filter_width << "\n";
 		file << "replay_list_height=" << replay_list_height << "\n";
 
+		file << "\n[AutoCamera]\n";
+		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
+		file << "autocam_hp_thresh=" << autocam_hp_thresh << "\n";
+		file << "autocam_dwell=" << static_cast<int>(autocam_dwell) << "\n";
+		file << "autocam_death=" << (autocam_death ? 1 : 0) << "\n";
+		file << "autocam_low_hp=" << (autocam_low_hp ? 1 : 0) << "\n";
+		file << "autocam_lord=" << (autocam_lord ? 1 : 0) << "\n";
+		file << "autocam_flag=" << (autocam_flag ? 1 : 0) << "\n";
+		file << "autocam_rez=" << (autocam_rez ? 1 : 0) << "\n";
+		file << "autocam_isolated=" << (autocam_isolated ? 1 : 0) << "\n";
+		file << "autocam_flag_carry=" << (autocam_flag_carry ? 1 : 0) << "\n";
+
 		file << "\n[Font]\n";
 		file << "font_index=" << saved_font_index << "\n";
 		file << "font_size=" << static_cast<int>(saved_font_size) << "\n";
@@ -324,6 +348,16 @@ public:
 			else if (key == "compass") is_compass_open = (value != 0);
 			else if (key == "debug_match_metadata") is_debug_match_metadata_open = (value != 0);
 			else if (key == "replay_browser") is_replay_browser_open = (value != 0);
+			else if (key == "autocam_lookahead") autocam_lookahead = static_cast<float>(value);
+			else if (key == "autocam_hp_thresh") autocam_hp_thresh = value;
+			else if (key == "autocam_dwell") autocam_dwell = static_cast<float>(value);
+			else if (key == "autocam_death") autocam_death = (value != 0);
+			else if (key == "autocam_low_hp") autocam_low_hp = (value != 0);
+			else if (key == "autocam_lord") autocam_lord = (value != 0);
+			else if (key == "autocam_flag") autocam_flag = (value != 0);
+			else if (key == "autocam_rez") autocam_rez = (value != 0);
+			else if (key == "autocam_isolated") autocam_isolated = (value != 0);
+			else if (key == "autocam_flag_carry") autocam_flag_carry = (value != 0);
 			else if (key == "font_index") saved_font_index = value;
 			else if (key == "font_size") saved_font_size = static_cast<float>(value);
 			else if (key == "window_width") window_width = value;

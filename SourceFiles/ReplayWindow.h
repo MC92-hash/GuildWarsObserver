@@ -433,6 +433,63 @@ private:
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_overlayRS;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_overlayBS;
 
+    // --- Auto Camera system ---
+    struct AutoCameraConfig {
+        float lookaheadSec    = 3.f;
+        float hpThreshold     = 0.70f;
+        float minDwellTime    = 5.f;
+        bool  focusDeath      = true;
+        bool  focusLowHp      = true;
+        bool  focusLord       = true;
+        bool  focusFlag       = true;
+        bool  focusRez        = true;
+        bool  focusIsolated   = true;
+        bool  focusFlagCarry  = true;
+    };
+
+    struct AutoCameraState {
+        int         currentTarget   = -1;
+        int         currentPriority = 0;
+        float       dwellTimer      = 0.f;
+        float       switchCooldown  = 0.f;
+        std::string currentReason;
+        bool        lerpActive      = false;
+        float       lerpElapsed     = 0.f;
+        float       lerpDuration    = 0.5f;
+        DirectX::XMFLOAT3 lerpFrom{};
+    };
+
+    struct AutoCamDebugEntry {
+        int         agentId = 0;
+        std::string name;
+        float       hpPct       = 0.f;
+        float       dmgRate     = 0.f;
+        float       projectedHp = 0.f;
+        int         score       = 0;
+        std::string reason;
+        bool        disqualified = false;
+        std::string disqualReason;
+    };
+    std::vector<AutoCamDebugEntry> m_autoCamDebug;
+    bool m_autoCamShowDebug = false;
+
+    bool            m_autoCameraEnabled = false;
+    bool            m_showAutoCameraPanel = false;
+    AutoCameraConfig m_autoCamCfg;
+    AutoCameraState  m_autoCamState;
+
+    void UpdateAutoCamera(float dt);
+    void DrawAutoCameraPanel();
+    void DrawAutoCameraDebugPanel();
+    void LoadAutoCamSettings();
+    void SaveAutoCamSettings();
+    float EstimateProjectedHp(const AgentReplayData& ard, float time, float lookahead) const;
+    float EstimateProjectedHpEx(const AgentReplayData& ard, float time, float lookahead, float* outDmgRate) const;
+    bool  WillAgentDie(const AgentReplayData& ard, float time, float lookahead) const;
+    bool  IsAgentTakingDamage(int agentId, float time, float window = 1.5f) const;
+    bool  IsAgentIsolated(const AgentReplayData& ard, float time, float radius = 2500.f) const;
+    bool  IsAgentCastingRez(const AgentReplayData& ard, float time) const;
+
     static bool s_classRegistered;
     static constexpr wchar_t kWindowClassName[] = L"GWObsReplayWindowClass";
 };
