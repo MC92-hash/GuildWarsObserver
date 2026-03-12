@@ -295,6 +295,33 @@ public:
     bool m_showMoralePanel = false;
     void DrawMoralePanel();
 
+    // --- Event Timeline ---
+    enum class TimelineEventType { Death, Resurrection, FlagCapture, MoraleBoost, LordAttacked, Victory };
+    struct TimelineEvent {
+        float time = 0.f;
+        TimelineEventType type = TimelineEventType::Death;
+        int agentId = 0;
+        int teamId = 0;
+        int professionId = 0;
+        std::string label;
+    };
+    struct TimelineData {
+        std::vector<float> blueHealth;
+        std::vector<float> redHealth;
+        std::vector<TimelineEvent> events;
+        bool computed = false;
+    };
+    TimelineData m_timeline;
+    bool m_showEventTimeline = false;
+    bool m_tlFilterDeath = true;
+    bool m_tlFilterRes = true;
+    bool m_tlFilterFlag = true;
+    bool m_tlFilterMorale = true;
+    bool m_tlFilterLord = true;
+    bool m_tlFilterVictory = true;
+    void BuildTimelineData();
+    void DrawEventTimeline();
+
     // --- Range Rings ---
     struct RingDef {
         const char* name;

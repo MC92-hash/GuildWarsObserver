@@ -1739,6 +1739,9 @@ void ReplayWindow::Tick()
         m_combatLogBuilt = true;
     }
 
+    if (m_combatLogBuilt && !m_timeline.computed)
+        BuildTimelineData();
+
     // Build flag state timeline (needs both agents and StoC for jumbo events)
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
         BuildFlagStateTimeline();
@@ -1964,6 +1967,7 @@ void ReplayWindow::DrawImGuiOverlay()
                 }
             }
             ImGui::MenuItem("Morale (M)", nullptr, &m_showMoralePanel);
+            ImGui::MenuItem("Event Timeline (T)", nullptr, &m_showEventTimeline);
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::Separator();
@@ -1999,6 +2003,7 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     DrawTimelineController();
+    DrawEventTimeline();
 
     if (m_showAgentDataWindow)
         DrawAgentDataWindow();
@@ -2085,6 +2090,9 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::IsKeyPressed(ImGuiKey_M))
             m_showMoralePanel = !m_showMoralePanel;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_T))
+            m_showEventTimeline = !m_showEventTimeline;
 
         if (ImGui::IsKeyPressed(ImGuiKey_F))
         {
@@ -5396,6 +5404,908 @@ bool ReplayWindow::HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
         SaveUILayout();
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// BuildTimelineData — precompute health curves + collect events
+// ---------------------------------------------------------------------------
+void ReplayWindow::BuildTimelineData()
+{
+    if (m_timeline.computed) return;
+    m_timeline.computed = true;
+
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    int totalSec = static_cast<int>(std::ceil(maxT));
+
+    m_timeline.blueHealth.resize(totalSec + 1, 100.f);
+    m_timeline.redHealth.resize(totalSec + 1, 100.f);
+
+    auto sampleTeamHealth = [&](const std::vector<int>& ids, std::vector<float>& out) {
+        for (int s = 0; s <= totalSec; ++s)
+        {
+            float t = static_cast<float>(s);
+            float sumHp = 0.f, sumMaxHp = 0.f;
+            for (int id : ids)
+            {
+                auto it = m_replayCtx.agents.find(id);
+                if (it == m_replayCtx.agents.end()) continue;
+                const auto& ard = it->second;
+                if (ard.type != AgentType::Player) continue;
+                const AgentSnapshot* snap = FindSnapshotAtTime(ard, t);
+                if (!snap) continue;
+                float mhp = static_cast<float>(snap->max_hp > 0 ? snap->max_hp : 480);
+                sumMaxHp += mhp;
+                if (snap->is_dead)
+                    sumHp += 0.f;
+                else
+                    sumHp += snap->health_pct * mhp;
+            }
+            out[s] = (sumMaxHp > 0.f) ? (sumHp / sumMaxHp * 100.f) : 0.f;
+        }
+    };
+
+    sampleTeamHealth(m_team1PlayerIds, m_timeline.blueHealth);
+    sampleTeamHealth(m_team2PlayerIds, m_timeline.redHealth);
+
+    auto teamForAgent = [&](int agentId) -> int {
+        for (int id : m_team1PlayerIds) if (id == agentId) return 1;
+        for (int id : m_team2PlayerIds) if (id == agentId) return 2;
+        return 0;
+    };
+
+    // Deaths & resurrections from snapshot transitions
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player) continue;
+        int team = teamForAgent(agentId);
+        for (size_t si = 1; si < ard.snapshots.size(); ++si)
+        {
+            const auto& prev = ard.snapshots[si - 1];
+            const auto& cur  = ard.snapshots[si];
+            if (cur.is_dead && !prev.is_dead)
+            {
+                TimelineEvent ev;
+                ev.time = cur.time;
+                ev.type = TimelineEventType::Death;
+                ev.agentId = agentId;
+                ev.teamId = team;
+                ev.professionId = ard.primaryProf;
+                ev.label = ard.playerName.empty() ? ard.partyBarLabel : ard.playerName;
+                m_timeline.events.push_back(ev);
+            }
+            if (!cur.is_dead && prev.is_dead)
+            {
+                TimelineEvent ev;
+                ev.time = cur.time;
+                ev.type = TimelineEventType::Resurrection;
+                ev.agentId = agentId;
+                ev.teamId = team;
+                ev.professionId = ard.primaryProf;
+                ev.label = ard.playerName.empty() ? ard.partyBarLabel : ard.playerName;
+                m_timeline.events.push_back(ev);
+            }
+        }
+    }
+
+    // Jumbo events
+    auto jumboTeamId = [](int pv) -> int {
+        return (pv == 1635021873) ? 1 : (pv == 1635021874) ? 2 : 0;
+    };
+
+    for (auto& ev : m_replayCtx.stocData.jumbo)
+    {
+        TimelineEvent te;
+        te.time = ev.time;
+        te.teamId = jumboTeamId(ev.party_value);
+
+        if (ev.message == "CAPTURED_TOWER") {
+            te.type = TimelineEventType::FlagCapture;
+            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" captured tower");
+        }
+        else if (ev.message == "MORALE_BOOST") {
+            te.type = TimelineEventType::MoraleBoost;
+            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" morale boost");
+        }
+        else if (ev.message == "GUILD_LORD_UNDER_ATTACK" || ev.message == "BASE_UNDER_ATTACK") {
+            te.type = TimelineEventType::LordAttacked;
+            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" lord under attack");
+        }
+        else if (ev.message == "VICTORY" || ev.message == "FLAWLESS_VICTORY") {
+            te.type = TimelineEventType::Victory;
+            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" victory!");
+        }
+        else continue;
+
+        m_timeline.events.push_back(te);
+    }
+
+    std::sort(m_timeline.events.begin(), m_timeline.events.end(),
+        [](const TimelineEvent& a, const TimelineEvent& b) { return a.time < b.time; });
+}
+
+// ---------------------------------------------------------------------------
+// Timeline profession icon loader (Textures/professions/{id}.png — same as website)
+// ---------------------------------------------------------------------------
+static ImTextureID LoadProfIconTimeline(ID3D11Device* device, int profId)
+{
+    if (profId < 1 || profId > 10) return nullptr;
+
+    static ID3D11Device* s_dev = nullptr;
+    static std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_dev) { s_cache.clear(); s_dev = device; }
+
+    auto it = s_cache.find(profId);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    static std::filesystem::path basePath;
+    if (basePath.empty())
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        auto dir = std::filesystem::path(exePath).parent_path();
+        for (int i = 0; i < 5; i++)
+        {
+            if (std::filesystem::exists(dir / "Textures" / "professions"))
+            {
+                basePath = dir / "Textures" / "professions";
+                break;
+            }
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+        if (basePath.empty())
+            basePath = std::filesystem::path(exePath).parent_path() / "Textures" / "professions";
+    }
+
+    char fn[16]; snprintf(fn, sizeof(fn), "%d.png", profId);
+    auto fullPath = basePath / fn;
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, &tex);
+    if (FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[profId] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+// ---------------------------------------------------------------------------
+// NPC icon loader (Textures/NPC subfolder)
+// ---------------------------------------------------------------------------
+static std::filesystem::path GetNPCIconBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "NPC"))
+        {
+            cached = dir / "Textures" / "NPC";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "NPC";
+    return cached;
+}
+
+static ImTextureID LoadNPCIcon(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetNPCIconBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, &tex);
+    if (FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+static std::filesystem::path GetSkillIconsBasePath();
+
+static ImTextureID LoadSkillIconFile(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetSkillIconsBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, &tex);
+    if (FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+// ---------------------------------------------------------------------------
+// DrawEventTimeline — full-width panel above playback bar
+// ---------------------------------------------------------------------------
+void ReplayWindow::DrawEventTimeline()
+{
+    if (!m_showEventTimeline || !m_timeline.computed) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float vpW = vp->Size.x;
+    const float vpH = vp->Size.y;
+
+    const float playbarH = 76.f;
+    const float panelH   = 160.f;
+    const float topPad   = 6.f;
+    const float scrubH   = 16.f;
+    const float chartH   = panelH - topPad - scrubH;
+
+    // Match playback bar's internal layout for horizontal alignment
+    const float PAD    = 12.f;
+    const float timeW  = 80.f;
+    const float badgeW = 64.f;
+
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    auto* dev = m_deviceResources->GetD3DDevice();
+
+    ImVec2 panelPos(vp->Pos.x, vp->Pos.y + vpH - playbarH - panelH);
+    ImGui::SetNextWindowPos(panelPos);
+    ImGui::SetNextWindowSize(ImVec2(vpW, panelH));
+
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar      | ImGuiWindowFlags_NoResize       |
+        ImGuiWindowFlags_NoMove          | ImGuiWindowFlags_NoScrollbar    |
+        ImGuiWindowFlags_NoCollapse      | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBackground    | ImGuiWindowFlags_NoFocusOnAppearing;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    if (!ImGui::Begin("##EventTimeline", nullptr, kFlags))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
+    ImGui::PopStyleVar();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 O = ImGui::GetWindowPos();
+    ImFont* font = ImGui::GetFont();
+    const float fs = font->FontSize;
+
+    // ── Palette ──────────────────────────────────────────────────────────
+    const ImU32 cBg         = IM_COL32( 10,  14,  18, 166);
+    const ImU32 cGlass      = IM_COL32( 18,  16,  10, 100);
+    const ImU32 cBorderHi   = IM_COL32(200, 168,  75,  82);
+    const ImU32 cText       = IM_COL32(232, 223, 200, 255);
+    const ImU32 cTextDim    = IM_COL32(120, 108,  80, 255);
+    const ImU32 cGrid       = IM_COL32(255, 255, 255,   8);
+    const ImU32 cBlue       = IM_COL32( 74, 144, 216, 255);
+    const ImU32 cBlueFill   = IM_COL32( 74, 144, 216,  18);
+    const ImU32 cRed        = IM_COL32(208,  72,  72, 255);
+    const ImU32 cRedFill    = IM_COL32(208,  72,  72,  18);
+    const ImU32 cPlayhead   = IM_COL32(255, 215, 100, 200);
+
+    // ── Background ──────────────────────────────────────────────────────
+    dl->AddRectFilled(O, ImVec2(O.x + vpW, O.y + panelH), cBg, 0.f);
+    {
+        float px = O.x + 2.f, py = O.y + 2.f;
+        float pw = vpW - 4.f, ph = panelH - 4.f;
+        dl->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + ph), cGlass, 6.f);
+        dl->AddRect(ImVec2(px, py), ImVec2(px + pw, py + ph), cBorderHi, 6.f);
+    }
+
+    // ── Chart area — aligned to playback bar's scrubber track ───────────
+    const float glassX = O.x + 2.f;
+    const float glassW = vpW - 4.f;
+    const float chartX0 = glassX + PAD + timeW + 6.f;
+    const float chartX1 = glassX + glassW - PAD - badgeW - 6.f;
+    const float chartY0 = O.y + topPad;
+    const float chartY1 = chartY0 + chartH;
+    const float chartW  = chartX1 - chartX0;
+    const float scrubY0 = chartY1;
+    const float scrubY1 = scrubY0 + scrubH;
+
+    // ── Close button (top-right X) ──────────────────────────────────────
+    {
+        const float btnSz = 18.f;
+        const float margin = 6.f;
+        ImVec2 btnMin(O.x + vpW - margin - btnSz, O.y + margin);
+        ImVec2 btnMax(btnMin.x + btnSz, btnMin.y + btnSz);
+        ImVec2 center((btnMin.x + btnMax.x) * 0.5f, (btnMin.y + btnMax.y) * 0.5f);
+
+        bool btnHov = ImGui::IsMouseHoveringRect(btnMin, btnMax);
+        ImU32 btnBg  = btnHov ? IM_COL32(200, 60, 60, 200) : IM_COL32(255, 255, 255, 20);
+        ImU32 xCol   = btnHov ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 168, 75, 180);
+
+        dl->AddRectFilled(btnMin, btnMax, btnBg, 3.f);
+        dl->AddRect(btnMin, btnMax, IM_COL32(200, 168, 75, 80), 3.f);
+        float cr = 5.f;
+        dl->AddLine(ImVec2(center.x - cr, center.y - cr),
+                    ImVec2(center.x + cr, center.y + cr), xCol, 1.5f);
+        dl->AddLine(ImVec2(center.x + cr, center.y - cr),
+                    ImVec2(center.x - cr, center.y + cr), xCol, 1.5f);
+
+        if (btnHov && ImGui::IsMouseClicked(0))
+            m_showEventTimeline = false;
+    }
+
+    // ── Filter pills — vertical left column ─────────────────────────────
+    {
+        const float iconH   = 16.f;
+        const float pillH   = 20.f;
+        const float pillGap = 3.f;
+        const float pillW   = chartX0 - O.x - 34.f;
+        float lx = O.x + 6.f;
+        float ly = O.y + 6.f;
+        const float fsPill = fs * 1.0f;
+
+        auto FilterPill = [&](const char* label, bool& active, ImTextureID miniTex, ImU32 fallbackCol) {
+            ImVec2 p0(lx, ly);
+            ImVec2 p1(lx + pillW, ly + pillH);
+
+            bool hovered = ImGui::IsMouseHoveringRect(p0, p1);
+            if (hovered && ImGui::IsMouseClicked(0))
+                active = !active;
+
+            ImU32 bg     = active ? IM_COL32(47, 36, 15, 220) : IM_COL32(20, 20, 20, 150);
+            ImU32 border = active ? IM_COL32(255, 215, 100, 255) : IM_COL32(255, 255, 255, 30);
+            ImU32 text   = active ? IM_COL32(255, 232, 176, 255) : IM_COL32(120, 120, 120, 255);
+
+            if (hovered) bg = IM_COL32(60, 50, 20, 220);
+
+            dl->AddRectFilled(p0, p1, bg, 4.f);
+            dl->AddRect(p0, p1, border, 4.f);
+
+            float iy = ly + (pillH - iconH) * 0.5f;
+            if (miniTex)
+                dl->AddImage(miniTex, ImVec2(lx + 5.f, iy), ImVec2(lx + 5.f + iconH, iy + iconH));
+            else
+                dl->AddCircleFilled(ImVec2(lx + 5.f + iconH * 0.5f, ly + pillH * 0.5f), 4.f, fallbackCol);
+
+            dl->AddText(font, fsPill,
+                ImVec2(lx + 5.f + iconH + 4.f, ly + (pillH - fsPill) * 0.5f), text, label);
+
+            ly += pillH + pillGap;
+        };
+
+        ImTextureID deathTex  = LoadProfIcon(dev, 1);
+        ImTextureID flagTex   = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
+        ImTextureID moraleTex = LoadFlagIcon(dev, "bluemorale.png");
+        ImTextureID lordTex   = LoadFlagIcon(dev, "blueguildlord2.png");
+
+        FilterPill("Death",   m_tlFilterDeath,  deathTex,  IM_COL32(208,  72,  72, 255));
+        FilterPill("Flag",    m_tlFilterFlag,   flagTex,   IM_COL32(255, 200,  60, 255));
+        FilterPill("Morale",  m_tlFilterMorale, moraleTex, IM_COL32(212, 160,  32, 255));
+        FilterPill("Lord",    m_tlFilterLord,   lordTex,   IM_COL32(255,  90,  90, 255));
+    }
+
+    // ── Clip to chart area ──────────────────────────────────────────────
+    dl->PushClipRect(ImVec2(chartX0, chartY0), ImVec2(chartX1, chartY1), true);
+
+    // ── Horizontal gridlines only (no vertical lines) ─────────────────
+    for (int pct = 25; pct <= 100; pct += 25)
+    {
+        float y = chartY1 - (pct / 100.f) * chartH;
+        dl->AddLine(ImVec2(chartX0, y), ImVec2(chartX1, y), cGrid);
+    }
+
+    float interval = maxT < 300.f ? 30.f : maxT < 600.f ? 60.f : 120.f;
+
+    // ── Y-axis labels ───────────────────────────────────────────────────
+    dl->PopClipRect();
+    for (int pct = 25; pct <= 100; pct += 25)
+    {
+        float y = chartY1 - (pct / 100.f) * chartH;
+        char buf[8]; snprintf(buf, sizeof(buf), "%d%%", pct);
+        ImVec2 ts = font->CalcTextSizeA(fs * 0.72f, FLT_MAX, 0.f, buf);
+        dl->AddText(font, fs * 0.72f,
+            ImVec2(chartX0 - ts.x - 4.f, y - ts.y * 0.5f), cTextDim, buf);
+    }
+
+    // ── X-axis labels (placed below the scrubber) ───────────────────────
+    for (float t = 0.f; t <= maxT; t += interval)
+    {
+        float x = chartX0 + (t / maxT) * chartW;
+        int mins = static_cast<int>(t) / 60;
+        int secs = static_cast<int>(t) % 60;
+        char buf[16]; snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
+        ImVec2 ts = font->CalcTextSizeA(fs * 0.72f, FLT_MAX, 0.f, buf);
+        dl->AddText(font, fs * 0.72f,
+            ImVec2(x - ts.x * 0.5f, scrubY1 + 1.f), cTextDim, buf);
+    }
+
+    dl->PushClipRect(ImVec2(chartX0, chartY0), ImVec2(chartX1, chartY1), true);
+
+    // ── Health curves (smooth linear interpolation with fill) ───────────
+    auto drawCurve = [&](const std::vector<float>& data, ImU32 lineCol, ImU32 fillCol) {
+        if (data.size() < 2) return;
+        int n = static_cast<int>(data.size());
+
+        // Filled area: build triangle strip using AddConvexPoly in segments
+        for (int i = 0; i < n - 1; ++i)
+        {
+            float t0 = static_cast<float>(i);
+            float t1 = static_cast<float>(i + 1);
+            float x0 = chartX0 + (t0 / maxT) * chartW;
+            float x1 = chartX0 + (t1 / maxT) * chartW;
+            float y0 = chartY1 - (data[i] / 100.f) * chartH;
+            float y1 = chartY1 - (data[i + 1] / 100.f) * chartH;
+
+            ImVec2 quad[4] = {
+                ImVec2(x0, y0), ImVec2(x1, y1),
+                ImVec2(x1, chartY1), ImVec2(x0, chartY1)
+            };
+            dl->AddConvexPolyFilled(quad, 4, fillCol);
+        }
+
+        // Smooth line
+        for (int i = 0; i < n - 1; ++i)
+        {
+            float t0 = static_cast<float>(i);
+            float t1 = static_cast<float>(i + 1);
+            float x0 = chartX0 + (t0 / maxT) * chartW;
+            float x1 = chartX0 + (t1 / maxT) * chartW;
+            float y0 = chartY1 - (data[i] / 100.f) * chartH;
+            float y1 = chartY1 - (data[i + 1] / 100.f) * chartH;
+            dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), lineCol, 1.f);
+        }
+    };
+
+    drawCurve(m_timeline.blueHealth, cBlue, cBlueFill);
+    drawCurve(m_timeline.redHealth,  cRed,  cRedFill);
+
+    // ── Event markers ───────────────────────────────────────────────────
+    auto isEventVisible = [&](const TimelineEvent& e) -> bool {
+        switch (e.type) {
+        case TimelineEventType::Death:        return m_tlFilterDeath;
+        case TimelineEventType::Resurrection: return false;
+        case TimelineEventType::FlagCapture:  return m_tlFilterFlag;
+        case TimelineEventType::MoraleBoost:  return m_tlFilterMorale;
+        case TimelineEventType::LordAttacked: return m_tlFilterLord;
+        case TimelineEventType::Victory:      return false;
+        }
+        return true;
+    };
+
+    // Bottom event row: flags + morale pinned here, 20px from chart bottom
+    const float iconSz       = 22.f;
+    const float bottomRowY   = chartY1 - 10.f; // center of bottom row
+    const float stackStep    = iconSz + 2.f;
+
+    struct MarkerPos { float x, y; int idx; };
+    std::vector<MarkerPos> markers;
+
+    for (int i = 0; i < static_cast<int>(m_timeline.events.size()); ++i)
+    {
+        const auto& e = m_timeline.events[i];
+        if (!isEventVisible(e)) continue;
+
+        float ex = chartX0 + (e.time / maxT) * chartW;
+        float ey;
+
+        if (e.type == TimelineEventType::FlagCapture)
+        {
+            ey = bottomRowY;
+        }
+        else if (e.type == TimelineEventType::MoraleBoost)
+        {
+            ey = bottomRowY;
+            // Collision avoidance: if a flag capture within 3s, offset morale 20px up
+            for (const auto& other : m_timeline.events)
+            {
+                if (other.type == TimelineEventType::FlagCapture &&
+                    isEventVisible(other) &&
+                    std::abs(e.time - other.time) <= 3.f)
+                {
+                    ey = bottomRowY - 20.f;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            int sec = std::clamp(static_cast<int>(e.time), 0,
+                static_cast<int>(m_timeline.blueHealth.size()) - 1);
+            const auto& curve = (e.teamId == 2) ? m_timeline.redHealth : m_timeline.blueHealth;
+            float healthPct = (sec < static_cast<int>(curve.size())) ? curve[sec] : 50.f;
+            ey = chartY1 - (healthPct / 100.f) * chartH;
+            float minY = chartY0 + iconSz * 0.5f + 1.f;
+            if (ey < minY) ey = minY;
+        }
+
+        markers.push_back({ ex, ey, i });
+    }
+
+    // Overlap stacking for curve-based markers (death, lord) — push downward
+    for (size_t mi = 0; mi < markers.size(); ++mi)
+    {
+        const auto& e = m_timeline.events[markers[mi].idx];
+        if (e.type == TimelineEventType::FlagCapture ||
+            e.type == TimelineEventType::MoraleBoost)
+            continue;
+
+        int stackCount = 0;
+        for (size_t mj = 0; mj < mi; ++mj)
+        {
+            const auto& eo = m_timeline.events[markers[mj].idx];
+            if (eo.type == TimelineEventType::FlagCapture ||
+                eo.type == TimelineEventType::MoraleBoost)
+                continue;
+
+            if (std::abs(markers[mi].x - markers[mj].x) < stackStep)
+                stackCount++;
+        }
+        if (stackCount > 0)
+        {
+            markers[mi].y += stackCount * stackStep;
+            if (markers[mi].y + iconSz * 0.5f > chartY1 - 22.f)
+                markers[mi].y = chartY1 - 22.f - iconSz * 0.5f;
+        }
+    }
+
+    // Draw markers with actual texture icons
+    ImVec2 mousePos = ImGui::GetMousePos();
+    int hoveredMarker = -1;
+
+    for (auto& mp : markers)
+    {
+        const auto& e = m_timeline.events[mp.idx];
+        float half = iconSz * 0.5f;
+        ImVec2 iconMin(mp.x - half, mp.y - half);
+        ImVec2 iconMax(mp.x + half, mp.y + half);
+
+        bool mHovered = (mousePos.x >= iconMin.x - 2.f && mousePos.x <= iconMax.x + 2.f &&
+                         mousePos.y >= iconMin.y - 2.f && mousePos.y <= iconMax.y + 2.f);
+        if (mHovered) {
+            hoveredMarker = mp.idx;
+            iconMin = ImVec2(mp.x - half * 1.3f, mp.y - half * 1.3f);
+            iconMax = ImVec2(mp.x + half * 1.3f, mp.y + half * 1.3f);
+        }
+
+        ImU32 teamBorderCol = (e.teamId == 2)
+            ? IM_COL32(208, 72, 72, 255)   // #d04848
+            : IM_COL32( 74,144,216, 255);   // #4a90d8
+
+        switch (e.type) {
+        case TimelineEventType::Death: {
+            dl->AddRectFilled(iconMin, iconMax,
+                              IM_COL32(10, 10, 10, 230), 2.f);
+            dl->AddRect(iconMin, iconMax,
+                        teamBorderCol, 2.f, 0, 2.f);
+            ImTextureID profTex = LoadProfIcon(dev, e.professionId);
+            if (profTex)
+                dl->AddImage(profTex, iconMin, iconMax);
+            else {
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "X");
+            }
+            // Subtle red cross overlay
+            {
+                const ImU32 crossCol = IM_COL32(220, 40, 40, 120);
+                dl->AddLine(ImVec2(iconMin.x + 2.f, iconMin.y + 2.f),
+                            ImVec2(iconMax.x - 2.f, iconMax.y - 2.f), crossCol, 1.5f);
+                dl->AddLine(ImVec2(iconMax.x - 2.f, iconMin.y + 2.f),
+                            ImVec2(iconMin.x + 2.f, iconMax.y - 2.f), crossCol, 1.5f);
+            }
+            break;
+        }
+        case TimelineEventType::FlagCapture: {
+            const char* flagFile = (e.teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+            ImTextureID tex = LoadFlagIcon(dev, flagFile);
+            if (tex)
+                dl->AddImage(tex, iconMin, iconMax);
+            else {
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "F");
+            }
+            break;
+        }
+        case TimelineEventType::MoraleBoost: {
+            const char* moraleFile = (e.teamId == 2) ? "redmorale.png" : "bluemorale.png";
+            ImTextureID tex = LoadFlagIcon(dev, moraleFile);
+            if (tex)
+                dl->AddImage(tex, iconMin, iconMax);
+            else {
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "M");
+            }
+            break;
+        }
+        case TimelineEventType::LordAttacked: {
+            const char* lordFile = (e.teamId == 2) ? "redguildlord2.png" : "blueguildlord2.png";
+            ImTextureID tex = LoadFlagIcon(dev, lordFile);
+            if (tex)
+                dl->AddImage(tex, iconMin, iconMax);
+            else {
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "!");
+            }
+            break;
+        }
+        default: break;
+        }
+    }
+
+    // ── Playhead (main chart) ───────────────────────────────────────────
+    {
+        float phX = chartX0 + (m_debugTimeline / maxT) * chartW;
+        dl->AddLine(ImVec2(phX, chartY0), ImVec2(phX, chartY1), cPlayhead, 1.5f);
+        dl->AddTriangleFilled(
+            ImVec2(phX - 4.f, chartY0),
+            ImVec2(phX + 4.f, chartY0),
+            ImVec2(phX,       chartY0 + 6.f), cPlayhead);
+    }
+
+    // ── Hover crosshair + tooltip ───────────────────────────────────────
+    bool chartHovered = (mousePos.x >= chartX0 && mousePos.x <= chartX1 &&
+                         mousePos.y >= chartY0 && mousePos.y <= chartY1);
+    if (chartHovered)
+    {
+        dl->AddLine(ImVec2(mousePos.x, chartY0), ImVec2(mousePos.x, chartY1),
+            IM_COL32(255, 255, 255, 40), 1.f);
+
+        float hoverT = ((mousePos.x - chartX0) / chartW) * maxT;
+        int sec = std::clamp(static_cast<int>(hoverT), 0,
+            static_cast<int>(m_timeline.blueHealth.size()) - 1);
+        float bh = m_timeline.blueHealth[sec];
+        float rh = m_timeline.redHealth[sec];
+        int mins = static_cast<int>(hoverT) / 60;
+        int secs = static_cast<int>(hoverT) % 60;
+
+        dl->PopClipRect();
+
+        char ttBuf[128];
+        snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
+        ImVec2 ttSz = font->CalcTextSizeA(fs * 0.78f, FLT_MAX, 0.f, ttBuf);
+        float ttX = std::clamp(mousePos.x - ttSz.x * 0.5f, chartX0, chartX1 - ttSz.x - 8.f);
+        float ttY = mousePos.y - ttSz.y - 10.f;
+        if (ttY < chartY0) ttY = mousePos.y + 14.f;
+
+        dl->AddRectFilled(
+            ImVec2(ttX - 4.f, ttY - 2.f),
+            ImVec2(ttX + ttSz.x + 4.f, ttY + ttSz.y + 2.f),
+            IM_COL32(14, 16, 20, 230), 4.f);
+        dl->AddRect(
+            ImVec2(ttX - 4.f, ttY - 2.f),
+            ImVec2(ttX + ttSz.x + 4.f, ttY + ttSz.y + 2.f),
+            IM_COL32(200, 168, 75, 80), 4.f);
+        dl->AddText(font, fs * 0.78f, ImVec2(ttX, ttY), cText, ttBuf);
+
+        dl->PushClipRect(ImVec2(chartX0, chartY0), ImVec2(chartX1, chartY1), true);
+    }
+
+    // ── Marker tooltip ──────────────────────────────────────────────────
+    if (hoveredMarker >= 0)
+    {
+        const auto& e = m_timeline.events[hoveredMarker];
+        dl->PopClipRect();
+
+        const char* typeName = "";
+        switch (e.type) {
+        case TimelineEventType::Death:        typeName = "Death"; break;
+        case TimelineEventType::FlagCapture:  typeName = "Flag Capture"; break;
+        case TimelineEventType::MoraleBoost:  typeName = "Morale Boost"; break;
+        case TimelineEventType::LordAttacked: typeName = "Lord Attacked"; break;
+        default: break;
+        }
+
+        int mins = static_cast<int>(e.time) / 60;
+        int secs = static_cast<int>(e.time) % 60;
+        char ttBuf[256];
+        if (!e.label.empty())
+            snprintf(ttBuf, sizeof(ttBuf), "[%d:%02d] %s - %s", mins, secs, typeName, e.label.c_str());
+        else
+            snprintf(ttBuf, sizeof(ttBuf), "[%d:%02d] %s", mins, secs, typeName);
+
+        ImVec2 ttSz = font->CalcTextSizeA(fs * 0.78f, FLT_MAX, 0.f, ttBuf);
+        float ttX = std::clamp(mousePos.x - ttSz.x * 0.5f, chartX0, chartX1 - ttSz.x - 8.f);
+        float ttY = mousePos.y - ttSz.y - 22.f;
+        if (ttY < chartY0) ttY = mousePos.y + 14.f;
+
+        dl->AddRectFilled(
+            ImVec2(ttX - 4.f, ttY - 2.f),
+            ImVec2(ttX + ttSz.x + 4.f, ttY + ttSz.y + 2.f),
+            IM_COL32(14, 16, 20, 240), 4.f);
+        dl->AddRect(
+            ImVec2(ttX - 4.f, ttY - 2.f),
+            ImVec2(ttX + ttSz.x + 4.f, ttY + ttSz.y + 2.f),
+            IM_COL32(200, 168, 75, 100), 4.f);
+        dl->AddText(font, fs * 0.78f, ImVec2(ttX, ttY), cText, ttBuf);
+
+        if (ImGui::IsMouseClicked(0))
+            m_debugTimeline = std::clamp(e.time, 0.f, maxT);
+
+        dl->PushClipRect(ImVec2(chartX0, chartY0), ImVec2(chartX1, chartY1), true);
+    }
+
+    dl->PopClipRect();
+
+    // ── Scrubber strip ──────────────────────────────────────────────────
+    dl->AddLine(ImVec2(chartX0, scrubY0), ImVec2(chartX1, scrubY0),
+        IM_COL32(200, 168, 75, 40), 1.f);
+    dl->PushClipRect(ImVec2(chartX0, scrubY0 + 1.f), ImVec2(chartX1, scrubY1), true);
+    dl->AddRectFilled(ImVec2(chartX0, scrubY0 + 1.f), ImVec2(chartX1, scrubY1),
+        IM_COL32(255, 255, 255, 6));
+
+    // Mini health curves in scrubber (smooth)
+    {
+        int n = static_cast<int>(m_timeline.blueHealth.size());
+        for (int i = 0; i < n - 1; ++i)
+        {
+            float t0 = static_cast<float>(i);
+            float t1 = static_cast<float>(i + 1);
+            float x0 = chartX0 + (t0 / maxT) * chartW;
+            float x1 = chartX0 + (t1 / maxT) * chartW;
+
+            float by0 = scrubY1 - (m_timeline.blueHealth[i] / 100.f) * scrubH;
+            float by1 = scrubY1 - (m_timeline.blueHealth[i + 1] / 100.f) * scrubH;
+            dl->AddLine(ImVec2(x0, by0), ImVec2(x1, by1), IM_COL32(74, 200, 255, 100), 1.f);
+
+            float ry0 = scrubY1 - (m_timeline.redHealth[i] / 100.f) * scrubH;
+            float ry1 = scrubY1 - (m_timeline.redHealth[i + 1] / 100.f) * scrubH;
+            dl->AddLine(ImVec2(x0, ry0), ImVec2(x1, ry1), IM_COL32(255, 107, 107, 100), 1.f);
+        }
+    }
+
+    // Scrubber playhead
+    {
+        float phX = chartX0 + (m_debugTimeline / maxT) * chartW;
+        dl->AddLine(ImVec2(phX, scrubY0), ImVec2(phX, scrubY1), cPlayhead, 2.f);
+    }
+
+    dl->PopClipRect();
+
+    // Unified click-drag scrubbing for both chart and scrubber areas
+    bool anyTimelineHovered = (mousePos.x >= chartX0 && mousePos.x <= chartX1 &&
+                               mousePos.y >= chartY0 && mousePos.y <= scrubY1);
+    static bool timelineDragging = false;
+    if (anyTimelineHovered && ImGui::IsMouseClicked(0) && hoveredMarker < 0)
+        timelineDragging = true;
+    if (!ImGui::IsMouseDown(0))
+        timelineDragging = false;
+    if (timelineDragging)
+    {
+        float t = ((mousePos.x - chartX0) / chartW) * maxT;
+        m_debugTimeline = std::clamp(t, 0.f, maxT);
+    }
+
+    // ── Bottom border shimmer ───────────────────────────────────────────
+    {
+        float sx = O.x + 12.f, sw = vpW - 24.f;
+        float sy = O.y + panelH - 1.f;
+        float mx = sx + sw * 0.5f;
+        dl->AddRectFilledMultiColor(
+            ImVec2(sx, sy), ImVec2(mx, sy + 1.f),
+            IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100),
+            IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0));
+        dl->AddRectFilledMultiColor(
+            ImVec2(mx, sy), ImVec2(sx + sw, sy + 1.f),
+            IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0),
+            IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100));
+    }
+
+    ImGui::End();
 }
 
 void ReplayWindow::DrawMatchTimer()
