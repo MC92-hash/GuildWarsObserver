@@ -449,6 +449,7 @@
     <ClCompile Include="SourceFiles\draw_dat_load_progress_bar.cpp" />
     <ClCompile Include="SourceFiles\draw_extract_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_file_info_editor_panel.cpp" />
+    <ClCompile Include="SourceFiles\draw_first_launch.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_for_open_dat_file.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_window_controller.cpp" />
     <ClCompile Include="SourceFiles\draw_hex_editor_panel.cpp" />

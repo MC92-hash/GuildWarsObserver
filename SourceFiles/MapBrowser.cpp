@@ -8,6 +8,7 @@
 #include "draw_dat_load_progress_bar.h"
 #include "draw_picking_info.h"
 #include "draw_ui.h"
+#include "draw_first_launch.h"
 #include "draw_timeline.h"
 #include "animation_state.h"
 #include "ModelViewer/ModelViewer.h"
@@ -209,23 +210,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     m_deviceResources->CreateWindowSizeDependentResources();
     CreateWindowSizeDependentResources();
 
-    m_map_renderer = std::make_unique<MapRenderer>(m_deviceResources->GetD3DDevice(),
-        m_deviceResources->GetD3DDeviceContext(), m_input_manager);
-    m_map_renderer->Initialize(static_cast<float>(width), static_cast<float>(height));
-
-    m_agent_overlay = std::make_unique<AgentOverlay>(
-        m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
-    m_agent_overlay->Initialize();
-
-    {
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        auto replayPath = std::filesystem::path(exePath).parent_path() / "replay.json";
-        if (std::filesystem::exists(replayPath))
-            m_match_replay.LoadFromFile(replayPath);
-    }
-
-    // Setup Dear ImGui
+    // --- Setup ImGui + TextureCache early so we can show the loading screen ---
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -234,7 +219,6 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     g_Cursors.Load();
 
-    // Enable INI persistence for window positions/sizes
     static std::string iniFilePath;
     if (iniFilePath.empty()) {
         wchar_t exePath[MAX_PATH];
@@ -253,16 +237,43 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     ImGui::PushStyleColor(ImGuiCol_TitleBg, style.Colors[ImGuiCol_WindowBg]);
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, style.Colors[ImGuiCol_WindowBg]);
 
-    // Setup Platform/Renderer backends
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
 
     GetTextureCache().Init(m_deviceResources->GetD3DDevice());
 
-    // Load saved window visibility settings
     GuiGlobalConstants::LoadSettings();
 
-    // Load the user's preferred font
+    // Present a dark frame immediately so the user doesn't see a white window
+    // while the heavier initialization work below runs.
+    // We intentionally avoid ImGui here to keep ImGui state pristine for the
+    // real render loop.
+    {
+        auto* ctx = m_deviceResources->GetD3DDeviceContext();
+        auto* rtv = m_deviceResources->GetRenderTargetView();
+        float dark[4] = { 0.078f, 0.094f, 0.118f, 1.f };
+        ctx->ClearRenderTargetView(rtv, dark);
+        m_deviceResources->Present();
+    }
+
+    // --- Now do the heavier initialization (user already sees loading screen) ---
+
+    m_map_renderer = std::make_unique<MapRenderer>(m_deviceResources->GetD3DDevice(),
+        m_deviceResources->GetD3DDeviceContext(), m_input_manager);
+    m_map_renderer->Initialize(static_cast<float>(width), static_cast<float>(height));
+
+    m_agent_overlay = std::make_unique<AgentOverlay>(
+        m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
+    m_agent_overlay->Initialize();
+
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        auto replayPath = std::filesystem::path(exePath).parent_path() / "replay.json";
+        if (std::filesystem::exists(replayPath))
+            m_match_replay.LoadFromFile(replayPath);
+    }
+
     LoadSelectedFont(GuiGlobalConstants::saved_font_size);
 
     // Load skill database (walk up from exe to find Data folder)

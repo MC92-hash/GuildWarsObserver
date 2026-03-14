@@ -755,6 +755,49 @@ static void ParseUnknownEvents(const std::string& content, StoCData& data)
     }
 }
 
+static void ParseLordEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[10];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 10);
+                if (n >= 9)
+                {
+                    std::string_view typeName(tok[0].begin,
+                                              tok[0].end - tok[0].begin);
+                    if (typeName == "LORD_DAMAGE")
+                    {
+                        StoCLordDamageEvent ev;
+                        ev.time           = li.time;
+                        ev.caster_id      = ToInt(tok[1].begin, tok[1].end);
+                        ev.target_id      = ToInt(tok[2].begin, tok[2].end);
+                        ev.value          = ToFloat(tok[3].begin, tok[3].end);
+                        ev.damage_type    = ToInt(tok[4].begin, tok[4].end);
+                        ev.attacking_team = ToInt(tok[5].begin, tok[5].end);
+                        ev.damage         = ToInt(tok[6].begin, tok[6].end);
+                        ev.damage_after   = ToInt(tok[8].begin, tok[8].end);
+                        data.lordDamage.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // File dispatch table
 // ---------------------------------------------------------------------------
@@ -773,6 +816,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "combat_events",      ParseCombatEvents },
     { "jumbo_messages",     ParseJumboMessages },
     { "unknown_events",     ParseUnknownEvents },
+    { "lord_events",        ParseLordEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

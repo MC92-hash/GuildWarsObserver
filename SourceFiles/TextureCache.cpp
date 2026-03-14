@@ -50,7 +50,7 @@ ID3D11ShaderResourceView* TextureCache::LoadFromFile(const std::wstring& wpath)
     if (!std::filesystem::exists(wpath)) return nullptr;
 
     DirectX::ScratchImage image;
-    HRESULT hr = DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    HRESULT hr = DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, image);
     if (FAILED(hr)) return nullptr;
 
     const auto& meta = image.GetMetadata();

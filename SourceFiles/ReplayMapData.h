@@ -713,15 +713,28 @@ struct UnknownEvent
     std::string raw_line;
 };
 
+struct StoCLordDamageEvent
+{
+    float time            = 0.f;
+    int   caster_id       = 0;
+    int   target_id       = 0;
+    float value           = 0.f;
+    int   damage_type     = 0;
+    int   attacking_team  = 0;
+    int   damage          = 0;
+    int   damage_after    = 0;
+};
+
 struct StoCData
 {
-    std::vector<AgentMovementEvent>   agentMovement;
-    std::vector<SkillActivationEvent> skill;
-    std::vector<AttackSkillEvent>     attackSkill;
-    std::vector<BasicAttackEvent>     basicAttack;
-    std::vector<CombatEvent>          combat;
-    std::vector<JumboMessageEvent>    jumbo;
-    std::vector<UnknownEvent>         unknown;
+    std::vector<AgentMovementEvent>     agentMovement;
+    std::vector<SkillActivationEvent>   skill;
+    std::vector<AttackSkillEvent>       attackSkill;
+    std::vector<BasicAttackEvent>       basicAttack;
+    std::vector<CombatEvent>            combat;
+    std::vector<JumboMessageEvent>      jumbo;
+    std::vector<UnknownEvent>           unknown;
+    std::vector<StoCLordDamageEvent>    lordDamage;
 };
 
 struct StoCParseProgress

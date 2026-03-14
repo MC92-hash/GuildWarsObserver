@@ -141,6 +141,8 @@ private:
     std::vector<int> m_itemIds;
     std::vector<int> m_unknownIds;
     bool m_agentsClassified    = false;
+    bool m_replayTimeConsolidated = false;
+    float m_displayTimeOffset  = 0.f;
     bool m_moveEventsBuilt     = false;
     bool m_castIntervalsBuilt  = false;
     bool m_skillUseTimelineBuilt = false;
@@ -253,6 +255,7 @@ private:
     bool m_showAgentOverlay = true;
     bool m_showSkillIcons   = true;
     bool m_showSkillLasers  = true;
+    bool m_show3DLabels     = true;
     void DrawSkillLasers();
 
     ImTextureID m_deathIconTex = nullptr;
@@ -294,6 +297,36 @@ public:
     // --- Morale Panel ---
     bool m_showMoralePanel = false;
     void DrawMoralePanel();
+
+    // --- Lord Damage Panel ---
+    struct LordAttackerRow {
+        int   agentId     = 0;
+        int   professionId = 0;
+        std::string name;
+        int   totalDmg    = 0;
+        float pct         = 0.f;
+        uint8_t teamId    = 0;
+    };
+    struct LordHitEvent {
+        float time     = 0.f;
+        int   casterId = 0;
+        int   rawDmg   = 0;
+    };
+    struct LordDamageData {
+        int      lordAgentId = -1;
+        float    lowPointHp  = 1.f;
+        int      totalDmgAbs = 0;
+        int      phaseCount  = 0;
+        uint32_t lordMaxHp   = 0;
+        std::vector<LordAttackerRow> attackers;
+        std::vector<bool> damageBuckets;
+        std::vector<LordHitEvent> hits;
+    };
+    LordDamageData m_lordDmg[2];
+    bool m_showLordDamagePanel = false;
+    bool m_lordDamageBuilt = false;
+    void BuildLordDamageData();
+    void DrawLordDamagePanel();
 
     // --- Event Timeline ---
     enum class TimelineEventType { Death, Resurrection, FlagCapture, MoraleBoost, LordAttacked, Victory };
@@ -489,6 +522,60 @@ private:
     bool  IsAgentTakingDamage(int agentId, float time, float window = 1.5f) const;
     bool  IsAgentIsolated(const AgentReplayData& ard, float time, float radius = 2500.f) const;
     bool  IsAgentCastingRez(const AgentReplayData& ard, float time) const;
+
+    // --- Top View mode ---
+    bool  m_topViewActive         = false;
+    bool  m_topViewTransitioning  = false;
+    float m_topViewTransTimer     = 0.f;
+    float m_topViewTransDuration  = 1.0f;
+
+    // Saved state before entering top view
+    DirectX::XMFLOAT3 m_tvSavedPos{};
+    float              m_tvSavedYaw   = 0.f;
+    float              m_tvSavedPitch = 0.f;
+    CameraMode         m_tvSavedCamMode = CameraMode::Free;
+    int                m_tvSavedFollowId = -1;
+    float              m_tvSavedFollowDist = 0.f;
+    float              m_tvSavedFollowYaw  = 0.f;
+    float              m_tvSavedFollowPitch = 0.f;
+    bool               m_tvSavedAutoCam    = false;
+    int                m_tvSavedFogPerspective = 0;
+    bool               m_tvSavedSkillIcons = true;
+    bool               m_tvSavedSkillLasers = true;
+    bool               m_tvSavedLodEnabled = false;
+    bool               m_tvSavedShow3DLabels = true;
+
+    // Transition interpolation endpoints
+    DirectX::XMFLOAT3 m_tvTransFrom{};
+    float              m_tvTransFromYaw   = 0.f;
+    float              m_tvTransFromPitch = 0.f;
+    DirectX::XMFLOAT3 m_tvTransTo{};
+    float              m_tvTransToYaw     = 0.f;
+    float              m_tvTransToPitch   = 0.f;
+
+    void EnterTopView();
+    void ExitTopView();
+    void UpdateTopViewTransition(float dt);
+    DirectX::XMFLOAT3 ComputeTopViewPosition() const;
+
+    // --- Incoming effect display ---
+    enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex };
+    struct IncomingEffect {
+        int             skillId     = 0;
+        std::string     label;
+        IncomingEffectType type     = IncomingEffectType::Damage;
+        float           spawnTime   = 0.f;
+        int             slot        = 0;
+    };
+    static constexpr float kEffectLifetime = 1.2f;
+    static constexpr int   kEffectMaxSlots = 4;
+    std::vector<IncomingEffect> m_incomingEffects;
+    float m_lastEffectScanTime = -1.f;
+    int   m_focusedAgentId     = -1;
+
+    void UpdateIncomingEffects();
+    void RenderIncomingEffects();
+    int  GetFocusedAgentId() const;
 
     static bool s_classRegistered;
     static constexpr wchar_t kWindowClassName[] = L"GWObsReplayWindowClass";

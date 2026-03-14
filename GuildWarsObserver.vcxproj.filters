@@ -722,6 +722,9 @@
     <ClCompile Include="SourceFiles\draw_dat_load_progress_bar.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="SourceFiles\draw_first_launch.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="SourceFiles\draw_gui_for_open_dat_file.cpp">
       <Filter>GUI</Filter>
     </ClCompile>

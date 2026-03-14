@@ -1130,6 +1130,46 @@ void ReplayWindow::Tick()
     // Poll async StoC event parsing
     PollStoCParseCompletion(m_replayCtx);
 
+    // Once both parsers are done, consolidate maxReplayTime from all sources
+    if (m_replayCtx.agentsLoaded && m_replayCtx.stocLoaded && !m_replayTimeConsolidated)
+    {
+        m_replayTimeConsolidated = true;
+
+        float maxT = m_replayCtx.maxReplayTime;
+
+        // Official match end from infos.json
+        if (m_matchMeta.match_end_time_ms > 0)
+            maxT = std::max(maxT, m_matchMeta.match_end_time_ms / 1000.f);
+
+        // Max StoC event timestamps
+        auto& sd = m_replayCtx.stocData;
+        if (!sd.combat.empty())
+            maxT = std::max(maxT, sd.combat.back().time);
+        if (!sd.skill.empty())
+            maxT = std::max(maxT, sd.skill.back().time);
+        if (!sd.attackSkill.empty())
+            maxT = std::max(maxT, sd.attackSkill.back().time);
+        if (!sd.lordDamage.empty())
+            maxT = std::max(maxT, sd.lordDamage.back().time);
+        if (!sd.jumbo.empty())
+            maxT = std::max(maxT, sd.jumbo.back().time);
+
+        m_replayCtx.maxReplayTime = maxT;
+
+        // Compute display offset so displayed time matches match_duration
+        // (match_duration excludes the ~60s GvG grace period)
+        m_displayTimeOffset = 0.f;
+        if (!m_matchMeta.match_duration.empty())
+        {
+            float displayDur = 0.f;
+            int mm = 0, ss = 0;
+            if (sscanf(m_matchMeta.match_duration.c_str(), "%d:%d", &mm, &ss) == 2)
+                displayDur = static_cast<float>(mm * 60 + ss);
+            if (displayDur > 0.f && maxT > displayDur)
+                m_displayTimeOffset = maxT - displayDur;
+        }
+    }
+
     // Once agents are loaded, classify and build per-category lists
     if (m_replayCtx.agentsLoaded && !m_agentsClassified && !m_replayCtx.agents.empty())
     {
@@ -1325,12 +1365,35 @@ void ReplayWindow::Tick()
                 processEnd(ev.caster_id, ev.time);
         }
 
-        for (auto& ev : m_replayCtx.stocData.attackSkill)
         {
-            if (ev.type == "ATTACK_SKILL_ACTIVATED")
-                processStart(ev.caster_id, ev.time, ev.skill_id);
-            else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
-                processEnd(ev.caster_id, ev.time);
+            auto& skillDb = GetSkillDatabase();
+            auto implicitClose = [&](int casterId) {
+                auto oc = openCasts.find(casterId);
+                if (oc == openCasts.end()) return;
+                const SkillInfo* si = skillDb.Get(oc->second.skillId);
+                float act = (si && si->activation > 0.01f) ? si->activation : 0.f;
+                oc->second.end = oc->second.start + act;
+                auto it = m_replayCtx.agents.find(casterId);
+                if (it != m_replayCtx.agents.end())
+                    it->second.castHistory.push_back(oc->second);
+                openCasts.erase(oc);
+            };
+
+            for (auto& ev : m_replayCtx.stocData.attackSkill)
+            {
+                if (ev.type == "ATTACK_SKILL_ACTIVATED")
+                {
+                    implicitClose(ev.caster_id);
+                    processStart(ev.caster_id, ev.time, ev.skill_id);
+                }
+                else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
+                    processEnd(ev.caster_id, ev.time);
+            }
+            // Flush remaining orphans
+            std::vector<int> orphanIds;
+            for (auto& [id, ci] : openCasts) orphanIds.push_back(id);
+            for (int id : orphanIds) implicitClose(id);
+            openCasts.clear();
         }
 
         // Sort each agent's cast history by start time
@@ -1387,27 +1450,51 @@ void ReplayWindow::Tick()
 
         // 2) Process StoC attack skill events
         openCasts.clear();
-        for (auto& ev : m_replayCtx.stocData.attackSkill)
         {
-            if (ev.type == "ATTACK_SKILL_ACTIVATED" && ev.skill_id > 0)
+            auto& skillDb = GetSkillDatabase();
+            auto implicitCloseSkillUse = [&](int casterId) {
+                auto oc = openCasts.find(casterId);
+                if (oc == openCasts.end()) return;
+                const SkillInfo* si = skillDb.Get(oc->second.skillId);
+                float act = (si && si->activation > 0.01f) ? si->activation : 0.f;
+                float endT = oc->second.start + act;
+                bool isInstant = (act < 0.01f);
+                auto it = m_replayCtx.agents.find(casterId);
+                if (it != m_replayCtx.agents.end())
+                    it->second.skillUseHistory.push_back(
+                        { oc->second.start, endT, 0.f, oc->second.skillId,
+                          oc->second.targetId, isInstant, false });
+                openCasts.erase(oc);
+            };
+
+            for (auto& ev : m_replayCtx.stocData.attackSkill)
             {
-                int tid = resolveTarget(ev.target_id, ev.caster_id);
-                openCasts[ev.caster_id] = { ev.time, ev.skill_id, tid };
-            }
-            else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
-            {
-                bool stopped = (ev.type == "ATTACK_SKILL_STOPPED");
-                auto oc = openCasts.find(ev.caster_id);
-                if (oc != openCasts.end())
+                if (ev.type == "ATTACK_SKILL_ACTIVATED" && ev.skill_id > 0)
                 {
-                    auto it = m_replayCtx.agents.find(ev.caster_id);
-                    if (it != m_replayCtx.agents.end())
-                        it->second.skillUseHistory.push_back(
-                            { oc->second.start, ev.time, 0.f, oc->second.skillId,
-                              oc->second.targetId, false, stopped });
-                    openCasts.erase(oc);
+                    implicitCloseSkillUse(ev.caster_id);
+                    int tid = resolveTarget(ev.target_id, ev.caster_id);
+                    openCasts[ev.caster_id] = { ev.time, ev.skill_id, tid };
+                }
+                else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
+                {
+                    bool stopped = (ev.type == "ATTACK_SKILL_STOPPED");
+                    auto oc = openCasts.find(ev.caster_id);
+                    if (oc != openCasts.end())
+                    {
+                        auto it = m_replayCtx.agents.find(ev.caster_id);
+                        if (it != m_replayCtx.agents.end())
+                            it->second.skillUseHistory.push_back(
+                                { oc->second.start, ev.time, 0.f, oc->second.skillId,
+                                  oc->second.targetId, false, stopped });
+                        openCasts.erase(oc);
+                    }
                 }
             }
+            // Flush remaining orphans using activation time from DB
+            std::vector<int> orphanIds;
+            for (auto& [id, oc] : openCasts) orphanIds.push_back(id);
+            for (int id : orphanIds) implicitCloseSkillUse(id);
+            openCasts.clear();
         }
 
         // 3) Sort each agent's timeline by startTime
@@ -1482,11 +1569,30 @@ void ReplayWindow::Tick()
             auto it = m_replayCtx.agents.find(agentId);
             if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return 0;
             auto& snaps = it->second.snapshots;
-            if (t <= snaps.front().time) return snaps.front().max_hp;
-            if (t >= snaps.back().time)  return snaps.back().max_hp;
-            int lo = 0, hi = (int)snaps.size() - 1;
-            while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
-            return snaps[lo].max_hp;
+
+            // Binary search for the last snapshot at or before t
+            int idx = 0;
+            if (t >= snaps.back().time) {
+                idx = (int)snaps.size() - 1;
+            } else if (t > snaps.front().time) {
+                int lo = 0, hi = (int)snaps.size() - 1;
+                while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
+                idx = lo;
+            }
+
+            if (snaps[idx].max_hp > 0) return snaps[idx].max_hp;
+
+            // max_hp unknown at this time — scan forward for the earliest known value
+            for (int i = idx + 1; i < (int)snaps.size(); ++i)
+            {
+                if (snaps[i].max_hp > 0) return snaps[i].max_hp;
+            }
+            // Also scan backward in case only earlier snapshots have it
+            for (int i = idx - 1; i >= 0; --i)
+            {
+                if (snaps[i].max_hp > 0) return snaps[i].max_hp;
+            }
+            return 0;
         };
 
         // Pass 1: skill events -> primary rows
@@ -1533,6 +1639,20 @@ void ReplayWindow::Tick()
             {
                 if (ev.type == "ATTACK_SKILL_ACTIVATED" && ev.skill_id > 0)
                 {
+                    // Close prior open cast for this caster (ranged attack skills
+                    // often have no FINISHED event).
+                    auto oc = open.find(ev.caster_id);
+                    if (oc != open.end())
+                    {
+                        CombatLogRow r;
+                        r.time = oc->second.start;
+                        r.casterId = ev.caster_id;
+                        r.targetId = oc->second.targetId;
+                        r.skillId = oc->second.skillId;
+                        r.category = CombatLogCategory::Skill;
+                        m_combatLog.push_back(std::move(r));
+                        open.erase(oc);
+                    }
                     open[ev.caster_id] = { ev.time, ev.skill_id, ev.target_id };
                 }
                 else if (ev.type == "ATTACK_SKILL_FINISHED" || ev.type == "ATTACK_SKILL_STOPPED")
@@ -1552,6 +1672,18 @@ void ReplayWindow::Tick()
                     }
                 }
             }
+            // Close remaining orphan attack skill casts
+            for (auto& [casterId, oc] : open)
+            {
+                CombatLogRow r;
+                r.time = oc.start;
+                r.casterId = casterId;
+                r.targetId = oc.targetId;
+                r.skillId = oc.skillId;
+                r.category = CombatLogCategory::Skill;
+                m_combatLog.push_back(std::move(r));
+            }
+            open.clear();
         }
 
         // Sort skill rows from Pass 1 so backward search reliably finds
@@ -1743,6 +1875,9 @@ void ReplayWindow::Tick()
     if (m_combatLogBuilt && !m_timeline.computed)
         BuildTimelineData();
 
+    if (m_combatLogBuilt && !m_lordDamageBuilt)
+        BuildLordDamageData();
+
     // Build flag state timeline (needs both agents and StoC for jumbo events)
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
         BuildFlagStateTimeline();
@@ -1819,8 +1954,11 @@ void ReplayWindow::Update(double elapsedMs)
     float dt = static_cast<float>(elapsedMs / 1000.0);
     if (m_inputManager)
         m_inputManager->SetSuppressKeyPolling(m_clSkillSearchFocused);
-    UpdateAutoCamera(dt);
-    UpdateFollowCamera(dt);
+    UpdateTopViewTransition(dt);
+    if (!m_topViewActive)
+        UpdateAutoCamera(dt);
+    if (!m_topViewActive && !m_topViewTransitioning)
+        UpdateFollowCamera(dt);
     m_mapRenderer->Update(dt);
 }
 
@@ -1950,7 +2088,7 @@ void ReplayWindow::DrawImGuiOverlay()
         {
             ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
 
-            if (ImGui::MenuItem("Distance LOD (dots/cylinders)",
+            if (ImGui::MenuItem("Stylized Agent Icons",
                                 nullptr, m_uiLayout.lodEnabled))
             {
                 m_uiLayout.lodEnabled = !m_uiLayout.lodEnabled;
@@ -1969,8 +2107,15 @@ void ReplayWindow::DrawImGuiOverlay()
                 }
             }
             ImGui::MenuItem("Morale (M)", nullptr, &m_showMoralePanel);
+            ImGui::MenuItem("Lord Damage (G)", nullptr, &m_showLordDamagePanel);
             ImGui::MenuItem("Event Timeline (T)", nullptr, &m_showEventTimeline);
             ImGui::MenuItem("Auto Camera (A)", nullptr, &m_showAutoCameraPanel);
+            {
+                bool tvOn = m_topViewActive;
+                if (ImGui::MenuItem("Top View (V)", nullptr, &tvOn)) {
+                    if (tvOn) EnterTopView(); else ExitTopView();
+                }
+            }
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::Separator();
@@ -2041,10 +2186,13 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawAgentOverlay();
     DrawFlags();
     DrawSkillLasers();
+    UpdateIncomingEffects();
+    RenderIncomingEffects();
     DrawRangeRings();
     DrawRangeRingToolbar();
     DrawFogOfWarToolbar();
     DrawMoralePanel();
+    DrawLordDamagePanel();
     DrawAutoCameraPanel();
     DrawAutoCameraDebugPanel();
 
@@ -2078,11 +2226,19 @@ void ReplayWindow::DrawImGuiOverlay()
         const auto& hk = ReplayHotkeys::Get();
         float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
 
-        if (ImGui::IsKeyPressed((ImGuiKey)hk.rewind5s))
+        // Configurable 5s hotkeys (skip if bound to arrow keys — arrows are handled below)
+        bool rew5isArrow = (hk.rewind5s  == ImGuiKey_LeftArrow  || hk.rewind5s  == ImGuiKey_RightArrow);
+        bool fwd5isArrow = (hk.forward5s == ImGuiKey_LeftArrow  || hk.forward5s == ImGuiKey_RightArrow);
+        if (!rew5isArrow && ImGui::IsKeyPressed((ImGuiKey)hk.rewind5s))
             m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
-
-        if (ImGui::IsKeyPressed((ImGuiKey)hk.forward5s))
+        if (!fwd5isArrow && ImGui::IsKeyPressed((ImGuiKey)hk.forward5s))
             m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
+
+        // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+            m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+            m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
 
         if (ImGui::IsKeyPressed((ImGuiKey)hk.playPause))
             m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
@@ -2100,6 +2256,9 @@ void ReplayWindow::DrawImGuiOverlay()
         if (ImGui::IsKeyPressed(ImGuiKey_T))
             m_showEventTimeline = !m_showEventTimeline;
 
+        if (ImGui::IsKeyPressed(ImGuiKey_G))
+            m_showLordDamagePanel = !m_showLordDamagePanel;
+
         if (ImGui::IsKeyPressed(ImGuiKey_A))
         {
             m_autoCameraEnabled = !m_autoCameraEnabled;
@@ -2109,7 +2268,7 @@ void ReplayWindow::DrawImGuiOverlay()
                 ExitFollowMode();
         }
 
-        if (ImGui::IsKeyPressed(ImGuiKey_F))
+        if (ImGui::IsKeyPressed(ImGuiKey_F) && !m_topViewActive)
         {
             if (m_fogPerspective > 0) {
                 m_fogLastActive = m_fogPerspective;
@@ -2118,6 +2277,14 @@ void ReplayWindow::DrawImGuiOverlay()
             } else {
                 m_fogPerspective = m_fogLastActive;
             }
+        }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_V))
+        {
+            if (m_topViewActive)
+                ExitTopView();
+            else
+                EnterTopView();
         }
     }
 
@@ -2853,6 +3020,7 @@ static constexpr float kFogCompassRadius = 5020.f;
 void ReplayWindow::DrawFogOfWar()
 {
     if (m_fogPerspective == 0) return;
+    if (m_topViewActive) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
 
     InitFogRenderer();
@@ -3511,12 +3679,17 @@ void ReplayWindow::DrawAgentCylinders()
 
 // Forward declarations for icon loaders (defined later)
 static ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
-static ImTextureID LoadProfStylized(ID3D11Device* device, int profId);
+enum class AgentIconState { Alive, Dead, Knockdown };
+static ImTextureID LoadProfStylized(ID3D11Device* device, int profId,
+                                     int teamId = 0,
+                                     AgentIconState state = AgentIconState::Alive);
 static ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
                                  int skillId,
                                  std::unordered_map<int, std::string>& index,
                                  std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache);
 static ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
+static ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename);
+static ImTextureID LoadEffectIcon(ID3D11Device* device, const char* filename);
 static std::string GetSkillDisplayName(int skillId);
 
 // Gradient helpers (used by cast bar rendering + texture building)
@@ -3559,6 +3732,9 @@ void ReplayWindow::DrawAgentOverlay()
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
     const float clickRadius = 14.f;
     m_hoveredAgentId = -1;
+
+    struct TopViewTooltipCandidate { float rectMinX, rectMinY, rectMaxX, rectMaxY; std::string name; float dist; };
+    std::vector<TopViewTooltipCandidate> topViewTooltipCandidates;
 
     // Map boundary clamping: use terrain bounds if available.
     // Bounds are in GWMB mesh coordinates (post-transform), so we clamp after
@@ -3921,14 +4097,20 @@ void ReplayWindow::DrawAgentOverlay()
         }
 
 
+        bool usedProfIcon = false;
         if (showDot)
         {
-            // For players in dot LOD, use stylized profession icon instead of plain dot
-            bool usedProfIcon = false;
             if (ard.type == AgentType::Player && ard.primaryProf >= 1)
             {
                 ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-                ImTextureID stylTex = LoadProfStylized(dev, ard.primaryProf);
+                AgentIconState iconState = AgentIconState::Alive;
+                if (dead)
+                    iconState = AgentIconState::Dead;
+                else if (ard.knockdownTiltAtTime(m_debugTimeline) > 0.f)
+                    iconState = AgentIconState::Knockdown;
+
+                ImTextureID stylTex = LoadProfStylized(dev, ard.primaryProf,
+                                                       ard.teamId, iconState);
                 if (stylTex)
                 {
                     float iconSz = std::clamp(vpH * 0.020f, 12.f, 22.f);
@@ -3960,8 +4142,8 @@ void ReplayWindow::DrawAgentOverlay()
             }
         }
 
-        // Dead freeze indicator: black X over the dot (dot-mode agents only)
-        if (showDot && is.showDeadFreeze && dead &&
+        // Dead freeze indicator: black X over the dot (dot-mode agents only, skip if prof icon used)
+        if (showDot && !usedProfIcon && is.showDeadFreeze && dead &&
             ard.type != AgentType::Flag && ard.type != AgentType::Spirit)
         {
             float r = dotRadius + 2.f;
@@ -4065,29 +4247,99 @@ void ReplayWindow::DrawAgentOverlay()
             }
         }
 
-        std::string label = GetAgentLabel(ard);
-        ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
-        float lx = scrX - textSize.x * 0.5f;
-        float ly = scrY + dotRadius + labelOffY;
+        if (m_show3DLabels)
+        {
+            std::string label = GetAgentLabel(ard);
+            ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
+            float lx = scrX - textSize.x * 0.5f;
+            float ly = scrY + dotRadius + labelOffY;
 
-        bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
-                               ard.categoryName == "Tower Flag Stand" ||
-                               ard.categoryName == "Obelisk Flag Stand" ||
-                               ard.categoryName == "Resurrection Shrine" ||
-                               ard.categoryName == "Dwarven Resurrection Shrine" ||
-                               ard.categoryName == "Lever");
-        float pad = 2.f;
-        dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                          ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
-                          IM_COL32(0, 0, 0, 13), 3.f);
-        if (isSpecialLabel)
-        {
-            dl->AddText(ImVec2(lx, ly), IM_COL32(245, 228, 180, 255), label.c_str());
+            bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
+                                   ard.categoryName == "Tower Flag Stand" ||
+                                   ard.categoryName == "Obelisk Flag Stand" ||
+                                   ard.categoryName == "Resurrection Shrine" ||
+                                   ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                   ard.categoryName == "Lever");
+            float pad = 2.f;
+            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                              ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
+                              IM_COL32(0, 0, 0, 13), 3.f);
+            if (isSpecialLabel)
+            {
+                dl->AddText(ImVec2(lx, ly), IM_COL32(245, 228, 180, 255), label.c_str());
+            }
+            else
+            {
+                dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
+                dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+            }
         }
-        else
+
+        // Top View: collect tooltip hit candidates
+        if (m_topViewActive)
         {
-            dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
-            dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+            const float pad = 4.f;
+            float hitSz = showDot ? std::clamp(vpH * 0.020f, 12.f, 22.f) : 24.f;
+            float rMinX = scrX - hitSz * 0.5f - pad;
+            float rMinY = scrY - hitSz * 0.5f - pad;
+            float rMaxX = scrX + hitSz * 0.5f + pad;
+            float rMaxY = scrY + hitSz * 0.5f + pad;
+            XMFLOAT3 camP = cam->GetPosition3f();
+            float dx = pos.x - camP.x, dy = pos.y - camP.y, dz = pos.z - camP.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            topViewTooltipCandidates.push_back({ rMinX, rMinY, rMaxX, rMaxY, GetAgentLabel(ard), dist });
+        }
+    }
+
+    // Top View: draw agent name tooltip on hover
+    if (m_topViewActive && !topViewTooltipCandidates.empty())
+    {
+        const float mx = mousePos.x, my = mousePos.y;
+        int bestIdx = -1;
+        float bestDist = FLT_MAX;
+        for (size_t i = 0; i < topViewTooltipCandidates.size(); ++i)
+        {
+            const auto& c = topViewTooltipCandidates[i];
+            if (mx >= c.rectMinX && mx <= c.rectMaxX && my >= c.rectMinY && my <= c.rectMaxY
+                && c.dist < bestDist)
+            {
+                bestDist = c.dist;
+                bestIdx = (int)i;
+            }
+        }
+        if (bestIdx >= 0)
+        {
+            const auto& c = topViewTooltipCandidates[bestIdx];
+            float iconCx = (c.rectMinX + c.rectMaxX) * 0.5f;
+            float iconCy = (c.rectMinY + c.rectMaxY) * 0.5f;
+            const float hitPad = 4.f;
+            float iconTop = c.rectMinY + hitPad;
+            float iconBottom = c.rectMaxY - hitPad;
+
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            const char* text = c.name.c_str();
+            ImVec2 textSize = font->CalcTextSizeA(11.f, FLT_MAX, 0.f, text);
+            const float tPadH = 4.f, tPadV = 3.f;
+            float tw = textSize.x + tPadH * 2.f;
+            float th = textSize.y + tPadV * 2.f;
+            const float gap = 8.f;
+
+            float tx = iconCx - tw * 0.5f;
+            float ty;
+            if (iconTop - gap - th >= 0.f)
+                ty = iconTop - gap - th;
+            else
+                ty = iconBottom + gap;
+            if (tx + tw > vpW) tx = vpW - tw;
+            if (tx < 0.f) tx = 0.f;
+            if (ty + th > vpH) ty = vpH - th;
+            if (ty < 0.f) ty = 0.f;
+
+            ImVec2 tMin(tx, ty);
+            ImVec2 tMax(tx + tw, ty + th);
+            fg->AddRectFilled(tMin, tMax, IM_COL32(14, 20, 26, (int)(0.88f * 255)));
+            fg->AddRect(tMin, tMax, IM_COL32(255, 255, 255, (int)(0.12f * 255)), 4.f);
+            fg->AddText(font, 11.f, ImVec2(tx + tPadH, ty + tPadV), IM_COL32(0xf0, 0xf0, 0xf0, 255), text);
         }
     }
 }
@@ -5422,8 +5674,553 @@ bool ReplayWindow::HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
 }
 
 // ---------------------------------------------------------------------------
+// DrawLordDamagePanel — guild lord damage stats floating panel
+// ---------------------------------------------------------------------------
+void ReplayWindow::DrawLordDamagePanel()
+{
+    if (!m_showLordDamagePanel || !m_lordDamageBuilt) return;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImFont* font = ImGui::GetFont();
+    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+
+    if (std::isnan(m_debugTimeline) || std::isinf(m_debugTimeline))
+        m_debugTimeline = 0.f;
+    float curTime = std::clamp(m_debugTimeline, 0.f, maxT);
+
+    // Party-style gradient definitions (matching DrawPartyHealthBar)
+    struct LordGrad5 { ImU32 c[5]; };
+    static constexpr LordGrad5 gAliveBlue = {{ IM_COL32(0x4A,0x6B,0xA3,0xFF), IM_COL32(0x3D,0x5F,0x98,0xFF), IM_COL32(0x30,0x5A,0x90,0xFF), IM_COL32(0x29,0x4E,0x7A,0xFF), IM_COL32(0x22,0x42,0x65,0xFF) }};
+    static constexpr LordGrad5 gDeadBlue  = {{ IM_COL32(0x3A,0x4A,0x66,0xFF), IM_COL32(0x33,0x42,0x59,0xFF), IM_COL32(0x2C,0x3A,0x4D,0xFF), IM_COL32(0x25,0x32,0x40,0xFF), IM_COL32(0x1E,0x29,0x33,0xFF) }};
+    static constexpr LordGrad5 gAliveRed  = {{ IM_COL32(0xCE,0x0C,0x0C,0xFF), IM_COL32(0xD6,0x34,0x34,0xFF), IM_COL32(0xD9,0x43,0x43,0xFF), IM_COL32(0xB2,0x00,0x00,0xFF), IM_COL32(0x7E,0x00,0x00,0xFF) }};
+    static constexpr LordGrad5 gDeadRed   = {{ IM_COL32(0x47,0x1C,0x17,0xFF), IM_COL32(0x53,0x24,0x1B,0xFF), IM_COL32(0x52,0x24,0x1C,0xFF), IM_COL32(0x3C,0x19,0x14,0xFF), IM_COL32(0x2F,0x13,0x0F,0xFF) }};
+    static constexpr LordGrad5 gDegenHex  = {{ IM_COL32(0xC9,0x47,0x9E,0xFF), IM_COL32(0xCE,0x5A,0xA8,0xFF), IM_COL32(0xD3,0x6C,0xB1,0xFF), IM_COL32(0xB5,0x33,0x8A,0xFF), IM_COL32(0x86,0x26,0x66,0xFF) }};
+    static constexpr LordGrad5 gPoison    = {{ IM_COL32(0x7F,0x7F,0x3F,0xFF), IM_COL32(0x8B,0x8B,0x50,0xFF), IM_COL32(0x94,0x94,0x5F,0xFF), IM_COL32(0x66,0x66,0x2B,0xFF), IM_COL32(0x4E,0x4E,0x1D,0xFF) }};
+    static constexpr LordGrad5 gBleeding  = {{ IM_COL32(0xDF,0x71,0x70,0xFF), IM_COL32(0xE1,0x7B,0x7B,0xFF), IM_COL32(0xE2,0x7E,0x7E,0xFF), IM_COL32(0xBC,0x59,0x59,0xFF), IM_COL32(0xA9,0x4F,0x50,0xFF) }};
+    static constexpr LordGrad5 gDeepWound = {{ IM_COL32(0x92,0x92,0x92,0xFF), IM_COL32(0x9F,0x9F,0x9F,0xFF), IM_COL32(0xAB,0xAB,0xAB,0xFF), IM_COL32(0x84,0x84,0x84,0xFF), IM_COL32(0x73,0x73,0x73,0xFF) }};
+
+    auto DrawLordGradRect = [](ImDrawList* dl, ImVec2 tl, ImVec2 br, const LordGrad5& g) {
+        float w = br.x - tl.x;
+        float h = br.y - tl.y;
+        if (w < 1.f || h < 1.f) return;
+        float bandH = h / 5.f;
+        for (int i = 0; i < 5; ++i) {
+            float y0 = tl.y + i * bandH;
+            float y1 = (i == 4) ? br.y : y0 + bandH;
+            ImU32 cTop = g.c[i];
+            ImU32 cBot = (i < 4) ? g.c[i + 1] : g.c[i];
+            dl->AddRectFilledMultiColor(ImVec2(tl.x, y0), ImVec2(br.x, y1), cTop, cTop, cBot, cBot);
+        }
+    };
+
+    // Load status icons every frame through the cached loaders
+    // (the loaders themselves cache by device+filename, so this is cheap)
+    // Do NOT store raw pointers in statics — they can dangle if the
+    // internal cache is invalidated on device change.
+    ImTextureID sIconWeaponSpell = LoadEffectIcon(dev, "WeaponSpell.png");
+    ImTextureID sIconEnchanted   = LoadPartyIcon(dev, "Enchanted.png");
+    ImTextureID sIconCondition   = LoadPartyIcon(dev, "Condition.png");
+    ImTextureID sIconHexed       = LoadPartyIcon(dev, "Hexed.png");
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(500, 100), ImVec2(900, FLT_MAX));
+
+    if (!ImGui::Begin("Lord Damage##lord_dmg", &m_showLordDamagePanel,
+            ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(5);
+        return;
+    }
+
+    // Viewport clamping
+    {
+        ImVec2 vpSz = ImGui::GetMainViewport()->Size;
+        ImVec2 wPos = ImGui::GetWindowPos();
+        ImVec2 wSz  = ImGui::GetWindowSize();
+        wPos.x = std::clamp(wPos.x, 0.f, std::max(0.f, vpSz.x - wSz.x));
+        wPos.y = std::clamp(wPos.y, 0.f, std::max(0.f, vpSz.y - wSz.y));
+        ImGui::SetWindowPos(wPos);
+    }
+
+    const ImU32 cLabel   = IM_COL32(0x70, 0x7d, 0x88, 255);
+    const ImU32 cWhite   = IM_COL32(0xe2, 0xe3, 0xe4, 255);
+    const ImU32 cBlue    = IM_COL32(74, 144, 216, 255);
+    const ImU32 cRed     = IM_COL32(208, 72, 72, 255);
+    const ImU32 cGreen   = IM_COL32(80, 200, 80, 255);
+    const ImU32 cAmber   = IM_COL32(220, 180, 40, 255);
+    const ImU32 cDanger  = IM_COL32(220, 60, 50, 255);
+
+    auto hpColor = [&](float pct) -> ImU32 {
+        if (pct > 0.6f) return cGreen;
+        if (pct > 0.3f) return cAmber;
+        return cDanger;
+    };
+
+    auto formatDmg = [](int v) -> std::string {
+        if (v < 1000) return std::to_string(v);
+        std::string s = std::to_string(v);
+        int insertPos = (int)s.length() - 3;
+        while (insertPos > 0) { s.insert(insertPos, ","); insertPos -= 3; }
+        return s;
+    };
+
+    float colW = std::max(50.f, (ImGui::GetContentRegionAvail().x - 10.f) * 0.5f);
+
+    // ---- PART 1: Lord header (icon, name, HP bar, stats) per column ----
+    auto DrawLordHeader = [&](int idx, float startX) {
+        auto& ld = m_lordDmg[idx];
+        bool isRed = (idx == 1);
+        const char* teamLabel = isRed ? "Red" : "Blue";
+        const char* iconFile = isRed ? "redguildlord.png" : "blueguildlord.png";
+        const std::string& guildHeader = isRed ? m_team2GuildHeader : m_team1GuildHeader;
+
+        ImGui::SetCursorPosX(startX);
+        float cursorY = ImGui::GetCursorPosY();
+
+        ImTextureID lordTex = LoadFlagIcon(dev, iconFile);
+        if (lordTex)
+        {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddImage(lordTex,
+                ImVec2(p.x, p.y), ImVec2(p.x + 32, p.y + 32));
+        }
+
+        const ImU32 cGuildHeader = IM_COL32(245, 227, 181, 255);
+        float textX = startX + 36.f;
+        ImGui::SetCursorPos(ImVec2(textX, cursorY + 1.f));
+        ImGui::GetWindowDrawList()->AddText(font, font->FontSize,
+            ImGui::GetCursorScreenPos(), cGuildHeader,
+            guildHeader.empty() ? teamLabel : guildHeader.c_str());
+        ImGui::SetCursorPos(ImVec2(textX, cursorY + 17.f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+        ImGui::TextUnformatted(std::format("{} Guild Lord", teamLabel).c_str());
+        ImGui::PopStyleColor();
+
+        ImGui::SetCursorPosX(startX);
+        ImGui::SetCursorPosY(cursorY + 36.f);
+
+        if (ld.lordAgentId < 0)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.33f, 0.34f, 0.35f, 1.f));
+            ImGui::TextUnformatted("No lord found");
+            ImGui::PopStyleColor();
+            return;
+        }
+
+        const AgentSnapshot* snap = nullptr;
+        float hpPct = 1.f;
+        bool isDead = false;
+        uint8_t teamId = isRed ? 2 : 1;
+        auto lordIt = m_replayCtx.agents.find(ld.lordAgentId);
+        if (lordIt != m_replayCtx.agents.end())
+        {
+            snap = FindSnapshotAtTime(lordIt->second, curTime);
+            if (snap) { hpPct = std::clamp(snap->health_pct, 0.f, 1.f); isDead = snap->is_dead; }
+        }
+
+        // Party-window-style HP bar
+        {
+            constexpr float barH = 20.f;
+            float barW = std::max(4.f, colW);
+            ImVec2 barTL = ImGui::GetCursorScreenPos();
+            ImVec2 barBR(barTL.x + barW, barTL.y + barH);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
+            dl->AddRect(barTL, barBR, IM_COL32(0x4E, 0x4D, 0x48, 0xFF), 0.f, 0, 1.0f);
+            ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
+            ImVec2 innerBR(barBR.x - 1, barBR.y - 1);
+            float innerW = innerBR.x - innerTL.x;
+            float innerH = innerBR.y - innerTL.y;
+
+            const LordGrad5* fillGrad = nullptr;
+            if (isDead)
+                fillGrad = (teamId == 1) ? &gDeadBlue : &gDeadRed;
+            else if (snap && snap->has_degen_hex)
+                fillGrad = &gDegenHex;
+            else if (snap && snap->has_poison)
+                fillGrad = &gPoison;
+            else if (snap && snap->has_bleeding)
+                fillGrad = &gBleeding;
+            else
+                fillGrad = (teamId == 1) ? &gAliveBlue : &gAliveRed;
+
+            if (isDead)
+            {
+                DrawLordGradRect(dl, innerTL, innerBR, *fillGrad);
+            }
+            else
+            {
+                const LordGrad5* deadGrad = (teamId == 1) ? &gDeadBlue : &gDeadRed;
+                DrawLordGradRect(dl, innerTL, innerBR, *deadGrad);
+                bool hasDeepWound = snap && snap->has_deep_wound && !isDead;
+                float fillPct = hasDeepWound ? std::min(hpPct, 0.80f) : hpPct;
+                if (fillPct > 0.f)
+                    DrawLordGradRect(dl, innerTL, ImVec2(innerTL.x + innerW * fillPct, innerBR.y), *fillGrad);
+                if (hasDeepWound)
+                    DrawLordGradRect(dl, ImVec2(innerTL.x + innerW * 0.80f, innerTL.y), innerBR, gDeepWound);
+            }
+
+            char hpText[32];
+            snprintf(hpText, sizeof(hpText), "%d%%", (int)(hpPct * 100.f));
+            ImVec2 hpSz = ImGui::CalcTextSize(hpText);
+            ImVec2 hpPos(innerTL.x + 4.f, innerTL.y + (innerH - hpSz.y) * 0.5f);
+            dl->AddText(ImVec2(hpPos.x + 1, hpPos.y + 1), IM_COL32(0, 0, 0, 0xCC), hpText);
+            dl->AddText(hpPos, isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : cWhite, hpText);
+
+            if (snap && !isDead)
+            {
+                const float icoSz = std::min(innerH - 2.f, 16.f);
+                float iconX = innerBR.x - 2.f;
+                float iconY = innerTL.y + (innerH - icoSz) * 0.5f;
+                if (snap->has_weapon_spell && sIconWeaponSpell)
+                    { iconX -= icoSz; dl->AddImage(sIconWeaponSpell, ImVec2(iconX, iconY), ImVec2(iconX + icoSz, iconY + icoSz)); iconX -= 1.f; }
+                if (snap->has_enchantment && sIconEnchanted)
+                    { iconX -= icoSz; dl->AddImage(sIconEnchanted, ImVec2(iconX, iconY), ImVec2(iconX + icoSz, iconY + icoSz)); iconX -= 1.f; }
+                if ((snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) && sIconCondition)
+                    { iconX -= icoSz; dl->AddImage(sIconCondition, ImVec2(iconX, iconY), ImVec2(iconX + icoSz, iconY + icoSz)); iconX -= 1.f; }
+                if (snap->has_hex && sIconHexed)
+                    { iconX -= icoSz; dl->AddImage(sIconHexed, ImVec2(iconX, iconY), ImVec2(iconX + icoSz, iconY + icoSz)); }
+            }
+            ImGui::Dummy(ImVec2(barW, barH));
+        }
+        ImGui::SetCursorPosX(startX);
+
+        // Compute live stats up to current timestamp
+        int liveTotalDmg = 0;
+        float liveLowHp = 1.f;
+        for (const auto& h : ld.hits)
+        {
+            if (h.time > curTime) break;
+            liveTotalDmg += h.rawDmg;
+        }
+        if (lordIt != m_replayCtx.agents.end())
+        {
+            for (const auto& s : lordIt->second.snapshots)
+            {
+                if (s.time > curTime) break;
+                if (s.health_pct < liveLowHp && s.health_pct >= 0.f)
+                    liveLowHp = s.health_pct;
+            }
+        }
+
+        if (liveTotalDmg > 0)
+        {
+            ImU32 lpCol = hpColor(liveLowHp);
+            ImGui::GetWindowDrawList()->AddText(font, font->FontSize,
+                ImGui::GetCursorScreenPos(), lpCol,
+                std::format("Low point: {:.0f}%", liveLowHp * 100.f).c_str());
+            ImGui::Dummy(ImVec2(colW, font->FontSize + 2.f));
+            ImGui::SetCursorPosX(startX);
+
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddText(font, font->FontSize, p, cLabel, "Dmg taken: ");
+            ImVec2 valSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, "Dmg taken: ");
+            ImGui::GetWindowDrawList()->AddText(font, font->FontSize,
+                ImVec2(p.x + valSz.x, p.y), cWhite, formatDmg(liveTotalDmg).c_str());
+            ImGui::Dummy(ImVec2(colW, font->FontSize + 2.f));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.33f, 0.34f, 0.35f, 1.f));
+            ImGui::TextUnformatted("Never attacked");
+            ImGui::PopStyleColor();
+        }
+    };
+
+    // ---- PART 2: Attacker breakdown per column ----
+    auto DrawLordAttackers = [&](int idx, float startX) {
+        auto& ld = m_lordDmg[idx];
+        if (ld.lordAgentId < 0) return;
+
+        int liveTotalDmg = 0;
+        std::unordered_map<int, int> liveAttackerDmg;
+        for (const auto& h : ld.hits)
+        {
+            if (h.time > curTime) break;
+            liveTotalDmg += h.rawDmg;
+            liveAttackerDmg[h.casterId] += h.rawDmg;
+        }
+        if (liveTotalDmg <= 0) return;
+
+        ImGui::SetCursorPosX(startX);
+        {
+            float fs10 = 10.f;
+            ImGui::GetWindowDrawList()->AddText(font, fs10,
+                ImGui::GetCursorScreenPos(), cLabel, "ATTACKERS");
+            ImGui::Dummy(ImVec2(colW, fs10 + 3.f));
+        }
+
+        std::vector<LordAttackerRow> liveRows;
+        liveRows.reserve(liveAttackerDmg.size());
+        for (auto& [aid, dmg] : liveAttackerDmg)
+        {
+            LordAttackerRow row;
+            row.agentId = aid;
+            row.totalDmg = dmg;
+            row.pct = (liveTotalDmg > 0) ? (float)dmg / (float)liveTotalDmg : 0.f;
+            auto ait = m_replayCtx.agents.find(aid);
+            if (ait != m_replayCtx.agents.end())
+            {
+                row.name = ait->second.partyBarLabel.empty()
+                    ? ait->second.playerName : ait->second.partyBarLabel;
+                row.professionId = ait->second.primaryProf;
+                row.teamId = ait->second.teamId;
+            }
+            liveRows.push_back(std::move(row));
+        }
+        std::sort(liveRows.begin(), liveRows.end(),
+            [](const LordAttackerRow& a, const LordAttackerRow& b) { return a.totalDmg > b.totalDmg; });
+        if (liveRows.size() > 8) liveRows.resize(8);
+
+        const float atkFontSz = font->FontSize;
+        const float rowH = std::max(20.f, atkFontSz + 6.f);
+        const float iconSz = 16.f;
+
+        for (const auto& atk : liveRows)
+        {
+            ImGui::SetCursorPosX(startX);
+            ImVec2 rowP = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
+            float iconY = rowP.y + (rowH - iconSz) * 0.5f;
+            ImTextureID profTex = LoadProfIcon(dev, atk.professionId);
+            if (profTex)
+                dl->AddImage(profTex, ImVec2(rowP.x, iconY), ImVec2(rowP.x + iconSz, iconY + iconSz));
+
+            float textY = rowP.y + (rowH - atkFontSz) * 0.5f;
+            float nameW = std::max(40.f, colW * 0.45f);
+            float nameX = rowP.x + iconSz + 4.f;
+            dl->PushClipRect(ImVec2(nameX, rowP.y),
+                ImVec2(nameX + nameW, rowP.y + rowH), true);
+            dl->AddText(font, atkFontSz, ImVec2(nameX, textY),
+                cWhite, atk.name.c_str());
+            dl->PopClipRect();
+
+            char pctBuf[16];
+            snprintf(pctBuf, sizeof(pctBuf), "%d%%", (int)(atk.pct * 100.f));
+            ImVec2 pctSz = font->CalcTextSizeA(atkFontSz, FLT_MAX, 0.f, pctBuf);
+            float pctX = nameX + nameW + 4 + 30 - pctSz.x;
+            dl->AddText(font, atkFontSz, ImVec2(pctX, textY), cWhite, pctBuf);
+
+            float barX = nameX + nameW + 4 + 32;
+            float barW = std::max(0.f, colW - (iconSz + 4 + nameW + 4 + 32));
+            ImU32 barBg = IM_COL32(255, 255, 255, 15);
+            ImU32 barFg = (atk.teamId == 2)
+                ? IM_COL32(208, 72, 72, 178)
+                : IM_COL32(74, 144, 216, 178);
+            dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
+                ImVec2(barX + barW, rowP.y + rowH - 3), barBg, 2.f);
+            dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
+                ImVec2(barX + barW * atk.pct, rowP.y + rowH - 3), barFg, 2.f);
+
+            ImGui::Dummy(ImVec2(colW, rowH));
+        }
+    };
+
+    // ===== LAYOUT =====
+
+    // Row 1: Lord headers (two columns)
+    float col0X = ImGui::GetCursorPosX();
+    float col1X = col0X + colW + 10.f;
+    float savedY = ImGui::GetCursorPosY();
+
+    DrawLordHeader(0, col0X);
+    float afterHdr0Y = ImGui::GetCursorPosY();
+
+    ImGui::SetCursorPosY(savedY);
+    DrawLordHeader(1, col1X);
+    float afterHdr1Y = ImGui::GetCursorPosY();
+
+    ImGui::SetCursorPosY(std::max(afterHdr0Y, afterHdr1Y) + 4.f);
+    ImGui::Separator();
+
+    // Row 2: Timeline strip (full width, stable position)
+    {
+        float stripH = 24.f;
+        float stripW = std::max(1.f, ImGui::GetContentRegionAvail().x);
+        ImVec2 stripP = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        ImGui::InvisibleButton("##LordTimeline", ImVec2(stripW, stripH));
+        if (ImGui::IsItemActive() && stripW > 1.f)
+        {
+            float mx = ImGui::GetIO().MousePos.x - stripP.x;
+            float ratio = std::clamp(mx / stripW, 0.f, 1.f);
+            m_debugTimeline = ratio * maxT;
+        }
+
+        int nBuckets = (int)std::max(m_lordDmg[0].damageBuckets.size(),
+                                      m_lordDmg[1].damageBuckets.size());
+        if (nBuckets < 1) nBuckets = 1;
+        float bw = stripW / (float)nBuckets;
+
+        for (int b = 0; b < (int)m_lordDmg[1].damageBuckets.size(); ++b)
+        {
+            ImVec2 bMin(stripP.x + b * bw, stripP.y);
+            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 12.f);
+            ImU32 col = m_lordDmg[1].damageBuckets[b]
+                ? IM_COL32(74, 144, 216, 204)
+                : IM_COL32(255, 255, 255, 10);
+            dl->AddRectFilled(bMin, bMax, col);
+        }
+
+        for (int b = 0; b < (int)m_lordDmg[0].damageBuckets.size(); ++b)
+        {
+            ImVec2 bMin(stripP.x + b * bw, stripP.y + 12.f);
+            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 24.f);
+            ImU32 col = m_lordDmg[0].damageBuckets[b]
+                ? IM_COL32(208, 72, 72, 204)
+                : IM_COL32(255, 255, 255, 10);
+            dl->AddRectFilled(bMin, bMax, col);
+        }
+
+        dl->AddLine(ImVec2(stripP.x, stripP.y + 12.f),
+                    ImVec2(stripP.x + stripW, stripP.y + 12.f),
+                    IM_COL32(255, 255, 255, 25));
+
+        float phX = stripP.x + (m_debugTimeline / maxT) * stripW;
+        dl->AddLine(ImVec2(phX, stripP.y), ImVec2(phX, stripP.y + stripH),
+            IM_COL32(200, 168, 75, 220), 1.5f);
+    }
+
+    ImGui::Separator();
+
+    // Row 3: Attacker lists (two columns, grows with content)
+    float atkSavedY = ImGui::GetCursorPosY();
+
+    DrawLordAttackers(0, col0X);
+    float afterAtk0Y = ImGui::GetCursorPosY();
+
+    ImGui::SetCursorPosY(atkSavedY);
+    DrawLordAttackers(1, col1X);
+    float afterAtk1Y = ImGui::GetCursorPosY();
+
+    ImGui::SetCursorPosY(std::max(afterAtk0Y, afterAtk1Y));
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(5);
+}
+
+// ---------------------------------------------------------------------------
 // BuildTimelineData — precompute health curves + collect events
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// BuildLordDamageData — one-time aggregation of guild lord combat stats
+// ---------------------------------------------------------------------------
+void ReplayWindow::BuildLordDamageData()
+{
+    if (m_lordDamageBuilt) return;
+    m_lordDamageBuilt = true;
+
+    m_lordDmg[0] = {};
+    m_lordDmg[1] = {};
+
+    // Find guild lord agent IDs
+    for (int nid : m_npcIds)
+    {
+        auto it = m_replayCtx.agents.find(nid);
+        if (it == m_replayCtx.agents.end()) continue;
+        if (it->second.categoryName != "Guild Lord") continue;
+        int idx = (it->second.teamId == 2) ? 1 : 0;
+        m_lordDmg[idx].lordAgentId = nid;
+    }
+
+    float maxT = m_replayCtx.maxReplayTime;
+    int bucketCount = std::max(1, (int)std::ceil(maxT / 5.f));
+
+    for (int li = 0; li < 2; ++li)
+    {
+        auto& ld = m_lordDmg[li];
+        if (ld.lordAgentId < 0) continue;
+
+        ld.damageBuckets.resize(bucketCount, false);
+
+        auto lordIt = m_replayCtx.agents.find(ld.lordAgentId);
+        if (lordIt == m_replayCtx.agents.end()) continue;
+        const auto& lordArd = lordIt->second;
+
+        // Resolve base max HP for HP-bar rendering
+        uint32_t baseMaxHp = 0;
+        for (const auto& s : lordArd.snapshots)
+            if (s.max_hp > 0) { baseMaxHp = s.max_hp; break; }
+        if (baseMaxHp == 0)
+            for (auto rit = lordArd.snapshots.rbegin(); rit != lordArd.snapshots.rend(); ++rit)
+                if (rit->max_hp > 0) { baseMaxHp = rit->max_hp; break; }
+        ld.lordMaxHp = baseMaxHp;
+
+        // Low point from snapshots
+        for (const auto& s : lordArd.snapshots)
+            if (s.health_pct < ld.lowPointHp && s.health_pct >= 0.f)
+                ld.lowPointHp = s.health_pct;
+
+        // Use lord_events.txt data (server-computed integer damage)
+        std::unordered_map<int, int> attackerDmg;
+        std::vector<float> hitTimes;
+
+        for (const auto& le : m_replayCtx.stocData.lordDamage)
+        {
+            if (le.target_id != ld.lordAgentId) continue;
+            if (le.damage <= 0) continue;
+
+            int rawDmg = le.damage;
+            ld.totalDmgAbs += rawDmg;
+            attackerDmg[le.caster_id] += rawDmg;
+            hitTimes.push_back(le.time);
+            ld.hits.push_back({ le.time, le.caster_id, rawDmg });
+
+            int bucket = std::clamp((int)(le.time / 5.f), 0, bucketCount - 1);
+            ld.damageBuckets[bucket] = true;
+        }
+
+        // Phases: 10+ second gap = new phase
+        if (!hitTimes.empty())
+        {
+            std::sort(hitTimes.begin(), hitTimes.end());
+            ld.phaseCount = 1;
+            for (size_t i = 1; i < hitTimes.size(); ++i)
+                if (hitTimes[i] - hitTimes[i - 1] >= 10.f)
+                    ld.phaseCount++;
+        }
+
+        // Build attacker rows
+        for (auto& [aid, dmg] : attackerDmg)
+        {
+            LordAttackerRow row;
+            row.agentId = aid;
+            row.totalDmg = dmg;
+            row.pct = (ld.totalDmgAbs > 0) ? (float)dmg / (float)ld.totalDmgAbs : 0.f;
+            auto ait = m_replayCtx.agents.find(aid);
+            if (ait != m_replayCtx.agents.end())
+            {
+                row.name = ait->second.partyBarLabel.empty()
+                    ? ait->second.playerName : ait->second.partyBarLabel;
+                row.professionId = ait->second.primaryProf;
+                row.teamId = ait->second.teamId;
+            }
+            ld.attackers.push_back(std::move(row));
+        }
+        std::sort(ld.attackers.begin(), ld.attackers.end(),
+            [](const LordAttackerRow& a, const LordAttackerRow& b) { return a.totalDmg > b.totalDmg; });
+        if (ld.attackers.size() > 8)
+            ld.attackers.resize(8);
+    }
+
+    // Auto-show if any lord took damage
+    if (m_lordDmg[0].totalDmgAbs > 0 || m_lordDmg[1].totalDmgAbs > 0)
+        m_showLordDamagePanel = true;
+}
+
 void ReplayWindow::BuildTimelineData()
 {
     if (m_timeline.computed) return;
@@ -5903,7 +6700,7 @@ void ReplayWindow::DrawEventTimeline()
         ImTextureID deathTex  = LoadProfIcon(dev, 1);
         ImTextureID flagTex   = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
         ImTextureID moraleTex = LoadFlagIcon(dev, "bluemorale.png");
-        ImTextureID lordTex   = LoadFlagIcon(dev, "blueguildlord2.png");
+        ImTextureID lordTex   = LoadFlagIcon(dev, "blueguildlord.png");
 
         FilterPill("Death",   m_tlFilterDeath,  deathTex,  IM_COL32(208,  72,  72, 255));
         FilterPill("Flag",    m_tlFilterFlag,   flagTex,   IM_COL32(255, 200,  60, 255));
@@ -5938,9 +6735,15 @@ void ReplayWindow::DrawEventTimeline()
     for (float t = 0.f; t <= maxT; t += interval)
     {
         float x = chartX0 + (t / maxT) * chartW;
-        int mins = static_cast<int>(t) / 60;
-        int secs = static_cast<int>(t) % 60;
-        char buf[16]; snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
+        float dispT = t - m_displayTimeOffset;
+        int absSec = static_cast<int>(std::abs(dispT));
+        int mins = absSec / 60;
+        int secs = absSec % 60;
+        char buf[16];
+        if (dispT < 0.f)
+            snprintf(buf, sizeof(buf), "-%d:%02d", mins, secs);
+        else
+            snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
         ImVec2 ts = font->CalcTextSizeA(fs * 0.72f, FLT_MAX, 0.f, buf);
         dl->AddText(font, fs * 0.72f,
             ImVec2(x - ts.x * 0.5f, scrubY1 + 1.f), cTextDim, buf);
@@ -6147,7 +6950,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::LordAttacked: {
-            const char* lordFile = (e.teamId == 2) ? "redguildlord2.png" : "blueguildlord2.png";
+            const char* lordFile = (e.teamId == 2) ? "redguildlord.png" : "blueguildlord.png";
             ImTextureID tex = LoadFlagIcon(dev, lordFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -6185,13 +6988,18 @@ void ReplayWindow::DrawEventTimeline()
             static_cast<int>(m_timeline.blueHealth.size()) - 1);
         float bh = m_timeline.blueHealth[sec];
         float rh = m_timeline.redHealth[sec];
-        int mins = static_cast<int>(hoverT) / 60;
-        int secs = static_cast<int>(hoverT) % 60;
+        float dispHT = hoverT - m_displayTimeOffset;
+        int absHT = static_cast<int>(std::abs(dispHT));
+        int mins = absHT / 60;
+        int secs = absHT % 60;
 
         dl->PopClipRect();
 
         char ttBuf[128];
-        snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
+        if (dispHT < 0.f)
+            snprintf(ttBuf, sizeof(ttBuf), "-%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
+        else
+            snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
         ImVec2 ttSz = font->CalcTextSizeA(fs * 0.78f, FLT_MAX, 0.f, ttBuf);
         float ttX = std::clamp(mousePos.x - ttSz.x * 0.5f, chartX0, chartX1 - ttSz.x - 8.f);
         float ttY = mousePos.y - ttSz.y - 10.f;
@@ -6225,13 +7033,16 @@ void ReplayWindow::DrawEventTimeline()
         default: break;
         }
 
-        int mins = static_cast<int>(e.time) / 60;
-        int secs = static_cast<int>(e.time) % 60;
+        float dispET = e.time - m_displayTimeOffset;
+        int absET = static_cast<int>(std::abs(dispET));
+        int mins = absET / 60;
+        int secs = absET % 60;
+        const char* sign = (dispET < 0.f) ? "-" : "";
         char ttBuf[256];
         if (!e.label.empty())
-            snprintf(ttBuf, sizeof(ttBuf), "[%d:%02d] %s - %s", mins, secs, typeName, e.label.c_str());
+            snprintf(ttBuf, sizeof(ttBuf), "[%s%d:%02d] %s - %s", sign, mins, secs, typeName, e.label.c_str());
         else
-            snprintf(ttBuf, sizeof(ttBuf), "[%d:%02d] %s", mins, secs, typeName);
+            snprintf(ttBuf, sizeof(ttBuf), "[%s%d:%02d] %s", sign, mins, secs, typeName);
 
         ImVec2 ttSz = font->CalcTextSizeA(fs * 0.78f, FLT_MAX, 0.f, ttBuf);
         float ttX = std::clamp(mousePos.x - ttSz.x * 0.5f, chartX0, chartX1 - ttSz.x - 8.f);
@@ -6594,6 +7405,187 @@ void ReplayWindow::ExitFollowMode()
     m_mapRenderer->m_disableMovementInput = false;
 }
 
+// ---------------------------------------------------------------------------
+// Top View mode
+// ---------------------------------------------------------------------------
+
+XMFLOAT3 ReplayWindow::ComputeTopViewPosition() const
+{
+    Terrain* terrain = m_mapRenderer ? m_mapRenderer->GetTerrain() : nullptr;
+    if (!terrain)
+        return XMFLOAT3(0.f, 5000.f, 0.f);
+
+    const auto& b = terrain->m_bounds;
+    float cx = (b.map_min_x + b.map_max_x) * 0.5f;
+    float cz = (b.map_min_z + b.map_max_z) * 0.5f;
+
+    float mapW = b.map_max_x - b.map_min_x;
+    float mapH = b.map_max_z - b.map_min_z;
+    if (mapW < 1.f) mapW = 10000.f;
+    if (mapH < 1.f) mapH = 10000.f;
+
+    // Add 5% padding
+    mapW *= 1.10f;
+    mapH *= 1.10f;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    float fovY  = cam->GetFovY();
+    float aspect = cam->GetAspectRatio();
+    if (fovY <= 0.f)  fovY  = 50.f * XM_PI / 180.f;
+    if (aspect <= 0.f) aspect = 16.f / 9.f;
+
+    float halfFovY = fovY * 0.5f;
+    float halfFovX = atanf(tanf(halfFovY) * aspect);
+
+    float hFromW = (mapW * 0.5f) / tanf(halfFovX);
+    float hFromH = (mapH * 0.5f) / tanf(halfFovY);
+    float height = std::max(hFromW, hFromH);
+
+    // Ensure minimum height and add vertical offset above terrain
+    float maxTerrainY = std::max(std::abs(b.map_min_y), std::abs(b.map_max_y));
+    height = std::max(height, 2000.f) + maxTerrainY;
+
+    return XMFLOAT3(cx, height, cz);
+}
+
+void ReplayWindow::EnterTopView()
+{
+    if (m_topViewActive) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+
+    // Save current camera state
+    m_tvSavedPos   = cam->GetPosition3f();
+    m_tvSavedYaw   = cam->GetYaw();
+    m_tvSavedPitch = cam->GetPitch();
+    m_tvSavedCamMode     = m_cameraMode;
+    m_tvSavedFollowId    = m_followedAgentId;
+    m_tvSavedFollowDist  = m_followDist;
+    m_tvSavedFollowYaw   = m_followYaw;
+    m_tvSavedFollowPitch = m_followPitch;
+    m_tvSavedFogPerspective = m_fogPerspective;
+    m_tvSavedSkillIcons   = m_showSkillIcons;
+    m_tvSavedSkillLasers  = m_showSkillLasers;
+    m_tvSavedLodEnabled   = m_uiLayout.lodEnabled;
+    m_tvSavedShow3DLabels = m_show3DLabels;
+
+    // Pause auto camera if active
+    m_tvSavedAutoCam = m_autoCameraEnabled;
+    if (m_autoCameraEnabled)
+        m_autoCameraEnabled = false;
+
+    // Exit follow mode so we have direct camera control
+    if (m_cameraMode == CameraMode::FollowAgent)
+        ExitFollowMode();
+
+    m_topViewActive = true;
+    m_mapRenderer->m_disableMovementInput = true;
+
+    // Suppress fog
+    if (m_fogPerspective > 0)
+    {
+        m_fogLastActive = m_fogPerspective;
+        m_fogPerspective = 0;
+    }
+
+    // Override display settings for top view
+    m_showSkillIcons      = false;
+    m_showSkillLasers     = false;
+    m_uiLayout.lodEnabled = true;
+    m_show3DLabels        = false;
+
+    // Set up transition
+    m_topViewTransitioning = true;
+    m_topViewTransTimer    = 0.f;
+    m_tvTransFrom      = cam->GetPosition3f();
+    m_tvTransFromYaw   = cam->GetYaw();
+    m_tvTransFromPitch = cam->GetPitch();
+    m_tvTransTo        = ComputeTopViewPosition();
+    m_tvTransToYaw     = 0.f;
+    m_tvTransToPitch   = -XM_PIDIV2 + 0.001f;  // Looking straight down
+}
+
+void ReplayWindow::ExitTopView()
+{
+    if (!m_topViewActive) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+
+    // Set up transition from current position back to saved
+    m_topViewTransitioning = true;
+    m_topViewTransTimer    = 0.f;
+    m_tvTransFrom      = cam->GetPosition3f();
+    m_tvTransFromYaw   = cam->GetYaw();
+    m_tvTransFromPitch = cam->GetPitch();
+    m_tvTransTo        = m_tvSavedPos;
+    m_tvTransToYaw     = m_tvSavedYaw;
+    m_tvTransToPitch   = m_tvSavedPitch;
+
+    m_topViewActive = false;
+    m_mapRenderer->m_disableMovementInput = false;
+
+    // Restore display settings
+    m_fogPerspective      = m_tvSavedFogPerspective;
+    m_showSkillIcons      = m_tvSavedSkillIcons;
+    m_showSkillLasers     = m_tvSavedSkillLasers;
+    m_uiLayout.lodEnabled = m_tvSavedLodEnabled;
+    m_show3DLabels        = m_tvSavedShow3DLabels;
+
+    // Restore follow mode if was active
+    if (m_tvSavedCamMode == CameraMode::FollowAgent && m_tvSavedFollowId >= 0)
+    {
+        EnterFollowMode(m_tvSavedFollowId);
+        m_followDist       = m_tvSavedFollowDist;
+        m_followDistTarget = m_tvSavedFollowDist;
+        m_followYaw        = m_tvSavedFollowYaw;
+        m_followPitch      = m_tvSavedFollowPitch;
+    }
+
+    // Restore auto camera
+    if (m_tvSavedAutoCam)
+    {
+        m_autoCameraEnabled = true;
+        m_autoCamState = AutoCameraState{};
+    }
+}
+
+void ReplayWindow::UpdateTopViewTransition(float dt)
+{
+    if (!m_topViewTransitioning) return;
+
+    m_topViewTransTimer += dt;
+    float t = std::clamp(m_topViewTransTimer / m_topViewTransDuration, 0.f, 1.f);
+
+    // Ease-in-out cubic
+    float ease = t < 0.5f
+        ? 4.f * t * t * t
+        : 1.f - 0.5f * powf(-2.f * t + 2.f, 3.f);
+
+    Camera* cam = m_mapRenderer->GetCamera();
+
+    // Lerp position
+    float lx = m_tvTransFrom.x + (m_tvTransTo.x - m_tvTransFrom.x) * ease;
+    float ly = m_tvTransFrom.y + (m_tvTransTo.y - m_tvTransFrom.y) * ease;
+    float lz = m_tvTransFrom.z + (m_tvTransTo.z - m_tvTransFrom.z) * ease;
+    cam->SetPosition(lx, ly, lz);
+
+    // Lerp orientation (short-path yaw interpolation)
+    float dyaw = m_tvTransToYaw - m_tvTransFromYaw;
+    while (dyaw >  XM_PI) dyaw -= XM_2PI;
+    while (dyaw < -XM_PI) dyaw += XM_2PI;
+    float curYaw   = m_tvTransFromYaw + dyaw * ease;
+    float curPitch = m_tvTransFromPitch + (m_tvTransToPitch - m_tvTransFromPitch) * ease;
+    cam->SetOrientation(curPitch, curYaw);
+
+    if (t >= 1.f)
+    {
+        m_topViewTransitioning = false;
+        // Snap to exact target values
+        cam->SetPosition(m_tvTransTo.x, m_tvTransTo.y, m_tvTransTo.z);
+        cam->SetOrientation(m_tvTransToPitch, m_tvTransToYaw);
+    }
+}
+
 void ReplayWindow::UpdateFollowCamera(float dt)
 {
     if (m_cameraMode != CameraMode::FollowAgent) return;
@@ -6745,8 +7737,12 @@ void ReplayWindow::UpdateAutoCamera(float dt)
     auto& st = m_autoCamState;
     auto& cfg = m_autoCamCfg;
 
-    st.dwellTimer += dt;
-    st.switchCooldown = std::max(0.f, st.switchCooldown - dt);
+    // Only advance timers while the replay is playing
+    if (m_replayCtx.isPlaying)
+    {
+        st.dwellTimer += dt;
+        st.switchCooldown = std::max(0.f, st.switchCooldown - dt);
+    }
 
     float now = m_debugTimeline;
 
@@ -6942,7 +7938,7 @@ void ReplayWindow::UpdateAutoCamera(float dt)
         st.lerpFrom = cam->GetPosition3f();
         st.lerpActive = true;
         st.lerpElapsed = 0.f;
-        st.lerpDuration = (bestScore >= 900) ? 0.6f : 1.5f;
+        st.lerpDuration = (bestScore >= 900) ? 1.2f : 2.5f;
 
         st.currentTarget = bestAgent;
         st.currentPriority = bestScore;
@@ -6966,9 +7962,13 @@ void ReplayWindow::UpdateAutoCamera(float dt)
     // Smooth camera lerp transition
     if (st.lerpActive && m_cameraMode == CameraMode::FollowAgent)
     {
-        st.lerpElapsed += dt;
+        if (m_replayCtx.isPlaying)
+            st.lerpElapsed += dt;
         float t = std::clamp(st.lerpElapsed / st.lerpDuration, 0.f, 1.f);
-        float ease = t * t * (3.f - 2.f * t);
+        // Ease-in-out quintic for a smoother, more cinematic camera glide
+        float ease = t < 0.5f
+            ? 16.f * t * t * t * t * t
+            : 1.f - 0.5f * powf(-2.f * t + 2.f, 5.f);
 
         if (t >= 1.f)
         {
@@ -7088,6 +8088,9 @@ void ReplayWindow::DrawAutoCameraPanel()
         st = AutoCameraState{};
     if (!m_autoCameraEnabled && wasEnabled)
         ExitFollowMode();
+
+    if (m_topViewActive && m_tvSavedAutoCam)
+        ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Paused (Top View active)");
 
     // ── Focus pills ──────────────────────────────────────────────────────
     ImGui::Separator();
@@ -7566,22 +8569,22 @@ void ReplayWindow::DrawInterfacePreferences()
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("Agent LOD System");
+    ImGui::Text("Stylized Agent Icons");
     ImGui::SameLine();
-    ImGui::TextDisabled("(distance-based detail levels)");
+    ImGui::TextDisabled("(profession icons at distance)");
     ImGui::Spacing();
 
-    if (ImGui::Checkbox("Enable LOD system", &m_uiLayout.lodEnabled))
+    if (ImGui::Checkbox("Enable Stylized Agent Icons", &m_uiLayout.lodEnabled))
         changed = true;
 
     if (!m_uiLayout.lodEnabled)
         ImGui::BeginDisabled();
 
     ImGui::SetNextItemWidth(200);
-    if (ImGui::SliderFloat("Cylinder distance", &m_uiLayout.lodDotDist, 1000.f, 10000.f, "%.0f"))
+    if (ImGui::SliderFloat("Icon distance", &m_uiLayout.lodDotDist, 1000.f, 10000.f, "%.0f"))
         changed = true;
     ImGui::SameLine();
-    ImGui::TextDisabled("(beyond -> dots)");
+    ImGui::TextDisabled("(beyond -> stylized icons)");
 
     if (!m_uiLayout.lodEnabled)
         ImGui::EndDisabled();
@@ -7721,10 +8724,14 @@ static ImTextureID LoadSvgIcon(ID3D11Device* device, const char* filename, int r
 static void FormatTime(float seconds, char* buf, size_t bufSize)
 {
     int totalSec = static_cast<int>(seconds);
-    if (totalSec < 0) totalSec = 0;
+    bool neg = totalSec < 0;
+    if (neg) totalSec = -totalSec;
     int m = totalSec / 60;
     int s = totalSec % 60;
-    snprintf(buf, bufSize, "%02d:%02d", m, s);
+    if (neg)
+        snprintf(buf, bufSize, "-%02d:%02d", m, s);
+    else
+        snprintf(buf, bufSize, "%02d:%02d", m, s);
 }
 
 void ReplayWindow::DrawTimelineController()
@@ -7830,8 +8837,8 @@ void ReplayWindow::DrawTimelineController()
     // ══════════════════════════════════════════════════════════════════════
     {
         char curBuf[16], totBuf[16];
-        FormatTime(m_debugTimeline, curBuf, sizeof(curBuf));
-        FormatTime(maxT, totBuf, sizeof(totBuf));
+        FormatTime(m_debugTimeline - m_displayTimeOffset, curBuf, sizeof(curBuf));
+        FormatTime(maxT - m_displayTimeOffset, totBuf, sizeof(totBuf));
 
         dl->AddText(font, fs, ImVec2(x0, y0 + 1.f), cText, curBuf);
         float curW = font->CalcTextSizeA(fs, FLT_MAX, 0.f, curBuf).x;
@@ -7923,11 +8930,11 @@ void ReplayWindow::DrawTimelineController()
     };
 
     // Pre-compute transport group width to center it
-    const float bk30W = 40.f * sf, bk5W = 34.f * sf;
-    const float fw5W  = 34.f * sf, fw30W = 40.f * sf;
+    const float bk30W = 40.f * sf, bk5W = 34.f * sf, bk1W = 34.f * sf;
+    const float fw1W  = 34.f * sf, fw5W = 34.f * sf, fw30W = 40.f * sf;
     const float stopW = 24.f * sf;
-    const float transportW = bk30W + BGAP + bk5W + GDIV + PLAY_SZ + BGAP + stopW
-                           + GDIV + fw5W + BGAP + fw30W;
+    const float transportW = bk30W + BGAP + bk5W + BGAP + bk1W + GDIV + PLAY_SZ + BGAP + stopW
+                           + GDIV + fw1W + BGAP + fw5W + BGAP + fw30W;
     const float transportX = O.x + (vpW - transportW) * 0.5f;
 
     // ── Status chip (left-aligned) ───────────────────────────────────────
@@ -7996,6 +9003,7 @@ void ReplayWindow::DrawTimelineController()
 
     DrawStepBtn("##Bk30", bk30W, "30s", -30.f, false);
     DrawStepBtn("##Bk5",  bk5W,  "5s",  -5.f,  false);
+    DrawStepBtn("##Bk1",  bk1W,  "1s",  -1.f,  false);
 
     cx += GDIV;
     Divider(cx - GDIV * 0.5f);
@@ -8064,6 +9072,7 @@ void ReplayWindow::DrawTimelineController()
     cx += GDIV;
     Divider(cx - GDIV * 0.5f);
 
+    DrawStepBtn("##Fw1",  fw1W,  "1s",  +1.f,  true);
     DrawStepBtn("##Fw5",  fw5W,  "5s",  +5.f,  true);
     DrawStepBtn("##Fw30", fw30W, "30s", +30.f, true);
 
@@ -8141,6 +9150,50 @@ void ReplayWindow::DrawTimelineController()
         }
         if (hov) ImGui::SetTooltip(m_autoCameraEnabled ? "Auto Camera: ON (A)" : "Auto Camera: OFF (A)");
         cx += acW;
+    }
+
+    // ── Top View toggle ──────────────────────────────────────────────────
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    {
+        float tvW = BTN_H;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##TopView", ImVec2(tvW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        bool on   = m_topViewActive;
+        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
+        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
+        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
+        FillBtn(cx, cy, tvW, BTN_H, hov, bg, bdr);
+
+        // Eye-looking-down icon
+        float thick = 1.3f * sf;
+        float mx = cx + tvW * 0.5f;
+        float my = cy + BTN_H * 0.5f;
+        // Eye outline (ellipse-like)
+        float ew = 6.f * sf, eh = 3.5f * sf;
+        dl->PathArcTo(ImVec2(mx, my + eh * 0.3f), ew, XM_PI, XM_2PI, 16);
+        dl->PathArcTo(ImVec2(mx, my - eh * 0.3f), ew, 0.f, XM_PI, 16);
+        dl->PathStroke(fg, true, thick);
+        // Pupil
+        dl->AddCircleFilled(ImVec2(mx, my), 2.f * sf, fg);
+        // Downward arrow below eye
+        float ay = my + eh + 2.f * sf;
+        dl->AddLine(ImVec2(mx, ay), ImVec2(mx, ay + 3.f * sf), fg, thick);
+        dl->AddLine(ImVec2(mx - 2.f * sf, ay + 1.f * sf), ImVec2(mx, ay + 3.f * sf), fg, thick);
+        dl->AddLine(ImVec2(mx + 2.f * sf, ay + 1.f * sf), ImVec2(mx, ay + 3.f * sf), fg, thick);
+
+        if (clk)
+        {
+            if (m_topViewActive)
+                ExitTopView();
+            else
+                EnterTopView();
+        }
+        if (hov) ImGui::SetTooltip(m_topViewActive ? "Exit Top View (V)" : "Top View (V)");
+        cx += tvW;
     }
 
     // ── Speed (right-aligned) ────────────────────────────────────────────
@@ -8721,11 +9774,38 @@ static ImTextureID LoadProfIcon(ID3D11Device* device, int profId)
     return LoadProfIconGeneric(device, GetProfIconsBasePath(), fn);
 }
 
-static ImTextureID LoadProfStylized(ID3D11Device* device, int profId)
+static ImTextureID LoadProfStylized(ID3D11Device* device, int profId,
+                                     int teamId,
+                                     AgentIconState state)
 {
     if (profId < 1 || profId > 10) return nullptr;
-    char fn[16]; snprintf(fn, sizeof(fn), "%d.png", profId);
-    return LoadProfIconGeneric(device, GetProfStylizedBasePath(), fn);
+
+    const char* teamStr = (teamId == 2) ? "red" : "blue";
+    const char* suffix  = "";
+    if (state == AgentIconState::Dead)      suffix = "_dead";
+    else if (state == AgentIconState::Knockdown) suffix = "_KD";
+
+    char fn[48];
+    snprintf(fn, sizeof(fn), "%d%s%s.png", profId, teamStr, suffix);
+
+    auto basePath = GetProfStylizedBasePath();
+    ImTextureID tex = LoadProfIconGeneric(device, basePath, fn);
+
+    // Fallback: if dead/KD icon missing, try alive
+    if (!tex && state != AgentIconState::Alive)
+    {
+        snprintf(fn, sizeof(fn), "%d%s.png", profId, teamStr);
+        tex = LoadProfIconGeneric(device, basePath, fn);
+    }
+
+    // Fallback: if team-specific icon missing, try plain number
+    if (!tex)
+    {
+        snprintf(fn, sizeof(fn), "%d.png", profId);
+        tex = LoadProfIconGeneric(device, basePath, fn);
+    }
+
+    return tex;
 }
 
 static ImTextureID LoadProfIconCL(ID3D11Device* device, int profId)
@@ -9693,11 +10773,15 @@ void ReplayWindow::DrawCombatLog()
 
             // Timestamp (left-aligned, bracketed)
             {
-                float matchTime = row.time - 60.f;
+                float matchTime = row.time - m_displayTimeOffset;
                 int totalMs = (int)(std::abs(matchTime) * 1000.f);
-                char tsBuf[20];
-                snprintf(tsBuf, sizeof(tsBuf), "[%02d:%02d.%03d]",
-                         totalMs / 60000, (totalMs / 1000) % 60, totalMs % 1000);
+                char tsBuf[24];
+                if (matchTime < 0.f)
+                    snprintf(tsBuf, sizeof(tsBuf), "[-%02d:%02d.%03d]",
+                             totalMs / 60000, (totalMs / 1000) % 60, totalMs % 1000);
+                else
+                    snprintf(tsBuf, sizeof(tsBuf), "[%02d:%02d.%03d]",
+                             totalMs / 60000, (totalMs / 1000) % 60, totalMs % 1000);
                 dl->PushClipRect(
                     ImVec2(startX + kColTs, startY),
                     ImVec2(startX + kColTs + kTsW, startY + kRowH), true);
@@ -9943,13 +11027,21 @@ void ReplayWindow::DrawCombatLog()
 
                 switch (row.category) {
                 case CombatLogCategory::Damage:
-                    snprintf(valBuf, sizeof(valBuf), "-%d%%",
-                        (int)(std::abs(row.valuePct) * 100.f));
+                    if (row.valueAbs != 0)
+                        snprintf(valBuf, sizeof(valBuf), "-%d%% (%d)",
+                            (int)(std::abs(row.valuePct) * 100.f), std::abs(row.valueAbs));
+                    else
+                        snprintf(valBuf, sizeof(valBuf), "-%d%%",
+                            (int)(std::abs(row.valuePct) * 100.f));
                     valCol = uDmgRed;
                     break;
                 case CombatLogCategory::Heal:
-                    snprintf(valBuf, sizeof(valBuf), "+%d%%",
-                        (int)(std::abs(row.valuePct) * 100.f));
+                    if (row.valueAbs != 0)
+                        snprintf(valBuf, sizeof(valBuf), "+%d%% (+%d)",
+                            (int)(std::abs(row.valuePct) * 100.f), std::abs(row.valueAbs));
+                    else
+                        snprintf(valBuf, sizeof(valBuf), "+%d%%",
+                            (int)(std::abs(row.valuePct) * 100.f));
                     valCol = uGreen;
                     break;
                 case CombatLogCategory::Interrupt:
@@ -10311,8 +11403,8 @@ void ReplayWindow::DrawAgentDataWindow()
     // ---- Top bar: timeline + stats ----
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     char curBuf[16], totBuf[16];
-    FormatTime(m_debugTimeline, curBuf, sizeof(curBuf));
-    FormatTime(maxT, totBuf, sizeof(totBuf));
+    FormatTime(m_debugTimeline - m_displayTimeOffset, curBuf, sizeof(curBuf));
+    FormatTime(maxT - m_displayTimeOffset, totBuf, sizeof(totBuf));
     ImGui::Text("%s / %s", curBuf, totBuf);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
@@ -11325,6 +12417,320 @@ void ReplayWindow::OnWindowSizeChanged(int width, int height)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Incoming effect display — floating damage/heal numbers on focused agent
+// ---------------------------------------------------------------------------
+
+int ReplayWindow::GetFocusedAgentId() const
+{
+    if (m_cameraMode == CameraMode::FollowAgent && m_followedAgentId >= 0)
+        return m_followedAgentId;
+    return -1;
+}
+
+void ReplayWindow::UpdateIncomingEffects()
+{
+    float now = m_debugTimeline;
+    int focused = GetFocusedAgentId();
+
+    if (focused != m_focusedAgentId || now < m_lastEffectScanTime - 0.5f)
+    {
+        m_incomingEffects.clear();
+        m_focusedAgentId = focused;
+        m_lastEffectScanTime = now;
+        return;
+    }
+    m_focusedAgentId = focused;
+    if (focused < 0) { m_incomingEffects.clear(); return; }
+
+    std::erase_if(m_incomingEffects, [&](const IncomingEffect& e) {
+        return (now - e.spawnTime) >= kEffectLifetime;
+    });
+
+    float scanFrom = m_lastEffectScanTime;
+    float scanTo   = now;
+    m_lastEffectScanTime = now;
+    if (scanTo <= scanFrom) return;
+
+    auto findAgentMaxHp = [&](int agentId, float t) -> uint32_t {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return 0;
+        const auto& snaps = it->second.snapshots;
+        if (snaps.empty()) return 0;
+        const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
+        if (s && s->max_hp > 0) return s->max_hp;
+        auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
+            [](const AgentSnapshot& a, float b) { return a.time < b; });
+        for (; sit != snaps.end(); ++sit)
+            if (sit->max_hp > 0) return sit->max_hp;
+        return 0;
+    };
+
+    struct CombatMatch { bool found; float value; float time; };
+    auto findCombatValue = [&](int casterId, int targetId, float skillEndTime) -> CombatMatch {
+        for (const auto& ce : m_replayCtx.stocData.combat)
+        {
+            if (ce.type != "DAMAGE") continue;
+            if (ce.caster_id != casterId) continue;
+            if (ce.target_id != targetId) continue;
+            float dt = ce.time - skillEndTime;
+            if (dt < -0.1f) continue;
+            if (dt > 1.5f) break;  // wider window for ranged projectile travel
+            return { true, ce.value, ce.time };
+        }
+        return { false, 0.f, 0.f };
+    };
+
+    auto& db = GetSkillDatabase();
+
+    auto pushEffect = [&](IncomingEffect eff) {
+        if ((int)m_incomingEffects.size() >= kEffectMaxSlots)
+        {
+            auto oldest = std::min_element(m_incomingEffects.begin(), m_incomingEffects.end(),
+                [](const IncomingEffect& a, const IncomingEffect& b) { return a.spawnTime < b.spawnTime; });
+            if (oldest != m_incomingEffects.end())
+                m_incomingEffects.erase(oldest);
+        }
+        for (auto& e : m_incomingEffects)
+            if (e.slot < kEffectMaxSlots - 1) e.slot++;
+        eff.slot = 0;
+        m_incomingEffects.push_back(std::move(eff));
+    };
+
+    // Primary source: scan all agents' skill use histories for skills targeting the focused agent
+    constexpr float kProjectileWindow = 1.5f;
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (agentId == focused) continue;
+        for (const auto& su : ard.skillUseHistory)
+        {
+            if (su.wasCancelled) continue;
+            if (su.targetId != focused) continue;
+            float endT = su.endTime;
+            // Look back up to kProjectileWindow for skills whose damage lands with a delay
+            if (endT > scanTo || endT < scanFrom - kProjectileWindow) continue;
+
+            const SkillInfo* si = db.Get(su.skillId);
+            int skillType = si ? si->type : 0;
+
+            auto cm = findCombatValue(agentId, focused, endT);
+
+            // Use combat event timestamp (damage impact) when available,
+            // otherwise fall back to cast end time.
+            float showTime = cm.found ? cm.time : endT;
+
+            // Only show if the display time falls within the current scan window
+            if (showTime <= scanFrom || showTime > scanTo) continue;
+
+            IncomingEffect eff;
+            eff.spawnTime = showTime;
+            eff.skillId = su.skillId;
+
+            if (cm.found)
+            {
+                bool isHeal = (cm.value > 0.f);
+                eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
+                uint32_t mhp = findAgentMaxHp(focused, cm.time);
+                int rawVal = (mhp > 0) ? (int)std::round(std::abs(cm.value) * mhp) : 0;
+                if (rawVal > 0)
+                    eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
+                else
+                    eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(cm.value) * 100.f);
+            }
+            else if (skillType == 24)
+            {
+                eff.type = IncomingEffectType::Hex;
+                eff.label = si ? si->name : "Hex";
+            }
+            else if (skillType == 23 || skillType == 33 || skillType == 34)
+            {
+                eff.type = IncomingEffectType::Heal;
+                eff.label = si ? si->name : "Enchantment";
+            }
+            else if (si && !si->name.empty())
+            {
+                eff.type = IncomingEffectType::Condition;
+                eff.label = si->name;
+            }
+
+            pushEffect(std::move(eff));
+        }
+    }
+
+    // Also scan self-cast skills that target self (heals, enchantments on self)
+    {
+        auto it = m_replayCtx.agents.find(focused);
+        if (it != m_replayCtx.agents.end())
+        {
+            for (const auto& su : it->second.skillUseHistory)
+            {
+                if (su.wasCancelled) continue;
+                if (su.targetId != focused && su.targetId > 0) continue;
+                float endT = su.endTime;
+                if (endT <= scanFrom || endT > scanTo) continue;
+
+                auto cm = findCombatValue(focused, focused, endT);
+                if (!cm.found) continue;
+                if (cm.value <= 0.f) continue;  // only show self-heals
+
+                float showTime = cm.time;
+                if (showTime > scanTo) continue;
+
+                IncomingEffect eff;
+                eff.spawnTime = showTime;
+                eff.skillId = su.skillId;
+                eff.type = IncomingEffectType::Heal;
+
+                uint32_t mhp = findAgentMaxHp(focused, cm.time);
+                int rawVal = (mhp > 0) ? (int)std::round(std::abs(cm.value) * mhp) : 0;
+                if (rawVal > 0)
+                    eff.label = std::format("+{}", rawVal);
+                else
+                    eff.label = std::format("+{:.0f}%", cm.value * 100.f);
+
+                pushEffect(std::move(eff));
+            }
+        }
+    }
+
+    // Interrupt events from combat log
+    for (const auto& ce : m_replayCtx.stocData.combat)
+    {
+        if (ce.time <= scanFrom || ce.time > scanTo) continue;
+        if (ce.target_id != focused) continue;
+        if (ce.type != "INTERRUPTED") continue;
+
+        IncomingEffect eff;
+        eff.spawnTime = ce.time;
+        eff.skillId = (int)ce.value;
+        eff.type = IncomingEffectType::Interrupt;
+        eff.label = "INTERRUPT";
+        pushEffect(std::move(eff));
+    }
+}
+
+void ReplayWindow::RenderIncomingEffects()
+{
+    if (m_incomingEffects.empty()) return;
+    int focused = m_focusedAgentId;
+    if (focused < 0) return;
+
+    auto it = m_replayCtx.agents.find(focused);
+    if (it == m_replayCtx.agents.end()) return;
+    const auto& ard = it->second;
+    if (ard.snapshots.empty()) return;
+
+    float now = m_debugTimeline;
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x, vpH = vp->Size.y;
+
+    // Project agent position to screen
+    float sx, sy, sz;
+    InterpolateAgentPosition(ard, now, m_replayCtx.interpSettings, sx, sy, sz);
+    XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+
+    float agentScrX, agentScrY;
+    if (!ProjectToScreen(viewProj, vpW, vpH, worldPos, agentScrX, agentScrY)) return;
+
+    // Estimate cylinder screen radius by projecting a point offset by the world-space radius
+    constexpr float CYL_WORLD_R = 30.f;
+    XMFLOAT3 sidePos = { worldPos.x + CYL_WORLD_R, worldPos.y, worldPos.z };
+    float sideScrX, sideScrY;
+    float cylScreenR = 15.f;
+    if (ProjectToScreen(viewProj, vpW, vpH, sidePos, sideScrX, sideScrY))
+        cylScreenR = std::abs(sideScrX - agentScrX);
+    cylScreenR = std::max(cylScreenR, 8.f);
+
+    constexpr float ICON_SZ   = 22.f;
+    constexpr float SLOT_H    = 26.f;
+    constexpr float GAP       = 4.f;
+    constexpr float PILL_PAD  = 3.f;
+
+    float baseX = agentScrX + cylScreenR + 6.f;
+    float baseY = agentScrY - (ICON_SZ * 0.5f);
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float labelFs = 11.f;
+
+    float maxLabelW = 0.f;
+    for (const auto& e : m_incomingEffects)
+    {
+        if (e.label.empty()) continue;
+        ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
+        maxLabelW = std::max(maxLabelW, tsz.x);
+    }
+    float stackW = ICON_SZ + GAP + PILL_PAD * 2.f + maxLabelW;
+
+    if (baseX + stackW > vpW - 20.f)
+        baseX = agentScrX - cylScreenR - 6.f - stackW;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+
+    for (const auto& e : m_incomingEffects)
+    {
+        float age = now - e.spawnTime;
+        if (age < 0.f || age >= kEffectLifetime) continue;
+
+        float opacity = (age < 0.6f) ? 1.f : 1.f - ((age - 0.6f) / 0.6f);
+        opacity = std::clamp(opacity, 0.f, 1.f);
+        uint8_t alpha = (uint8_t)(opacity * 255.f);
+
+        float slotY = baseY + e.slot * SLOT_H;
+
+        ImTextureID skillTex = nullptr;
+        if (e.skillId > 0)
+            skillTex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+
+        ImVec2 iconTL(baseX, slotY);
+        ImVec2 iconBR(iconTL.x + ICON_SZ, iconTL.y + ICON_SZ);
+
+        if (skillTex)
+        {
+            dl->AddImage(skillTex, iconTL, iconBR,
+                ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
+        }
+        else
+        {
+            ImU32 fCol = IM_COL32(200, 180, 140, alpha);
+            float cx = (iconTL.x + iconBR.x) * 0.5f;
+            float cy = (iconTL.y + iconBR.y) * 0.5f;
+            dl->AddLine(ImVec2(cx - 6.f, cy - 6.f), ImVec2(cx + 6.f, cy + 6.f), fCol, 2.f);
+            dl->AddLine(ImVec2(cx + 6.f, cy - 6.f), ImVec2(cx - 6.f, cy + 6.f), fCol, 2.f);
+        }
+
+        // Skip label + pill if the effect has no label (icon-only effect)
+        if (e.label.empty()) continue;
+
+        ImU32 labelCol;
+        switch (e.type) {
+        case IncomingEffectType::Damage:    labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
+        case IncomingEffectType::Heal:      labelCol = IM_COL32(0x60, 0xFF, 0x80, alpha); break;
+        case IncomingEffectType::Interrupt:  labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+        case IncomingEffectType::Condition:  labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+        case IncomingEffectType::Hex:       labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+        }
+
+        ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
+        float pillX = iconBR.x + GAP;
+        float labelY = slotY + (ICON_SZ - tsz.y) * 0.5f;
+        float pillY = labelY - PILL_PAD;
+        float pillW = tsz.x + PILL_PAD * 2.f;
+        float pillH = tsz.y + PILL_PAD * 2.f;
+
+        dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH),
+            IM_COL32(0, 0, 0, (uint8_t)(0.55f * 255.f * opacity)), 3.f);
+
+        dl->AddText(font, labelFs,
+            ImVec2(pillX + PILL_PAD, labelY), labelCol, e.label.c_str());
+    }
+}
+
 void ReplayWindow::OnDestroy()
 {
     SaveAutoCamSettings();
@@ -11417,7 +12823,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                         cam->SetPosition(pos.x, pos.y, pos.z);
                     }
 
-                    if (rw->m_rightMouseDown)
+                    if (rw->m_rightMouseDown && !rw->m_topViewActive)
                     {
                         float radX = DirectX::XMConvertToRadians(0.25f * dx);
                         float radY = DirectX::XMConvertToRadians(0.25f * dy);
@@ -11514,7 +12920,15 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         {
             float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
 
-            if (rw->m_cameraMode == CameraMode::FollowAgent)
+            if (rw->m_topViewActive)
+            {
+                Camera* cam = rw->m_mapRenderer->GetCamera();
+                XMFLOAT3 pos = cam->GetPosition3f();
+                float zoomFactor = (delta > 0) ? 0.90f : 1.12f;
+                pos.y = std::max(200.f, pos.y * zoomFactor);
+                cam->SetPosition(pos.x, pos.y, pos.z);
+            }
+            else if (rw->m_cameraMode == CameraMode::FollowAgent)
             {
                 float factor = (delta > 0) ? 0.85f : 1.18f;
                 rw->m_followDistTarget = std::clamp(
