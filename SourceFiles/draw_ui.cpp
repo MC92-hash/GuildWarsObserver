@@ -86,7 +86,20 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		if (!s_setupDone)
 		{
 			if (draw_setup_wizard())
+			{
 				s_setupDone = true;
+
+				// Trigger match folder scan now that the wizard has set the path
+				if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
+				{
+					std::filesystem::path mf(GuiGlobalConstants::saved_match_data_folder_path);
+					if (std::filesystem::exists(mf) && std::filesystem::is_directory(mf))
+					{
+						replay_library.SetMatchDataFolder(GuiGlobalConstants::saved_match_data_folder_path);
+						replay_library.ScanFolder();
+					}
+				}
+			}
 			else
 				return;
 		}
