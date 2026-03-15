@@ -201,20 +201,37 @@ void DATManager::read_all_files()
     }
 }
 
+static unsigned char* SafeReadDatFile(GWDat& dat, HANDLE file_handle, int index)
+{
+    __try
+    {
+        return dat.readFile(file_handle, index, false);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return nullptr;
+    }
+}
+
 void DATManager::read_files_thread(Concurrency::concurrent_queue<int>& file_indices_queue)
 {
     HANDLE file_handle = m_dat.get_dat_filehandle(m_dat_filepath.c_str());
-    unsigned char* data;
-    int index;
+    if (file_handle == INVALID_HANDLE_VALUE || file_handle == nullptr)
+    {
+        m_num_running_dat_reader_threads.fetch_sub(1, std::memory_order_relaxed);
+        return;
+    }
 
+    int index;
 
     while (file_indices_queue.try_pop(index))
     {
         try
         {
-            data = m_dat.readFile(file_handle, index, false);
-            delete[] data;
-            auto _ = m_num_types_read.fetch_add(1, std::memory_order_relaxed);
+            unsigned char* data = SafeReadDatFile(m_dat, file_handle, index);
+            if (data)
+                delete[] data;
+            m_num_types_read.fetch_add(1, std::memory_order_relaxed);
         }
         catch (...)
         {
@@ -223,5 +240,5 @@ void DATManager::read_files_thread(Concurrency::concurrent_queue<int>& file_indi
 
     CloseHandle(file_handle);
 
-    auto remaining_threads = m_num_running_dat_reader_threads.fetch_sub(1, std::memory_order_relaxed);
+    m_num_running_dat_reader_threads.fetch_sub(1, std::memory_order_relaxed);
 }

@@ -11,10 +11,12 @@
 #include "FFNA_MapFile.h"
 #include "FFNA_ModelFile.h"
 #include "AMAT_file.h"
+#include "TextureCache.h"
 #include <string>
 #include <memory>
 #include <variant>
 #include <unordered_set>
+#include <chrono>
 
 struct ReplayHotkeys
 {
@@ -63,7 +65,7 @@ private:
     void ShutdownImGui();
 
     // Phased map loading (one phase per Tick to keep window responsive)
-    enum class LoadingPhase { Validate, Init, PropModels, PlaceProps, Ready, Error };
+    enum class LoadingPhase { Validate, Init, PropModels, PlaceProps, FadingOut, Ready, Error };
 
     void StepValidate();
     void StepLoadInit();
@@ -465,6 +467,19 @@ private:
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_overlayDSS;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_overlayRS;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_overlayBS;
+
+    // --- Match loading screen ---
+    using LsClock = std::chrono::steady_clock;
+    TextureCache m_lsTexCache;
+    std::string  m_lsBgPath;
+    LsClock::time_point m_lsStartTime;
+    bool  m_lsStartTimeSet = false;
+    bool  m_lsHitReady     = false;
+    LsClock::time_point m_lsReadyTime;
+
+    std::string GetMatchLoadingBgPath() const;
+    static const char* GetMapScreenshotFile(int mapId);
+    static const char* GetMapNameForLoading(int mapId);
 
     // --- Auto Camera system ---
     struct AutoCameraConfig {

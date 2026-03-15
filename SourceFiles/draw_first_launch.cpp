@@ -12,15 +12,41 @@ namespace
     using Clock = std::chrono::steady_clock;
     static Clock::time_point s_startTime;
     static bool  s_startTimeSet = false;
-    static constexpr float kSimDurationSec = 2.5f;  // wall-clock seconds for 0→90%
-    static Clock::time_point s_hitFullTime;          // when progress first reached 100%
+    static constexpr float kSimDurationSec = 2.5f;
+
+    static Clock::time_point s_hitFullTime;
     static bool  s_hitFull = false;
-    static constexpr float kHoldAtFullSec = 1.0f;   // linger at 100% before transition
-    static bool  s_datDialogOpen = false;
-    static char  s_pathBuffer[512] = "";
-    static std::string s_errorMsg;
-    static bool  s_showPathMissingNote = false;
-    static bool  s_overlayInitialized = false;
+    static constexpr float kFadeDurationSec  = 0.4f;
+    static constexpr float kReadyDisplaySec  = 0.8f;
+    static constexpr float kHoldAtFullSec    = kFadeDurationSec + kReadyDisplaySec;
+
+
+    // --- helpers ---
+
+    static std::string FormatWithCommas(int value)
+    {
+        if (value < 0) value = 0;
+        std::string raw = std::to_string(value);
+        std::string result;
+        int count = 0;
+        for (int i = static_cast<int>(raw.size()) - 1; i >= 0; --i)
+        {
+            if (count > 0 && count % 3 == 0)
+                result.insert(result.begin(), ',');
+            result.insert(result.begin(), raw[i]);
+            ++count;
+        }
+        return result;
+    }
+
+    static void DrawTextWithShadow(ImDrawList* dl, ImVec2 pos, ImU32 col, const char* text)
+    {
+        ImU32 shadow = IM_COL32(0, 0, 0, 220);
+        dl->AddText(ImVec2(pos.x - 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(ImVec2(pos.x + 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(ImVec2(pos.x,       pos.y + 2.f), shadow, text);
+        dl->AddText(pos, col, text);
+    }
 
     static std::string GetLoadingScreenPath()
     {
@@ -40,44 +66,13 @@ namespace
         return "";
     }
 
-    static std::string GetDefaultBrowsePath()
-    {
-        static const char* candidates[] = {
-            "C:\\Program Files\\Guild Wars\\Gw.dat",
-            "C:\\Program Files (x86)\\Guild Wars\\Gw.dat",
-            "D:\\Guild Wars\\Gw.dat",
-        };
-        for (const char* c : candidates)
-        {
-            if (std::filesystem::exists(c))
-                return std::filesystem::path(c).parent_path().string();
-        }
-        return "C:\\";
-    }
-
-    static void OpenBrowseDialog()
-    {
-        std::string initial = GetDefaultBrowsePath();
-        if (!GuiGlobalConstants::saved_gw_dat_path.empty())
-        {
-            auto parent = std::filesystem::path(GuiGlobalConstants::saved_gw_dat_path).parent_path();
-            if (std::filesystem::exists(parent))
-                initial = parent.string();
-        }
-        ImGuiFileDialog::Instance()->OpenDialog("FirstLaunchChooseGwDat", "Select Gw.dat",
-            ".dat", initial + "\\.");
-        s_datDialogOpen = true;
-    }
 }
 
-bool draw_first_launch(bool dat_path_is_set, float dat_load_fraction)
+bool draw_first_launch(const LoadingProgress& progress)
 {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 display = io.DisplaySize;
 
-    // Record the first call time so simulated progress uses wall-clock time.
-    // This correctly accounts for time spent in Initialize() before the
-    // render loop starts.
     if (!s_startTimeSet)
     {
         s_startTime = Clock::now();
@@ -85,50 +80,48 @@ bool draw_first_launch(bool dat_path_is_set, float dat_load_fraction)
     }
 
     float elapsed = std::chrono::duration<float>(Clock::now() - s_startTime).count();
-    float simFraction = std::min(elapsed / kSimDurationSec, 1.f);  // 0→1 over kSimDurationSec
+    float simFraction = std::min(elapsed / kSimDurationSec, 1.f);
     bool simulatedDone = (simFraction >= 1.f);
 
-    // Displayed progress:
-    //   0  → 0.9   simulated ramp (wall-clock)
-    //   0.9 → 1.0  mapped from dat_load_fraction when path is set
+    float dat_load_fraction = 0.f;
+    if (progress.dat_files_total > 0)
+        dat_load_fraction = static_cast<float>(progress.dat_files_read) /
+                            static_cast<float>(progress.dat_files_total);
+
+    // Displayed progress
     float displayProgress;
     if (!simulatedDone)
-    {
         displayProgress = simFraction * 0.9f;
-    }
-    else if (dat_path_is_set)
-    {
+    else if (progress.dat_path_is_set)
         displayProgress = 0.9f + 0.1f * std::clamp(dat_load_fraction, 0.f, 1.f);
-    }
     else
-    {
         displayProgress = 0.9f;
-    }
 
-    bool atFull = simulatedDone && dat_path_is_set &&
+    bool atFull = simulatedDone && progress.dat_path_is_set &&
                   dat_load_fraction >= 1.f && displayProgress >= 1.f;
     if (atFull && !s_hitFull)
     {
         s_hitFull = true;
         s_hitFullTime = Clock::now();
     }
+
+    float fadeElapsed = 0.f;
     if (s_hitFull)
     {
-        float holdElapsed = std::chrono::duration<float>(Clock::now() - s_hitFullTime).count();
-        if (holdElapsed >= kHoldAtFullSec)
+        fadeElapsed = std::chrono::duration<float>(Clock::now() - s_hitFullTime).count();
+        if (fadeElapsed >= kHoldAtFullSec)
             return true;
     }
 
-    // Status text
-    const char* statusText;
-    if (!simulatedDone)
-        statusText = "Initializing...";
-    else if (!dat_path_is_set)
-        statusText = "Please locate your Guild Wars installation to continue.";
-    else if (dat_load_fraction < 1.f)
-        statusText = "Loading Guild Wars data...";
-    else
-        statusText = "Ready";
+    // Fade factor: 0→1 over kFadeDurationSec after hitting full
+    float fadeOutAlpha = 1.f;  // status lines + bar
+    float readyAlpha   = 0.f;  // "Ready" text
+    if (s_hitFull)
+    {
+        float t = std::clamp(fadeElapsed / kFadeDurationSec, 0.f, 1.f);
+        fadeOutAlpha = 1.f - t;
+        readyAlpha   = t;
+    }
 
     // --- Fullscreen background window ---
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -152,156 +145,88 @@ bool draw_first_launch(bool dat_path_is_set, float dat_load_fraction)
     if (tex)
         dl->AddImage(tex, ImVec2(0, 0), display);
 
-    // Progress bar
-    {
-        float barW = display.x * 0.4f;
-        float barH = 6.f;
-        float barX = (display.x - barW) * 0.5f;
-        float barY = display.y * 0.85f;
+    // Progress bar geometry (unchanged position)
+    float barW = display.x * 0.4f;
+    float barH = 6.f;
+    float barX = (display.x - barW) * 0.5f;
+    float barY = display.y * 0.85f;
+    float barRight = barX + barW;
 
-        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH),
-            IM_COL32(40, 44, 52, 255), 3.f);
-        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * displayProgress, barY + barH),
-            IM_COL32(74, 144, 216, 230), 3.f);
+    // Progress bar (with fade)
+    {
+        ImU32 bgCol   = IM_COL32(40, 44, 52, static_cast<int>(255 * fadeOutAlpha));
+        ImU32 fillCol = IM_COL32(74, 144, 216, static_cast<int>(230 * fadeOutAlpha));
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH), bgCol, 3.f);
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * displayProgress, barY + barH), fillCol, 3.f);
     }
 
-    // Status text (centered)
+    // --- Status text lines (right-aligned above bar, with shadow) ---
+    if (fadeOutAlpha > 0.01f && !s_hitFull)
     {
-        ImVec2 textSize = ImGui::CalcTextSize(statusText);
-        float tx = (display.x - textSize.x) * 0.5f;
-        float ty = display.y * 0.78f;
-        dl->AddText(ImVec2(tx, ty), IM_COL32(240, 240, 240, 255), statusText);
+        ImU32 labelCol   = IM_COL32(255, 255, 255, static_cast<int>(210 * fadeOutAlpha));
+        ImU32 counterCol = IM_COL32(255, 255, 255, static_cast<int>(250 * fadeOutAlpha));
+
+        float lineH = ImGui::GetFontSize() + 2.f;
+        float textY = barY - 8.f;
+        bool showedAnyLine = false;
+
+        // Dat file line — show whenever dat loading is in progress
+        if (progress.dat_path_is_set && progress.dat_files_total > 0 && dat_load_fraction < 1.f)
+        {
+            std::string label = "Loading .dat file  ";
+            std::string counter = "[" + FormatWithCommas(progress.dat_files_read) +
+                                  " / " + FormatWithCommas(progress.dat_files_total) + "]";
+            std::string full = label + counter;
+            ImVec2 fullSz = ImGui::CalcTextSize(full.c_str());
+            ImVec2 labelSz = ImGui::CalcTextSize(label.c_str());
+
+            textY -= lineH;
+            float lineX = barRight - fullSz.x;
+            DrawTextWithShadow(dl, ImVec2(lineX, textY), labelCol, label.c_str());
+            DrawTextWithShadow(dl, ImVec2(lineX + labelSz.x, textY), counterCol, counter.c_str());
+            showedAnyLine = true;
+        }
+
+        // Match metadata line — show once loaded (count known)
+        if (progress.match_count >= 0)
+        {
+            std::string label = "Match metadata loaded  ";
+            std::string counter = "[" + FormatWithCommas(progress.match_count) + " matches]";
+            std::string full = label + counter;
+            ImVec2 fullSz = ImGui::CalcTextSize(full.c_str());
+            ImVec2 labelSz = ImGui::CalcTextSize(label.c_str());
+
+            textY -= lineH;
+            float lineX = barRight - fullSz.x;
+            DrawTextWithShadow(dl, ImVec2(lineX, textY), labelCol, label.c_str());
+            DrawTextWithShadow(dl, ImVec2(lineX + labelSz.x, textY), counterCol, counter.c_str());
+            showedAnyLine = true;
+        }
+
+        // Fallback — only when no granular info is available yet
+        if (!showedAnyLine)
+        {
+            const char* initText = "Initializing...";
+            ImVec2 sz = ImGui::CalcTextSize(initText);
+            textY -= lineH;
+            DrawTextWithShadow(dl, ImVec2(barRight - sz.x, textY), labelCol, initText);
+        }
+    }
+
+    // "Ready" text (centered, fades in)
+    if (readyAlpha > 0.01f)
+    {
+        const char* readyText = "Ready";
+        ImVec2 sz = ImGui::CalcTextSize(readyText);
+        float rx = (display.x - sz.x) * 0.5f;
+        float ry = barY - 30.f;
+        ImU32 readyCol = IM_COL32(255, 255, 255, static_cast<int>(230 * readyAlpha));
+        DrawTextWithShadow(dl, ImVec2(rx, ry), readyCol, readyText);
     }
 
     ImGui::End();
     ImGui::PopStyleColor(1);
     ImGui::PopStyleVar(3);
-
-    // --- Dat-path overlay (only when no path is configured and simulated progress done) ---
-    if (simulatedDone && !dat_path_is_set)
-    {
-        if (!s_overlayInitialized)
-        {
-            s_overlayInitialized = true;
-            if (!GuiGlobalConstants::saved_gw_dat_path.empty() &&
-                !std::filesystem::exists(GuiGlobalConstants::saved_gw_dat_path))
-            {
-                s_showPathMissingNote = true;
-                size_t len = std::min(GuiGlobalConstants::saved_gw_dat_path.size(), sizeof(s_pathBuffer) - 1);
-                memcpy(s_pathBuffer, GuiGlobalConstants::saved_gw_dat_path.c_str(), len);
-                s_pathBuffer[len] = '\0';
-            }
-        }
-
-        float panelW = 480.f;
-        float panelH = s_showPathMissingNote ? 250.f : 220.f;
-        ImVec2 panelPos((display.x - panelW) * 0.5f, (display.y - panelH) * 0.5f);
-
-        ImGui::SetNextWindowPos(panelPos);
-        ImGui::SetNextWindowSize(ImVec2(panelW, panelH));
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.039f, 0.055f, 0.071f, 0.90f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.12f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
-
-        if (ImGui::Begin("##DatPathPrompt", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar))
-        {
-            {
-                const char* title = "Guild Wars installation not found.";
-                float titleW = ImGui::CalcTextSize(title).x;
-                ImGui::SetCursorPosX((panelW - titleW) * 0.5f);
-                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", title);
-            }
-
-            ImGui::Spacing();
-
-            {
-                const char* sub = "Please locate your GW.dat file to complete setup.";
-                float subW = ImGui::CalcTextSize(sub).x;
-                ImGui::SetCursorPosX((panelW - subW) * 0.5f);
-                ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.85f, 1.f), "%s", sub);
-            }
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            ImGui::Text("Path:");
-            ImGui::SetNextItemWidth(panelW - 40.f);
-            ImGui::InputText("##datpath", s_pathBuffer, sizeof(s_pathBuffer));
-
-            if (s_showPathMissingNote)
-            {
-                ImGui::TextColored(ImVec4(0.878f, 0.471f, 0.188f, 1.f),
-                    "Previously configured file was not found at this location.");
-            }
-
-            if (!s_errorMsg.empty())
-            {
-                ImGui::TextColored(ImVec4(1.f, 0.376f, 0.376f, 1.f), "%s", s_errorMsg.c_str());
-            }
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            float btnTotalW = 100.f + 8.f + 100.f;
-            ImGui::SetCursorPosX((panelW - btnTotalW) * 0.5f);
-
-            if (ImGui::Button("Browse...", ImVec2(100, 28)))
-                OpenBrowseDialog();
-
-            ImGui::SameLine(0.f, 8.f);
-
-            if (ImGui::Button("Confirm", ImVec2(100, 28)))
-            {
-                s_errorMsg.clear();
-                std::string path(s_pathBuffer);
-                while (!path.empty() && (path.back() == ' ' || path.back() == '\t'))
-                    path.pop_back();
-
-                if (path.empty())
-                {
-                    s_errorMsg = "Please select a GW.dat file.";
-                }
-                else if (!std::filesystem::exists(path))
-                {
-                    s_errorMsg = "File not found. Please check the path.";
-                }
-                else
-                {
-                    GuiGlobalConstants::saved_gw_dat_path = path;
-                    GuiGlobalConstants::SaveSettings();
-
-                    std::wstring wpath(path.begin(), path.end());
-                    gw_dat_path = wpath;
-                    gw_dat_path_set = true;
-
-                    s_showPathMissingNote = false;
-                    s_overlayInitialized = false;
-                }
-            }
-        }
-        ImGui::End();
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(2);
-    }
-
-    // Handle file dialog result
-    if (s_datDialogOpen && ImGuiFileDialog::Instance()->Display("FirstLaunchChooseGwDat",
-        ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
-    {
-        if (ImGuiFileDialog::Instance()->IsOk())
-        {
-            std::string fp = ImGuiFileDialog::Instance()->GetFilePathName();
-            size_t len = std::min(fp.size(), sizeof(s_pathBuffer) - 1);
-            memcpy(s_pathBuffer, fp.c_str(), len);
-            s_pathBuffer[len] = '\0';
-        }
-        ImGuiFileDialog::Instance()->Close();
-        s_datDialogOpen = false;
-    }
 
     return false;
 }
@@ -310,9 +235,4 @@ void draw_first_launch_reset_state()
 {
     s_startTimeSet = false;
     s_hitFull = false;
-    s_datDialogOpen = false;
-    s_pathBuffer[0] = '\0';
-    s_errorMsg.clear();
-    s_showPathMissingNote = false;
-    s_overlayInitialized = false;
 }

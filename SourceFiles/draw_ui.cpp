@@ -2,6 +2,8 @@
 #include "draw_ui.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_first_launch.h"
+#include "draw_setup_wizard.h"
+#include "SetupConfig.h"
 #include "draw_dat_load_progress_bar.h"
 #include "draw_debug_match_metadata.h"
 #include "draw_picking_info.h"
@@ -10,6 +12,7 @@
 #include "ReplayLibrary.h"
 #include "FontConfig.h"
 #include <windows.h>
+#include <filesystem>
 
 extern FileType selected_file_type;
 extern HSTREAM selected_audio_stream_handle;
@@ -21,6 +24,8 @@ bool custom_file_info_changed = false;
 std::unordered_set<uint32_t> dat_compare_filter_result;
 
 static bool s_preferences_open = false;
+static bool s_licenceModalOpen = false;
+static bool s_datSettingsModalOpen = false;
 
 static void draw_preferences_window()
 {
@@ -75,28 +80,43 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
 	ReplayLibrary& replay_library)
 {
-	// Loading screen: shown on every launch until dat loading completes
-	// AND the progress animation has finished visually.
+	// First-launch setup wizard (blocks everything until complete)
+	{
+		static bool s_setupDone = !SetupConfig::IsFirstLaunch();
+		if (!s_setupDone)
+		{
+			if (draw_setup_wizard())
+				s_setupDone = true;
+			else
+				return;
+		}
+	}
+
 	{
 		static bool s_loadingScreenDone = false;
 		if (!s_loadingScreenDone)
 		{
-			auto& dm = dat_managers[dat_manager_to_show];
-			float dat_frac = 0.f;
-			if (gw_dat_path_set)
+			LoadingProgress lp;
+			lp.dat_path_is_set = gw_dat_path_set;
+
+			if (gw_dat_path_set && dat_managers.count(0) > 0 && dat_managers[0])
 			{
+				auto& dm = dat_managers[0];
 				if (dm->m_initialization_state == InitializationState::Completed)
-					dat_frac = 1.f;
+				{
+					lp.dat_files_read  = dm->get_num_files();
+					lp.dat_files_total = dm->get_num_files();
+				}
 				else if (dm->m_initialization_state == InitializationState::Started)
 				{
-					int total = dm->get_num_files();
-					int read  = dm->get_num_files_type_read();
-					if (total > 0)
-						dat_frac = static_cast<float>(read) / static_cast<float>(total);
+					lp.dat_files_total = dm->get_num_files();
+					lp.dat_files_read  = dm->get_num_files_type_read();
 				}
 			}
+			if (replay_library.IsLoaded())
+				lp.match_count = replay_library.GetMatchCount();
 
-			if (draw_first_launch(gw_dat_path_set, dat_frac))
+			if (draw_first_launch(lp))
 				s_loadingScreenDone = true;
 			else
 				return;
@@ -162,7 +182,39 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			}
 			ImGui::EndMenu();
 		}
+		if (ImGui::BeginMenu("Help")) {
+			if (ImGui::MenuItem("Licence & Credits"))
+				s_licenceModalOpen = true;
+			if (ImGui::MenuItem("File Paths"))
+				s_datSettingsModalOpen = true;
+			ImGui::EndMenu();
+		}
 		ImGui::EndMainMenuBar();
+	}
+
+	// DAT file missing notification bar
+	if (!s_datSettingsModalOpen && gw_dat_path_set &&
+		!SetupConfig::dat_file_path.empty() &&
+		!std::filesystem::exists(SetupConfig::dat_file_path))
+	{
+		ImVec2 display = ImGui::GetIO().DisplaySize;
+		float barH = 28.f;
+		ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::menu_bar_height));
+		ImGui::SetNextWindowSize(ImVec2(display.x, barH));
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.55f, 0.35f, 0.05f, 0.95f));
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 4));
+		if (ImGui::Begin("##DatMissingBar", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoNav))
+		{
+			ImGui::Text("DAT file not found at saved path.");
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Update Path"))
+				s_datSettingsModalOpen = true;
+		}
+		ImGui::End();
+		ImGui::PopStyleVar();
+		ImGui::PopStyleColor();
 	}
 
 	// Open file dialog triggered by File menu
@@ -238,6 +290,10 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	// Preferences window
 	draw_preferences_window();
+
+	// Help menu modals
+	draw_licence_modal(&s_licenceModalOpen);
+	draw_dat_settings_modal(&s_datSettingsModalOpen);
 
 	dat_manager_to_show_changed = dat_manager_to_show != initial_dat_manager_to_show;
 }

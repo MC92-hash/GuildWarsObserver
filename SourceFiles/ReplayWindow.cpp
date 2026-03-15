@@ -14,6 +14,7 @@
 #define NANOSVGRAST_IMPLEMENTATION
 #include "../ThirdParty/nanosvg/nanosvgrast.h"
 #include <d3dcompiler.h>
+#include <filesystem>
 #include <fstream>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
@@ -1110,7 +1111,7 @@ void ReplayWindow::StepPlaceProps()
     {
         m_replayCtx.mapLoaded = true;
         m_loadProgress = 1.0f;
-        m_loadingPhase = LoadingPhase::Ready;
+        m_loadingPhase = LoadingPhase::FadingOut;
 
         SetWindowTextW(m_hwnd, BuildWindowTitle(m_matchMeta).c_str());
     }
@@ -1938,6 +1939,10 @@ void ReplayWindow::Tick()
         RenderLoadingScreen();
         break;
 
+    case LoadingPhase::FadingOut:
+        RenderLoadingScreen();
+        break;
+
     case LoadingPhase::Ready:
         Render();
         break;
@@ -1981,70 +1986,543 @@ void ReplayWindow::Render()
 }
 
 // ---------------------------------------------------------------------------
-// Loading screen overlay (dark background + animated progress bar)
+// Map name helpers
 // ---------------------------------------------------------------------------
+
+const char* ReplayWindow::GetMapNameForLoading(int mapId)
+{
+    switch (mapId)
+    {
+    case 7: case 171:   return "Warrior's Isle";
+    case 8: case 172:   return "Hunter's Isle";
+    case 9: case 173:   return "Wizard's Isle";
+    case 52: case 167:  return "Burning Isle";
+    case 68: case 170:  return "Frozen Isle";
+    case 69: case 174:  return "Nomad's Isle";
+    case 70: case 168:  return "Druid's Isle";
+    case 71: case 175:  return "Isle of the Dead";
+    case 360: case 358: return "Isle of Meditation";
+    case 361: case 355: return "Isle of Weeping Stone";
+    case 362: case 356: return "Isle of Jade";
+    case 363: case 357: return "Imperial Isle";
+    case 531: case 533: return "Uncharted Isle";
+    case 532: case 534: return "Isle of Wurms";
+    case 537: case 541: return "Corrupted Isle";
+    case 540: case 542: return "Isle of Solitude";
+    default:            return nullptr;
+    }
+}
+
+const char* ReplayWindow::GetMapScreenshotFile(int mapId)
+{
+    switch (mapId)
+    {
+    case 52: case 167:  return "Burning Isle.jpg";
+    case 537: case 541: return "Corrupted Isle.jpg";
+    case 70: case 168:  return "Druid's Isle.webp";
+    case 68: case 170:  return "Frozen Isle.webp";
+    case 363: case 357: return "Imperial Isle.jpg";
+    case 362: case 356: return "Isle of Jade.jpg";
+    case 360: case 358: return "Isle of Meditation.jpg";
+    case 540: case 542: return "Isle of Solitude.jpg";
+    case 71: case 175:  return "Isle of the Dead.jpg";
+    case 361: case 355: return "Isle of Weeping Stone.webp";
+    case 532: case 534: return "Isle of Wurms.webp";
+    case 69: case 174:  return "Nomad's Isle.jpg";
+    case 531: case 533: return "Uncharted Isle.jpg";
+    case 7: case 171:   return "Warrior's Isle.webp";
+    case 9: case 173:   return "Wizard's Isle.webp";
+    default:            return nullptr;
+    }
+}
+
+std::string ReplayWindow::GetMatchLoadingBgPath() const
+{
+    const char* file = GetMapScreenshotFile(m_matchMeta.map_id);
+
+    wchar_t exePath[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
+        return "";
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 6; i++)
+    {
+        if (file)
+        {
+            auto p = dir / "Textures" / "Loading_Screen" / file;
+            if (std::filesystem::exists(p))
+                return p.string();
+        }
+        // Fallback: main splash screen
+        auto fb = dir / "Textures" / "Launch_screen" / "GWOBS_Loading_Screen_1.png";
+        if (std::filesystem::exists(fb))
+            return fb.string();
+
+        if (!dir.has_parent_path() || dir == dir.parent_path())
+            break;
+        dir = dir.parent_path();
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Loading screen overlay (ImGui-based match loading screen)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    static std::string LsFormatWithCommas(int value)
+    {
+        if (value < 0) value = 0;
+        std::string raw = std::to_string(value);
+        std::string result;
+        int count = 0;
+        for (int i = static_cast<int>(raw.size()) - 1; i >= 0; --i)
+        {
+            if (count > 0 && count % 3 == 0)
+                result.insert(result.begin(), ',');
+            result.insert(result.begin(), raw[i]);
+            ++count;
+        }
+        return result;
+    }
+
+    static void LsDrawTextWithShadow(ImDrawList* dl, ImVec2 pos, ImU32 col, const char* text)
+    {
+        ImU32 shadow = IM_COL32(0, 0, 0, 220);
+        dl->AddText(ImVec2(pos.x - 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(ImVec2(pos.x + 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(ImVec2(pos.x,       pos.y + 2.f), shadow, text);
+        dl->AddText(pos, col, text);
+    }
+
+    static void LsDrawTextWithShadowEx(ImDrawList* dl, ImFont* font, float fontSize,
+                                        ImVec2 pos, ImU32 col, const char* text)
+    {
+        ImU32 shadow = IM_COL32(0, 0, 0, 220);
+        dl->AddText(font, fontSize, ImVec2(pos.x - 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x + 1.f, pos.y + 1.f), shadow, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x,       pos.y + 2.f), shadow, text);
+        dl->AddText(font, fontSize, pos, col, text);
+    }
+
+    static void LsDrawTextHeavyShadow(ImDrawList* dl, ImFont* font, float fontSize,
+                                       ImVec2 pos, ImU32 col, const char* text)
+    {
+        ImU32 s1 = IM_COL32(0, 0, 0, 255);
+        ImU32 s2 = IM_COL32(0, 0, 0, 200);
+        // Tight crisp outline
+        dl->AddText(font, fontSize, ImVec2(pos.x - 1.f, pos.y), s1, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x + 1.f, pos.y), s1, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y - 1.f), s1, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1.f), s1, text);
+        // Deeper soft glow
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 2.f), s2, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x - 2.f, pos.y + 2.f), s2, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x + 2.f, pos.y + 2.f), s2, text);
+        dl->AddText(font, fontSize, pos, col, text);
+    }
+
+    static std::string GetPartyGuildDisplay(const MatchMeta& m, const std::string& partyId,
+                                            std::string& outName, std::string& outTag)
+    {
+        auto pit = m.parties.find(partyId);
+        if (pit == m.parties.end()) { outName = "?"; outTag = ""; return "?"; }
+
+        std::map<int, int> guildCounts;
+        for (const auto& p : pit->second.players)
+            if (p.guild_id > 0) guildCounts[p.guild_id]++;
+
+        int bestGuildId = 0, bestCount = 0;
+        for (const auto& [gid, cnt] : guildCounts)
+            if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
+
+        if (bestGuildId == 0) { outName = "Unknown"; outTag = ""; return "Unknown"; }
+
+        auto guildIdStr = std::to_string(bestGuildId);
+        auto git = m.guilds.find(guildIdStr);
+        if (git != m.guilds.end())
+        {
+            outName = git->second.name;
+            outTag = git->second.tag;
+            return outName + " [" + outTag + "]";
+        }
+        outName = "Guild #" + guildIdStr;
+        outTag = "";
+        return outName;
+    }
+}
 
 void ReplayWindow::RenderLoadingScreen()
 {
-    auto* ctx = m_deviceResources->GetD3DDeviceContext();
+    // --- D3D clear ---
+    auto* d3dCtx = m_deviceResources->GetD3DDeviceContext();
     auto* rtv = m_deviceResources->GetRenderTargetView();
     auto* dsv = m_deviceResources->GetDepthStencilView();
 
-    float darkBg[4] = { 0.06f, 0.06f, 0.09f, 1.0f };
-    ctx->ClearRenderTargetView(rtv, darkBg);
-    ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
+    float darkBg[4] = { 0.039f, 0.055f, 0.071f, 1.0f };
+    d3dCtx->ClearRenderTargetView(rtv, darkBg);
+    d3dCtx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
 
     auto vp = m_deviceResources->GetScreenViewport();
-    ctx->RSSetViewports(1, &vp);
-    ctx->OMSetRenderTargets(1, &rtv, nullptr);
+    d3dCtx->RSSetViewports(1, &vp);
+    d3dCtx->OMSetRenderTargets(1, &rtv, nullptr);
 
-    // Build overlay quads in NDC space
-    const float barHalfW = 0.20f;
-    const float barHalfH = 0.004f;
-    const float barY     = 0.0f;
+    // --- Init ImGui if needed ---
+    if (!m_imguiInitialized)
+        InitImGui();
 
-    float fillRight = -barHalfW + 2.0f * barHalfW * std::clamp(m_loadProgress, 0.0f, 1.0f);
+    ImGuiContext* prevCtx = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(m_imguiContext);
 
-    auto makeQuad = [](OverlayVertex* out, float l, float t, float r, float b,
-                       float cr, float cg, float cb, float ca)
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 display = io.DisplaySize;
+
+    // --- Init texture cache and background path (once) ---
+    if (!m_lsTexCache.IsInitialized())
     {
-        out[0] = { l, t, cr, cg, cb, ca };
-        out[1] = { r, t, cr, cg, cb, ca };
-        out[2] = { l, b, cr, cg, cb, ca };
-        out[3] = { l, b, cr, cg, cb, ca };
-        out[4] = { r, t, cr, cg, cb, ca };
-        out[5] = { r, b, cr, cg, cb, ca };
-    };
-
-    OverlayVertex verts[12];
-    makeQuad(&verts[0], -barHalfW, barY + barHalfH, barHalfW, barY - barHalfH,
-             0.15f, 0.15f, 0.20f, 1.0f);
-    makeQuad(&verts[6], -barHalfW, barY + barHalfH, fillRight, barY - barHalfH,
-             0.25f, 0.50f, 1.00f, 1.0f);
-
-    // Upload vertices
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (SUCCEEDED(ctx->Map(m_overlayVB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-    {
-        memcpy(mapped.pData, verts, sizeof(verts));
-        ctx->Unmap(m_overlayVB.Get(), 0);
+        m_lsTexCache.Init(m_deviceResources->GetD3DDevice());
+        m_lsBgPath = GetMatchLoadingBgPath();
     }
 
-    // Set pipeline state for 2D overlay
-    UINT stride = sizeof(OverlayVertex), offset = 0;
-    ctx->IASetVertexBuffers(0, 1, m_overlayVB.GetAddressOf(), &stride, &offset);
-    ctx->IASetInputLayout(m_overlayIL.Get());
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx->VSSetShader(m_overlayVS.Get(), nullptr, 0);
-    ctx->PSSetShader(m_overlayPS.Get(), nullptr, 0);
-    ctx->RSSetState(m_overlayRS.Get());
-    ctx->OMSetDepthStencilState(m_overlayDSS.Get(), 0);
-    float blendFactor[4] = {};
-    ctx->OMSetBlendState(m_overlayBS.Get(), blendFactor, 0xFFFFFFFF);
+    // --- Timing ---
+    if (!m_lsStartTimeSet)
+    {
+        m_lsStartTime = LsClock::now();
+        m_lsStartTimeSet = true;
+    }
+    float elapsed = std::chrono::duration<float>(LsClock::now() - m_lsStartTime).count();
 
-    ctx->Draw(12, 0);
+    constexpr float kFadeInSec         = 0.3f;
+    constexpr float kBgFadeInSec       = 0.5f;
+    constexpr float kStatusFadeOutSec  = 0.2f;
+    constexpr float kReadyLabelSec     = 0.2f;
+    constexpr float kReadyHoldSec      = 2.0f;
+    constexpr float kFinalFadeOutSec   = 0.4f;
+
+    float screenAlpha = std::clamp(elapsed / kFadeInSec, 0.f, 1.f);
+    float bgAlpha     = std::clamp((elapsed - 0.05f) / kBgFadeInSec, 0.f, 1.f);
+
+    // --- Check if "Ready" (FadingOut phase = map load done, fade animation plays) ---
+    bool isReady = (m_loadingPhase == LoadingPhase::FadingOut);
+
+    float readyFadeOut = 1.f;
+    float readyTextAlpha = 0.f;
+    bool shouldTransition = false;
+
+    if (isReady && !m_lsHitReady)
+    {
+        m_lsHitReady = true;
+        m_lsReadyTime = LsClock::now();
+    }
+
+    if (m_lsHitReady)
+    {
+        float re = std::chrono::duration<float>(LsClock::now() - m_lsReadyTime).count();
+
+        // Phase A: status text fades out (0 .. kStatusFadeOutSec)
+        float fadeT = std::clamp(re / kStatusFadeOutSec, 0.f, 1.f);
+        readyFadeOut = 1.f - fadeT;
+
+        // Phase B: "Ready" label appears (kStatusFadeOutSec .. + kReadyLabelSec)
+        float readyStart = kStatusFadeOutSec;
+        if (re >= readyStart)
+            readyTextAlpha = std::clamp((re - readyStart) / 0.1f, 0.f, 1.f);
+
+        // Phase C: hold on completed screen (kStatusFadeOutSec + kReadyLabelSec .. + kReadyHoldSec)
+        float holdEnd = kStatusFadeOutSec + kReadyLabelSec + kReadyHoldSec;
+
+        // Phase D: final fade out to black
+        float afterHold = re - holdEnd;
+        if (afterHold > 0.f)
+        {
+            float finalFade = std::clamp(afterHold / kFinalFadeOutSec, 0.f, 1.f);
+            screenAlpha = 1.f - finalFade;
+            if (finalFade >= 1.f)
+                shouldTransition = true;
+        }
+    }
+
+    // --- Fullscreen ImGui window ---
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(display);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.039f, 0.055f, 0.071f, screenAlpha));
+
+    ImGui::Begin("##MatchLoadingScreen", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoInputs);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // --- Background image (contain-fit) ---
+    ImTextureID bgTex = m_lsBgPath.empty() ? nullptr : m_lsTexCache.GetTexture(m_lsBgPath);
+    if (bgTex && screenAlpha > 0.01f)
+    {
+        // We need the actual image dimensions for contain-fit.
+        // TextureCache returns an SRV; query the underlying texture for size.
+        ID3D11ShaderResourceView* srv = static_cast<ID3D11ShaderResourceView*>(bgTex);
+        Microsoft::WRL::ComPtr<ID3D11Resource> res;
+        srv->GetResource(res.GetAddressOf());
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> tex2d;
+        res.As(&tex2d);
+
+        float imgW = display.x, imgH = display.y;
+        if (tex2d)
+        {
+            D3D11_TEXTURE2D_DESC desc;
+            tex2d->GetDesc(&desc);
+            imgW = static_cast<float>(desc.Width);
+            imgH = static_cast<float>(desc.Height);
+        }
+
+        // Contain-fit: scale to fit within window, maintain aspect ratio
+        float scaleX = display.x / imgW;
+        float scaleY = display.y / imgH;
+        float scale = (std::min)(scaleX, scaleY);
+        float drawW = imgW * scale;
+        float drawH = imgH * scale;
+        float offX = (display.x - drawW) * 0.5f;
+        float offY = (display.y - drawH) * 0.5f;
+
+        ImU32 imgCol = IM_COL32(255, 255, 255, static_cast<int>(255 * bgAlpha * screenAlpha));
+        dl->AddImage(bgTex, ImVec2(offX, offY), ImVec2(offX + drawW, offY + drawH),
+                     ImVec2(0, 0), ImVec2(1, 1), imgCol);
+    }
+
+    // --- Dark overlay ---
+    {
+        ImU32 overlayCol = IM_COL32(0, 0, 0, static_cast<int>(115 * screenAlpha));
+        dl->AddRectFilled(ImVec2(0, 0), display, overlayCol);
+    }
+
+    // --- Match info header (top center, with dark pill) ---
+    if (screenAlpha > 0.01f)
+    {
+        ImFont* font = ImGui::GetFont();
+
+        // --- Build strings ---
+        const char* mapName = GetMapNameForLoading(m_matchMeta.map_id);
+        char dateLine[128];
+        snprintf(dateLine, sizeof(dateLine), "%04d/%02d/%02d",
+                 m_matchMeta.year, m_matchMeta.month, m_matchMeta.day);
+        std::string line1 = std::string(dateLine) + "  \xC2\xB7  " + (mapName ? mapName : "Unknown Map");
+
+        std::string name1, tag1, name2, tag2;
+        GetPartyGuildDisplay(m_matchMeta, "1", name1, tag1);
+        GetPartyGuildDisplay(m_matchMeta, "2", name2, tag2);
+
+        std::string team1Name = name1;
+        std::string team1Tag  = tag1.empty() ? "" : " [" + tag1 + "]";
+        std::string team2Name = name2;
+        std::string team2Tag  = tag2.empty() ? "" : " [" + tag2 + "]";
+
+        // --- Sizes ---
+        float line1Size = 17.f;
+        float line2Size = 28.f;
+        float vsSize    = 20.f;
+        float tagSize   = 28.f;
+
+        // --- Measure line 1 ---
+        ImVec2 line1Sz = font->CalcTextSizeA(line1Size, FLT_MAX, 0.f, line1.c_str());
+
+        // --- Measure line 2 components ---
+        ImVec2 t1NameSz = font->CalcTextSizeA(line2Size, FLT_MAX, 0.f, team1Name.c_str());
+        ImVec2 t1TagSz  = team1Tag.empty() ? ImVec2(0,0) : font->CalcTextSizeA(tagSize, FLT_MAX, 0.f, team1Tag.c_str());
+        std::string vsPad = "  vs  ";
+        ImVec2 vsSz = font->CalcTextSizeA(vsSize, FLT_MAX, 0.f, vsPad.c_str());
+        ImVec2 t2NameSz = font->CalcTextSizeA(line2Size, FLT_MAX, 0.f, team2Name.c_str());
+        ImVec2 t2TagSz  = team2Tag.empty() ? ImVec2(0,0) : font->CalcTextSizeA(tagSize, FLT_MAX, 0.f, team2Tag.c_str());
+
+        float line2TotalW = t1NameSz.x + t1TagSz.x + vsSz.x + t2NameSz.x + t2TagSz.x;
+        float line2H = (std::max)(t1NameSz.y, vsSz.y);
+
+        // --- Dark pill background ---
+        float pillPadL = 32.f, pillPadR = 32.f, pillPadT = 12.f, pillPadB = 16.f;
+        float pillContentW = (std::max)(line1Sz.x, line2TotalW);
+        float spacing = 8.f;
+        float pillContentH = line1Sz.y + spacing + line2H;
+        float pillW = pillContentW + pillPadL + pillPadR;
+        float pillH = pillContentH + pillPadT + pillPadB;
+        float pillX = (display.x - pillW) * 0.5f;
+        float pillY = 48.f;
+        float pillR = 14.f;
+
+        ImU32 pillCol = IM_COL32(0, 0, 0, static_cast<int>(128 * screenAlpha));
+        dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH), pillCol, pillR);
+
+        // --- Line 1 position (centered within pill) ---
+        float line1X = pillX + (pillW - line1Sz.x) * 0.5f;
+        float line1Y = pillY + pillPadT;
+        ImU32 line1Col = IM_COL32(212, 160, 32, static_cast<int>(255 * screenAlpha));
+        LsDrawTextHeavyShadow(dl, font, line1Size, ImVec2(line1X, line1Y), line1Col, line1.c_str());
+
+        // --- Line 2 position (centered within pill) ---
+        float line2Y = line1Y + line1Sz.y + spacing;
+        float line2X = pillX + (pillW - line2TotalW) * 0.5f;
+        float vsYOff = (line2Size - vsSize) * 0.5f;
+        float tagYOff = 0.f;
+
+        // Team 1 name (bold color)
+        ImU32 teamCol = IM_COL32(240, 192, 64, static_cast<int>(255 * screenAlpha));
+        ImU32 tagCol  = IM_COL32(240, 192, 64, static_cast<int>(179 * screenAlpha));
+        ImU32 vsCol   = IM_COL32(212, 160, 32, static_cast<int>(204 * screenAlpha));
+
+        float cx = line2X;
+        LsDrawTextHeavyShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team1Name.c_str());
+        cx += t1NameSz.x;
+        if (!team1Tag.empty())
+        {
+            LsDrawTextHeavyShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team1Tag.c_str());
+            cx += t1TagSz.x;
+        }
+        LsDrawTextHeavyShadow(dl, font, vsSize, ImVec2(cx, line2Y + vsYOff), vsCol, vsPad.c_str());
+        cx += vsSz.x;
+        LsDrawTextHeavyShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team2Name.c_str());
+        cx += t2NameSz.x;
+        if (!team2Tag.empty())
+            LsDrawTextHeavyShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team2Tag.c_str());
+    }
+
+    // --- Progress bar geometry ---
+    float barW = (std::min)(800.f, display.x - 120.f);
+    float barH = 6.f;
+    float barX = (display.x - barW) * 0.5f;
+    float barY = display.y - 40.f - barH;
+    float barRight = barX + barW;
+
+    // --- Progress bar ---
+    {
+        float barAlpha = readyFadeOut * screenAlpha;
+        ImU32 bgCol   = IM_COL32(40, 44, 52, static_cast<int>(255 * barAlpha));
+        ImU32 fillCol = IM_COL32(74, 144, 216, static_cast<int>(230 * barAlpha));
+        float progress = std::clamp(m_loadProgress, 0.f, 1.f);
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW, barY + barH), bgCol, 3.f);
+        dl->AddRectFilled(ImVec2(barX, barY), ImVec2(barX + barW * progress, barY + barH), fillCol, 3.f);
+    }
+
+    // --- Status text lines (right-aligned above bar) ---
+    if (readyFadeOut > 0.01f && screenAlpha > 0.01f && !m_lsHitReady)
+    {
+        float alpha = readyFadeOut * screenAlpha;
+        ImU32 labelCol   = IM_COL32(255, 255, 255, static_cast<int>(210 * alpha));
+        ImU32 counterCol = IM_COL32(255, 255, 255, static_cast<int>(250 * alpha));
+
+        float lineH = ImGui::GetFontSize() + 2.f;
+        float textY = barY - 8.f;
+
+        auto drawStatusLine = [&](const std::string& label, const std::string& counter)
+        {
+            std::string full = label + counter;
+            ImVec2 fullSz = ImGui::CalcTextSize(full.c_str());
+            ImVec2 labelSz = ImGui::CalcTextSize(label.c_str());
+            textY -= lineH;
+            float lineX = barRight - fullSz.x;
+            LsDrawTextWithShadow(dl, ImVec2(lineX, textY), labelCol, label.c_str());
+            LsDrawTextWithShadow(dl, ImVec2(lineX + labelSz.x, textY), counterCol, counter.c_str());
+        };
+
+        bool showedAny = false;
+
+        // Map loading status
+        if (m_loadingPhase == LoadingPhase::Init)
+        {
+            drawStatusLine("Loading map geometry...", "");
+            showedAny = true;
+        }
+        else if (m_loadingPhase == LoadingPhase::PropModels && m_totalPropFilenames > 0)
+        {
+            drawStatusLine("Loading map models  ",
+                "[" + LsFormatWithCommas(m_propModelLoadIndex) +
+                " / " + LsFormatWithCommas(m_totalPropFilenames) + "]");
+            showedAny = true;
+        }
+        else if (m_loadingPhase == LoadingPhase::PlaceProps && m_totalPropInstances > 0)
+        {
+            drawStatusLine("Placing props  ",
+                "[" + LsFormatWithCommas(m_propPlaceIndex) +
+                " / " + LsFormatWithCommas(m_totalPropInstances) + "]");
+            showedAny = true;
+        }
+
+        // Match data parsing (async, can run in parallel with map loading)
+        {
+            int agentDone = 0, agentTotal = 0, stocDone = 0, stocTotal = 0;
+            bool agentActive = false, stocActive = false;
+            if (m_replayCtx.agentParseProgress && !m_replayCtx.agentsLoaded)
+            {
+                agentDone = m_replayCtx.agentParseProgress->files_done.load();
+                agentTotal = m_replayCtx.agentParseProgress->files_total.load();
+                agentActive = (agentTotal > 0);
+            }
+            if (m_replayCtx.stocParseProgress && !m_replayCtx.stocLoaded)
+            {
+                stocDone = m_replayCtx.stocParseProgress->files_done.load();
+                stocTotal = m_replayCtx.stocParseProgress->files_total.load();
+                stocActive = (stocTotal > 0);
+            }
+
+            if (agentActive || stocActive)
+            {
+                int totalDone = agentDone + stocDone;
+                int totalAll = agentTotal + stocTotal;
+                drawStatusLine("Loading match data  ",
+                    "[" + LsFormatWithCommas(totalDone) +
+                    " / " + LsFormatWithCommas(totalAll) + "]");
+                showedAny = true;
+            }
+        }
+
+        if (!showedAny && m_loadingPhase == LoadingPhase::Validate)
+        {
+            drawStatusLine("Initializing...", "");
+        }
+    }
+
+    // --- "Ready" text (centered, fades in) ---
+    if (readyTextAlpha > 0.01f && screenAlpha > 0.01f)
+    {
+        const char* readyText = "Ready";
+        ImVec2 sz = ImGui::CalcTextSize(readyText);
+        float rx = (display.x - sz.x) * 0.5f;
+        float ry = barY - 30.f;
+        ImU32 readyCol = IM_COL32(255, 255, 255, static_cast<int>(230 * readyTextAlpha * screenAlpha));
+        LsDrawTextWithShadow(dl, ImVec2(rx, ry), readyCol, readyText);
+    }
+
+    // --- Error text ---
+    if (m_loadingPhase == LoadingPhase::Error && !m_errorMsg.empty() && screenAlpha > 0.01f)
+    {
+        std::string errDisplay = "Error: " + m_errorMsg;
+        ImVec2 sz = ImGui::CalcTextSize(errDisplay.c_str());
+        float ex = (display.x - sz.x) * 0.5f;
+        float ey = display.y * 0.5f;
+        ImU32 errCol = IM_COL32(255, 96, 96, static_cast<int>(255 * screenAlpha));
+        LsDrawTextWithShadow(dl, ImVec2(ex, ey), errCol, errDisplay.c_str());
+    }
+
+    ImGui::End();
+    ImGui::PopStyleColor(1);
+    ImGui::PopStyleVar(3);
+
+    ImGui::Render();
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+    if (prevCtx)
+        ImGui::SetCurrentContext(prevCtx);
 
     m_deviceResources->Present();
+
+    // Transition to Ready phase after all fades complete
+    if (shouldTransition)
+        m_loadingPhase = LoadingPhase::Ready;
 }
 
 // ---------------------------------------------------------------------------

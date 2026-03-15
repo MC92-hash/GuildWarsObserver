@@ -725,6 +725,12 @@
     <ClCompile Include="SourceFiles\draw_first_launch.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="SourceFiles\SetupConfig.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\draw_setup_wizard.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="SourceFiles\draw_gui_for_open_dat_file.cpp">
       <Filter>GUI</Filter>
     </ClCompile>

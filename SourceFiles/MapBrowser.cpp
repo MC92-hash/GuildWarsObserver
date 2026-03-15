@@ -9,6 +9,7 @@
 #include "draw_picking_info.h"
 #include "draw_ui.h"
 #include "draw_first_launch.h"
+#include "SetupConfig.h"
 #include "draw_timeline.h"
 #include "animation_state.h"
 #include "ModelViewer/ModelViewer.h"
@@ -242,7 +243,13 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     GetTextureCache().Init(m_deviceResources->GetD3DDevice());
 
+    SetupConfig::Load();
     GuiGlobalConstants::LoadSettings();
+
+    if (!SetupConfig::dat_file_path.empty())
+        GuiGlobalConstants::saved_gw_dat_path = SetupConfig::dat_file_path;
+    if (!SetupConfig::match_data_folder.empty())
+        GuiGlobalConstants::saved_match_data_folder_path = SetupConfig::match_data_folder;
 
     // Present a dark frame immediately so the user doesn't see a white window
     // while the heavier initialization work below runs.
@@ -293,8 +300,10 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         }
     }
 
-    // Auto-load gw.dat from saved config if path is valid
-    if (!GuiGlobalConstants::saved_gw_dat_path.empty() && !gw_dat_path_set)
+    // Auto-load gw.dat from saved config if path is valid.
+    // Skip during first-launch wizard -- the wizard will set the path when complete.
+    if (!SetupConfig::IsFirstLaunch() &&
+        !GuiGlobalConstants::saved_gw_dat_path.empty() && !gw_dat_path_set)
     {
         std::filesystem::path datPath(GuiGlobalConstants::saved_gw_dat_path);
         if (std::filesystem::exists(datPath))
