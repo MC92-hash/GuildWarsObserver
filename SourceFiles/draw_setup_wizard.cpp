@@ -3,6 +3,7 @@
 #include "draw_gui_for_open_dat_file.h"
 #include "SetupConfig.h"
 #include "GuiGlobalConstants.h"
+#include "FolderWatcher.h"
 #include "TextureCache.h"
 #include "imgui.h"
 #include <filesystem>
@@ -1067,7 +1068,7 @@ void draw_licence_modal(bool* open)
 
 // ─── File Paths modal (for Help menu) ────────────────────────────────────────
 
-void draw_dat_settings_modal(bool* open)
+void draw_dat_settings_modal(bool* open, FolderWatcher* watcher)
 {
     if (!open || !*open) return;
 
@@ -1306,6 +1307,8 @@ void draw_dat_settings_modal(bool* open)
                 SetupConfig::Save();
                 GuiGlobalConstants::saved_match_data_folder_path = p;
                 GuiGlobalConstants::SaveSettings();
+                if (watcher)
+                    watcher->Restart(p);
                 folderSaved = true;
                 folderSaveTime = Clock::now();
             }

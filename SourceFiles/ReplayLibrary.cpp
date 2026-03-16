@@ -3,6 +3,8 @@
 #include <json.hpp>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
+#include <algorithm>
 
 using json = nlohmann::json;
 
@@ -701,6 +703,55 @@ void ReplayLibrary::ScanFolder()
 
     m_matches = m_provider.GetAvailableReplays();
     m_loaded = true;
+}
+
+int ReplayLibrary::RescanDiff()
+{
+    m_newMatchFolders.clear();
+    if (m_folder_path.empty()) return 0;
+
+    auto fresh = m_provider.GetAvailableReplays();
+
+    // Build set of existing folder_path values for fast lookup
+    std::unordered_set<std::string> existingSet;
+    existingSet.reserve(m_matches.size());
+    for (auto& m : m_matches)
+        existingSet.insert(m.folder_path);
+
+    // Build set of fresh folder_path values
+    std::unordered_set<std::string> freshSet;
+    freshSet.reserve(fresh.size());
+    for (auto& m : fresh)
+        freshSet.insert(m.folder_path);
+
+    // Remove matches no longer on disk
+    m_matches.erase(
+        std::remove_if(m_matches.begin(), m_matches.end(),
+            [&](const MatchMeta& m) { return freshSet.find(m.folder_path) == freshSet.end(); }),
+        m_matches.end());
+
+    // Add new matches
+    int added = 0;
+    for (auto& m : fresh)
+    {
+        if (existingSet.find(m.folder_path) == existingSet.end())
+        {
+            m_newMatchFolders.push_back(m.folder_path);
+            m_matches.push_back(std::move(m));
+            added++;
+        }
+    }
+
+    // Sort by date descending (newest first)
+    std::sort(m_matches.begin(), m_matches.end(), [](const MatchMeta& a, const MatchMeta& b)
+    {
+        if (a.year != b.year) return a.year > b.year;
+        if (a.month != b.month) return a.month > b.month;
+        return a.day > b.day;
+    });
+
+    m_loaded = true;
+    return added;
 }
 
 void ReplayLibrary::Clear()

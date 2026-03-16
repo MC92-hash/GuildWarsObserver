@@ -15,6 +15,7 @@
 #include "MatchReplay.h"
 #include "ReplayLibrary.h"
 #include "ReplayWindow.h"
+#include "FolderWatcher.h"
 #include <draw_extract_panel.h>
 
 using namespace std::chrono;
@@ -118,6 +119,7 @@ private:
     std::unique_ptr<AgentOverlay> m_agent_overlay;
     MatchReplay m_match_replay;
     ReplayLibrary m_replay_library;
+    FolderWatcher m_folderWatcher;
 
     std::string m_error_msg = "";
     bool m_show_error_msg = false;

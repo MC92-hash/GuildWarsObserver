@@ -1536,6 +1536,84 @@ void ReplayWindow::Tick()
             }
         }
 
+        // 5) Match INTERRUPTED combat events to cancelled SkillUseEvents
+        for (const auto& ce : m_replayCtx.stocData.combat)
+        {
+            if (ce.type != "INTERRUPTED") continue;
+            int victimId = ce.caster_id;
+            int intSkillId = (int)ce.value;
+            auto ait = m_replayCtx.agents.find(victimId);
+            if (ait == m_replayCtx.agents.end()) continue;
+            auto& hist = ait->second.skillUseHistory;
+            // Binary search for the closest cancelled event before this interrupt time
+            int lo2 = 0, hi2 = (int)hist.size() - 1, best2 = -1;
+            while (lo2 <= hi2) {
+                int mid2 = lo2 + (hi2 - lo2) / 2;
+                if (hist[mid2].endTime <= ce.time + 0.5f) { best2 = mid2; lo2 = mid2 + 1; }
+                else hi2 = mid2 - 1;
+            }
+            for (int i = best2; i >= 0; --i)
+            {
+                float dt = ce.time - hist[i].endTime;
+                if (dt > 3.0f) break;
+                if (dt < -0.5f) continue;
+                if (!hist[i].wasCancelled || hist[i].wasInterrupted) continue;
+                if (intSkillId > 0 && hist[i].skillId != intSkillId) continue;
+                hist[i].wasInterrupted = true;
+                break;
+            }
+        }
+
+        // 6) Precompute recharge durations per cast event (fast recast detection)
+        // NOTE: Fast recast detection may produce false positives if recharge-reduction
+        // skills are active (e.g. Quickening Zephyr). In standard GvG this is rare.
+        // Known limitation — no fix planned.
+        {
+            auto& skillDb = GetSkillDatabase();
+            for (auto& [id, ard] : m_replayCtx.agents)
+            {
+                // Group events by skill ID
+                std::unordered_map<int, std::vector<int>> skillEventIndices;
+                for (int i = 0; i < (int)ard.skillUseHistory.size(); i++)
+                {
+                    auto& ev = ard.skillUseHistory[i];
+                    if (ev.wasCancelled) continue;
+                    skillEventIndices[ev.skillId].push_back(i);
+                }
+
+                for (auto& [sid, indices] : skillEventIndices)
+                {
+                    const SkillInfo* si = skillDb.IsLoaded() ? skillDb.Get(sid) : nullptr;
+                    float normalRecharge = si ? si->recharge : 0.f;
+
+                    for (int j = 0; j < (int)indices.size(); j++)
+                    {
+                        auto& ev = ard.skillUseHistory[indices[j]];
+                        float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
+
+                        if (j + 1 < (int)indices.size())
+                        {
+                            auto& nextEv = ard.skillUseHistory[indices[j + 1]];
+                            float expectedNext = castEnd + normalRecharge;
+                            if (nextEv.startTime < expectedNext - 0.5f && normalRecharge > 0.f)
+                            {
+                                ev.wasFastRecast = true;
+                                ev.rechargeDuration = nextEv.startTime - castEnd;
+                            }
+                            else
+                            {
+                                ev.rechargeDuration = normalRecharge;
+                            }
+                        }
+                        else
+                        {
+                            ev.rechargeDuration = normalRecharge;
+                        }
+                    }
+                }
+            }
+        }
+
         m_skillUseTimelineBuilt = true;
     }
 
@@ -2105,20 +2183,12 @@ namespace
         dl->AddText(font, fontSize, pos, col, text);
     }
 
-    static void LsDrawTextHeavyShadow(ImDrawList* dl, ImFont* font, float fontSize,
+    static void LsDrawTextCrispShadow(ImDrawList* dl, ImFont* font, float fontSize,
                                        ImVec2 pos, ImU32 col, const char* text)
     {
-        ImU32 s1 = IM_COL32(0, 0, 0, 255);
-        ImU32 s2 = IM_COL32(0, 0, 0, 200);
-        // Tight crisp outline
-        dl->AddText(font, fontSize, ImVec2(pos.x - 1.f, pos.y), s1, text);
-        dl->AddText(font, fontSize, ImVec2(pos.x + 1.f, pos.y), s1, text);
-        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y - 1.f), s1, text);
-        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1.f), s1, text);
-        // Deeper soft glow
-        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 2.f), s2, text);
-        dl->AddText(font, fontSize, ImVec2(pos.x - 2.f, pos.y + 2.f), s2, text);
-        dl->AddText(font, fontSize, ImVec2(pos.x + 2.f, pos.y + 2.f), s2, text);
+        ImU32 shadow = IM_COL32(0, 0, 0, 230);
+        dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1.f), shadow, text);
+        dl->AddText(font, fontSize, ImVec2(pos.x + 1.f, pos.y + 1.f), shadow, text);
         dl->AddText(font, fontSize, pos, col, text);
     }
 
@@ -2325,10 +2395,10 @@ void ReplayWindow::RenderLoadingScreen()
         std::string team2Tag  = tag2.empty() ? "" : " [" + tag2 + "]";
 
         // --- Sizes ---
-        float line1Size = 17.f;
-        float line2Size = 28.f;
-        float vsSize    = 20.f;
-        float tagSize   = 28.f;
+        float line1Size = 16.f;
+        float line2Size = 26.f;
+        float vsSize    = 18.f;
+        float tagSize   = 26.f;
 
         // --- Measure line 1 ---
         ImVec2 line1Sz = font->CalcTextSizeA(line1Size, FLT_MAX, 0.f, line1.c_str());
@@ -2344,25 +2414,27 @@ void ReplayWindow::RenderLoadingScreen()
         float line2TotalW = t1NameSz.x + t1TagSz.x + vsSz.x + t2NameSz.x + t2TagSz.x;
         float line2H = (std::max)(t1NameSz.y, vsSz.y);
 
-        // --- Dark pill background ---
-        float pillPadL = 32.f, pillPadR = 32.f, pillPadT = 12.f, pillPadB = 16.f;
+        // --- Dark pill background (opaque, no blur) ---
+        float pillPadL = 28.f, pillPadR = 28.f, pillPadT = 10.f, pillPadB = 14.f;
         float pillContentW = (std::max)(line1Sz.x, line2TotalW);
-        float spacing = 8.f;
+        float spacing = 6.f;
         float pillContentH = line1Sz.y + spacing + line2H;
         float pillW = pillContentW + pillPadL + pillPadR;
         float pillH = pillContentH + pillPadT + pillPadB;
         float pillX = (display.x - pillW) * 0.5f;
         float pillY = 48.f;
-        float pillR = 14.f;
+        float pillR = 10.f;
 
-        ImU32 pillCol = IM_COL32(0, 0, 0, static_cast<int>(128 * screenAlpha));
+        ImU32 pillCol    = IM_COL32(8, 12, 16, static_cast<int>(209 * screenAlpha));
+        ImU32 pillBorder = IM_COL32(255, 255, 255, static_cast<int>(20 * screenAlpha));
         dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH), pillCol, pillR);
+        dl->AddRect(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH), pillBorder, pillR);
 
         // --- Line 1 position (centered within pill) ---
         float line1X = pillX + (pillW - line1Sz.x) * 0.5f;
         float line1Y = pillY + pillPadT;
         ImU32 line1Col = IM_COL32(212, 160, 32, static_cast<int>(255 * screenAlpha));
-        LsDrawTextHeavyShadow(dl, font, line1Size, ImVec2(line1X, line1Y), line1Col, line1.c_str());
+        LsDrawTextCrispShadow(dl, font, line1Size, ImVec2(line1X, line1Y), line1Col, line1.c_str());
 
         // --- Line 2 position (centered within pill) ---
         float line2Y = line1Y + line1Sz.y + spacing;
@@ -2370,25 +2442,25 @@ void ReplayWindow::RenderLoadingScreen()
         float vsYOff = (line2Size - vsSize) * 0.5f;
         float tagYOff = 0.f;
 
-        // Team 1 name (bold color)
+        // Team names
         ImU32 teamCol = IM_COL32(240, 192, 64, static_cast<int>(255 * screenAlpha));
-        ImU32 tagCol  = IM_COL32(240, 192, 64, static_cast<int>(179 * screenAlpha));
-        ImU32 vsCol   = IM_COL32(212, 160, 32, static_cast<int>(204 * screenAlpha));
+        ImU32 tagCol  = IM_COL32(240, 192, 64, static_cast<int>(191 * screenAlpha));
+        ImU32 vsCol   = IM_COL32(212, 160, 32, static_cast<int>(191 * screenAlpha));
 
         float cx = line2X;
-        LsDrawTextHeavyShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team1Name.c_str());
+        LsDrawTextCrispShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team1Name.c_str());
         cx += t1NameSz.x;
         if (!team1Tag.empty())
         {
-            LsDrawTextHeavyShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team1Tag.c_str());
+            LsDrawTextCrispShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team1Tag.c_str());
             cx += t1TagSz.x;
         }
-        LsDrawTextHeavyShadow(dl, font, vsSize, ImVec2(cx, line2Y + vsYOff), vsCol, vsPad.c_str());
+        LsDrawTextCrispShadow(dl, font, vsSize, ImVec2(cx, line2Y + vsYOff), vsCol, vsPad.c_str());
         cx += vsSz.x;
-        LsDrawTextHeavyShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team2Name.c_str());
+        LsDrawTextCrispShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team2Name.c_str());
         cx += t2NameSz.x;
         if (!team2Tag.empty())
-            LsDrawTextHeavyShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team2Tag.c_str());
+            LsDrawTextCrispShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team2Tag.c_str());
     }
 
     // --- Progress bar geometry ---
@@ -2596,6 +2668,7 @@ void ReplayWindow::DrawImGuiOverlay()
             }
             ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
+            ImGui::MenuItem("Piano Roll (P)", nullptr, &m_showPianoRoll);
             ImGui::Separator();
             ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
             ImGui::EndMenu();
@@ -2660,6 +2733,8 @@ void ReplayWindow::DrawImGuiOverlay()
 
     DrawPartyWindows();
     DrawCombatLog();
+    DrawPlayerInfoPanel();
+    DrawPianoRollPanel();
 
     DrawAgentOverlay();
     DrawFlags();
@@ -2683,6 +2758,7 @@ void ReplayWindow::DrawImGuiOverlay()
     {
         m_leftClickPending = false;
         m_leftMouseDown = true;
+        ClosePlayerInfoPanel();
         if (!m_rightMouseDown)
         {
             ShowCursor(FALSE);
@@ -2764,6 +2840,9 @@ void ReplayWindow::DrawImGuiOverlay()
             else
                 EnterTopView();
         }
+
+        if (ImGui::IsKeyPressed(ImGuiKey_P))
+            m_showPianoRoll = !m_showPianoRoll;
     }
 
     // Determine cursor mode, then apply drag overrides before committing
@@ -4469,8 +4548,8 @@ void ReplayWindow::DrawAgentOverlay()
                                      IM_COL32(255, 255, 255, alpha));
                     }
 
-                    // Cast bar (non-instant skills: casting, cancelled, or just completed)
-                    bool showBar = sv.isCasting || sv.cancelled;
+                    // Cast bar (non-instant skills: casting, cancelled, interrupted, or just completed)
+                    bool showBar = sv.isCasting || sv.cancelled || sv.interrupted;
                     if (showBar)
                     {
                         float barW = iconSz * 1.6f;
@@ -4493,6 +4572,7 @@ void ReplayWindow::DrawAgentOverlay()
                         }
 
                         // Fill: procedural horizontal gradient + vertical vignette
+                        // Green = success, Yellow/orange = cancelled, Purple = interrupted
                         float fillW = barW * pct;
                         if (pct > 0.005f)
                         {
@@ -4507,10 +4587,20 @@ void ReplayWindow::DrawAgentOverlay()
                                 { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
                                 { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
                             };
-                            const GradStop* hS = sv.cancelled ? sOrangeH  : sGreenH;
-                            int              nH = sv.cancelled ? 8         : 6;
-                            float         topV = sv.cancelled ? 0.58f     : 0.55f;
-                            float         botV = sv.cancelled ? 0.52f     : 0.50f;
+                            static const GradStop sPurpleH[] = {
+                                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
+                                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
+                            };
+                            const GradStop* hS;
+                            int nH;
+                            float topV, botV;
+                            if (sv.interrupted) {
+                                hS = sPurpleH; nH = 4; topV = 0.58f; botV = 0.52f;
+                            } else if (sv.cancelled) {
+                                hS = sOrangeH; nH = 8; topV = 0.58f; botV = 0.52f;
+                            } else {
+                                hS = sGreenH; nH = 6; topV = 0.55f; botV = 0.50f;
+                            }
 
                             int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
                             for (int si = 0; si < nSegs; ++si)
@@ -4552,7 +4642,12 @@ void ReplayWindow::DrawAgentOverlay()
                             ImU8 glA1 = (ImU8)(140 * sv.alpha);
                             ImU8 glA2 = (ImU8)( 60 * sv.alpha);
                             ImU32 gc1, gc2;
-                            if (sv.cancelled)
+                            if (sv.interrupted)
+                            {
+                                gc1 = IM_COL32(128, 48,192, glA1);
+                                gc2 = IM_COL32(128, 48,192, glA2);
+                            }
+                            else if (sv.cancelled)
                             {
                                 gc1 = IM_COL32(192,120,  0, glA1);
                                 gc2 = IM_COL32(192,120,  0, glA2);
@@ -4717,6 +4812,7 @@ void ReplayWindow::DrawAgentOverlay()
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
                     EnterFollowMode(agentId);
+                    OpenPlayerInfoPanel(agentId);
                     if (m_showRangeRings)
                         m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
                     if (m_fogPerspective > 0)
@@ -9839,6 +9935,185 @@ static std::filesystem::path GetGameUIBasePath()
     return cached;
 }
 
+static std::filesystem::path GetWeaponsBasePath()
+{
+    static std::filesystem::path cached;
+    if (!cached.empty()) return cached;
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        if (std::filesystem::exists(dir / "Textures" / "Weapons"))
+        {
+            cached = dir / "Textures" / "Weapons";
+            return cached;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+    cached = std::filesystem::path(exePath).parent_path() / "Textures" / "Weapons";
+    return cached;
+}
+
+static ImTextureID LoadWeaponTexture(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetWeaponsBasePath() / filename;
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+// Resolve weapon textures using (weapon_type, weapon_item_type) lookup table.
+// weapon_type: broad category (0=flag/bundle, 1=bow, 2=axe, ... 8-14=caster)
+// weapon_item_type values:
+//   12  = wand/focus pair (main + offhand focus)
+//   24  = melee or wand + shield
+//   46  = two-handed weapon, staff, or single weapon
+//         (bow, hammer, daggers, scythe, staff, flag)
+//   Any other value: treat as 46 (single/two-handed), log warning if unexpected
+// teamId: 1=blue, 2=red (for flag textures)
+struct WeaponTextureResult {
+    const char* mainTex  = nullptr;  // filename in Textures/Weapons/ (or nullptr)
+    const char* offTex   = nullptr;
+    bool        isShield = false;
+    bool        isFlag   = false;    // mainTex is in Textures/Others_UI/ instead
+    // weapon_element: reserved for future per-element icon support (weapon_type 8-14)
+};
+
+static const char* GetShieldTexture(int primaryProf)
+{
+    if (primaryProf == 1)  return "GW.EXE_0x448AF925.png"; // Warrior
+    if (primaryProf == 10) return "GW.EXE_0x46522695.png"; // Paragon
+    return "GW.EXE_0x44FABD1B.png";                        // Default
+}
+
+static const char* GetSpearTexture(int primaryProf)
+{
+    if (primaryProf == 1) return "GW.EXE_0x326CECAC.png"; // Warrior
+    return "GW.EXE_0x9F1FFD71.png";                       // Default
+}
+
+static WeaponTextureResult ResolveWeaponTextures(uint16_t weapType, uint8_t weapItemType, int primaryProf, int teamId)
+{
+    WeaponTextureResult r;
+
+    // (weapon_type, weapon_item_type) lookup
+    switch (weapType)
+    {
+    case 0: // Flag / bundle
+        if (weapItemType == 46) {
+            r.isFlag = true;
+            r.mainTex = (teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+        }
+        break;
+
+    case 1: // Bow (1, 46)
+        if (weapItemType == 46) r.mainTex = "GW.EXE_0xA1EB9A01.png";
+        break;
+
+    case 2: // Axe
+        r.mainTex = "GW.EXE_0x1B498CF9.png";
+        if (weapItemType == 24) { r.offTex = GetShieldTexture(primaryProf); r.isShield = true; }
+        else if (weapItemType == 12) { r.offTex = "GW.EXE_0x07B80EA9.png"; }
+        break;
+
+    case 3: // Hammer (3, 46)
+        if (weapItemType == 46) r.mainTex = "GW.EXE_0x4AA72219.png";
+        break;
+
+    case 4: // Daggers (4, 46)
+        if (weapItemType == 46) r.mainTex = "GW.EXE_0x45D46F95.png";
+        break;
+
+    case 5: // Scythe (5, 46)
+        if (weapItemType == 46) r.mainTex = "GW.EXE_0x4D455BF0.png";
+        break;
+
+    case 6: // Spear
+        r.mainTex = GetSpearTexture(primaryProf);
+        if (weapItemType == 24) { r.offTex = GetShieldTexture(primaryProf); r.isShield = true; }
+        else if (weapItemType == 12) { r.offTex = "GW.EXE_0x07B80EA9.png"; }
+        break;
+
+    case 7: // Sword
+        r.mainTex = "GW.EXE_0x5356CC35.png";
+        if (weapItemType == 24) { r.offTex = GetShieldTexture(primaryProf); r.isShield = true; }
+        else if (weapItemType == 12) { r.offTex = "GW.EXE_0x07B80EA9.png"; }
+        break;
+
+    case 8: case 9: case 10: case 11: case 12: case 13: case 14: // Caster weapons
+        if (weapItemType == 46) {
+            r.mainTex = "GW.EXE_0x0C5FF809.png"; // Staff (generic)
+        } else if (weapItemType == 24) {
+            r.mainTex = "GW.EXE_0x99766683.png"; // Wand (generic)
+            r.offTex  = GetShieldTexture(primaryProf);
+            r.isShield = true;
+        } else if (weapItemType == 12) {
+            r.mainTex = "GW.EXE_0x99766683.png"; // Wand (generic)
+            r.offTex  = "GW.EXE_0x07B80EA9.png"; // Focus (generic)
+        }
+        break;
+    }
+
+    if (!r.mainTex && !r.isFlag)
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Unknown weapon combo: type=[%u] item_type=[%u]", weapType, weapItemType);
+        OutputDebugStringA(buf);
+        OutputDebugStringA("\n");
+    }
+
+    return r;
+}
+
 static std::filesystem::path GetEffectsBasePath()
 {
     static std::filesystem::path cached;
@@ -10428,6 +10703,66 @@ static ImTextureID LoadEffectIcon(ID3D11Device* device, const char* filename)
     if (it != s_cache.end()) return (ImTextureID)it->second.Get();
 
     auto fullPath = GetEffectsBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+static ImTextureID LoadSkillDescIcon(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetGameUIBasePath() / "Skill Description" / filename;
     if (!std::filesystem::exists(fullPath)) return nullptr;
 
     DirectX::ScratchImage image;
@@ -11712,6 +12047,7 @@ void ReplayWindow::DrawPartyWindows()
             if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
             {
                 EnterFollowMode(agentId);
+                OpenPlayerInfoPanel(agentId);
                 if (m_showRangeRings)
                     m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
                 if (m_fogPerspective > 0)
@@ -13488,4 +13824,2820 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
     }
 
     return DefWindowProc(hWnd, message, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
+// Piano Roll Panel
+// ---------------------------------------------------------------------------
+
+static ImU32 PianoRollSkillColor(int skillType, bool bright)
+{
+    if (skillType >= 2 && skillType <= 12) return bright ? IM_COL32(0xFF,0xB8,0x20,0xFF) : IM_COL32(0x4A,0x3A,0x00,0xFF);
+    if (skillType == 31)                   return bright ? IM_COL32(0xFF,0xB8,0x20,0xFF) : IM_COL32(0x4A,0x3A,0x00,0xFF);
+    if (skillType == 24)                   return bright ? IM_COL32(0x90,0x40,0xC0,0xFF) : IM_COL32(0x50,0x1A,0x70,0xFF);
+    if (skillType == 23 || skillType == 33 || skillType == 34 || skillType == 15)
+                                           return bright ? IM_COL32(0x20,0xC0,0xA0,0xFF) : IM_COL32(0x0A,0x3A,0x3A,0xFF);
+    if (skillType == 27 || skillType == 26 || skillType == 28)
+                                           return bright ? IM_COL32(0x20,0xC0,0xA0,0xFF) : IM_COL32(0x0A,0x3A,0x3A,0xFF);
+    if (skillType == 13 || skillType == 18 || skillType == 19 || skillType == 20 || skillType == 32)
+                                           return bright ? IM_COL32(0x40,0xC0,0x60,0xFF) : IM_COL32(0x1A,0x5A,0x2A,0xFF);
+    if (skillType == 14 || skillType == 16 || skillType == 17 || skillType == 21 ||
+        skillType == 25 || skillType == 29 || skillType == 30)
+                                           return bright ? IM_COL32(0x60,0x60,0x60,0xFF) : IM_COL32(0x2A,0x2A,0x2A,0xFF);
+    if (skillType == 22)                   return bright ? IM_COL32(0x40,0xC0,0x60,0xFF) : IM_COL32(0x1A,0x5A,0x2A,0xFF);
+    return bright ? IM_COL32(0x60,0x60,0x60,0xFF) : IM_COL32(0x2A,0x2A,0x2A,0xFF);
+}
+
+void ReplayWindow::DrawPianoRollPanel()
+{
+    if (!m_showPianoRoll) return;
+    if (m_team1PlayerIds.empty() && m_team2PlayerIds.empty()) return;
+
+    auto* dev = m_deviceResources->GetD3DDevice();
+    auto& db  = GetSkillDatabase();
+    const float now = m_debugTimeline;
+    ImGuiIO& io = ImGui::GetIO();
+    ImFont* font = ImGui::GetFont();
+
+    // Zoom table: half-window sizes in seconds
+    static const float kZoomHalf[] = { 5.f, 10.f, 15.f, 30.f, 60.f };
+    static const int   kZoomCount  = 5;
+    m_pianoRollZoomIdx = std::clamp(m_pianoRollZoomIdx, 0, kZoomCount - 1);
+    const float halfWin = kZoomHalf[m_pianoRollZoomIdx];
+    const float winStart = now - halfWin;
+    const float winEnd   = now + halfWin;
+    const float winDur   = winEnd - winStart;
+
+    // Layout constants
+    constexpr float kNameColW   = 120.f;
+    constexpr float kHeaderH    = 32.f;
+    constexpr float kTimeAxisH  = 22.f;
+    constexpr float kTeamLabelH = 24.f;
+    constexpr float kRowH       = 32.f;
+    constexpr float kBarH       = 20.f;
+    constexpr float kLegendH    = 28.f;
+    constexpr float kIconSz     = 18.f;
+
+    const int nBlue = (int)m_team1PlayerIds.size();
+    const int nRed  = (int)m_team2PlayerIds.size();
+    const int nBlueRows = m_pianoRollTeam1Open ? nBlue : 0;
+    const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
+    const float bodyH = kTimeAxisH
+                      + kTeamLabelH + nBlueRows * kRowH
+                      + kTeamLabelH + nRedRows  * kRowH
+                      + kLegendH;
+    const float totalH = kHeaderH + bodyH;
+
+    const float screenW = io.DisplaySize.x;
+
+    // Panel window — Morale-style: standard ImGui title bar, matching colors
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.055f, 0.078f, 0.102f, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(500.f, 0.f), ImVec2(screenW, io.DisplaySize.y));
+    ImGui::SetNextWindowPos(ImVec2(screenW - 720.f, 80.f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(700.f, totalH + 30.f), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Piano Roll", &m_showPianoRoll,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(5);
+        return;
+    }
+
+    // Clamp to viewport
+    {
+        const auto* vp = ImGui::GetMainViewport();
+        ImVec2 wPos = ImGui::GetWindowPos();
+        ImVec2 wSz  = ImGui::GetWindowSize();
+        float cx = std::clamp(wPos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - wSz.x);
+        float cy = std::clamp(wPos.y, vp->Pos.y, vp->Pos.y + vp->Size.y - wSz.y);
+        if (cx != wPos.x || cy != wPos.y) ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 cp = ImGui::GetCursorScreenPos();
+    const float panelW = ImGui::GetWindowWidth();
+    const float tlW = panelW - kNameColW;
+    float curY = cp.y;
+
+    // ── Mouse wheel zoom (FIX 5) ──────────────────────────────────────
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+    {
+        float wheel = io.MouseWheel;
+        if (wheel != 0.f)
+        {
+            if (wheel > 0.f && m_pianoRollZoomIdx > 0) {
+                m_pianoRollZoomIdx--;
+                m_pianoRollZoomToast = (float)ImGui::GetTime();
+            } else if (wheel < 0.f && m_pianoRollZoomIdx < kZoomCount - 1) {
+                m_pianoRollZoomIdx++;
+                m_pianoRollZoomToast = (float)ImGui::GetTime();
+            }
+        }
+    }
+
+    // ── Time axis ──────────────────────────────────────────────────────
+    {
+        float axisTop = curY;
+        dl->AddRectFilled(ImVec2(cp.x, axisTop), ImVec2(cp.x + panelW, axisTop + kTimeAxisH),
+                          IM_COL32(0, 0, 0, 40));
+
+        char lbl[16];
+        struct TimeLabel { float pct; char text[16]; bool isNow; };
+        TimeLabel labels[5];
+        auto fmtSec = [](char* buf, float s) {
+            if (s == 0.f) { snprintf(buf, 16, "now"); return; }
+            if (s == (int)s) snprintf(buf, 16, "%+ds", (int)s);
+            else             snprintf(buf, 16, "%+.1fs", s);
+        };
+        float offsets[5] = { -halfWin, -halfWin * 0.5f, 0.f, halfWin * 0.5f, halfWin };
+        for (int i = 0; i < 5; i++) {
+            labels[i].pct = (float)i / 4.f;
+            labels[i].isNow = (offsets[i] == 0.f);
+            fmtSec(labels[i].text, offsets[i]);
+        }
+
+        float tlLeft = cp.x + kNameColW;
+        for (int i = 0; i < 5; i++)
+        {
+            float lx = tlLeft + labels[i].pct * tlW;
+            float fSz = labels[i].isNow ? 12.f : 11.f;
+            ImU32 col = labels[i].isNow ? IM_COL32(0xD4,0xA0,0x20,0xFF) : IM_COL32(0x60,0x6A,0x74,0xFF);
+            ImVec2 ts = font->CalcTextSizeA(fSz, FLT_MAX, 0.f, labels[i].text);
+            float tx = lx - ts.x * 0.5f;
+            tx = std::clamp(tx, tlLeft + 2.f, cp.x + panelW - ts.x - 2.f);
+            dl->AddText(font, fSz, ImVec2(tx, axisTop + (kTimeAxisH - fSz) * 0.5f), col, labels[i].text);
+        }
+        curY += kTimeAxisH;
+    }
+
+    float nowLineTop = curY;
+    float nowLineX   = cp.x + kNameColW + 0.5f * tlW;
+
+    // Helper: snapshot for agent at time
+    auto getSnap = [&](int agentId, float t) -> const AgentSnapshot*
+    {
+        auto ait = m_replayCtx.agents.find(agentId);
+        if (ait == m_replayCtx.agents.end()) return nullptr;
+        const auto& snaps = ait->second.snapshots;
+        if (snaps.empty()) return nullptr;
+        if (t <= snaps.front().time) return &snaps.front();
+        if (t >= snaps.back().time)  return &snaps.back();
+        int lo = 0, hi = (int)snaps.size() - 1;
+        while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
+        return &snaps[lo];
+    };
+
+    // Edge fade bg color (matches panel background)
+    const ImU32 kFadeSolid = IM_COL32(14, 20, 26, 234);
+    const ImU32 kFadeTrans = IM_COL32(14, 20, 26, 0);
+
+    // Helper: draw one team section (label + player rows)
+    auto drawTeamBlock = [&](const std::vector<int>& playerIds, int teamId,
+                             const char* teamName, bool& expanded,
+                             ImU32 teamCol, ImU32 teamBg, ImU32 teamBorder)
+    {
+        float tlLeft = cp.x + kNameColW;
+        int nPlayers = (int)playerIds.size();
+
+        // Team label row
+        ImVec2 tlMin(cp.x, curY);
+        ImVec2 tlMax(cp.x + panelW, curY + kTeamLabelH);
+        dl->AddRectFilled(tlMin, tlMax, teamBg);
+        dl->AddLine(tlMin, ImVec2(tlMax.x, tlMin.y), teamBorder);
+        dl->AddLine(ImVec2(tlMin.x, tlMax.y), tlMax, teamBorder);
+
+        // Collapse triangle
+        {
+            float triX = cp.x + 8.f;
+            float triY = curY + kTeamLabelH * 0.5f;
+            float triSz = 5.f;
+            ImU32 triCol = IM_COL32(255, 255, 255, 178);
+            if (expanded) {
+                dl->AddTriangleFilled(
+                    ImVec2(triX, triY - triSz),
+                    ImVec2(triX + triSz * 2.f, triY - triSz),
+                    ImVec2(triX + triSz, triY + triSz), triCol);
+            } else {
+                dl->AddTriangleFilled(
+                    ImVec2(triX, triY - triSz),
+                    ImVec2(triX + triSz * 2.f, triY),
+                    ImVec2(triX, triY + triSz), triCol);
+            }
+        }
+
+        // Team name
+        char teamBuf[128];
+        if (expanded)
+            snprintf(teamBuf, sizeof(teamBuf), "%s", teamName);
+        else
+            snprintf(teamBuf, sizeof(teamBuf), "%s  (%d players)", teamName, nPlayers);
+        dl->AddText(font, 12.f, ImVec2(cp.x + 22.f, curY + (kTeamLabelH - 12.f) * 0.5f), teamCol, teamBuf);
+
+        // Click to toggle collapse
+        if (ImGui::IsMouseHoveringRect(tlMin, tlMax) && ImGui::IsMouseClicked(0))
+            expanded = !expanded;
+
+        curY += kTeamLabelH;
+
+        if (!expanded) return;
+
+        for (int pi = 0; pi < nPlayers; pi++)
+        {
+            int agentId = playerIds[pi];
+            auto ait = m_replayCtx.agents.find(agentId);
+            if (ait == m_replayCtx.agents.end()) { curY += kRowH; continue; }
+            const auto& ard = ait->second;
+
+            float rowTop = curY;
+            float rowBot = curY + kRowH;
+
+            bool rowHovered = ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot));
+            if (rowHovered) m_pianoRollHoverRow = agentId;
+
+            float rowAlpha = 1.f;
+            if (m_pianoRollHoverRow >= 0 && m_pianoRollHoverRow != agentId)
+                rowAlpha = 0.6f;
+
+            const AgentSnapshot* snap = getSnap(agentId, now);
+            bool isDead = snap && snap->is_dead;
+
+            dl->AddLine(ImVec2(cp.x, rowBot), ImVec2(cp.x + panelW, rowBot),
+                        IM_COL32(255, 255, 255, 8));
+            if (isDead)
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot),
+                                  IM_COL32(204, 48, 48, (int)(15 * rowAlpha)));
+            if (rowHovered)
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot),
+                                  IM_COL32(255, 255, 255, 10));
+
+            // Player label
+            {
+                float profIconSz = 16.f;
+                ImTextureID profTex = LoadProfIcon(dev, ard.primaryProf);
+                float iconY = rowTop + (kRowH - profIconSz) * 0.5f;
+                if (profTex)
+                    dl->AddImage(profTex, ImVec2(cp.x + 6.f, iconY),
+                                 ImVec2(cp.x + 6.f + profIconSz, iconY + profIconSz),
+                                 ImVec2(0,0), ImVec2(1,1),
+                                 IM_COL32(255,255,255,(int)(255 * rowAlpha)));
+
+                ImU32 nameCol = isDead
+                    ? IM_COL32(0xCC,0x30,0x30,(int)(255 * rowAlpha))
+                    : IM_COL32(0xF0,0xF0,0xF0,(int)(255 * rowAlpha));
+
+                const char* pn = ard.playerName.c_str();
+                char nameBuf[32];
+                size_t pnLen = strlen(pn);
+                if (pnLen > 13) { snprintf(nameBuf, sizeof(nameBuf), "%.12s..", pn); pn = nameBuf; }
+                dl->AddText(font, 12.f, ImVec2(cp.x + 26.f, rowTop + (kRowH - 12.f) * 0.5f), nameCol, pn);
+
+                if (rowHovered && ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + kNameColW, rowBot))
+                    && ImGui::IsMouseClicked(0))
+                {
+                    OpenPlayerInfoPanel(agentId);
+                }
+            }
+
+            // Timeline area
+            if (isDead)
+            {
+                ImVec2 ts = font->CalcTextSizeA(11.f, FLT_MAX, 0.f, "DEAD");
+                float dx = tlLeft + tlW * 0.5f - ts.x * 0.5f;
+                dl->AddText(font, 11.f, ImVec2(dx, rowTop + (kRowH - 11.f) * 0.5f),
+                            IM_COL32(0xCC,0x30,0x30,(int)(128 * rowAlpha)), "DEAD");
+            }
+            else
+            {
+                dl->PushClipRect(ImVec2(tlLeft, rowTop), ImVec2(cp.x + panelW, rowBot), true);
+
+                float barY = rowTop + (kRowH - kBarH) * 0.5f;
+
+                for (const auto& ev : ard.skillUseHistory)
+                {
+                    if (ev.isInstant) continue;
+                    float castStart = ev.startTime;
+                    float castEnd   = ev.endTime;
+                    float dur = castEnd - castStart;
+                    if (dur < 0.01f) continue;
+
+                    float lPct = (castStart - winStart) / winDur;
+                    float rPct = (castEnd   - winStart) / winDur;
+                    if (rPct < -0.02f || lPct > 1.02f) continue;
+
+                    float bx0 = tlLeft + lPct * tlW;
+                    float bx1 = tlLeft + rPct * tlW;
+                    float bw  = bx1 - bx0;
+
+                    bool isFuture = castStart > now;
+                    bool isActive = castStart <= now && castEnd > now;
+
+                    float barAlpha = rowAlpha;
+                    if (isFuture) barAlpha *= 0.50f;
+
+                    const SkillInfo* si = db.IsLoaded() ? db.Get(ev.skillId) : nullptr;
+                    int skillType = si ? si->type : 0;
+
+                    ImU32 colL = PianoRollSkillColor(skillType, false);
+                    ImU32 colR = PianoRollSkillColor(skillType, true);
+                    colL = (colL & 0x00FFFFFF) | ((ImU32)(((colL >> 24) & 0xFF) * barAlpha) << 24);
+                    colR = (colR & 0x00FFFFFF) | ((ImU32)(((colR >> 24) & 0xFF) * barAlpha) << 24);
+
+                    if (isActive)
+                    {
+                        float progress = (now - castStart) / dur;
+                        float fillX = bx0 + bw * progress;
+                        dl->AddRectFilledMultiColor(ImVec2(bx0, barY), ImVec2(fillX, barY + kBarH), colL, colR, colR, colL);
+                        dl->AddRectFilled(ImVec2(fillX, barY), ImVec2(bx1, barY + kBarH),
+                                          IM_COL32(255,255,255,(int)(15 * barAlpha)), 2.f);
+                    }
+                    else
+                    {
+                        dl->AddRectFilledMultiColor(ImVec2(bx0, barY), ImVec2(bx1, barY + kBarH), colL, colR, colR, colL);
+                    }
+                    dl->AddRect(ImVec2(bx0, barY), ImVec2(bx1, barY + kBarH),
+                                IM_COL32(0,0,0,(int)(60 * barAlpha)), 2.f);
+
+                    // Skill icon (hidden if bar too narrow at max zoom)
+                    if (bw >= 14.f)
+                    {
+                        ImTextureID skTex = LoadSkillIcon(this, dev, ev.skillId,
+                                                         m_skillIconIndex, m_skillIconCache);
+                        if (skTex)
+                        {
+                            float icoSz = std::min(kIconSz, kBarH - 2.f);
+                            float icoX  = bx0 + 1.f;
+                            float icoY  = barY + (kBarH - icoSz) * 0.5f;
+                            float icoA  = (bw < icoSz + 4.f) ? 0.7f * barAlpha : barAlpha;
+                            dl->AddImage(skTex, ImVec2(icoX, icoY),
+                                         ImVec2(icoX + icoSz, icoY + icoSz),
+                                         ImVec2(0,0), ImVec2(1,1),
+                                         IM_COL32(255,255,255,(int)(255 * icoA)));
+                        }
+                    }
+
+                    // Hover tooltip
+                    if (ImGui::IsMouseHoveringRect(ImVec2(bx0, barY), ImVec2(std::max(bx1, bx0 + 6.f), barY + kBarH)))
+                    {
+                        ImGui::BeginTooltip();
+                        if (si) ImGui::TextUnformatted(si->name.c_str());
+                        else    ImGui::Text("Skill %d", ev.skillId);
+
+                        int mm = (int)(ev.startTime) / 60;
+                        float ss = ev.startTime - mm * 60.f;
+                        ImGui::Text("Time: %d:%05.2f", mm, ss);
+                        ImGui::Text("Caster: %s", ard.playerName.c_str());
+
+                        if (ev.targetId >= 0)
+                        {
+                            auto tit = m_replayCtx.agents.find(ev.targetId);
+                            if (tit != m_replayCtx.agents.end())
+                                ImGui::Text("Target: %s", tit->second.playerName.c_str());
+                        }
+                        ImGui::EndTooltip();
+
+                        if (ImGui::IsMouseClicked(0))
+                            m_debugTimeline = ev.startTime;
+                    }
+                }
+
+                // Edge fades
+                dl->AddRectFilledMultiColor(
+                    ImVec2(tlLeft, rowTop), ImVec2(tlLeft + 20.f, rowBot),
+                    kFadeSolid, kFadeTrans, kFadeTrans, kFadeSolid);
+                dl->AddRectFilledMultiColor(
+                    ImVec2(cp.x + panelW - 20.f, rowTop), ImVec2(cp.x + panelW, rowBot),
+                    kFadeTrans, kFadeSolid, kFadeSolid, kFadeTrans);
+
+                dl->PopClipRect();
+            }
+
+            curY += kRowH;
+        }
+    };
+
+    // ── Blue team ──────────────────────────────────────────────────────
+    drawTeamBlock(m_team1PlayerIds, 1,
+                  m_team1GuildHeader.empty() ? "Blue Team" : m_team1GuildHeader.c_str(),
+                  m_pianoRollTeam1Open,
+                  IM_COL32(0x4A,0x90,0xD8,0xFF),
+                  IM_COL32(0x4A,0x90,0xD8,0x14),
+                  IM_COL32(0x4A,0x90,0xD8,0x26));
+
+    // ── Red team ───────────────────────────────────────────────────────
+    drawTeamBlock(m_team2PlayerIds, 2,
+                  m_team2GuildHeader.empty() ? "Red Team" : m_team2GuildHeader.c_str(),
+                  m_pianoRollTeam2Open,
+                  IM_COL32(0xD0,0x48,0x48,0xFF),
+                  IM_COL32(0xD0,0x48,0x48,0x14),
+                  IM_COL32(0xD0,0x48,0x48,0x26));
+
+    float nowLineBot = curY;
+
+    // ── Now line ───────────────────────────────────────────────────────
+    dl->AddLine(ImVec2(nowLineX, nowLineTop), ImVec2(nowLineX, nowLineBot),
+                IM_COL32(255, 255, 255, 140), 1.f);
+
+    // ── Legend bar ──────────────────────────────────────────────────────
+    {
+        ImVec2 legMin(cp.x, curY);
+        ImVec2 legMax(cp.x + panelW, curY + kLegendH);
+        dl->AddRectFilled(legMin, legMax, IM_COL32(0, 0, 0, 40));
+        dl->AddLine(legMin, ImVec2(legMax.x, legMin.y), IM_COL32(255, 255, 255, 13));
+
+        float lx = cp.x + 12.f;
+        float ly = curY + (kLegendH - 6.f) * 0.5f;
+
+        struct LegItem { ImU32 colL; ImU32 colR; const char* label; };
+        LegItem items[] = {
+            { IM_COL32(0x1A,0x5A,0x2A,0xFF), IM_COL32(0x40,0xC0,0x60,0xFF), "Heal/Prot" },
+            { IM_COL32(0x4A,0x3A,0x00,0xFF), IM_COL32(0xFF,0xB8,0x20,0xFF), "Damage" },
+            { IM_COL32(0x50,0x1A,0x70,0xFF), IM_COL32(0x90,0x40,0xC0,0xFF), "Hex/Curse" },
+            { IM_COL32(0x0A,0x3A,0x3A,0xFF), IM_COL32(0x20,0xC0,0xA0,0xFF), "Enchant" },
+            { IM_COL32(0x2A,0x2A,0x2A,0xFF), IM_COL32(0x60,0x60,0x60,0xFF), "Other" },
+        };
+
+        for (auto& it : items)
+        {
+            dl->AddRectFilledMultiColor(
+                ImVec2(lx, ly), ImVec2(lx + 20.f, ly + 6.f),
+                it.colL, it.colR, it.colR, it.colL);
+            dl->AddText(font, 11.f, ImVec2(lx + 24.f, curY + (kLegendH - 11.f) * 0.5f),
+                        IM_COL32(0xA0,0xAA,0xB4,0xFF), it.label);
+            ImVec2 ts = font->CalcTextSizeA(11.f, FLT_MAX, 0.f, it.label);
+            lx += 24.f + ts.x + 14.f;
+        }
+
+        float rx = cp.x + panelW - 12.f;
+        const char* futTxt = "dimmed = future";
+        ImVec2 fts = font->CalcTextSizeA(11.f, FLT_MAX, 0.f, futTxt);
+        dl->AddText(font, 11.f, ImVec2(rx - fts.x, curY + (kLegendH - 11.f) * 0.5f),
+                    IM_COL32(0x70,0x7D,0x88,0xFF), futTxt);
+
+        float nlx = rx - fts.x - 60.f;
+        dl->AddLine(ImVec2(nlx, ly), ImVec2(nlx, ly + 6.f), IM_COL32(255,255,255,140));
+        dl->AddText(font, 11.f, ImVec2(nlx + 4.f, curY + (kLegendH - 11.f) * 0.5f),
+                    IM_COL32(0x70,0x7D,0x88,0xFF), "now");
+
+        curY += kLegendH;
+    }
+
+    // ── Zoom toast ─────────────────────────────────────────────────────
+    {
+        float elapsed = (float)ImGui::GetTime() - m_pianoRollZoomToast;
+        if (elapsed < 1.2f)
+        {
+            float alpha = (elapsed < 0.8f) ? 1.f : 1.f - (elapsed - 0.8f) / 0.4f;
+            char zoomTxt[16];
+            snprintf(zoomTxt, sizeof(zoomTxt), "\xc2\xb1 %.0fs", halfWin);
+            ImVec2 ts = font->CalcTextSizeA(12.f, FLT_MAX, 0.f, zoomTxt);
+            float tx = cp.x + panelW * 0.5f - ts.x * 0.5f;
+            float ty = curY - kLegendH * 0.5f - 6.f;
+            ImU32 zcol = IM_COL32(255, 255, 255, (int)(220 * alpha));
+            ImU32 zbg  = IM_COL32(0, 0, 0, (int)(180 * alpha));
+            dl->AddRectFilled(ImVec2(tx - 8.f, ty - 4.f), ImVec2(tx + ts.x + 8.f, ty + ts.y + 4.f), zbg, 6.f);
+            dl->AddText(font, 12.f, ImVec2(tx, ty), zcol, zoomTxt);
+        }
+    }
+
+    // Advance cursor so ImGui knows the content size
+    float contentH = curY - cp.y;
+    ImGui::Dummy(ImVec2(panelW, contentH));
+
+    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+        m_pianoRollHoverRow = -1;
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(5);
+}
+
+// ---------------------------------------------------------------------------
+// Player Info Panel
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::OpenPlayerInfoPanel(int agentId)
+{
+    if (agentId < 0) return;
+    auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return;
+    if (it->second.type != AgentType::Player) return;
+
+    m_playerInfoAgentId = agentId;
+    m_showPlayerInfoPanel = true;
+
+    if (m_pipWeaponSets.agentId != agentId)
+        BuildWeaponSets(agentId);
+}
+
+void ReplayWindow::ClosePlayerInfoPanel()
+{
+    m_showPlayerInfoPanel = false;
+    m_playerInfoAgentId = -1;
+}
+
+void ReplayWindow::BuildWeaponSets(int agentId)
+{
+    m_pipWeaponSets.agentId = agentId;
+    m_pipWeaponSets.sets.clear();
+    m_pipWeaponSets.built = true;
+
+    auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return;
+
+    const auto& ard = it->second;
+    const auto& snaps = ard.snapshots;
+    int primaryProf = ard.primaryProf;
+
+    if (primaryProf < 1 || primaryProf > 10) {
+        OutputDebugStringA("Unknown profession for weapon slot ordering, defaulting to caster classification\n");
+    }
+
+    auto isMartial = [](int prof) {
+        return prof == 1 || prof == 2 || prof == 7 || prof == 9 || prof == 10;
+    };
+
+    auto getSlotCategory = [&](const WeaponSetEntry& ws) -> int {
+        if ((ws.weapCat == 2 || ws.weapCat == 6 || ws.weapCat == 7) && ws.mainType == 24)
+            return 1; // Defensive: Sword/Axe/Spear + Shield
+        if (isMartial(primaryProf)) {
+            if (ws.weapCat == 1 || ws.weapCat == 3 || ws.weapCat == 4 || ws.weapCat == 5)
+                return 2; // Martial second set
+        } else {
+            if (ws.weapCat >= 8 && ws.weapCat <= 14 && ws.mainType == 12)
+                return 2; // Caster: Wand + Focus
+        }
+        if (ws.weapCat >= 8 && ws.weapCat <= 14 && ws.mainType == 46)
+            return 3; // Staff
+        return 4;     // Others (flags, unusual combos)
+    };
+
+    struct KeyInfo {
+        uint16_t mainId, offId;
+        uint16_t weapCat;
+        uint8_t  mainType, offType;
+        float    firstSeen;
+        int      maxConsec;
+        bool     isFlag;
+    };
+    std::vector<KeyInfo> candidates;
+
+    uint16_t prevMain = 0xFFFF, prevOff = 0xFFFF;
+    int consecCount = 0;
+    bool flagSeen = false;
+
+    for (size_t si = 0; si < snaps.size(); si++)
+    {
+        const auto& s = snaps[si];
+        if (s.weapon_item_id == 0 && s.offhand_item_id == 0) {
+            prevMain = 0xFFFF; prevOff = 0xFFFF; consecCount = 0;
+            continue;
+        }
+
+        if (s.weapon_item_id == prevMain && s.offhand_item_id == prevOff) {
+            consecCount++;
+        } else {
+            consecCount = 1;
+            prevMain = s.weapon_item_id;
+            prevOff  = s.offhand_item_id;
+        }
+
+        bool thisIsFlag = (s.weapon_type == 0 && s.weapon_item_type == 46);
+
+        // Deduplicate flags: only one flag entry allowed
+        if (thisIsFlag && flagSeen) continue;
+
+        bool found = false;
+        for (auto& c : candidates) {
+            if (c.mainId == s.weapon_item_id && c.offId == s.offhand_item_id) {
+                if (consecCount > c.maxConsec) c.maxConsec = consecCount;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (thisIsFlag) flagSeen = true;
+            KeyInfo ki;
+            ki.mainId    = s.weapon_item_id;
+            ki.offId     = s.offhand_item_id;
+            ki.weapCat   = s.weapon_type;
+            ki.mainType  = s.weapon_item_type;
+            ki.offType   = s.offhand_item_type;
+            ki.firstSeen = s.time;
+            ki.maxConsec = consecCount;
+            ki.isFlag    = thisIsFlag;
+            candidates.push_back(ki);
+        }
+    }
+
+    // Build set list — require >= 3 consecutive snapshots unless offhand present or flag
+    for (auto& c : candidates) {
+        bool hasOffhand = (c.offId != 0);
+        if (!c.isFlag && !hasOffhand && c.maxConsec < 3) continue;
+
+        WeaponSetEntry e;
+        e.mainId    = c.mainId;
+        e.offId     = c.offId;
+        e.weapCat   = c.weapCat;
+        e.mainType  = c.mainType;
+        e.offType   = c.offType;
+        e.firstSeen = c.firstSeen;
+        e.isFlag    = c.isFlag;
+        m_pipWeaponSets.sets.push_back(e);
+    }
+
+    // Sort by slot category (1→2→3→4), then by firstSeen within same category
+    std::stable_sort(m_pipWeaponSets.sets.begin(), m_pipWeaponSets.sets.end(),
+        [&](const WeaponSetEntry& a, const WeaponSetEntry& b) {
+            int sa = getSlotCategory(a);
+            int sb = getSlotCategory(b);
+            if (sa != sb) return sa < sb;
+            return a.firstSeen < b.firstSeen;
+        });
+
+    // Compute disambiguation subscripts for sets sharing the same icon appearance
+    for (size_t i = 0; i < m_pipWeaponSets.sets.size(); i++) {
+        auto& a = m_pipWeaponSets.sets[i];
+        if (a.disambig > 0) continue;
+        std::vector<size_t> dupes;
+        dupes.push_back(i);
+        for (size_t j = i + 1; j < m_pipWeaponSets.sets.size(); j++) {
+            auto& b = m_pipWeaponSets.sets[j];
+            if (b.weapCat == a.weapCat && b.mainType == a.mainType)
+                dupes.push_back(j);
+        }
+        if (dupes.size() > 1) {
+            int sub = 1;
+            for (size_t idx : dupes)
+                m_pipWeaponSets.sets[idx].disambig = sub++;
+        }
+    }
+}
+
+static const char* WeaponTypeName(uint8_t t)
+{
+    switch (t) {
+    case 1:  return "Axe";
+    case 2:  return "Sword";
+    case 3:  return "Hammer";
+    case 4:  return "Bow";
+    case 5:  return "Daggers";
+    case 6:  return "Scythe";
+    case 7:  return "Spear";
+    case 8:  return "Staff";
+    case 9:  return "Wand";
+    case 10: return "Focus";
+    case 11: return "Shield";
+    default: return "?";
+    }
+}
+
+std::vector<ReplayWindow::PipSkillStat> ReplayWindow::BuildSkillStats(int agentId, float currentTime) const
+{
+    std::vector<PipSkillStat> result;
+    auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return result;
+
+    const auto& history = it->second.skillUseHistory;
+
+    // Count casts per skill up to currentTime
+    struct SkillAccum {
+        int totalCasts = 0;
+        std::unordered_map<int, int> targetCounts; // targetId -> count
+    };
+    std::unordered_map<int, SkillAccum> accum;
+    int grandTotal = 0;
+
+    for (const auto& ev : history)
+    {
+        if (ev.startTime > currentTime) break;
+        auto& a = accum[ev.skillId];
+        a.totalCasts++;
+        a.targetCounts[ev.targetId >= 0 ? ev.targetId : agentId]++;
+        grandTotal++;
+    }
+
+    if (grandTotal == 0) return result;
+
+    for (auto& [skillId, a] : accum)
+    {
+        PipSkillStat stat;
+        stat.skillId    = skillId;
+        stat.totalCasts = a.totalCasts;
+        stat.castPct    = (float)a.totalCasts / (float)grandTotal;
+
+        for (auto& [tId, cnt] : a.targetCounts)
+        {
+            PipSkillStat::TargetBreakdown tb;
+            tb.targetId = tId;
+            tb.count    = cnt;
+            tb.pct      = (float)cnt / (float)a.totalCasts;
+
+            auto tit = m_replayCtx.agents.find(tId);
+            if (tit != m_replayCtx.agents.end())
+            {
+                tb.name   = tit->second.partyBarLabel.empty() ? tit->second.playerName : tit->second.partyBarLabel;
+                tb.teamId = tit->second.teamId;
+            }
+            else
+            {
+                tb.name = (tId == agentId) ? "Self" : ("Agent " + std::to_string(tId));
+            }
+
+            stat.targets.push_back(std::move(tb));
+        }
+
+        std::sort(stat.targets.begin(), stat.targets.end(),
+                  [](const auto& a, const auto& b) { return a.pct > b.pct; });
+
+        result.push_back(std::move(stat));
+    }
+
+    std::sort(result.begin(), result.end(),
+              [](const auto& a, const auto& b) { return a.castPct > b.castPct; });
+
+    return result;
+}
+
+void ReplayWindow::DrawPlayerInfoPanel()
+{
+    if (!m_showPlayerInfoPanel || m_playerInfoAgentId < 0) return;
+
+    auto agentIt = m_replayCtx.agents.find(m_playerInfoAgentId);
+    if (agentIt == m_replayCtx.agents.end()) { ClosePlayerInfoPanel(); return; }
+
+    const AgentReplayData& ard = agentIt->second;
+    const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
+    bool isDead = snap ? snap->is_dead : false;
+
+    ImGuiIO& io = ImGui::GetIO();
+    float vpW = io.DisplaySize.x;
+    float vpH = io.DisplaySize.y;
+    float maxH = vpH * 0.80f;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+
+    static bool s_firstOpen = true;
+    if (s_firstOpen)
+    {
+        ImGui::SetNextWindowPos(ImVec2(vpW - 460.f, vpH * 0.40f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(440.f, 0.f), ImGuiCond_FirstUseEver);
+        s_firstOpen = false;
+    }
+    float maxW = std::min(vpW * 0.5f, 900.f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(360.f, 100.f), ImVec2(maxW, maxH));
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.067f, 0.082f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.08f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0.05f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(1.f, 1.f, 1.f, 0.15f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(1.f, 1.f, 1.f, 0.30f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(1.f, 1.f, 1.f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 4.f);
+
+    bool open = true;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize;
+
+    if (!ImGui::Begin("##PlayerInfoPanel", &open, flags))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(4);
+        ImGui::PopStyleColor(6);
+        return;
+    }
+
+    if (!open)
+    {
+        ClosePlayerInfoPanel();
+        ImGui::End();
+        ImGui::PopStyleVar(4);
+        ImGui::PopStyleColor(6);
+        return;
+    }
+
+    // Clamp panel to viewport bounds
+    {
+        ImVec2 wPos = ImGui::GetWindowPos();
+        ImVec2 wSz  = ImGui::GetWindowSize();
+        float clampX = std::clamp(wPos.x, 0.f, std::max(0.f, vpW - wSz.x));
+        float clampY = std::clamp(wPos.y, 0.f, std::max(0.f, vpH - wSz.y));
+        if (clampX != wPos.x || clampY != wPos.y)
+            ImGui::SetWindowPos(ImVec2(clampX, clampY));
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float contentW = ImGui::GetWindowSize().x;
+    constexpr float kPadX = 12.f;
+    constexpr ImU32 kGold = IM_COL32(0xD4, 0xA0, 0x20, 0xFF);
+    constexpr ImU32 kDivider = IM_COL32(255, 255, 255, 15);
+    constexpr ImU32 kBlueTeam = IM_COL32(0x4a, 0x90, 0xd8, 0xFF);
+    constexpr ImU32 kRedTeam  = IM_COL32(0xd0, 0x48, 0x48, 0xFF);
+
+    // Helper: strip profession/level prefix ("Mo/W20 Name" -> "Name")
+    auto StripProfPrefix = [](const std::string& raw) -> std::string {
+        if (raw.empty()) return raw;
+        // Pattern: "X/Y## Name" or "X## Name" — find first space after digits
+        size_t i = 0;
+        bool foundSlashOrDigit = false;
+        while (i < raw.size() && (raw[i] == '/' || isalpha((unsigned char)raw[i]) || isdigit((unsigned char)raw[i])))
+        {
+            if (raw[i] == '/' || isdigit((unsigned char)raw[i])) foundSlashOrDigit = true;
+            i++;
+        }
+        if (foundSlashOrDigit && i < raw.size() && raw[i] == ' ')
+            return raw.substr(i + 1);
+        return raw;
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 1 — HEADER: PriIcon / SecIcon  PlayerName  [DP near name]
+    // ═══════════════════════════════════════════════════════════════
+    {
+        ImVec2 headerTL = ImGui::GetCursorScreenPos();
+        float headerH = 40.f;
+        dl->AddRectFilled(headerTL, ImVec2(headerTL.x + contentW, headerTL.y + headerH),
+                          IM_COL32(0, 0, 0, 64));
+
+        float cx = headerTL.x + kPadX;
+        float iconCenterY = headerTL.y + headerH * 0.5f;
+
+        // Primary profession icon 22x22
+        ImTextureID priTex = LoadProfIcon(dev, ard.primaryProf);
+        if (priTex)
+            dl->AddImage(priTex, ImVec2(cx, iconCenterY - 11.f), ImVec2(cx + 22, iconCenterY + 11.f));
+        cx += 24.f;
+
+        // "/" separator
+        dl->AddText(nullptr, 14.f,
+            ImVec2(cx, iconCenterY - 7.f), IM_COL32(255, 255, 255, 100), "/");
+        cx += ImGui::CalcTextSize("/").x + 2.f;
+
+        // Secondary profession icon 16x16
+        if (ard.secondaryProf > 0)
+        {
+            ImTextureID secTex = LoadProfIcon(dev, ard.secondaryProf);
+            if (secTex)
+                dl->AddImage(secTex, ImVec2(cx, iconCenterY - 8.f), ImVec2(cx + 16, iconCenterY + 8.f));
+            cx += 18.f;
+        }
+
+        cx += 6.f;
+
+        // Player name in gold, 16px
+        std::string displayName = ard.playerName.empty() ? ard.partyBarLabel : ard.playerName;
+        displayName = StripProfPrefix(displayName);
+        float nameFontSz = 16.f;
+        float maxNameW = contentW - (cx - headerTL.x) - 44.f;
+        ImVec2 nameSz = ImGui::CalcTextSize(displayName.c_str());
+        float nameScaledW = nameSz.x * (nameFontSz / ImGui::GetFontSize());
+        if (nameScaledW > maxNameW && displayName.size() > 4)
+        {
+            while (nameScaledW > maxNameW && displayName.size() > 4)
+            {
+                size_t sp = displayName.rfind(' ');
+                if (sp != std::string::npos && sp > 0)
+                    displayName = displayName.substr(0, sp) + "...";
+                else
+                {
+                    displayName.pop_back();
+                    if (displayName.size() > 3)
+                        displayName = displayName.substr(0, displayName.size()) + "...";
+                }
+                nameSz = ImGui::CalcTextSize(displayName.c_str());
+                nameScaledW = nameSz.x * (nameFontSz / ImGui::GetFontSize());
+            }
+        }
+
+        float nameY = headerTL.y + (headerH - nameFontSz) * 0.5f;
+        dl->AddText(nullptr, nameFontSz, ImVec2(cx + 1, nameY + 1), IM_COL32(0, 0, 0, 200), displayName.c_str());
+        dl->AddText(nullptr, nameFontSz, ImVec2(cx, nameY), kGold, displayName.c_str());
+
+        // Right side: team dot + close
+        float rx = headerTL.x + contentW - kPadX;
+        ImU32 dotCol = (ard.teamId == 1) ? kBlueTeam : kRedTeam;
+
+        ImGui::SetCursorScreenPos(ImVec2(rx - 16.f, headerTL.y + (headerH - 16.f) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.1f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.f, 1.f, 1.f, 0.2f));
+        if (ImGui::SmallButton("X##pip_close"))
+            ClosePlayerInfoPanel();
+        ImGui::PopStyleColor(4);
+
+        float dotCx = rx - 16.f - 12.f;
+        dl->AddCircleFilled(ImVec2(dotCx, headerTL.y + headerH * 0.5f), 4.f, dotCol);
+
+        ImGui::SetCursorScreenPos(ImVec2(headerTL.x, headerTL.y + headerH));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 2 — Morale row + HP bar (gradient, red theme for all, status icons)
+    // ═══════════════════════════════════════════════════════════════
+    if (snap)
+    {
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + kPadX,
+                                         ImGui::GetCursorScreenPos().y + 8.f));
+        ImVec2 sec = ImGui::GetCursorScreenPos();
+        float barW = contentW - 2 * kPadX;
+
+        // Compute morale (boost/penalty) for this agent
+        int moraleValue = 0;
+        {
+            float curTime = m_debugTimeline;
+            int teamBoosts = 0;
+            for (auto& ev : m_replayCtx.stocData.jumbo)
+            {
+                if (ev.time > curTime) break;
+                if (ev.message == "MORALE_BOOST")
+                {
+                    bool isTeam1 = (ev.party_value == 1635021873);
+                    bool isTeam2 = (ev.party_value == 1635021874);
+                    if ((ard.teamId == 1 && isTeam1) || (ard.teamId == 2 && isTeam2))
+                        ++teamBoosts;
+                }
+            }
+            int deathCount = 0;
+            for (size_t sIdx = 1; sIdx < ard.snapshots.size(); ++sIdx)
+            {
+                if (ard.snapshots[sIdx].time > curTime) break;
+                if (ard.snapshots[sIdx].is_dead && !ard.snapshots[sIdx - 1].is_dead)
+                    ++deathCount;
+            }
+            moraleValue = std::clamp(teamBoosts * 10 - deathCount * 15, -60, 10);
+        }
+
+        // Morale row (only if non-zero), above HP bar, right-aligned
+        if (moraleValue != 0)
+        {
+            constexpr float kMoraleRowH = 18.f;
+            float rowRight = sec.x + barW;
+
+            if (moraleValue > 0)
+            {
+                char boostBuf[32];
+                snprintf(boostBuf, sizeof(boostBuf), "MORALE BOOST  +%d%%", moraleValue);
+                ImVec2 bSz = ImGui::CalcTextSize(boostBuf);
+                float bScale = 12.f / ImGui::GetFontSize();
+                float bx = rowRight - bSz.x * bScale;
+                float by = sec.y + (kMoraleRowH - 12.f) * 0.5f;
+                dl->AddText(nullptr, 12.f, ImVec2(bx, by), kGold, boostBuf);
+            }
+            else
+            {
+                ImU32 dpCol;
+                if (moraleValue >= -15)      dpCol = IM_COL32(0xE0, 0x78, 0x30, 0xFF);
+                else if (moraleValue >= -30) dpCol = IM_COL32(0xC0, 0x50, 0x20, 0xFF);
+                else                         dpCol = IM_COL32(0xCC, 0x30, 0x30, 0xFF);
+
+                int dotCount = (-moraleValue) / 15;
+                char dpBuf[48];
+                std::string dots;
+                for (int d = 0; d < dotCount; d++) dots += "\xE2\x97\x8F"; // ●
+                if (moraleValue <= -60)
+                    snprintf(dpBuf, sizeof(dpBuf), "%d%%  %s MAX", moraleValue, dots.c_str());
+                else
+                    snprintf(dpBuf, sizeof(dpBuf), "%d%%  %s", moraleValue, dots.c_str());
+                ImVec2 dSz = ImGui::CalcTextSize(dpBuf);
+                float dScale = 12.f / ImGui::GetFontSize();
+                float dx = rowRight - dSz.x * dScale;
+                float dy = sec.y + (kMoraleRowH - 12.f) * 0.5f;
+                dl->AddText(nullptr, 12.f, ImVec2(dx + 1, dy + 1), IM_COL32(0, 0, 0, 0xCC), dpBuf);
+                dl->AddText(nullptr, 12.f, ImVec2(dx, dy), dpCol, dpBuf);
+            }
+
+            sec.y += kMoraleRowH;
+            ImGui::SetCursorScreenPos(sec);
+        }
+        float barH = 16.f;
+
+        float hpPct = std::clamp(snap->health_pct, 0.f, 1.f);
+        bool hasDeepWound = snap->has_deep_wound && !isDead;
+
+        // Always use red theme for readability in this panel
+        const Gradient5* fillGrad = nullptr;
+        if (isDead)
+            fillGrad = &kDeadRed;
+        else if (snap->has_degen_hex)
+            fillGrad = &kDegenHex;
+        else if (snap->has_poison)
+            fillGrad = &kPoison;
+        else if (snap->has_bleeding)
+            fillGrad = &kBleeding;
+        else
+            fillGrad = &kAliveRed;
+
+        ImVec2 bTL(sec.x, sec.y);
+        ImVec2 bBR(sec.x + barW, sec.y + barH);
+
+        dl->AddRect(bTL, bBR, IM_COL32(0x4E, 0x4D, 0x48, 0xFF), 0.f, 0, 1.0f);
+
+        ImVec2 innerTL(bTL.x + 1, bTL.y + 1);
+        ImVec2 innerBR(bBR.x - 1, bBR.y - 1);
+        float innerW = innerBR.x - innerTL.x;
+        float innerH = innerBR.y - innerTL.y;
+
+        if (isDead)
+        {
+            DrawGradientRect(dl, innerTL, innerBR, *fillGrad);
+        }
+        else
+        {
+            DrawGradientRect(dl, innerTL, innerBR, kDeadRed);
+
+            float fillPct = hasDeepWound ? std::min(hpPct, 0.80f) : hpPct;
+            if (fillPct > 0.f)
+                DrawGradientRect(dl, innerTL, ImVec2(innerTL.x + innerW * fillPct, innerBR.y), *fillGrad);
+
+            if (hasDeepWound)
+                DrawGradientRect(dl, ImVec2(innerTL.x + innerW * 0.80f, innerTL.y), innerBR, kDeepWound);
+        }
+
+        // Status icons inside bar (right-aligned, same as party window)
+        if (!isDead)
+        {
+            PartyIcons icons = LoadAllPartyIcons(dev);
+            const float iconSz = std::min(innerH - 2.f, 14.f);
+            float iconX = innerBR.x - 2.f;
+            float iconY = innerTL.y + (innerH - iconSz) * 0.5f;
+
+            if (snap->has_weapon_spell && icons.weaponSpell)
+            {
+                iconX -= iconSz;
+                dl->AddImage(icons.weaponSpell, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+                iconX -= 1.f;
+            }
+            if (snap->has_enchantment && icons.enchanted)
+            {
+                iconX -= iconSz;
+                dl->AddImage(icons.enchanted, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+                iconX -= 1.f;
+            }
+            if ((snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) && icons.condition)
+            {
+                iconX -= iconSz;
+                dl->AddImage(icons.condition, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+                iconX -= 1.f;
+            }
+            if (snap->has_hex && icons.hexed)
+            {
+                iconX -= iconSz;
+                dl->AddImage(icons.hexed, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            }
+        }
+
+        if (isDead)
+        {
+            // Solid red bar + centered DEAD label
+            DrawGradientRect(dl, innerTL, innerBR, kDeadRed);
+            const char* deadLabel = "DEAD";
+            ImVec2 dSz = ImGui::CalcTextSize(deadLabel);
+            float dScale = 11.f / ImGui::GetFontSize();
+            float dx = innerTL.x + (innerW - dSz.x * dScale) * 0.5f;
+            float dy = innerTL.y + (innerH - 11.f) * 0.5f;
+            dl->AddText(nullptr, 11.f, ImVec2(dx + 1, dy + 1), IM_COL32(0, 0, 0, 0xCC), deadLabel);
+            dl->AddText(nullptr, 11.f, ImVec2(dx, dy), IM_COL32(255, 255, 255, 255), deadLabel);
+        }
+        else
+        {
+            // HP text with shadow (inside bar, left-aligned)
+            char hpBuf[32];
+            if (snap->max_hp > 0)
+                snprintf(hpBuf, sizeof(hpBuf), "%d / %d", (int)(hpPct * snap->max_hp), (int)snap->max_hp);
+            else
+                snprintf(hpBuf, sizeof(hpBuf), "%d%%", (int)(hpPct * 100));
+            ImVec2 textPos(innerTL.x + 4.f, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
+            dl->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 0xCC), hpBuf);
+            dl->AddText(textPos, IM_COL32(255, 255, 255, 255), hpBuf);
+        }
+
+        // Morale/DP now drawn in dedicated row above HP bar
+
+        sec.y = bBR.y + 4.f;
+
+        if (isDead)
+        {
+            bool beingRezzed = false;
+            for (auto& [aid, otherArd] : m_replayCtx.agents)
+            {
+                if (aid == m_playerInfoAgentId) continue;
+                for (auto& ev : otherArd.skillUseHistory)
+                {
+                    if (ev.startTime > m_debugTimeline) break;
+                    if (ev.endTime < m_debugTimeline) continue;
+                    if (ev.targetId == m_playerInfoAgentId && !ev.wasCancelled)
+                    {
+                        auto& db = GetSkillDatabase();
+                        const SkillInfo* sinfo = db.IsLoaded() ? db.Get(ev.skillId) : nullptr;
+                        if (sinfo && sinfo->type == 22)
+                            beingRezzed = true;
+                    }
+                }
+            }
+
+            if (beingRezzed)
+            {
+                float pulse = 0.6f + 0.4f * (sinf((float)ImGui::GetTime() * 7.85f) * 0.5f + 0.5f);
+                dl->AddText(nullptr, 11.f, ImVec2(sec.x + 4.f, sec.y),
+                    IM_COL32(224, 120, 48, (int)(255 * pulse)), "Being rezzed...");
+                sec.y += 16.f;
+            }
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(sec.x, sec.y + 4.f));
+    }
+
+    // Shared tooltip lambda for skill icons (used by Sections 3 and 5)
+    auto DrawPipSkillTooltip = [&](int skillId, ImTextureID skillTex, const char* modTooltip = nullptr) {
+        auto& db = GetSkillDatabase();
+        const SkillInfo* si = db.IsLoaded() ? db.Get(skillId) : nullptr;
+        if (!si) return;
+
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.039f, 0.055f, 0.071f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.83f, 0.63f, 0.13f, 0.3f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(340.f);
+
+        if (skillTex) { ImGui::Image(skillTex, ImVec2(40, 40)); ImGui::SameLine(); }
+
+        ImGui::BeginGroup();
+        if (si->is_elite)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.85f, 0.3f, 1.f));
+            ImGui::Text("{Elite} %s", si->name.c_str());
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(1, 1, 1, 1), "%s", si->name.c_str());
+        }
+
+        const char* typeName = SkillDatabase::GetTypeName(si->type);
+        const char* attrName = SkillDatabase::GetAttributeName(si->attribute);
+        if (typeName[0] || attrName[0])
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.f));
+            if (attrName[0])
+                ImGui::Text("%s  (%s)", typeName, attrName);
+            else
+                ImGui::TextUnformatted(typeName);
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndGroup();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        {
+            bool hasCost = false;
+
+            auto CostInt = [&](const char* iconFile, const char* fmt, int val) {
+                if (val <= 0) return;
+                ImTextureID tex = LoadSkillDescIcon(dev, iconFile);
+                if (!tex) { if (hasCost) ImGui::SameLine(0, 10); ImGui::Text(fmt, val); hasCost = true; return; }
+                if (hasCost) ImGui::SameLine(0, 10);
+                ImGui::Image(tex, ImVec2(14.f, 14.f));
+                ImGui::SameLine(0, 4);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.f);
+                ImGui::Text(fmt, val);
+                hasCost = true;
+            };
+
+            auto CostFloat = [&](const char* iconFile, const char* fmt, float val) {
+                if (val <= 0.f) return;
+                ImTextureID tex = LoadSkillDescIcon(dev, iconFile);
+                if (!tex) { if (hasCost) ImGui::SameLine(0, 10); ImGui::Text(fmt, val); hasCost = true; return; }
+                if (hasCost) ImGui::SameLine(0, 10);
+                ImGui::Image(tex, ImVec2(14.f, 14.f));
+                ImGui::SameLine(0, 4);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.f);
+                ImGui::Text(fmt, val);
+                hasCost = true;
+            };
+
+            CostInt("energy.png", "%d", si->energy);
+            CostInt("adrenaline.png", "%d", si->adrenaline);
+            CostInt("sacrifice.png", "%d%%", si->sacrifice);
+            if (si->upkeep < 0)
+                CostInt("upkeep.png", "%d", -si->upkeep);
+
+            if (si->activation > 0)
+                CostFloat("activation.png",
+                    (si->activation == (int)si->activation) ? "%.0f" : "%.1f",
+                    si->activation);
+            if (si->recharge > 0)
+                CostFloat("recharge.png",
+                    (si->recharge == (int)si->recharge) ? "%.0f" : "%.1f",
+                    si->recharge);
+            CostInt("overcast.png", "%d", si->overcast);
+        }
+
+        ImGui::Spacing();
+
+        if (!si->description.empty())
+        {
+            std::string desc = si->description;
+            size_t pos;
+            while ((pos = desc.find('<')) != std::string::npos)
+            {
+                size_t end = desc.find('>', pos);
+                if (end == std::string::npos) break;
+                desc.erase(pos, end - pos + 1);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.82f, 0.75f, 1.f));
+            ImGui::TextWrapped("%s", desc.c_str());
+            ImGui::PopStyleColor();
+        }
+
+        if (modTooltip && modTooltip[0])
+        {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.19f, 0.63f, 0.63f, 1.f));
+            ImGui::Text("Recharge modifier: %s", modTooltip);
+            ImGui::PopStyleColor();
+        }
+
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
+    };
+
+    // Pre-compute skill stats (shared by Section 3 cast counter tooltip and Section 5)
+    auto pipSkillStats = BuildSkillStats(m_playerInfoAgentId, m_debugTimeline);
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 3 — SKILL ICON BAR (skills with cast counters)
+    // ═══════════════════════════════════════════════════════════════
+    float pipSkillIconSz = 40.f; // will be overwritten by computed skill icon size
+    {
+        float winX = ImGui::GetWindowPos().x;
+        ImVec2 skPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
+        float innerW = contentW - 2 * kPadX;
+
+        dl->AddLine(ImVec2(skPos.x, skPos.y), ImVec2(skPos.x + innerW, skPos.y), kDivider);
+        skPos.y += 8.f;
+
+        struct SkillSlot {
+            int skillId = 0;
+            int castsAtCurrent = 0;
+            int castsTotal = 0;
+            float firstUseTime = 1e9f;
+        };
+        std::vector<SkillSlot> slots;
+        {
+            // Count casts per skill from history
+            std::unordered_map<int, SkillSlot> slotMap;
+            for (const auto& ev : ard.skillUseHistory)
+            {
+                auto& sl = slotMap[ev.skillId];
+                if (sl.skillId == 0) { sl.skillId = ev.skillId; sl.firstUseTime = ev.startTime; }
+                sl.castsTotal++;
+                if (ev.startTime <= m_debugTimeline)
+                    sl.castsAtCurrent++;
+            }
+
+            // Use used_skills order from match metadata (same as main UI)
+            const std::vector<int>* usedSkills = nullptr;
+            for (const auto& [pid, party] : m_matchMeta.parties)
+            {
+                for (const auto& pm : party.players)
+                {
+                    if (pm.id == m_playerInfoAgentId && !pm.used_skills.empty())
+                    { usedSkills = &pm.used_skills; break; }
+                }
+                if (usedSkills) break;
+                for (const auto& pm : party.others)
+                {
+                    if (pm.id == m_playerInfoAgentId && !pm.used_skills.empty())
+                    { usedSkills = &pm.used_skills; break; }
+                }
+                if (usedSkills) break;
+            }
+
+            std::unordered_set<int> placed;
+            if (usedSkills)
+            {
+                for (int sid : *usedSkills)
+                {
+                    auto it = slotMap.find(sid);
+                    if (it != slotMap.end())
+                        slots.push_back(it->second);
+                    else
+                        slots.push_back({ sid, 0, 0, 1e9f });
+                    placed.insert(sid);
+                }
+            }
+            // Append any skills from history not in used_skills, ordered by first use
+            std::vector<SkillSlot> extras;
+            for (auto& [id, sl] : slotMap)
+                if (placed.find(id) == placed.end())
+                    extras.push_back(sl);
+            std::sort(extras.begin(), extras.end(),
+                [](const SkillSlot& a, const SkillSlot& b) { return a.firstUseTime < b.firstUseTime; });
+            for (auto& e : extras)
+                slots.push_back(e);
+        }
+
+        int numSlots = std::max((int)slots.size(), 1);
+        constexpr float kSkGap = 5.f;
+        constexpr int kGridCols = 8;
+        float kSkIconSz = std::floor((innerW - (kGridCols - 1) * kSkGap) / kGridCols);
+        if (kSkIconSz < 28.f) kSkIconSz = 28.f;
+
+        float startX = skPos.x;
+        pipSkillIconSz = kSkIconSz;
+
+        EnsureSkillIconIndex();
+
+        float kCountFontX = (kSkIconSz < 32.f) ? 10.f : 12.f;
+        float kCountFontSm = (kSkIconSz < 32.f) ? 9.f : 11.f;
+
+        // ── Compute per-skill cooldown state for current timestamp ──
+        constexpr int kResSigId = 2;
+        constexpr int kComplicateId = 932;
+        constexpr float kComplicateDuration = 12.f;
+
+        // Recharge modifier skill IDs
+        constexpr int kSqSkillId  = 456;   // Serpent's Quickness
+        constexpr int kPsSkillId  = 449;   // Practiced Stance
+        constexpr int kDpSkillId  = 572;   // Deadly Paradox
+        constexpr int kAolSkillId = 1521;  // Avatar of Lyssa
+        constexpr int kLhSkillId  = 1512;  // Lyssa's Haste
+        constexpr uint32_t kQzSpiritModelId = 2937;
+        constexpr float kQzRange = 2512.f;
+
+        struct RechargeModifier {
+            int   sourceSkillId    = 0;
+            float multiplier       = 1.f;
+            bool  appliesToAll     = false;
+            bool  preparationsOnly = false;
+            bool  assassinOnly     = false;
+            bool  dervishEnchOnly  = false;
+            const char* sourceName = "";
+        };
+        std::vector<RechargeModifier> activeModifiers;
+        bool dpDisableAttacks = false;
+        float dpDisableExpiry = 0.f;
+        bool qzActive = false;
+
+        // ── Build active modifiers from skill cast history (recomputed every frame for scrub) ──
+        auto& skDb = GetSkillDatabase();
+        {
+            float curTime = m_debugTimeline;
+
+            // --- Quickening Zephyr: check all QZ spirits alive + in range ---
+            {
+                float playerX = 0, playerY = 0, playerZ = 0;
+                InterpolateAgentPosition(ard, curTime, m_replayCtx.interpSettings, playerX, playerY, playerZ);
+
+                for (auto& [spiritId, spiritArd] : m_replayCtx.agents)
+                {
+                    if (spiritArd.modelId != kQzSpiritModelId) continue;
+                    if (spiritArd.isDeadAtTime(curTime)) continue;
+                    if (!spiritArd.isAliveAtTime(curTime)) continue;
+
+                    float spX = 0, spY = 0, spZ = 0;
+                    InterpolateAgentPosition(spiritArd, curTime, m_replayCtx.interpSettings, spX, spY, spZ);
+                    float dx = playerX - spX, dy = playerY - spY;
+                    float dist = std::sqrt(dx * dx + dy * dy);
+                    if (dist <= kQzRange)
+                    {
+                        qzActive = true;
+                        break;
+                    }
+                }
+            }
+
+            // --- Scan focused agent's own casts for buff-type modifiers ---
+            for (const auto& ev : ard.skillUseHistory)
+            {
+                if (ev.wasCancelled) continue;
+                float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
+                if (castEnd > curTime) continue;
+
+                // Serpent's Quickness (SQ): all skills x0.67, 20s, ends if HP<50%
+                if (ev.skillId == kSqSkillId)
+                {
+                    float expiresAt = castEnd + 20.f;
+                    if (curTime < expiresAt)
+                    {
+                        float hpPct = ard.healthPctAtTime(curTime);
+                        if (hpPct >= 0.50f)
+                        {
+                            RechargeModifier m;
+                            m.sourceSkillId = kSqSkillId;
+                            m.multiplier = 0.67f;
+                            m.appliesToAll = true;
+                            m.sourceName = "SQ";
+                            activeModifiers.push_back(m);
+                        }
+                    }
+                }
+
+                // Practiced Stance (PS): preparations only x0.50
+                if (ev.skillId == kPsSkillId)
+                {
+                    const SkillInfo* psInfo = skDb.Get(kPsSkillId);
+                    float dur = psInfo ? psInfo->recharge : 30.f;
+                    float expiresAt = castEnd + dur;
+                    if (curTime < expiresAt)
+                    {
+                        RechargeModifier m;
+                        m.sourceSkillId = kPsSkillId;
+                        m.multiplier = 0.50f;
+                        m.preparationsOnly = true;
+                        m.sourceName = "PS";
+                        activeModifiers.push_back(m);
+                    }
+                }
+
+                // Deadly Paradox (DP): assassin skills x0.67 + disable attacks, 10s
+                if (ev.skillId == kDpSkillId)
+                {
+                    float expiresAt = castEnd + 10.f;
+                    if (curTime < expiresAt)
+                    {
+                        RechargeModifier m;
+                        m.sourceSkillId = kDpSkillId;
+                        m.multiplier = 0.67f;
+                        m.assassinOnly = true;
+                        m.sourceName = "DP";
+                        activeModifiers.push_back(m);
+
+                        dpDisableAttacks = true;
+                        dpDisableExpiry = expiresAt;
+                    }
+                }
+
+                // Avatar of Lyssa: dervish enchantments x0.50
+                if (ev.skillId == kAolSkillId)
+                {
+                    const SkillInfo* aolInfo = skDb.Get(kAolSkillId);
+                    float dur = aolInfo ? aolInfo->recharge : 45.f;
+                    float expiresAt = castEnd + dur;
+                    if (curTime < expiresAt && !ev.wasCancelled)
+                    {
+                        RechargeModifier m;
+                        m.sourceSkillId = kAolSkillId;
+                        m.multiplier = 0.50f;
+                        m.dervishEnchOnly = true;
+                        m.sourceName = "AoL";
+                        activeModifiers.push_back(m);
+                    }
+                }
+
+                // Lyssa's Haste: dervish enchantments x0.67
+                if (ev.skillId == kLhSkillId)
+                {
+                    const SkillInfo* lhInfo = skDb.Get(kLhSkillId);
+                    float dur = lhInfo ? lhInfo->recharge : 20.f;
+                    float expiresAt = castEnd + dur;
+                    if (curTime < expiresAt && !ev.wasCancelled)
+                    {
+                        RechargeModifier m;
+                        m.sourceSkillId = kLhSkillId;
+                        m.multiplier = 0.67f;
+                        m.dervishEnchOnly = true;
+                        m.sourceName = "LH";
+                        activeModifiers.push_back(m);
+                    }
+                }
+            }
+        }
+
+        // Lambda: compute effective recharge multiplier for a given skill
+        auto GetRechargeMultiplier = [&](int skillId) -> float
+        {
+            const SkillInfo* si = skDb.Get(skillId);
+            float mult = 1.f;
+
+            // QZ applies to all skills
+            if (qzActive) mult *= 0.50f;
+
+            for (const auto& mod : activeModifiers)
+            {
+                if (mod.appliesToAll)
+                {
+                    mult *= mod.multiplier;
+                    continue;
+                }
+                if (mod.preparationsOnly && si && si->type == 17)
+                {
+                    mult *= mod.multiplier;
+                    continue;
+                }
+                if (mod.assassinOnly && si && si->profession == 7)
+                {
+                    mult *= mod.multiplier;
+                    continue;
+                }
+                if (mod.dervishEnchOnly && si && si->profession == 10 &&
+                    (si->type == 15 || si->type == 23 || si->type == 33 || si->type == 34))
+                {
+                    mult *= mod.multiplier;
+                    continue;
+                }
+            }
+
+            return mult;
+        };
+
+        // Lambda: is this skill an attack skill (disabled by Deadly Paradox)
+        auto IsAttackSkill = [&](int skillId) -> bool
+        {
+            const SkillInfo* si = skDb.Get(skillId);
+            if (!si) return false;
+            return si->type == 2 || si->type == 3 || si->type == 4 ||
+                   si->type == 5 || si->type == 6 || si->type == 7 ||
+                   si->type == 8 || si->type == 9 || si->type == 10;
+        };
+
+        // Collect morale boost timestamps for this team
+        std::vector<float> teamMoraleBoosts;
+        for (auto& jmb : m_replayCtx.stocData.jumbo)
+        {
+            if (jmb.time > m_debugTimeline) break;
+            if (jmb.message == "MORALE_BOOST")
+            {
+                bool isTeam1 = (jmb.party_value == 1635021873);
+                bool isTeam2 = (jmb.party_value == 1635021874);
+                if ((ard.teamId == 1 && isTeam1) || (ard.teamId == 2 && isTeam2))
+                    teamMoraleBoosts.push_back(jmb.time);
+            }
+        }
+
+        // Collect Complicate lockouts affecting this agent
+        struct ComplicateLock {
+            int skillId = 0;
+            float start = 0.f;
+            float end = 0.f;
+        };
+        std::vector<ComplicateLock> complicateLocks;
+        for (const auto& ev : ard.skillUseHistory)
+        {
+            if (!ev.wasInterrupted) continue;
+            if (ev.endTime > m_debugTimeline) break;
+            // Check if a Complicate was the source of this interrupt
+            for (const auto& [eid, eard] : m_replayCtx.agents)
+            {
+                if (eard.teamId == ard.teamId) continue;
+                for (const auto& eev : eard.skillUseHistory)
+                {
+                    if (eev.skillId != kComplicateId) continue;
+                    if (eev.wasCancelled) continue;
+                    if (eev.targetId != m_playerInfoAgentId) continue;
+                    if (std::abs(eev.endTime - ev.endTime) < 0.3f)
+                    {
+                        float lockEnd = eev.endTime + kComplicateDuration;
+                        bool clearedByBoost = false;
+                        for (float bt : teamMoraleBoosts)
+                            if (bt > eev.endTime && bt <= m_debugTimeline) { clearedByBoost = true; break; }
+                        if (!clearedByBoost && lockEnd > m_debugTimeline)
+                        {
+                            ComplicateLock cl; cl.skillId = ev.skillId; cl.start = eev.endTime; cl.end = lockEnd;
+                            complicateLocks.push_back(cl);
+                        }
+                    }
+                }
+            }
+        }
+        // Also check Complicate against allies in range (AoE effect on focused agent)
+        for (const auto& [eid, eard] : m_replayCtx.agents)
+        {
+            if (eard.teamId == ard.teamId) continue;
+            for (const auto& eev : eard.skillUseHistory)
+            {
+                if (eev.skillId != kComplicateId || eev.wasCancelled) continue;
+                if (eev.endTime > m_debugTimeline) continue;
+                if (eev.targetId == m_playerInfoAgentId) continue;
+                // Find the target agent (ally of focused)
+                auto targetIt = m_replayCtx.agents.find(eev.targetId);
+                if (targetIt == m_replayCtx.agents.end()) continue;
+                if (targetIt->second.teamId != ard.teamId) continue;
+                // Find interrupted skill on the direct target
+                int intSkill = 0;
+                for (const auto& tev : targetIt->second.skillUseHistory)
+                {
+                    if (!tev.wasInterrupted) continue;
+                    if (std::abs(tev.endTime - eev.endTime) < 0.3f)
+                    { intSkill = tev.skillId; break; }
+                }
+                if (intSkill == 0) continue;
+                // Check distance: focused agent must be in range of direct target
+                float tx, ty, tz, fx, fy, fz;
+                InterpolateAgentPosition(targetIt->second, eev.endTime, m_replayCtx.interpSettings, tx, ty, tz);
+                InterpolateAgentPosition(ard, eev.endTime, m_replayCtx.interpSettings, fx, fy, fz);
+                float dx = tx - fx, dy = ty - fy, dz = tz - fz;
+                float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                if (dist > 322.f) continue;
+                float lockEnd = eev.endTime + kComplicateDuration;
+                bool clearedByBoost = false;
+                for (float bt : teamMoraleBoosts)
+                    if (bt > eev.endTime && bt <= m_debugTimeline) { clearedByBoost = true; break; }
+                if (!clearedByBoost && lockEnd > m_debugTimeline)
+                {
+                    ComplicateLock cl; cl.skillId = intSkill; cl.start = eev.endTime; cl.end = lockEnd;
+                    complicateLocks.push_back(cl);
+                }
+            }
+        }
+
+        // 0=available, 1=recharging, 2=permanent (Res Signet)
+        struct SkillCooldown {
+            int state = 0;
+            float rechargeStart = 0.f;
+            float rechargeDuration = 0.f;
+            float remaining = 0.f;
+            bool isComplicate = false;
+            float rechargeMult = 1.f;
+            bool isDisabledByDP = false;
+            float dpCountdown = 0.f;
+            std::string modifierTooltip;
+        };
+        constexpr int RS_AVAILABLE = 0, RS_RECHARGING = 1, RS_PERMANENT = 2;
+        std::vector<SkillCooldown> cooldowns;
+        cooldowns.resize(slots.size());
+
+        for (int si2 = 0; si2 < (int)slots.size(); si2++)
+        {
+            int sid = slots[si2].skillId;
+            SkillCooldown& cd = cooldowns[si2];
+
+            // Scan all successful casts for this skill up to current time
+            for (const auto& ev : ard.skillUseHistory)
+            {
+                if (ev.skillId != sid) continue;
+                if (ev.wasCancelled) continue;
+                if (ev.endTime > m_debugTimeline) continue;
+                float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
+                if (sid == kResSigId)
+                {
+                    cd.state = RS_PERMANENT;
+                    cd.rechargeStart = castEnd;
+                }
+                else if (ev.rechargeDuration > 0.f)
+                {
+                    cd.state = RS_RECHARGING;
+                    cd.rechargeStart = castEnd;
+                    cd.rechargeDuration = ev.rechargeDuration;
+                }
+            }
+
+            // Check if recharge expired
+            if (cd.state == RS_RECHARGING)
+            {
+                cd.remaining = cd.rechargeStart + cd.rechargeDuration - m_debugTimeline;
+                if (cd.remaining <= 0.f)
+                    cd.state = RS_AVAILABLE;
+            }
+
+            // Morale boost clears both RECHARGING and PERMANENT
+            if (cd.state != RS_AVAILABLE)
+            {
+                for (float bt : teamMoraleBoosts)
+                {
+                    if (bt > cd.rechargeStart && bt <= m_debugTimeline)
+                    { cd.state = RS_AVAILABLE; break; }
+                }
+            }
+
+            // Complicate override (takes priority if still active)
+            for (const auto& cl : complicateLocks)
+            {
+                if (cl.skillId == sid)
+                {
+                    float rem = cl.end - m_debugTimeline;
+                    if (rem > 0.f && (cd.state == RS_AVAILABLE || rem > cd.remaining))
+                    {
+                        cd.state = RS_RECHARGING;
+                        cd.rechargeStart = cl.start;
+                        cd.rechargeDuration = kComplicateDuration;
+                        cd.remaining = rem;
+                        cd.isComplicate = true;
+                    }
+                }
+            }
+
+            // Apply recharge modifier to remaining time
+            cd.rechargeMult = GetRechargeMultiplier(sid);
+            if (cd.state == RS_RECHARGING && !cd.isComplicate)
+            {
+                float effectiveDur = cd.rechargeDuration * cd.rechargeMult;
+                cd.remaining = cd.rechargeStart + effectiveDur - m_debugTimeline;
+                if (cd.remaining <= 0.f)
+                    cd.state = RS_AVAILABLE;
+            }
+            else if (cd.state == RS_RECHARGING)
+            {
+                cd.remaining = cd.rechargeStart + cd.rechargeDuration - m_debugTimeline;
+            }
+
+            // Deadly Paradox disables attack skills
+            if (dpDisableAttacks && IsAttackSkill(sid))
+            {
+                cd.isDisabledByDP = true;
+                cd.dpCountdown = dpDisableExpiry - m_debugTimeline;
+            }
+
+            // Build modifier tooltip string
+            if (cd.rechargeMult < 0.999f || cd.isDisabledByDP)
+            {
+                std::string tt;
+                if (qzActive) tt += "QZ x0.50";
+                for (const auto& mod : activeModifiers)
+                {
+                    bool applies = false;
+                    if (mod.appliesToAll) applies = true;
+                    else if (mod.preparationsOnly) {
+                        const SkillInfo* si = skDb.Get(sid);
+                        if (si && si->type == 17) applies = true;
+                    }
+                    else if (mod.assassinOnly) {
+                        const SkillInfo* si = skDb.Get(sid);
+                        if (si && si->profession == 7) applies = true;
+                    }
+                    else if (mod.dervishEnchOnly) {
+                        const SkillInfo* si = skDb.Get(sid);
+                        if (si && si->profession == 10 &&
+                            (si->type == 15 || si->type == 23 || si->type == 33 || si->type == 34))
+                            applies = true;
+                    }
+                    if (applies)
+                    {
+                        if (!tt.empty()) tt += " + ";
+                        char buf[32];
+                        snprintf(buf, sizeof(buf), "%s x%.2f", mod.sourceName, mod.multiplier);
+                        tt += buf;
+                    }
+                }
+                cd.modifierTooltip = tt;
+            }
+        }
+
+        // Detect recent morale boost for white flash effect
+        float moraleFlashAlpha = 0.f;
+        if (!teamMoraleBoosts.empty())
+        {
+            float lastBoost = teamMoraleBoosts.back();
+            float elapsed = m_debugTimeline - lastBoost;
+            if (elapsed >= 0.f && elapsed < 0.15f)
+                moraleFlashAlpha = 0.6f * (1.f - elapsed / 0.15f);
+        }
+
+        // Hover delay state for cast counter tooltip
+        static int    s_hoverSkillId   = -1;
+        static float  s_hoverStartTime = -1.f;
+        constexpr float kHoverDelay    = 0.080f;
+        int hoveredCounterSkill = -1;
+
+        for (int i = 0; i < (int)slots.size(); i++)
+        {
+            auto& sl = slots[i];
+            int col = i % kGridCols;
+            int row = i / kGridCols;
+            float ix = startX + col * (kSkIconSz + kSkGap);
+            float iy = skPos.y + row * (kSkIconSz + 3.f + kCountFontX + 6.f);
+
+            dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
+                              IM_COL32(0, 0, 0, 77), 5.f);
+            dl->AddRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
+                        IM_COL32(255, 255, 255, 31), 5.f);
+
+            ImTextureID skillTex = LoadSkillIcon(this, dev, sl.skillId,
+                m_skillIconIndex, m_skillIconCache);
+            if (skillTex)
+                dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
+                             ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1));
+
+            // ── Recharge arc overlay ──
+            const SkillCooldown& cd = cooldowns[i];
+            if (cd.state == RS_PERMANENT)
+            {
+                // Full dark overlay (Res Signet — permanent until morale boost)
+                float cx = ix + kSkIconSz * 0.5f, cy = iy + kSkIconSz * 0.5f;
+                float r = kSkIconSz * 0.5f;
+                dl->AddCircleFilled(ImVec2(cx, cy), r, IM_COL32(0, 0, 0, 166), 32);
+            }
+            else if (cd.state == RS_RECHARGING && cd.rechargeDuration > 0.f)
+            {
+                float effectiveDur = cd.isComplicate ? cd.rechargeDuration : cd.rechargeDuration * cd.rechargeMult;
+                float progress = (effectiveDur > 0.f) ? std::clamp(cd.remaining / effectiveDur, 0.f, 1.f) : 0.f;
+                float cx = ix + kSkIconSz * 0.5f, cy = iy + kSkIconSz * 0.5f;
+                float r = kSkIconSz * 0.5f;
+
+                ImU32 arcCol = cd.isComplicate
+                    ? IM_COL32(80, 0, 80, 179)
+                    : IM_COL32(0, 0, 0, 166);
+
+                if (progress > 0.001f)
+                {
+                    // Filled pie from 12 o'clock, clockwise sweep
+                    float startAngle = -IM_PI * 0.5f;
+                    float sweepAngle = 2.f * IM_PI * progress;
+                    int nArcSegs = std::max(8, (int)(32.f * progress));
+
+                    dl->PathClear();
+                    dl->PathLineTo(ImVec2(cx, cy));
+                    for (int s = 0; s <= nArcSegs; s++)
+                    {
+                        float a = startAngle - sweepAngle * ((float)s / nArcSegs);
+                        dl->PathLineTo(ImVec2(cx + r * cosf(a), cy + r * sinf(a)));
+                    }
+                    dl->PathFillConvex(arcCol);
+                }
+
+                // Countdown text
+                if (cd.remaining > 1.0f)
+                {
+                    char cdBuf[8];
+                    snprintf(cdBuf, sizeof(cdBuf), "%d", (int)ceilf(cd.remaining));
+                    ImVec2 cdSz = ImGui::CalcTextSize(cdBuf);
+                    float cdScale = 10.f / ImGui::GetFontSize();
+                    float cdW = cdSz.x * cdScale;
+                    float cdH = cdSz.y * cdScale;
+                    dl->AddText(nullptr, 10.f,
+                        ImVec2(cx - cdW * 0.5f + 1.f, cy - cdH * 0.5f + 1.f),
+                        IM_COL32(0, 0, 0, 200), cdBuf);
+                    dl->AddText(nullptr, 10.f,
+                        ImVec2(cx - cdW * 0.5f, cy - cdH * 0.5f),
+                        IM_COL32(255, 255, 255, 230), cdBuf);
+                }
+            }
+
+            // Morale boost white flash
+            if (moraleFlashAlpha > 0.f && cd.state == RS_AVAILABLE)
+            {
+                ImU8 flashA = (ImU8)(moraleFlashAlpha * 255.f);
+                dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
+                    IM_COL32(255, 255, 255, flashA), 5.f);
+            }
+
+            // Deadly Paradox disabled overlay (attack skills)
+            if (cd.isDisabledByDP && cd.dpCountdown > 0.f)
+            {
+                dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
+                    IM_COL32(0, 0, 0, 191), 5.f);
+                // Red X
+                const char* xStr = "X";
+                ImVec2 xSz = ImGui::CalcTextSize(xStr);
+                float xScale = 14.f / ImGui::GetFontSize();
+                float xW = xSz.x * xScale, xH = xSz.y * xScale;
+                float cxDP = ix + kSkIconSz * 0.5f, cyDP = iy + kSkIconSz * 0.35f;
+                dl->AddText(nullptr, 14.f,
+                    ImVec2(cxDP - xW * 0.5f, cyDP - xH * 0.5f),
+                    IM_COL32(204, 48, 48, 255), xStr);
+                // Countdown below X
+                char dpBuf[8];
+                snprintf(dpBuf, sizeof(dpBuf), "%.0f", ceilf(cd.dpCountdown));
+                ImVec2 dpSz = ImGui::CalcTextSize(dpBuf);
+                float dpScale = 9.f / ImGui::GetFontSize();
+                float dpW = dpSz.x * dpScale;
+                dl->AddText(nullptr, 9.f,
+                    ImVec2(cxDP - dpW * 0.5f, cyDP + xH * 0.4f),
+                    IM_COL32(204, 48, 48, 200), dpBuf);
+            }
+
+            // QZ active indicator: thin cyan border ring
+            if (qzActive && cd.rechargeMult < 0.999f)
+            {
+                dl->AddRect(ImVec2(ix - 1, iy - 1),
+                    ImVec2(ix + kSkIconSz + 1, iy + kSkIconSz + 1),
+                    IM_COL32(48, 160, 160, 200), 5.f, 0, 1.5f);
+            }
+
+            // Complicate tooltip on hover
+            if (cd.isComplicate && cd.state == RS_RECHARGING)
+            {
+                if (ImGui::IsMouseHoveringRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz)))
+                {
+                    char ttBuf[128];
+                    if (qzActive)
+                        snprintf(ttBuf, sizeof(ttBuf), "On cooldown: Complicate (%.0fs) + QZ active", cd.remaining);
+                    else
+                        snprintf(ttBuf, sizeof(ttBuf), "On cooldown: Complicate (%.0fs)", cd.remaining);
+                    ImGui::SetTooltip("%s", ttBuf);
+                }
+            }
+
+            // Icon hover → skill description tooltip (only if not showing complicate tooltip)
+            bool iconHovered = false;
+            if (!(cd.isComplicate && cd.state == RS_RECHARGING))
+            {
+                iconHovered = ImGui::IsMouseHoveringRect(
+                    ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz));
+                if (iconHovered)
+                {
+                    const char* modTip = (!cd.modifierTooltip.empty()) ? cd.modifierTooltip.c_str() : nullptr;
+                    DrawPipSkillTooltip(sl.skillId, skillTex, modTip);
+                }
+            }
+
+            // Cast counter text
+            float textY = iy + kSkIconSz + 3.f;
+            float counterH = kCountFontX + 2.f;
+            ImVec2 counterMin(ix, textY);
+            ImVec2 counterMax(ix + kSkIconSz, textY + counterH);
+            bool counterHovered = !iconHovered && ImGui::IsMouseHoveringRect(counterMin, counterMax);
+
+            if (sl.castsTotal == 0)
+            {
+                const char* dash = "--";
+                ImVec2 dSz = ImGui::CalcTextSize(dash);
+                float dScale = kCountFontSm / ImGui::GetFontSize();
+                dl->AddText(nullptr, kCountFontSm,
+                    ImVec2(ix + (kSkIconSz - dSz.x * dScale) * 0.5f, textY),
+                    IM_COL32(0x70, 0x7d, 0x88, 0xFF), dash);
+            }
+            else
+            {
+                char xBuf[8], yBuf[8];
+                snprintf(xBuf, sizeof(xBuf), "%d", sl.castsAtCurrent);
+                snprintf(yBuf, sizeof(yBuf), "%d", sl.castsTotal);
+                float fScaleX = kCountFontX / ImGui::GetFontSize();
+                float fScaleSm = kCountFontSm / ImGui::GetFontSize();
+                ImVec2 xSz = ImGui::CalcTextSize(xBuf);  xSz.x *= fScaleX;
+                ImVec2 sSz = ImGui::CalcTextSize("/");    sSz.x *= fScaleSm;
+                ImVec2 ySz = ImGui::CalcTextSize(yBuf);   ySz.x *= fScaleSm;
+                float totalTW = xSz.x + sSz.x + ySz.x;
+                float tx = ix + (kSkIconSz - totalTW) * 0.5f;
+                dl->AddText(nullptr, kCountFontX, ImVec2(tx, textY),
+                    IM_COL32(0xF0, 0xF0, 0xF0, 0xFF), xBuf);
+                tx += xSz.x;
+                dl->AddText(nullptr, kCountFontSm, ImVec2(tx, textY + 1.f),
+                    IM_COL32(0x50, 0x5a, 0x64, 0xFF), "/");
+                tx += sSz.x;
+                dl->AddText(nullptr, kCountFontSm, ImVec2(tx, textY + 1.f),
+                    IM_COL32(0x70, 0x7d, 0x88, 0xFF), yBuf);
+            }
+
+            if (counterHovered)
+                hoveredCounterSkill = sl.skillId;
+        }
+
+        // Hover delay logic
+        float now = (float)ImGui::GetTime();
+        if (hoveredCounterSkill < 0)
+        {
+            s_hoverSkillId = -1;
+            s_hoverStartTime = -1.f;
+        }
+        else if (s_hoverSkillId != hoveredCounterSkill)
+        {
+            s_hoverSkillId = hoveredCounterSkill;
+            s_hoverStartTime = now;
+        }
+
+        bool showCounterTooltip = (hoveredCounterSkill >= 0 &&
+            s_hoverSkillId == hoveredCounterSkill &&
+            s_hoverStartTime > 0.f &&
+            (now - s_hoverStartTime) >= kHoverDelay);
+
+        if (showCounterTooltip)
+        {
+            const PipSkillStat* foundStat = nullptr;
+            for (const auto& st : pipSkillStats)
+                if (st.skillId == hoveredCounterSkill) { foundStat = &st; break; }
+
+            ImTextureID ttSkillTex = LoadSkillIcon(this, dev, hoveredCounterSkill,
+                m_skillIconIndex, m_skillIconCache);
+            std::string ttSkillName = GetSkillDisplayName(hoveredCounterSkill);
+            int castsNow = foundStat ? foundStat->totalCasts : 0;
+
+            int hovIdx = -1;
+            for (int i = 0; i < (int)slots.size(); i++)
+                if (slots[i].skillId == hoveredCounterSkill) { hovIdx = i; break; }
+            float hoverIx = startX + (hovIdx >= 0 ? hovIdx : 0) * (kSkIconSz + kSkGap);
+            float hoverIy = skPos.y;
+
+            constexpr float kTtPadX = 14.f;
+            constexpr float kTtPadY = 12.f;
+            constexpr float kTtRowH = 22.f;
+            constexpr float kTtRowGap = 3.f;
+
+            bool isSelfOnly = false;
+            int numTargets = 0;
+            if (foundStat && castsNow > 0)
+            {
+                isSelfOnly = foundStat->targets.empty() ||
+                    (foundStat->targets.size() == 1 &&
+                     foundStat->targets[0].targetId == m_playerInfoAgentId);
+                numTargets = (int)foundStat->targets.size();
+            }
+
+            float headerH = 24.f;
+            float dividerH = 6.f;
+            float bodyH = 0.f;
+            if (!foundStat || castsNow == 0) bodyH = 20.f;
+            else if (isSelfOnly) bodyH = 24.f;
+            else bodyH = numTargets * (kTtRowH + kTtRowGap);
+            float listMaxH = 320.f;
+            if (bodyH > listMaxH) bodyH = listMaxH;
+            float ttH = kTtPadY * 2 + headerH + dividerH + bodyH;
+            float ttW = std::clamp(280.f, 240.f, 320.f);
+
+            // Position with 8px screen margin
+            float ttX = hoverIx - ttW - 4.f;
+            float ttY = hoverIy;
+            if (ttX < 8.f)
+            {
+                ttX = hoverIx + kSkIconSz + 4.f;
+                if (ttX + ttW > vpW - 8.f)
+                    ttX = vpW - 8.f - ttW;
+            }
+            if (ttY + ttH > vpH - 8.f)
+                ttY = vpH - 8.f - ttH;
+            if (ttY < 8.f) ttY = 8.f;
+            if (ttX < 8.f) ttX = 8.f;
+
+            ImGui::SetNextWindowPos(ImVec2(ttX, ttY));
+            ImGui::SetNextWindowSize(ImVec2(ttW, 0.f));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.031f, 0.055f, 0.078f, 1.00f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.83f, 0.63f, 0.13f, 0.45f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0.05f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(1.f, 1.f, 1.f, 0.20f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kTtPadX, kTtPadY));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 3.f);
+            ImGui::BeginTooltip();
+
+            ImDrawList* ttDl = ImGui::GetWindowDrawList();
+            float innerTtW = ttW - 2 * kTtPadX;
+
+            // Header: [icon 20x20]  [name 12px bold]  [X casts 11px] right-aligned
+            if (ttSkillTex)
+            {
+                ImGui::Image(ttSkillTex, ImVec2(20, 20));
+                ImGui::SameLine(0, 6);
+            }
+            {
+                float cy = ImGui::GetCursorPosY();
+                ImGui::SetCursorPosY(cy + 2.f);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+                ImGui::TextUnformatted(ttSkillName.c_str());
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+
+                char castsBuf[32];
+                snprintf(castsBuf, sizeof(castsBuf), "%d cast%s", castsNow, castsNow == 1 ? "" : "s");
+                ImVec2 cSz = ImGui::CalcTextSize(castsBuf);
+                float rightX = innerTtW + kTtPadX - cSz.x;
+                if (ImGui::GetCursorPosX() < rightX)
+                    ImGui::SetCursorPosX(rightX);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.44f, 0.49f, 0.53f, 1.f));
+                ImGui::TextUnformatted(castsBuf);
+                ImGui::PopStyleColor();
+            }
+
+            // Divider
+            {
+                ImVec2 dp = ImGui::GetCursorScreenPos();
+                ttDl->AddLine(ImVec2(dp.x, dp.y + 2.f), ImVec2(dp.x + innerTtW, dp.y + 2.f),
+                    IM_COL32(255, 255, 255, 20));
+                ImGui::Dummy(ImVec2(0, 5.f));
+            }
+
+            if (!foundStat || castsNow == 0)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.44f, 0.49f, 0.53f, 1.f));
+                ImGui::TextUnformatted("Not used yet");
+                ImGui::PopStyleColor();
+            }
+            else if (isSelfOnly)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.83f, 0.63f, 0.13f, 1.f));
+                float tw = ImGui::CalcTextSize("(self only)").x;
+                ImGui::SetCursorPosX((ttW - tw) * 0.5f);
+                ImGui::TextUnformatted("(self only)");
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                // Build sorted target list
+                struct TtTarget {
+                    int targetId;
+                    std::string name;
+                    uint8_t teamId;
+                    int primaryProf;
+                    float pct;
+                    bool isSelf;
+                };
+                std::vector<TtTarget> sorted;
+                for (const auto& t : foundStat->targets)
+                {
+                    TtTarget tt;
+                    tt.targetId = t.targetId;
+                    tt.name = StripProfPrefix(t.name);
+                    tt.teamId = t.teamId;
+                    tt.pct = t.pct;
+                    tt.isSelf = (t.targetId == m_playerInfoAgentId);
+                    tt.primaryProf = 0;
+                    auto ait = m_replayCtx.agents.find(t.targetId);
+                    if (ait != m_replayCtx.agents.end())
+                        tt.primaryProf = ait->second.primaryProf;
+                    sorted.push_back(tt);
+                }
+                std::sort(sorted.begin(), sorted.end(),
+                    [](const TtTarget& a, const TtTarget& b) {
+                        if (a.isSelf && a.pct <= 0.50f && !b.isSelf) return false;
+                        if (b.isSelf && b.pct <= 0.50f && !a.isSelf) return true;
+                        return a.pct > b.pct;
+                    });
+
+                // Scrollable target list if > 6 targets
+                bool needScroll = (int)sorted.size() > 6;
+                if (needScroll)
+                    ImGui::BeginChild("##TtTargets", ImVec2(innerTtW, listMaxH), false);
+
+                for (int ri = 0; ri < (int)sorted.size(); ri++)
+                {
+                    const auto& tt = sorted[ri];
+                    ImVec2 rp = ImGui::GetCursorScreenPos();
+
+                    // Primary profession icon only, 16x16
+                    float iconStackW = 0.f;
+                    ImTextureID priTex = (tt.primaryProf > 0) ? LoadProfIcon(dev, tt.primaryProf) : nullptr;
+                    if (priTex)
+                    {
+                        float priY = rp.y + (kTtRowH - 16.f) * 0.5f;
+                        ttDl->AddImage(priTex, ImVec2(rp.x, priY), ImVec2(rp.x + 16.f, priY + 16.f));
+                        iconStackW = 20.f;
+                    }
+
+                    std::string dispName = tt.name;
+                    if (tt.isSelf) dispName += " (self)";
+                    ImU32 nameCol;
+                    if (tt.isSelf) nameCol = kGold;
+                    else if (tt.teamId == 1) nameCol = kBlueTeam;
+                    else nameCol = kRedTeam;
+
+                    // Percentage text (right-aligned, 32px reserved)
+                    constexpr float kPctReservedW = 32.f;
+                    constexpr float kBarMaxW = 80.f;
+                    constexpr float kBarGap = 8.f;
+                    char pBuf[8];
+                    int pctInt = (int)(tt.pct * 100);
+                    snprintf(pBuf, sizeof(pBuf), "%d%%", pctInt);
+                    ImU32 pctCol;
+                    if (pctInt > 40)       pctCol = IM_COL32(0xF0, 0xF0, 0xF0, 0xFF);
+                    else if (pctInt >= 20)  pctCol = IM_COL32(0xa0, 0xaa, 0xb4, 0xFF);
+                    else                    pctCol = IM_COL32(0x70, 0x7d, 0x88, 0xFF);
+
+                    // Layout: [icon 20px] [name] [8px gap] [bar 80px max] [8px gap] [pct 32px]
+                    float rightReserved = kBarGap + kBarMaxW + kBarGap + kPctReservedW;
+                    float maxNameW = innerTtW - iconStackW - 4.f - rightReserved;
+                    if (maxNameW < 40.f) maxNameW = 40.f;
+
+                    float nameX = rp.x + iconStackW + 4.f;
+                    float nameY = rp.y + (kTtRowH - 13.f) * 0.5f;
+                    ImVec2 nSz = ImGui::CalcTextSize(dispName.c_str());
+                    float nScale = 13.f / ImGui::GetFontSize();
+                    std::string fullName = dispName;
+                    bool truncated = false;
+                    if (nSz.x * nScale > maxNameW && dispName.size() > 4)
+                    {
+                        while (nSz.x * nScale > maxNameW && dispName.size() > 4)
+                        {
+                            dispName.pop_back();
+                            nSz = ImGui::CalcTextSize((dispName + "..").c_str());
+                        }
+                        dispName += "..";
+                        truncated = true;
+                    }
+                    ttDl->AddText(nullptr, 13.f, ImVec2(nameX, nameY), nameCol, dispName.c_str());
+
+                    if (truncated)
+                    {
+                        float nhW = nSz.x * nScale;
+                        if (ImGui::IsMouseHoveringRect(ImVec2(nameX, nameY),
+                            ImVec2(nameX + nhW, nameY + 15.f)))
+                            ImGui::SetTooltip("%s", fullName.c_str());
+                    }
+
+                    // Proportional bar between name and %
+                    ImU32 barCol = nameCol;
+                    float barAreaX = rp.x + innerTtW - kPctReservedW - kBarGap - kBarMaxW;
+                    float barY = rp.y + (kTtRowH - 5.f) * 0.5f;
+                    float barFillW = kBarMaxW * tt.pct;
+                    ttDl->AddRectFilled(ImVec2(barAreaX, barY),
+                        ImVec2(barAreaX + kBarMaxW, barY + 5.f),
+                        IM_COL32(255, 255, 255, 20), 2.f);
+                    if (barFillW > 0.f)
+                        ttDl->AddRectFilled(ImVec2(barAreaX, barY),
+                            ImVec2(barAreaX + barFillW, barY + 5.f),
+                            barCol, 2.f);
+
+                    ImVec2 pSz = ImGui::CalcTextSize(pBuf);
+                    float pScale = 12.f / ImGui::GetFontSize();
+                    ttDl->AddText(nullptr, 12.f,
+                        ImVec2(rp.x + innerTtW - pSz.x * pScale, nameY + 0.5f),
+                        pctCol, pBuf);
+
+                    ImGui::Dummy(ImVec2(innerTtW, kTtRowH + kTtRowGap));
+                }
+
+                if (needScroll)
+                    ImGui::EndChild();
+            }
+
+            ImGui::EndTooltip();
+            ImGui::PopStyleVar(4);
+            ImGui::PopStyleColor(4);
+        }
+
+        int totalRows = std::max(1, (numSlots + kGridCols - 1) / kGridCols);
+        float rowH = kSkIconSz + 3.f + kCountFontX + 6.f;
+        skPos.y += totalRows * rowH + 4.f;
+        ImGui::SetCursorScreenPos(ImVec2(skPos.x, skPos.y));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 3B — ACTIVE CAST BAR
+    // ═══════════════════════════════════════════════════════════════
+    if (!isDead)
+    {
+        auto sv = ard.skillVisualAtTime(m_debugTimeline);
+        bool isNonInstant = false;
+        if (sv.skillId > 0 && sv.alpha > 0.f)
+        {
+            // Find the matching event
+            int lo = 0, hi = static_cast<int>(ard.skillUseHistory.size()) - 1, best = -1;
+            while (lo <= hi) {
+                int mid = lo + (hi - lo) / 2;
+                if (ard.skillUseHistory[mid].startTime <= m_debugTimeline) { best = mid; lo = mid + 1; }
+                else hi = mid - 1;
+            }
+            if (best >= 0)
+                isNonInstant = !ard.skillUseHistory[best].isInstant &&
+                    (ard.skillUseHistory[best].endTime - ard.skillUseHistory[best].startTime > 0.001f);
+        }
+
+        if (sv.skillId > 0 && sv.alpha > 0.f && isNonInstant)
+        {
+            float winX = ImGui::GetWindowPos().x;
+            constexpr float kCbPadT = 6.f, kCbPadB = 8.f;
+            constexpr float kCbIconSz = 32.f;
+            constexpr float kCbBarH = 10.f;
+            constexpr float kCbGap = 8.f;
+
+            ImVec2 cbPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y + kCbPadT);
+            ImU8 icoAlpha = (ImU8)(sv.alpha * 255.f);
+
+            ImTextureID cbSkillTex = LoadSkillIcon(this, dev, sv.skillId,
+                m_skillIconIndex, m_skillIconCache);
+            if (cbSkillTex)
+            {
+                dl->AddImageRounded(cbSkillTex, ImVec2(cbPos.x, cbPos.y),
+                    ImVec2(cbPos.x + kCbIconSz, cbPos.y + kCbIconSz),
+                    ImVec2(0, 0), ImVec2(1, 1),
+                    IM_COL32(255, 255, 255, icoAlpha), 6.f);
+            }
+
+            float barLeft = cbPos.x + kCbIconSz + kCbGap;
+            float barRight = winX + contentW - kPadX;
+            float barW = barRight - barLeft;
+            float barY = cbPos.y + (kCbIconSz - kCbBarH) * 0.5f;
+            ImVec2 barMin(barLeft, barY);
+            ImVec2 barMax(barRight, barY + kCbBarH);
+            float midY = barY + kCbBarH * 0.5f;
+            ImU8 barAlpha = (ImU8)(sv.alpha * 255.f);
+
+            // Background
+            {
+                ImU32 bgD = IM_COL32(0, 0, 0, barAlpha);
+                ImU32 bgM = IM_COL32(36, 36, 36, barAlpha);
+                dl->AddRectFilledMultiColor(barMin, ImVec2(barMax.x, midY), bgD, bgD, bgM, bgM);
+                dl->AddRectFilledMultiColor(ImVec2(barMin.x, midY), barMax, bgM, bgM, bgD, bgD);
+            }
+
+            // Green = success/casting, Yellow = cancelled, Purple = interrupted
+            auto& db = GetSkillDatabase();
+            const SkillInfo* castSi = db.IsLoaded() ? db.Get(sv.skillId) : nullptr;
+
+            static const GradStop sGreenH[] = {
+                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
+                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
+                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
+            };
+            static const GradStop sYellowH[] = {
+                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
+                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
+                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
+                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
+            };
+            static const GradStop sPurpleH[] = {
+                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
+                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
+            };
+
+            const GradStop* hStops;
+            int nStops;
+            ImU32 glowCol;
+            if (sv.interrupted) {
+                hStops = sPurpleH; nStops = 4;
+                glowCol = IM_COL32(128, 48, 192, (ImU8)(0.3f * barAlpha));
+            } else if (sv.cancelled) {
+                hStops = sYellowH; nStops = 8;
+                glowCol = IM_COL32(192, 120, 0, (ImU8)(0.3f * barAlpha));
+            } else {
+                hStops = sGreenH; nStops = 6;
+                glowCol = IM_COL32(96, 208, 32, (ImU8)(0.3f * barAlpha));
+            }
+
+            float pct = sv.progress;
+            float fillW = barW * pct;
+            if (pct > 0.005f)
+            {
+                int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
+                float topV = (sv.cancelled || sv.interrupted) ? 0.58f : 0.55f;
+                float botV = (sv.cancelled || sv.interrupted) ? 0.52f : 0.50f;
+                for (int si2 = 0; si2 < nSegs; ++si2)
+                {
+                    float u0 = (float)si2 / nSegs;
+                    float u1 = (float)(si2 + 1) / nSegs;
+                    float r0, g0, b0, r1, g1, b1;
+                    SampleGradient(hStops, nStops, u0 * pct, r0, g0, b0);
+                    SampleGradient(hStops, nStops, u1 * pct, r1, g1, b1);
+
+                    float x0 = barMin.x + fillW * u0;
+                    float x1 = barMin.x + fillW * u1;
+
+                    auto vig = [&](float r, float g, float b, float d) -> ImU32 {
+                        float m = 1.f - d;
+                        return IM_COL32((ImU8)(r * m), (ImU8)(g * m), (ImU8)(b * m), barAlpha);
+                    };
+                    ImU32 tl = vig(r0,g0,b0, topV);
+                    ImU32 tr = vig(r1,g1,b1, topV);
+                    ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, barAlpha);
+                    ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, barAlpha);
+                    ImU32 bl = vig(r0,g0,b0, botV);
+                    ImU32 br = vig(r1,g1,b1, botV);
+
+                    dl->AddRectFilledMultiColor(
+                        ImVec2(x0, barMin.y), ImVec2(x1, midY), tl, tr, mr, ml);
+                    dl->AddRectFilledMultiColor(
+                        ImVec2(x0, midY), ImVec2(x1, barMax.y), ml, mr, br, bl);
+                }
+
+                // Leading-edge glow
+                float fillX = barMin.x + fillW;
+                float gw = 6.f;
+                dl->AddRectFilled(
+                    ImVec2(fillX - gw * 0.5f, barMin.y),
+                    ImVec2(fillX + gw * 0.5f, barMax.y), glowCol);
+                ImU32 glowOuter = (glowCol & 0x00FFFFFF) | ((ImU32)((barAlpha * 0.15f)) << 24);
+                dl->AddRectFilled(
+                    ImVec2(fillX - gw, barMin.y - 1.f),
+                    ImVec2(fillX + gw, barMax.y + 1.f), glowOuter);
+            }
+
+            // Skill name inside bar (if wide enough)
+            constexpr float kCbNameFontSz = 12.f;
+            if (castSi && fillW > 60.f)
+            {
+                const char* sName = castSi->name.c_str();
+                ImVec2 nameSz = ImGui::CalcTextSize(sName);
+                float nameScale = kCbNameFontSz / ImGui::GetFontSize();
+                float nameW = nameSz.x * nameScale;
+                if (nameW < fillW - 4.f)
+                {
+                    float nx = barMin.x + (fillW - nameW) * 0.5f;
+                    float ny = barY + (kCbBarH - kCbNameFontSz) * 0.5f;
+                    dl->AddText(nullptr, kCbNameFontSz, ImVec2(nx + 1, ny + 1),
+                        IM_COL32(0, 0, 0, (ImU8)(0.50f * barAlpha)), sName);
+                    dl->AddText(nullptr, kCbNameFontSz, ImVec2(nx, ny),
+                        IM_COL32(255, 255, 255, (ImU8)(0.85f * barAlpha)), sName);
+                }
+            }
+
+            // Cast time remaining (above bar, flush right)
+            if (sv.isCasting)
+            {
+                int bIdx = -1;
+                {
+                    int lo2 = 0, hi2 = static_cast<int>(ard.skillUseHistory.size()) - 1;
+                    while (lo2 <= hi2) {
+                        int mid2 = lo2 + (hi2 - lo2) / 2;
+                        if (ard.skillUseHistory[mid2].startTime <= m_debugTimeline) { bIdx = mid2; lo2 = mid2 + 1; }
+                        else hi2 = mid2 - 1;
+                    }
+                }
+                if (bIdx >= 0)
+                {
+                    const auto& ev = ard.skillUseHistory[bIdx];
+                    float remaining = ev.endTime - m_debugTimeline;
+                    if (remaining < 0.f) remaining = 0.f;
+                    char timeBuf[16];
+                    snprintf(timeBuf, sizeof(timeBuf), "%.1fs", remaining);
+                    ImVec2 tSz = ImGui::CalcTextSize(timeBuf);
+                    float tScale = 10.f / ImGui::GetFontSize();
+                    dl->AddText(nullptr, 10.f,
+                        ImVec2(barMax.x - tSz.x * tScale, barMin.y - 12.f),
+                        IM_COL32(255, 255, 255, (ImU8)(0.60f * barAlpha)), timeBuf);
+                }
+            }
+
+            float totalH = kCbPadT + kCbIconSz + kCbPadB;
+            ImGui::SetCursorScreenPos(ImVec2(cbPos.x, cbPos.y - kCbPadT + totalH));
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 4 — WEAPON SETS
+    // ═══════════════════════════════════════════════════════════════
+    if (m_pipWeaponSets.built && !m_pipWeaponSets.sets.empty())
+    {
+        float winX = ImGui::GetWindowPos().x;
+        ImVec2 wPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
+
+        dl->AddLine(ImVec2(wPos.x, wPos.y), ImVec2(wPos.x + contentW - 2 * kPadX, wPos.y), kDivider);
+        wPos.y += 8.f;
+
+        dl->AddText(nullptr, 10.f, wPos, kGold, "WEAPON SET");
+        wPos.y += 16.f;
+
+        int activeIdx = -1;
+        if (snap)
+        {
+            for (int i = 0; i < (int)m_pipWeaponSets.sets.size(); i++)
+            {
+                auto& ws = m_pipWeaponSets.sets[i];
+                if (ws.mainId == snap->weapon_item_id && ws.offId == snap->offhand_item_id)
+                { activeIdx = i; break; }
+            }
+        }
+
+        float kWsBtnSz = pipSkillIconSz;
+        constexpr float kWsGap = 5.f, kWsPad = 5.f;
+        for (int i = 0; i < (int)m_pipWeaponSets.sets.size(); i++)
+        {
+            auto& ws = m_pipWeaponSets.sets[i];
+            bool active = (i == activeIdx);
+
+            ImVec2 btnTL(wPos.x, wPos.y);
+            ImVec2 btnBR(btnTL.x + kWsBtnSz, btnTL.y + kWsBtnSz);
+
+            if (ws.isFlag)
+            {
+                // Flag: dashed border style (simulated with short line segments)
+                ImU32 borderCol = active ? IM_COL32(212, 160, 32, 200) : IM_COL32(255, 255, 255, 50);
+                dl->AddRectFilled(btnTL, btnBR, IM_COL32(255, 255, 255, 6), 6.f);
+                float dashLen = 4.f, gapLen = 3.f;
+                auto drawDashed = [&](ImVec2 a, ImVec2 b) {
+                    float dx = b.x - a.x, dy = b.y - a.y;
+                    float len = sqrtf(dx * dx + dy * dy);
+                    if (len < 1.f) return;
+                    float ux = dx / len, uy = dy / len;
+                    float t = 0.f;
+                    while (t < len) {
+                        float e = std::min(t + dashLen, len);
+                        dl->AddLine(ImVec2(a.x + ux * t, a.y + uy * t),
+                                    ImVec2(a.x + ux * e, a.y + uy * e), borderCol, 1.f);
+                        t = e + gapLen;
+                    }
+                };
+                drawDashed(btnTL, ImVec2(btnBR.x, btnTL.y));
+                drawDashed(ImVec2(btnBR.x, btnTL.y), btnBR);
+                drawDashed(btnBR, ImVec2(btnTL.x, btnBR.y));
+                drawDashed(ImVec2(btnTL.x, btnBR.y), btnTL);
+            }
+            else if (active)
+            {
+                dl->AddRectFilled(btnTL, btnBR, IM_COL32(212, 160, 32, 38), 6.f);
+                dl->AddRect(btnTL, btnBR, IM_COL32(212, 160, 32, 255), 6.f, 0, 1.5f);
+            }
+            else
+            {
+                dl->AddRectFilled(btnTL, btnBR, IM_COL32(255, 255, 255, 10), 6.f);
+                dl->AddRect(btnTL, btnBR, IM_COL32(255, 255, 255, 31), 6.f);
+            }
+
+            WeaponTextureResult wtr = ResolveWeaponTextures(ws.weapCat, ws.mainType, ard.primaryProf, ard.teamId);
+            ImTextureID mainTex = nullptr;
+            if (wtr.mainTex) {
+                mainTex = wtr.isFlag ? LoadFlagIcon(dev, wtr.mainTex)
+                                     : LoadWeaponTexture(dev, wtr.mainTex);
+            }
+            ImTextureID offTex = wtr.offTex ? LoadWeaponTexture(dev, wtr.offTex) : nullptr;
+
+            float iconArea = kWsBtnSz - 2 * kWsPad;
+            if (mainTex && offTex)
+            {
+                float offSz  = iconArea - 4.f;
+                float mainSz = iconArea;
+                // Offhand (back layer, offset +4px)
+                ImVec2 oTL(btnTL.x + kWsPad + 4.f, btnTL.y + kWsPad + 4.f);
+                ImVec2 oBR(oTL.x + offSz, oTL.y + offSz);
+                dl->AddImage(offTex, oTL, oBR, ImVec2(0, 0), ImVec2(1, 1),
+                    IM_COL32(255, 255, 255, 217));
+                // Main hand (front layer, top-left offset)
+                ImVec2 mTL(btnTL.x + kWsPad - 2.f, btnTL.y + kWsPad - 2.f);
+                ImVec2 mBR(mTL.x + mainSz, mTL.y + mainSz);
+                dl->AddImage(mainTex, mTL, mBR);
+            }
+            else if (mainTex)
+            {
+                float sz = iconArea;
+                float cx = btnTL.x + (kWsBtnSz - sz) * 0.5f;
+                float cy = btnTL.y + (kWsBtnSz - sz) * 0.5f;
+                dl->AddImage(mainTex, ImVec2(cx, cy), ImVec2(cx + sz, cy + sz));
+            }
+            else
+            {
+                // Empty placeholder
+                dl->AddRect(ImVec2(btnTL.x + 8, btnTL.y + 8),
+                    ImVec2(btnBR.x - 8, btnBR.y - 8),
+                    IM_COL32(255, 255, 255, 38), 4.f, 0, 1.f);
+                const char* q = "?";
+                ImVec2 qSz = ImGui::CalcTextSize(q);
+                float qScale = 12.f / ImGui::GetFontSize();
+                dl->AddText(nullptr, 12.f,
+                    ImVec2(btnTL.x + (kWsBtnSz - qSz.x * qScale) * 0.5f,
+                           btnTL.y + (kWsBtnSz - qSz.y * qScale) * 0.5f),
+                    IM_COL32(0x50, 0x5a, 0x64, 0xFF), q);
+            }
+
+            // Set label below icon area: #1, #2, #3...
+            char setLabel[8];
+            snprintf(setLabel, sizeof(setLabel), "#%d", i + 1);
+            ImVec2 ls = ImGui::CalcTextSize(setLabel);
+            float lScale = 10.f / ImGui::GetFontSize();
+            dl->AddText(nullptr, 10.f,
+                ImVec2(btnTL.x + (kWsBtnSz - ls.x * lScale) * 0.5f, btnBR.y - 12.f),
+                IM_COL32(0x70, 0x7d, 0x88, 0xFF), setLabel);
+
+            wPos.x += kWsBtnSz + kWsGap;
+        }
+
+        wPos.y += kWsBtnSz + 8.f;
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + kPadX, wPos.y));
+    }
+
+    // (Section 5 — Skill Cast Stats removed, replaced by skill icon grid + tooltip)
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 6 — CENTERED PLAYHEAD CAST TIMELINE (±10s)
+    // ═══════════════════════════════════════════════════════════════
+    {
+        float winX = ImGui::GetWindowPos().x;
+        ImVec2 tPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
+        float innerW = contentW - 2 * kPadX;
+
+        dl->AddLine(ImVec2(tPos.x, tPos.y), ImVec2(tPos.x + innerW, tPos.y), kDivider);
+        tPos.y += 8.f;
+
+        dl->AddText(nullptr, 10.f, tPos, kGold, "CAST TIMELINE");
+        tPos.y += 16.f;
+
+        constexpr float kTlIconSz     = 24.f;
+        constexpr float kTlIconCastSz = 28.f;
+        constexpr float kTlIconGap    = 3.f;
+        constexpr float kTlBarH       = 12.f;
+        constexpr float kTimeLabelH   = 16.f;
+        constexpr float kFadeW        = 16.f;
+        constexpr float kHalfWindow   = 10.f;
+        constexpr float kFullWindow   = 20.f;
+        constexpr int   kFutureAlpha  = 153;
+
+        float tlW    = innerW;
+        float tlH    = kTlIconCastSz + kTlIconGap + kTlBarH;
+        float barTopY = tPos.y + kTlIconCastSz + kTlIconGap;
+
+        ImVec2 tlTL(tPos.x, tPos.y);
+
+        // Bar track background
+        dl->AddRectFilled(ImVec2(tPos.x, barTopY),
+            ImVec2(tPos.x + tlW, barTopY + kTlBarH),
+            IM_COL32(0, 0, 0, 77), 4.f);
+
+        float curTime     = m_debugTimeline;
+        float windowStart = curTime - kHalfWindow;
+        float windowEnd   = curTime + kHalfWindow;
+        float centerX     = tPos.x + tlW * 0.5f;
+
+        auto timeToX = [&](float t) -> float {
+            return tPos.x + ((t - windowStart) / kFullWindow) * tlW;
+        };
+
+        // Collect visible cast bars
+        struct TlBar {
+            float x0 = 0.f, x1 = 0.f;
+            float rawStart = 0.f, rawEnd = 0.f;
+            int skillId = 0;
+            ImU32 barCol = 0;
+            bool isActive = false;
+            float castProgress = 0.f;
+        };
+        std::vector<TlBar> tlBars;
+
+        auto agentIt2 = m_replayCtx.agents.find(m_playerInfoAgentId);
+        if (agentIt2 != m_replayCtx.agents.end())
+        {
+            const auto& castHist = agentIt2->second.castHistory;
+            auto& db = GetSkillDatabase();
+            for (const auto& ci : castHist)
+            {
+                if (ci.end < windowStart) continue;
+                if (ci.start > windowEnd) break;
+
+                float x0raw = timeToX(ci.start);
+                float x1raw = timeToX(ci.end);
+                float x0 = std::max(x0raw, tPos.x);
+                float x1 = std::min(x1raw, tPos.x + tlW);
+                if (x1 <= x0) continue;
+
+                ImU32 barCol = IM_COL32(0xD4, 0xA0, 0x20, 200);
+                if (db.IsLoaded())
+                {
+                    const SkillInfo* si = db.Get(ci.skillId);
+                    if (si)
+                    {
+                        int type = si->type;
+                        if (type == 1 || type == 2 || type == 10 || type == 14 || type == 24)
+                            barCol = IM_COL32(0xC8, 0xA8, 0x20, 200);
+                        else if (type == 6 || type == 22)
+                            barCol = IM_COL32(0x40, 0xA0, 0x40, 200);
+                        else if (type == 4 || type == 5)
+                            barCol = IM_COL32(0x80, 0x40, 0xC0, 200);
+                    }
+                }
+
+                bool isActive = (ci.start <= curTime && ci.end > curTime);
+                float castDur = ci.end - ci.start;
+                float progress = (castDur > 0.f) ? std::clamp((curTime - ci.start) / castDur, 0.f, 1.f) : 1.f;
+
+                if (isActive)
+                {
+                    // Elapsed portion: full opacity
+                    float fillX = timeToX(curTime);
+                    fillX = std::clamp(fillX, x0, x1);
+                    if (fillX > x0)
+                        dl->AddRectFilled(ImVec2(x0, barTopY), ImVec2(fillX, barTopY + kTlBarH), barCol, 3.f);
+                    // Remaining portion: dim track
+                    if (fillX < x1)
+                    {
+                        ImU32 dimCol = (barCol & 0x00FFFFFF) | (((ImU32)80) << 24);
+                        dl->AddRectFilled(ImVec2(fillX, barTopY), ImVec2(x1, barTopY + kTlBarH), dimCol, 3.f);
+                    }
+                }
+                else
+                {
+                    bool isFuture = (ci.start > curTime);
+                    ImU32 drawCol = barCol;
+                    if (isFuture)
+                        drawCol = (barCol & 0x00FFFFFF) | (((ImU32)kFutureAlpha) << 24);
+                    dl->AddRectFilled(ImVec2(x0, barTopY), ImVec2(x1, barTopY + kTlBarH), drawCol, 3.f);
+                }
+
+                tlBars.push_back({ x0, x1, ci.start, ci.end, ci.skillId, barCol, isActive, progress });
+
+                if (ImGui::IsMouseHoveringRect(ImVec2(x0, barTopY), ImVec2(x1, barTopY + kTlBarH)))
+                {
+                    std::string sName = GetSkillDisplayName(ci.skillId);
+                    int mins = (int)(ci.start / 60.f);
+                    float secs = ci.start - mins * 60.f;
+                    ImGui::SetTooltip("%s -- %d:%05.2f", sName.c_str(), mins, secs);
+                }
+            }
+        }
+
+        // Skill icons above/below bars with overlap alternation
+        EnsureSkillIconIndex();
+        bool lastBelow = false;
+        float lastIconRight = -1000.f;
+        for (size_t bi = 0; bi < tlBars.size(); bi++)
+        {
+            const auto& tb = tlBars[bi];
+            bool isFuture = (tb.rawStart > curTime);
+            float icoSz = tb.isActive ? kTlIconCastSz : kTlIconSz;
+            ImU32 icoTint = isFuture ? IM_COL32(255, 255, 255, kFutureAlpha) : IM_COL32(255, 255, 255, 255);
+
+            // Position icon: past→right edge of bar, future→left edge, active→fill edge
+            float icoX;
+            if (tb.isActive)
+            {
+                float fillEdge = tb.x0 + (tb.x1 - tb.x0) * tb.castProgress;
+                icoX = fillEdge - icoSz * 0.5f;
+            }
+            else if (isFuture)
+                icoX = tb.x0 - icoSz * 0.5f;
+            else
+                icoX = tb.x1 - icoSz * 0.5f;
+
+            icoX = std::clamp(icoX, tPos.x, tPos.x + tlW - icoSz);
+
+            bool placeBelow = false;
+            if (icoX < lastIconRight + 2.f)
+                placeBelow = !lastBelow;
+
+            float icoY = placeBelow
+                ? barTopY + kTlBarH + kTlIconGap
+                : barTopY - kTlIconGap - icoSz;
+
+            ImTextureID skTex = LoadSkillIcon(this, dev, tb.skillId,
+                m_skillIconIndex, m_skillIconCache);
+            if (skTex)
+            {
+                dl->AddImageRounded(skTex,
+                    ImVec2(icoX, icoY), ImVec2(icoX + icoSz, icoY + icoSz),
+                    ImVec2(0, 0), ImVec2(1, 1), icoTint, 3.f);
+            }
+
+            if (tb.isActive)
+            {
+                dl->AddRect(ImVec2(icoX - 0.5f, icoY - 0.5f),
+                    ImVec2(icoX + icoSz + 0.5f, icoY + icoSz + 0.5f),
+                    IM_COL32(0xFF, 0xB8, 0x20, 0xFF), 3.f, 0, 1.5f);
+            }
+
+            lastBelow = placeBelow;
+            lastIconRight = icoX + icoSz;
+        }
+
+        // Center playhead line
+        dl->AddLine(ImVec2(centerX, tPos.y), ImVec2(centerX, barTopY + kTlBarH),
+            IM_COL32(255, 255, 255, 179), 1.f);
+
+        // Edge fade overlays (16px gradient at each end)
+        {
+            float fadeL = tPos.x;
+            float fadeR = tPos.x + tlW;
+            float topY  = tPos.y;
+            float botY  = barTopY + kTlBarH;
+            ImU32 opaque = IM_COL32(13, 13, 18, 255);
+            ImU32 clear  = IM_COL32(13, 13, 18, 0);
+            // Left fade
+            dl->AddRectFilledMultiColor(
+                ImVec2(fadeL, topY), ImVec2(fadeL + kFadeW, botY),
+                opaque, clear, clear, opaque);
+            // Right fade
+            dl->AddRectFilledMultiColor(
+                ImVec2(fadeR - kFadeW, topY), ImVec2(fadeR, botY),
+                clear, opaque, opaque, clear);
+        }
+
+        // Time labels below bar
+        {
+            float labelY = barTopY + kTlBarH + 3.f;
+            constexpr float kLblFontSz = 11.f;
+            ImU32 lblCol = IM_COL32(0x60, 0x6a, 0x74, 0xFF);
+
+            struct TLabel { float xRatio; const char* text; };
+            TLabel labels[] = {
+                { 0.00f, "-10s" },
+                { 0.25f,  "-5s" },
+                { 0.50f,  "now" },
+                { 0.75f,  "+5s" },
+                { 1.00f, "+10s" },
+            };
+            for (auto& lb : labels)
+            {
+                float lx = tPos.x + tlW * lb.xRatio;
+                ImVec2 sz = ImGui::CalcTextSize(lb.text);
+                float scale = kLblFontSz / ImGui::GetFontSize();
+                float tw = sz.x * scale;
+                ImU32 col = (lb.xRatio == 0.50f) ? IM_COL32(255, 255, 255, 140) : lblCol;
+                dl->AddText(nullptr, kLblFontSz, ImVec2(lx - tw * 0.5f, labelY), col, lb.text);
+            }
+        }
+
+        // Interaction: click to scrub timeline
+        float totalH = tlH + kTimeLabelH;
+        ImGui::SetCursorScreenPos(tlTL);
+        ImGui::InvisibleButton("##pip_timeline", ImVec2(tlW, totalH));
+        if (ImGui::IsItemClicked())
+        {
+            float mouseX = ImGui::GetIO().MousePos.x;
+            float ratio = std::clamp((mouseX - tPos.x) / tlW, 0.f, 1.f);
+            m_debugTimeline = windowStart + ratio * kFullWindow;
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(tPos.x, tPos.y + totalH + 8.f));
+    }
+
+    // TODO: Current target + nearest ally/enemy (Section 7, deferred)
+
+    ImGui::Dummy(ImVec2(0, 4.f));
+
+    ImGui::End();
+    ImGui::PopStyleVar(4);
+    ImGui::PopStyleColor(6);
 }

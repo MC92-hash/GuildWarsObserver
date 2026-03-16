@@ -288,6 +288,7 @@
     <ClInclude Include="SourceFiles\StoCParser.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\FontConfig.h" />
+    <ClInclude Include="SourceFiles\FolderWatcher.h" />
     <ClInclude Include="SourceFiles\SkillDatabase.h" />
     <ClInclude Include="SourceFiles\DXMathHelpers.h" />
     <ClInclude Include="SourceFiles\Extract_BASS_DLL_resource.h" />
@@ -451,6 +452,7 @@
     <ClCompile Include="SourceFiles\draw_file_info_editor_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_first_launch.cpp" />
     <ClCompile Include="SourceFiles\SetupConfig.cpp" />
+    <ClCompile Include="SourceFiles\FolderWatcher.cpp" />
     <ClCompile Include="SourceFiles\draw_setup_wizard.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_for_open_dat_file.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_window_controller.cpp" />

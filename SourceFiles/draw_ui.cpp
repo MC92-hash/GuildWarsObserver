@@ -10,6 +10,7 @@
 #include "draw_replay_browser.h"
 #include "GuiGlobalConstants.h"
 #include "ReplayLibrary.h"
+#include "FolderWatcher.h"
 #include "FontConfig.h"
 #include <windows.h>
 #include <filesystem>
@@ -78,7 +79,7 @@ static void draw_preferences_window()
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-	ReplayLibrary& replay_library)
+	ReplayLibrary& replay_library, FolderWatcher& folder_watcher)
 {
 	// First-launch setup wizard (blocks everything until complete)
 	{
@@ -97,6 +98,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 					{
 						replay_library.SetMatchDataFolder(GuiGlobalConstants::saved_match_data_folder_path);
 						replay_library.ScanFolder();
+						folder_watcher.Start(GuiGlobalConstants::saved_match_data_folder_path, []{});
 					}
 				}
 			}
@@ -283,6 +285,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 			replay_library.SetMatchDataFolder(folderPath);
 			replay_library.ScanFolder();
+			folder_watcher.Restart(folderPath);
 		}
 	}
 
@@ -295,6 +298,10 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		draw_dat_load_progress_bar(dat_files_read, dat_total_files);
 	}
 
+	// Check folder watcher for new match files
+	if (folder_watcher.HasPendingRefresh() && replay_library.IsLoaded())
+		replay_library.RescanDiff();
+
 	// Replay browser (available regardless of DAT state)
 	draw_replay_browser(replay_library);
 
@@ -306,7 +313,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	// Help menu modals
 	draw_licence_modal(&s_licenceModalOpen);
-	draw_dat_settings_modal(&s_datSettingsModalOpen);
+	draw_dat_settings_modal(&s_datSettingsModalOpen, &folder_watcher);
 
 	dat_manager_to_show_changed = dat_manager_to_show != initial_dat_manager_to_show;
 }

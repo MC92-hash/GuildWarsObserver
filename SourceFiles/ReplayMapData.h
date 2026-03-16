@@ -352,8 +352,11 @@ struct SkillUseEvent
     float fullCastDuration = 0.f; // theoretical full cast time (from successful casts)
     int   skillId   = 0;
     int   targetId  = -1;    // resolved target agent id (-1 = self/none)
-    bool  isInstant    = false;
-    bool  wasCancelled = false;  // true if SKILL_STOPPED / ATTACK_SKILL_STOPPED
+    bool  isInstant      = false;
+    bool  wasCancelled   = false;  // true if SKILL_STOPPED / ATTACK_SKILL_STOPPED
+    bool  wasInterrupted = false;  // true if a matching INTERRUPTED event was found
+    float rechargeDuration = 0.f;  // precomputed actual recharge (may differ from DB if fast recast)
+    bool  wasFastRecast    = false; // true if next cast happened before normal recharge expired
 };
 
 struct AgentReplayData
@@ -447,11 +450,12 @@ struct AgentReplayData
 
     // Combined visual state for skill icon + cast bar (always in sync).
     struct SkillVisual {
-        int   skillId    = 0;
-        float alpha      = 0.f;   // shared icon+bar opacity
-        bool  isCasting  = false;  // currently filling the bar
-        float progress   = 0.f;   // 0..1 bar fill
-        bool  cancelled  = false;  // purple recolor
+        int   skillId     = 0;
+        float alpha       = 0.f;   // shared icon+bar opacity
+        bool  isCasting   = false;  // currently filling the bar
+        float progress    = 0.f;   // 0..1 bar fill
+        bool  cancelled   = false;  // self-cancel (yellow)
+        bool  interrupted = false;  // enemy interrupt (purple)
     };
 
     SkillVisual skillVisualAtTime(float t) const
@@ -488,9 +492,10 @@ struct AgentReplayData
                 sv.cancelled = false;
                 sv.progress  = std::min((t - ev.startTime) / dur, 1.f);
             } else {
-                sv.isCasting = false;
-                sv.cancelled = ev.wasCancelled;
-                sv.progress  = ev.wasCancelled
+                sv.isCasting   = false;
+                sv.cancelled   = ev.wasCancelled && !ev.wasInterrupted;
+                sv.interrupted = ev.wasInterrupted;
+                sv.progress    = ev.wasCancelled
                     ? std::min(dur / fullDur, 1.f)
                     : 1.0f;
             }
@@ -569,6 +574,19 @@ struct AgentReplayData
             if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
         }
         return snapshots[lo].is_alive;
+    }
+
+    float healthPctAtTime(float t) const
+    {
+        if (snapshots.empty()) return 0.f;
+        if (t <= snapshots.front().time) return snapshots.front().health_pct;
+        if (t >= snapshots.back().time)  return snapshots.back().health_pct;
+        int lo = 0, hi = static_cast<int>(snapshots.size()) - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        return snapshots[lo].health_pct;
     }
 
     // Returns the time at which the current death sequence began.

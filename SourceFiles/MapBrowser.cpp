@@ -322,6 +322,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         {
             m_replay_library.SetMatchDataFolder(GuiGlobalConstants::saved_match_data_folder_path);
             m_replay_library.ScanFolder();
+            m_folderWatcher.Start(GuiGlobalConstants::saved_match_data_folder_path, []{});
         }
     }
 }
@@ -831,7 +832,7 @@ void MapBrowser::Render()
     }
     else {
         draw_ui(m_dat_managers, m_dat_manager_to_show_in_dat_browser, m_map_renderer.get(), picking_info, m_csv_data, m_FPS_target, m_timer, m_extract_panel_info,
-            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library);
+            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher);
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active

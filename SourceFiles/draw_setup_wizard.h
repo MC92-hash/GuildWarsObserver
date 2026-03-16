@@ -7,4 +7,5 @@ bool draw_setup_wizard();
 void draw_licence_modal(bool* open);
 
 // File paths modal (DAT file + match data folder, for Help menu).
-void draw_dat_settings_modal(bool* open);
+class FolderWatcher;
+void draw_dat_settings_modal(bool* open, FolderWatcher* watcher = nullptr);

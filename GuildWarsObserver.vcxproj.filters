@@ -342,6 +342,9 @@
     <ClInclude Include="SourceFiles\FontConfig.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\FolderWatcher.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\SkillDatabase.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -726,6 +729,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\SetupConfig.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\FolderWatcher.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\draw_setup_wizard.cpp">

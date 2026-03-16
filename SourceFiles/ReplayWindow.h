@@ -573,6 +573,57 @@ private:
     void UpdateTopViewTransition(float dt);
     DirectX::XMFLOAT3 ComputeTopViewPosition() const;
 
+    // --- Piano Roll Panel ---
+    bool  m_showPianoRoll       = false;
+    int   m_pianoRollZoomIdx    = 2;   // index into zoom table: 0=±5s,1=±10s,2=±15s,3=±30s,4=±60s
+    int   m_pianoRollHoverRow   = -1;  // agent id of hovered row (-1 = none)
+    bool  m_pianoRollTeam1Open  = true;
+    bool  m_pianoRollTeam2Open  = true;
+    float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
+
+    void DrawPianoRollPanel();
+
+    // --- Player Info Panel ---
+    bool m_showPlayerInfoPanel = false;
+    int  m_playerInfoAgentId   = -1;
+
+    struct WeaponSetEntry {
+        uint16_t mainId   = 0;   // weapon_item_id   (identity key part 1)
+        uint16_t offId    = 0;   // offhand_item_id   (identity key part 2)
+        uint16_t weapCat  = 0;   // weapon_type       (for icon resolution)
+        uint8_t  mainType = 0;   // weapon_item_type  (for icon resolution)
+        uint8_t  offType  = 0;   // offhand_item_type (informational)
+        float    firstSeen = 0.f; // timestamp of first appearance
+        int      disambig  = 0;   // >0 if multiple sets share same icon appearance (subscript number)
+        bool     isFlag    = false;
+    };
+    struct PlayerWeaponSets {
+        int agentId = -1;
+        std::vector<WeaponSetEntry> sets;
+        bool built = false;
+    };
+    PlayerWeaponSets m_pipWeaponSets;
+
+    struct PipSkillStat {
+        int   skillId     = 0;
+        int   totalCasts  = 0;
+        float castPct     = 0.f;
+        struct TargetBreakdown {
+            int         targetId = 0;
+            std::string name;
+            uint8_t     teamId   = 0;
+            int         count    = 0;
+            float       pct      = 0.f;
+        };
+        std::vector<TargetBreakdown> targets;
+    };
+
+    void OpenPlayerInfoPanel(int agentId);
+    void ClosePlayerInfoPanel();
+    void DrawPlayerInfoPanel();
+    void BuildWeaponSets(int agentId);
+    std::vector<PipSkillStat> BuildSkillStats(int agentId, float currentTime) const;
+
     // --- Incoming effect display ---
     enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex };
     struct IncomingEffect {

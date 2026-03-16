@@ -142,6 +142,11 @@ public:
     void ScanFolder();
     void Clear();
 
+    // Diff-based rescan: adds new matches, removes deleted ones, returns count of new matches added.
+    int RescanDiff();
+    const std::vector<std::string>& GetNewMatchFolders() const { return m_newMatchFolders; }
+    void ClearNewMatchFolders() { m_newMatchFolders.clear(); }
+
     const std::vector<MatchMeta>& GetMatches() const { return m_matches; }
     bool IsLoaded() const { return m_loaded; }
     const std::string& GetFolderPath() const { return m_folder_path; }
@@ -152,4 +157,5 @@ private:
     std::vector<MatchMeta> m_matches;
     std::string m_folder_path;
     bool m_loaded = false;
+    std::vector<std::string> m_newMatchFolders;
 };

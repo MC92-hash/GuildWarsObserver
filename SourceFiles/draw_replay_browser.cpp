@@ -6,6 +6,7 @@
 #include "SkillDatabase.h"
 #include <algorithm>
 #include <set>
+#include <unordered_map>
 
 // ─── Profession helpers ──────────────────────────────────────────────────────
 
@@ -684,9 +685,26 @@ struct BrowserState
     // User-resizable splitter state (pixels, <=0 means use default)
     float userFilterW = -1.0f;
     float userTopRowH = -1.0f;
+
+    // New-match highlight flash (folder_path -> highlight start time)
+    std::unordered_map<std::string, float> highlightStartTimes;
+
+    // Notification bar
+    int   notifyNewCount = 0;
+    std::string notifyMatchName;
+    float notifyStartTime = -1.f;
+    bool  notifyDismissed = false;
 };
 
 static BrowserState s_state;
+
+static void NotifyNewMatches(int count, const std::string& matchName)
+{
+    s_state.notifyNewCount = count;
+    s_state.notifyMatchName = matchName;
+    s_state.notifyStartTime = (float)ImGui::GetTime();
+    s_state.notifyDismissed = false;
+}
 
 static std::string ToLower(const std::string& s)
 {
@@ -1843,6 +1861,17 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::TableNextRow();
                 ImGui::PushID(fm.originalIndex);
 
+                // Gold highlight flash for newly added matches
+                auto hlIt = s_state.highlightStartTimes.find(m.folder_path);
+                if (hlIt != s_state.highlightStartTimes.end())
+                {
+                    float age = (float)ImGui::GetTime() - hlIt->second;
+                    float hlAlpha = std::max(0.f, 1.f - age / 2.f) * 0.15f;
+                    if (hlAlpha > 0.f)
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                            IM_COL32(212, 160, 32, (int)(hlAlpha * 255)));
+                }
+
                 ImGui::TableNextColumn();
                 char dateBuf[16];
                 snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
@@ -2503,12 +2532,106 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
     ImGui::PopStyleVar(2);
 }
 
+// ─── Notification bar for new matches ─────────────────────────────────────────
+
+static void DrawNotificationBar()
+{
+    if (s_state.notifyDismissed || s_state.notifyStartTime < 0.f || s_state.notifyNewCount <= 0)
+        return;
+
+    float elapsed = (float)ImGui::GetTime() - s_state.notifyStartTime;
+    constexpr float kAutoDissmissTime = 4.f;
+    constexpr float kFadeDuration = 0.3f;
+
+    if (elapsed > kAutoDissmissTime + kFadeDuration)
+    {
+        s_state.notifyNewCount = 0;
+        return;
+    }
+
+    float alpha = 1.f;
+    if (elapsed > kAutoDissmissTime)
+        alpha = 1.f - (elapsed - kAutoDissmissTime) / kFadeDuration;
+
+    char text[256];
+    if (s_state.notifyNewCount == 1 && !s_state.notifyMatchName.empty())
+    {
+        std::string truncated = s_state.notifyMatchName;
+        if (truncated.size() > 50) truncated = truncated.substr(0, 47) + "...";
+        snprintf(text, sizeof(text), "New match added: %s", truncated.c_str());
+    }
+    else if (s_state.notifyNewCount == 1)
+        snprintf(text, sizeof(text), "1 new match added");
+    else
+        snprintf(text, sizeof(text), "%d new matches added", s_state.notifyNewCount);
+
+    float barH = 28.f;
+    float availW = ImGui::GetContentRegionAvail().x;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+
+    dl->AddRectFilled(p, ImVec2(p.x + availW, p.y + barH),
+        IM_COL32(212, 160, 32, (int)(30 * alpha)));
+    dl->AddLine(p, ImVec2(p.x, p.y + barH),
+        IM_COL32(212, 160, 32, (int)(255 * alpha)), 2.f);
+
+    ImGui::SetCursorScreenPos(ImVec2(p.x + 10.f, p.y + (barH - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.85f * alpha));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+
+    // Dismiss button
+    float btnW = ImGui::CalcTextSize("X").x + 12.f;
+    ImGui::SetCursorScreenPos(ImVec2(p.x + availW - btnW - 4.f, p.y + (barH - ImGui::GetTextLineHeight()) * 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f * alpha));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.1f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.f, 1.f, 1.f, 0.2f));
+    if (ImGui::SmallButton("X##notif_dismiss"))
+        s_state.notifyDismissed = true;
+    ImGui::PopStyleColor(4);
+
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + barH + 2.f));
+}
+
 // ─── Main entry point ────────────────────────────────────────────────────────
 
 void draw_replay_browser(ReplayLibrary& library)
 {
     if (!GuiGlobalConstants::is_replay_browser_open)
         return;
+
+    // Process new matches from RescanDiff — populate highlights and notification
+    if (!library.GetNewMatchFolders().empty())
+    {
+        float now = (float)ImGui::GetTime();
+        int count = (int)library.GetNewMatchFolders().size();
+
+        for (auto& fp : library.GetNewMatchFolders())
+            s_state.highlightStartTimes[fp] = now;
+
+        // Build notification match name from the first new match
+        std::string matchName;
+        if (count == 1)
+        {
+            for (auto& m : library.GetMatches())
+            {
+                if (m.folder_path == library.GetNewMatchFolders()[0])
+                {
+                    // Try to build "Team1 vs Team2"
+                    auto it1 = m.guilds.find("1");
+                    auto it2 = m.guilds.find("2");
+                    if (it1 != m.guilds.end() && it2 != m.guilds.end())
+                        matchName = it1->second.name + " vs " + it2->second.name;
+                    break;
+                }
+            }
+        }
+
+        NotifyNewMatches(count, matchName);
+        library.ClearNewMatchFolders();
+    }
 
     if (!library.IsLoaded() || library.GetMatches().empty())
         return;
@@ -2559,6 +2682,8 @@ void draw_replay_browser(ReplayLibrary& library)
         return;
     }
 
+    DrawNotificationBar();
+
     // Debounce global search (200ms)
     if (s_state.lastSearchEditTime >= 0.0f &&
         (float)ImGui::GetTime() - s_state.lastSearchEditTime >= 0.2f)
@@ -2566,6 +2691,18 @@ void draw_replay_browser(ReplayLibrary& library)
         snprintf(s_state.searchDebounced, sizeof(s_state.searchDebounced),
                  "%s", s_state.searchBuf);
         s_state.lastSearchEditTime = -1.0f;
+    }
+
+    // Expire old highlight flashes (2000ms)
+    {
+        float now = (float)ImGui::GetTime();
+        for (auto it = s_state.highlightStartTimes.begin(); it != s_state.highlightStartTimes.end();)
+        {
+            if (now - it->second > 2.f)
+                it = s_state.highlightStartTimes.erase(it);
+            else
+                ++it;
+        }
     }
 
     auto filtered = FilterMatches(matches);
