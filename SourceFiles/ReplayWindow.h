@@ -12,11 +12,16 @@
 #include "FFNA_ModelFile.h"
 #include "AMAT_file.h"
 #include "TextureCache.h"
+#include "HeatmapData.h"
+#include "HeatmapRenderer.h"
+#include "HeatmapMenu.h"
 #include <string>
 #include <memory>
 #include <variant>
 #include <unordered_set>
 #include <chrono>
+
+class SpatialAudioEngine;
 
 struct ReplayHotkeys
 {
@@ -642,6 +647,39 @@ private:
     void UpdateIncomingEffects();
     void RenderIncomingEffects();
     int  GetFocusedAgentId() const;
+
+    // --- Spatial Audio ---
+    std::unique_ptr<SpatialAudioEngine> m_audioEngine;
+    bool m_audioInitialized = false;
+    bool m_audioEnabled     = true;
+    bool m_showAudioDebug   = false;
+
+    // Per-agent cursors into skillUseHistory for caster (startTime) and target (endTime) sounds
+    std::unordered_map<int, size_t> m_audioSkillCursor;       // caster: tracks startTime
+    std::unordered_map<int, size_t> m_audioTargetCursor;      // target: tracks endTime
+    std::vector<std::pair<int, size_t>> m_targetEventOrder;   // (agentId, eventIdx) sorted by endTime
+    bool m_targetOrderBuilt = false;
+    size_t m_targetOrderCursor = 0;
+    float m_audioLastTime = -1.f;
+
+    void InitAudioEngine();
+    void UpdateAudioPlayback(float currentTime, float dt);
+
+    // --- Heatmap system ---
+    HeatmapSettings       m_heatmapSettings;
+    HeatmapAccumulator    m_heatmapAccumulator;
+    HeatmapRenderer       m_heatmapRenderer;
+    bool                  m_heatmapInitialized = false;
+    bool                  m_heatmapMeshBuilt   = false;
+    bool                  m_heatmapPopulated   = false;
+
+    void InitHeatmapRenderer();
+    void PopulateHeatmapFromSnapshots();
+    void UpdateHeatmapSamples();
+    void DrawHeatmapOverlay();
+    void SaveHeatmapSettings();
+    void LoadHeatmapSettings();
+    void ResolveHeatmapLayers();
 
     static bool s_classRegistered;
     static constexpr wchar_t kWindowClassName[] = L"GWObsReplayWindowClass";

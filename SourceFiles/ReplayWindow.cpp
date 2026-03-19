@@ -8,6 +8,8 @@
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
 #include "CursorSystem.h"
+#include "SpatialAudioEngine.h"
+#include "SoundCache.h"
 
 #define NANOSVG_IMPLEMENTATION
 #include "../ThirdParty/nanosvg/nanosvg.h"
@@ -24,6 +26,7 @@ using Microsoft::WRL::ComPtr;
 
 static void SaveMapTransform(int mapId, const MapTransform& t);
 static MapTransform LoadMapTransform(int mapId, bool* found = nullptr);
+static ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
 
 // ---------------------------------------------------------------------------
 // Hotkey persistence (singleton, JSON)
@@ -220,6 +223,201 @@ static std::wstring BuildWindowTitle(const MatchMeta& match)
 }
 
 // ---------------------------------------------------------------------------
+// Spatial Audio
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetSkillSoundsFilePath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    auto settingsDir = dir / "settings";
+    return settingsDir / "skill_sounds.json";
+}
+
+void ReplayWindow::InitAudioEngine()
+{
+    if (m_audioInitialized || !m_datManager) return;
+
+    m_audioEngine = std::make_unique<SpatialAudioEngine>();
+    auto jsonPath = GetSkillSoundsFilePath();
+    if (!std::filesystem::exists(jsonPath)) {
+        OutputDebugStringA(("[Audio] skill_sounds.json not found at: " + jsonPath.string() + "\n").c_str());
+        return;
+    }
+
+    if (!m_audioEngine->Init(m_datManager, m_hashIndex, jsonPath.string())) {
+        OutputDebugStringA("[Audio] SpatialAudioEngine init failed\n");
+        m_audioEngine.reset();
+        return;
+    }
+
+    m_audioInitialized = true;
+    OutputDebugStringA("[Audio] Engine ready\n");
+}
+
+void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
+{
+    if (!m_audioInitialized || !m_audioEngine || !m_audioEnabled) return;
+
+    // Update listener from camera
+    Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
+    if (cam) {
+        XMFLOAT3 pos = cam->GetPosition3f();
+        XMMATRIX view = cam->GetView();
+
+        // Project camera forward onto the horizontal XZ plane so that
+        // screen-space left/right maps to speaker left/right regardless of camera pitch.
+        XMFLOAT4X4 v4;
+        XMStoreFloat4x4(&v4, view);
+        XMFLOAT3 flatFront = { -v4._31, 0.0f, -v4._33 };
+        float len = sqrtf(flatFront.x * flatFront.x + flatFront.z * flatFront.z);
+        if (len > 0.001f) { flatFront.x /= len; flatFront.z /= len; }
+        else { flatFront = { 0.f, 0.f, 1.f }; }
+        XMFLOAT3 up = { 0.f, 1.f, 0.f };
+
+        m_audioEngine->UpdateListener(pos, flatFront, up, dt);
+    }
+
+    // Detect scrub/seek: if timeline jumped backwards or forward significantly, reset cursors
+    bool seeked = (m_audioLastTime > currentTime + 0.01f) ||
+                  (currentTime - m_audioLastTime > 2.0f);
+    if (seeked) {
+        m_audioSkillCursor.clear();
+        m_audioEngine->StopAll();
+        // m_targetOrderCursor is reset via binary search in the target loop below
+    }
+
+    float prevTime = m_audioLastTime;
+    m_audioLastTime = currentTime;
+
+    if (prevTime < 0.f || seeked) return;
+
+    // Helper: find agent position at a given time via binary search on snapshots
+    auto findAgentPos = [](const AgentReplayData& ard, float t, float& ox, float& oy, float& oz) {
+        ox = oy = oz = 0.f;
+        if (ard.snapshots.empty()) return;
+        auto& snaps = ard.snapshots;
+        int idx = 0;
+        if (t >= snaps.back().time)
+            idx = static_cast<int>(snaps.size()) - 1;
+        else if (t > snaps.front().time) {
+            int lo = 0, hi = static_cast<int>(snaps.size()) - 1;
+            while (lo < hi) {
+                int mid = lo + (hi - lo + 1) / 2;
+                if (snaps[mid].time <= t) lo = mid; else hi = mid - 1;
+            }
+            idx = lo;
+        }
+        ox = snaps[idx].x;
+        oy = snaps[idx].y;
+        oz = snaps[idx].z;
+    };
+
+    // --- Caster sounds: trigger at cast startTime, positioned at caster ---
+    for (auto& [agentId, ard] : m_replayCtx.agents) {
+        if (ard.skillUseHistory.empty()) continue;
+
+        auto [it, inserted] = m_audioSkillCursor.try_emplace(agentId, 0);
+        size_t& cursor = it->second;
+
+        if (inserted) {
+            size_t lo = 0, hi = ard.skillUseHistory.size();
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo) / 2;
+                if (ard.skillUseHistory[mid].startTime <= prevTime)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            cursor = lo;
+        }
+
+        while (cursor < ard.skillUseHistory.size()) {
+            const auto& ev = ard.skillUseHistory[cursor];
+            if (ev.startTime > currentTime) break;
+
+            if (ev.startTime > prevTime) {
+                float ax, ay, az;
+                findAgentPos(ard, ev.startTime, ax, ay, az);
+
+                SoundEvent snd;
+                snd.category = SoundCategory::SKILL_CAST;
+                snd.skill_id = static_cast<uint32_t>(ev.skillId);
+                snd.source_agent_id = agentId;
+                m_audioEngine->Post(snd, ax, ay, az);
+            }
+            cursor++;
+        }
+    }
+
+    // --- Target sounds: trigger at cast endTime, positioned at target agent ---
+    // Build a global timeline of (casterId, eventIdx) sorted by endTime once.
+    // Includes all non-cancelled events (self-target uses caster position).
+    if (!m_targetOrderBuilt && m_skillUseTimelineBuilt) {
+        m_targetEventOrder.clear();
+        for (auto& [agentId, ard] : m_replayCtx.agents) {
+            for (size_t i = 0; i < ard.skillUseHistory.size(); i++) {
+                const auto& ev = ard.skillUseHistory[i];
+                if (!ev.wasCancelled)
+                    m_targetEventOrder.push_back({ agentId, i });
+            }
+        }
+        std::sort(m_targetEventOrder.begin(), m_targetEventOrder.end(),
+            [this](const auto& a, const auto& b) {
+                float ea = m_replayCtx.agents.at(a.first).skillUseHistory[a.second].endTime;
+                float eb = m_replayCtx.agents.at(b.first).skillUseHistory[b.second].endTime;
+                return ea < eb;
+            });
+        m_targetOrderCursor = 0;
+        m_targetOrderBuilt = true;
+    }
+
+    if (m_targetOrderBuilt) {
+        if (seeked) {
+            size_t lo = 0, hi = m_targetEventOrder.size();
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo) / 2;
+                auto& p = m_targetEventOrder[mid];
+                float et = m_replayCtx.agents.at(p.first).skillUseHistory[p.second].endTime;
+                if (et <= prevTime) lo = mid + 1; else hi = mid;
+            }
+            m_targetOrderCursor = lo;
+        }
+
+        while (m_targetOrderCursor < m_targetEventOrder.size()) {
+            auto& [casterId, evIdx] = m_targetEventOrder[m_targetOrderCursor];
+            const auto& ev = m_replayCtx.agents.at(casterId).skillUseHistory[evIdx];
+            if (ev.endTime > currentTime) break;
+
+            if (ev.endTime > prevTime) {
+                // Resolve position: use target agent if available, otherwise caster
+                float tx, ty, tz;
+                int targetId = ev.targetId;
+                auto tit = (targetId >= 0) ? m_replayCtx.agents.find(targetId) : m_replayCtx.agents.end();
+                if (tit != m_replayCtx.agents.end()) {
+                    findAgentPos(tit->second, ev.endTime, tx, ty, tz);
+                } else {
+                    // Self-target or unknown target: use caster position
+                    auto cit = m_replayCtx.agents.find(casterId);
+                    if (cit != m_replayCtx.agents.end())
+                        findAgentPos(cit->second, ev.endTime, tx, ty, tz);
+                    else
+                        tx = ty = tz = 0.f;
+                }
+
+                SoundEvent snd;
+                snd.category = SoundCategory::HIT;
+                snd.skill_id = static_cast<uint32_t>(ev.skillId);
+                snd.source_agent_id = casterId;
+                m_audioEngine->Post(snd, tx, ty, tz);
+            }
+            m_targetOrderCursor++;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -275,6 +473,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    if (m_audioEngine) m_audioEngine->Shutdown();
     ShutdownImGui();
     if (m_hwnd)
         SetWindowLongPtr(m_hwnd, GWLP_USERDATA, 0);
@@ -522,6 +721,7 @@ void ReplayWindow::InitImGui()
 
     m_imguiInitialized = true;
     LoadUILayout();
+    LoadHeatmapSettings();
 
     ImGui::SetCurrentContext(prevCtx);
 }
@@ -1614,6 +1814,15 @@ void ReplayWindow::Tick()
             }
         }
 
+        // Sort each agent's skillUseHistory by startTime so binary searches
+        // and cursor-based audio scanning work correctly.
+        for (auto& [id, ard] : m_replayCtx.agents) {
+            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+                [](const SkillUseEvent& a, const SkillUseEvent& b) {
+                    return a.startTime < b.startTime;
+                });
+        }
+
         m_skillUseTimelineBuilt = true;
     }
 
@@ -2043,6 +2252,8 @@ void ReplayWindow::Update(double elapsedMs)
     if (!m_topViewActive && !m_topViewTransitioning)
         UpdateFollowCamera(dt);
     m_mapRenderer->Update(dt);
+
+    UpdateAudioPlayback(m_debugTimeline, dt);
 }
 
 void ReplayWindow::Render()
@@ -2053,6 +2264,8 @@ void ReplayWindow::Render()
         m_deviceResources->GetRenderTargetView(),
         nullptr,
         m_deviceResources->GetDepthStencilView());
+
+    DrawHeatmapOverlay();
 
     DrawFogOfWar();
 
@@ -2593,8 +2806,10 @@ void ReplayWindow::RenderLoadingScreen()
     m_deviceResources->Present();
 
     // Transition to Ready phase after all fades complete
-    if (shouldTransition)
+    if (shouldTransition) {
         m_loadingPhase = LoadingPhase::Ready;
+        InitAudioEngine();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2670,7 +2885,13 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
             ImGui::MenuItem("Piano Roll (P)", nullptr, &m_showPianoRoll);
             ImGui::Separator();
+
+            ImGui::MenuItem("Heatmap (H)", nullptr, &m_heatmapSettings.show);
+
+            ImGui::Separator();
             ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
+            ImGui::Separator();
+            ImGui::MenuItem("Sound FX", nullptr, &m_audioEnabled);
             ImGui::EndMenu();
         }
 
@@ -2681,6 +2902,7 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
             ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
             ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            ImGui::MenuItem("Audio Debug", nullptr, &m_showAudioDebug);
             ImGui::EndMenu();
         }
 
@@ -2735,6 +2957,112 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawCombatLog();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
+
+    {
+        auto lutGetter = [this](HeatmapPalette p) -> ID3D11ShaderResourceView* {
+            return m_heatmapRenderer.GetLutSRV(p);
+        };
+
+        // Heatmap floating panel
+        if (m_heatmapSettings.show)
+        {
+            std::vector<AgentMenuEntry> hmAgents;
+            if (m_agentsClassified)
+            {
+                auto* dev = m_deviceResources->GetD3DDevice();
+                for (int id : m_playerIds)
+                {
+                    auto it = m_replayCtx.agents.find(id);
+                    if (it == m_replayCtx.agents.end()) continue;
+                    const auto& ard = it->second;
+                    std::string label = ard.playerName.empty()
+                        ? ard.categoryName : ard.playerName;
+                    ImTextureID icon = (ard.primaryProf > 0)
+                        ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
+                    hmAgents.push_back({ id, label, ard.teamId, icon });
+                }
+            }
+            size_t prevLayerCount = m_heatmapSettings.layers.size();
+            bool hmChanged = DrawHeatmapPanel(m_heatmapSettings, hmAgents, lutGetter);
+            if (hmChanged)
+            {
+                size_t newCount = m_heatmapSettings.layers.size();
+                if (newCount != prevLayerCount)
+                {
+                    m_heatmapAccumulator.EnsureLayerCount(newCount);
+                    if (m_heatmapInitialized)
+                        m_heatmapRenderer.EnsureLayerTextures(
+                            m_deviceResources->GetD3DDevice(), newCount);
+                }
+                m_heatmapAccumulator.MarkAllLayersDirty();
+                ResolveHeatmapLayers();
+                SaveHeatmapSettings();
+            }
+        }
+
+        DrawHeatmapLegend(m_heatmapSettings, lutGetter);
+    }
+
+    // Audio debug panel
+    if (m_showAudioDebug && m_audioEngine) {
+        ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Audio Debug", &m_showAudioDebug)) {
+            auto stats = m_audioEngine->GetDebugStats();
+            ImGui::Text("Engine initialized: %s", m_audioInitialized ? "YES" : "NO");
+            ImGui::Text("Audio enabled:      %s", m_audioEnabled ? "YES" : "NO");
+            ImGui::Text("MFT size:           %d", m_datManager ? m_datManager->get_num_files() : -1);
+            if (m_datManager) {
+                auto wpath = m_datManager->get_filepath();
+                std::string path8(wpath.begin(), wpath.end());
+                ImGui::TextWrapped("DAT: %s", path8.c_str());
+            }
+            ImGui::Separator();
+            ImGui::Text("Events posted:      %d", stats.eventsPosted);
+            ImGui::Text("Sounds played:      %d", stats.soundsPlayed);
+            ImGui::Text("Voices active:      %d", stats.voicesActive);
+            if (stats.voicesActive > 0) {
+                float total = stats.panLeft + stats.panRight;
+                float pct = total > 0.001f ? stats.panLeft / total : 0.5f;
+                const char* dir = (pct > 0.55f) ? "LEFT" : (pct < 0.45f) ? "RIGHT" : "CENTER";
+                ImGui::Text("Pan L:%.2f R:%.2f  [%s]", stats.panLeft, stats.panRight, dir);
+            }
+            ImGui::Separator();
+            ImGui::Text("ID out of range:    %d", stats.hashNotFound);
+            ImGui::Text("Not SOUND type:     %d", stats.notSoundType);
+            ImGui::Text("Decode failures:    %d", stats.decodeFailures);
+            if (auto* sc = m_audioEngine->GetSoundCache()) {
+                auto& ll = sc->GetLastLoad();
+                ImGui::Separator();
+                ImGui::Text("Hash index entries: %d", sc->GetHashIndexSize());
+                ImGui::Text("Last fileId (json): %u", ll.fileId);
+                ImGui::Text("Resolved MFT idx:   %u", ll.resolvedIndex);
+                ImGui::Text("Resolve method:     %s", ll.resolveMethod.c_str());
+                ImGui::Text("Data size:          %d", ll.dataSize);
+                ImGui::Text("MFT type:           %d", ll.mftType);
+                ImGui::Text("Magic bytes:        %02X %02X %02X %02X",
+                    ll.magic[0], ll.magic[1], ll.magic[2], ll.magic[3]);
+                ImGui::Text("Load ok:            %s", ll.loaded ? "YES" : "NO");
+                if (!ll.rejectReason.empty())
+                    ImGui::TextColored(ImVec4(1,0.4f,0.4f,1), "Reject: %s", ll.rejectReason.c_str());
+            }
+            ImGui::Separator();
+            ImGui::Text("Last skill: %u '%s'", stats.lastSkillId, stats.lastSkillName.c_str());
+            ImGui::Text("Timeline: %.2f  LastAudio: %.2f", m_debugTimeline, m_audioLastTime);
+            ImGui::Separator();
+            auto& cfg = m_audioEngine->GetConfig();
+            ImGui::SliderFloat("Master Vol", &cfg.master_volume, 0.f, 1.f);
+            ImGui::SliderFloat("SFX Vol", &cfg.sfx_volume, 0.f, 1.f);
+            ImGui::SliderFloat("Dist Scale", &cfg.curve_distance_scaler, 1.f, 50.f);
+        }
+        ImGui::End();
+    }
+    else if (m_showAudioDebug && !m_audioEngine) {
+        if (ImGui::Begin("Audio Debug", &m_showAudioDebug)) {
+            ImGui::Text("Audio engine not created");
+            ImGui::Text("Initialized: %s", m_audioInitialized ? "YES" : "NO");
+        }
+        ImGui::End();
+    }
 
     DrawAgentOverlay();
     DrawFlags();
@@ -2843,6 +3171,12 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::IsKeyPressed(ImGuiKey_P))
             m_showPianoRoll = !m_showPianoRoll;
+
+        if (ImGui::IsKeyPressed(ImGuiKey_H))
+        {
+            m_heatmapSettings.show = !m_heatmapSettings.show;
+            SaveHeatmapSettings();
+        }
     }
 
     // Determine cursor mode, then apply drag overrides before committing
@@ -16640,4 +16974,164 @@ void ReplayWindow::DrawPlayerInfoPanel()
     ImGui::End();
     ImGui::PopStyleVar(4);
     ImGui::PopStyleColor(6);
+}
+
+// ===========================================================================
+// Heatmap system (layer-stack)
+// ===========================================================================
+
+void ReplayWindow::InitHeatmapRenderer()
+{
+    if (m_heatmapInitialized) return;
+    m_heatmapInitialized = true;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    m_heatmapRenderer.Init(dev);
+
+    size_t n = m_heatmapSettings.layers.size();
+    m_heatmapAccumulator.EnsureLayerCount(n);
+    m_heatmapRenderer.EnsureLayerTextures(dev, n);
+}
+
+void ReplayWindow::PopulateHeatmapFromSnapshots()
+{
+    if (m_heatmapPopulated) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    m_heatmapPopulated = true;
+
+    const MapTransform& t = m_replayCtx.mapTransform;
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player) continue;
+        if (ard.snapshots.empty()) continue;
+
+        for (const auto& snap : ard.snapshots)
+        {
+            XMFLOAT3 wpos = ApplyMapTransformToPos(snap.x, snap.y, snap.z, t);
+            uint32_t tsMs = static_cast<uint32_t>(snap.time * 1000.0f);
+            m_heatmapAccumulator.OnAgentMoved(agentId, wpos.x, wpos.z, tsMs);
+        }
+    }
+}
+
+void ReplayWindow::UpdateHeatmapSamples()
+{
+    if (!m_heatmapSettings.renderEnabled) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    PopulateHeatmapFromSnapshots();
+}
+
+void ReplayWindow::DrawHeatmapOverlay()
+{
+    if (!m_heatmapSettings.renderEnabled) return;
+    if (!m_agentsClassified) return;
+    if (m_heatmapSettings.layers.empty()) return;
+
+    InitHeatmapRenderer();
+
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+    if (!terrain) return;
+
+    if (!m_heatmapMeshBuilt)
+    {
+        const auto& b = terrain->m_bounds;
+        m_heatmapAccumulator.SetWorldBounds(b.map_min_x, b.map_max_x,
+                                            b.map_min_z, b.map_max_z);
+        float waterY = m_mapRenderer->GetWaterLevel();
+        m_heatmapRenderer.BuildMesh(m_deviceResources->GetD3DDevice(), terrain,
+                                    b.map_min_x, b.map_max_x,
+                                    b.map_min_z, b.map_max_z,
+                                    waterY);
+        m_heatmapMeshBuilt = true;
+    }
+
+    if (!m_heatmapRenderer.IsReady()) return;
+
+    UpdateHeatmapSamples();
+
+    std::unordered_map<int, uint8_t> agentTeams;
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+        agentTeams[agentId] = ard.teamId;
+
+    size_t layerCount = m_heatmapSettings.layers.size();
+    m_heatmapAccumulator.EnsureLayerCount(layerCount);
+    m_heatmapRenderer.EnsureLayerTextures(m_deviceResources->GetD3DDevice(), layerCount);
+
+    auto* ctx = m_deviceResources->GetD3DDeviceContext();
+
+    for (size_t i = 0; i < layerCount; ++i)
+    {
+        const auto& def = m_heatmapSettings.layers[i];
+        if (!def.enabled || !def.matched) continue;
+
+        m_heatmapAccumulator.RebuildLayerIfDirty(
+            i, def, m_debugTimeline,
+            m_heatmapSettings.timeRange, m_heatmapSettings.windowSeconds,
+            agentTeams);
+
+        m_heatmapRenderer.UpdateLayerDensityTexture(ctx, i, m_heatmapAccumulator);
+        m_heatmapAccumulator.ClearLayerTextureDirty(i);
+    }
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    m_heatmapRenderer.RenderLayers(ctx, viewProj, m_heatmapSettings.layers);
+}
+
+// ---------------------------------------------------------------------------
+// Resolve layer subjects against current match agents
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::ResolveHeatmapLayers()
+{
+    if (!m_agentsClassified) return;
+
+    for (auto& layer : m_heatmapSettings.layers)
+    {
+        if (layer.subjectType == HeatmapSubjectType::TEAM ||
+            layer.subjectType == HeatmapSubjectType::DOMINANCE)
+        {
+            layer.matched = true;
+            continue;
+        }
+
+        layer.matched = false;
+        for (auto& [agentId, ard] : m_replayCtx.agents)
+        {
+            if (ard.type != AgentType::Player) continue;
+            std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
+            if (name == layer.subjectName)
+            {
+                layer.subjectId = agentId;
+                layer.matched = true;
+                break;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Heatmap settings persistence
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path GetHeatmapSettingsPath()
+{
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    auto settingsDir = dir / "settings";
+    if (!std::filesystem::exists(settingsDir))
+        std::filesystem::create_directories(settingsDir);
+    return settingsDir / "heatmap_settings.json";
+}
+
+void ReplayWindow::SaveHeatmapSettings()
+{
+    // No persistence — heatmap starts fresh each session
+}
+
+void ReplayWindow::LoadHeatmapSettings()
+{
+    m_heatmapSettings = HeatmapSettings{};
 }

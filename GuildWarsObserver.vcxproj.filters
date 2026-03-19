@@ -327,6 +327,15 @@
     <ClInclude Include="SourceFiles\ReplayWindow.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\HeatmapData.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SourceFiles\HeatmapRenderer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SourceFiles\HeatmapMenu.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\ReplayMapData.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -750,6 +759,15 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\HeatmapData.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\HeatmapRenderer.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\HeatmapMenu.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp">
