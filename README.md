@@ -113,6 +113,22 @@ See all 16 players' skill activity on a single shared time axis. Instantly spot 
 
 ---
 
+### Player Position Heatmap
+
+Visualise where players and teams spend their time on the map. Heatmaps conform to the 3D terrain and render as semi-transparent overlays with smooth colour gradients.
+
+![Heatmap](docs/gifs/heatmap.gif)
+
+- **Layer stack**: add unlimited independent heatmap layers — per player, per team, or Dominance (blue vs red territory control)
+- **9 colour palettes**: Thermal, Inferno, Viridis, Team Blue, Team Red, Dominance, Lava, Sunset, Amber
+- **Dominance mode**: shows which team controls each area — blue zones, red zones, and contested areas in warm white
+- **Time range filter**: full match or sliding window (10–600 s)
+- **Per-layer opacity** and enable/disable toggles
+- **Colour legend** overlay with one gradient bar per visible layer
+- Toggle from View menu or press **H**
+
+---
+
 ### Player Info Panel
 
 Click any agent or party panel row to open a detailed panel for that player.
