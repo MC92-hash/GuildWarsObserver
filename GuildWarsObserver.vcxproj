@@ -108,7 +108,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;TinyTIFF_x86.lib;libvcruntimed.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;winhttp.lib;TinyTIFF_x86.lib;libvcruntimed.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LargeAddressAware>false</LargeAddressAware>
     </Link>
     <Manifest>
@@ -132,7 +132,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;TinyTIFF_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;winhttp.lib;TinyTIFF_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
@@ -160,7 +160,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;gdi32.lib;gdiplus.lib;TinyTIFF_x86.lib;libvcruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;gdi32.lib;gdiplus.lib;winhttp.lib;TinyTIFF_x86.lib;libvcruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LargeAddressAware>true</LargeAddressAware>
       <IgnoreSpecificDefaultLibraries>
       </IgnoreSpecificDefaultLibraries>
@@ -192,7 +192,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;gdi32.lib;gdiplus.lib;TinyTIFF_x64.lib;libvcruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;dxguid.lib;uuid.lib;kernel32.lib;user32.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;DbgHelp.lib;gdi32.lib;gdiplus.lib;winhttp.lib;TinyTIFF_x64.lib;libvcruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Manifest>
       <EnableDpiAwareness>PerMonitorHighDPIAware</EnableDpiAwareness>
@@ -276,6 +276,13 @@
     <ClInclude Include="SourceFiles\draw_pathfinding_panel.h" />
     <ClInclude Include="SourceFiles\draw_text_panel.h" />
     <ClInclude Include="SourceFiles\draw_ui.h" />
+    <ClInclude Include="SourceFiles\draw_sync_status.h" />
+    <ClInclude Include="SourceFiles\Net\HttpClient.h" />
+    <ClInclude Include="SourceFiles\Net\MatchIndex.h" />
+    <ClInclude Include="SourceFiles\Net\CloudReplayProvider.h" />
+    <ClInclude Include="SourceFiles\Net\SyncEngine.h" />
+    <ClInclude Include="SourceFiles\Net\TarGzExtractor.h" />
+    <ClInclude Include="SourceFiles\ThirdParty\miniz\miniz.h" />
     <ClInclude Include="SourceFiles\draw_timeline.h" />
     <ClInclude Include="SourceFiles\AgentOverlay.h" />
     <ClInclude Include="SourceFiles\MatchReplay.h" />
@@ -482,6 +489,14 @@
     <ClCompile Include="SourceFiles\draw_pathfinding_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_text_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_ui.cpp" />
+    <ClCompile Include="SourceFiles\draw_sync_status.cpp" />
+    <ClCompile Include="SourceFiles\Net\HttpClient.cpp" />
+    <ClCompile Include="SourceFiles\Net\MatchIndex.cpp" />
+    <ClCompile Include="SourceFiles\Net\CloudReplayProvider.cpp" />
+    <ClCompile Include="SourceFiles\Net\SyncEngine.cpp" />
+    <ClCompile Include="SourceFiles\ThirdParty\miniz\miniz_impl.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="SourceFiles\draw_timeline.cpp" />
     <ClCompile Include="SourceFiles\AgentOverlay.cpp" />
     <ClCompile Include="SourceFiles\MatchReplay.cpp" />

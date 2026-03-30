@@ -113,6 +113,8 @@ struct MatchMeta
 
     std::string folder_name;
     std::string folder_path;
+
+    bool is_cloud_only = false;  // true if match is available online but not cached locally
 };
 
 class IReplayProvider
@@ -127,10 +129,10 @@ class LocalReplayProvider : public IReplayProvider
 public:
     void SetFolder(const std::string& path);
     std::vector<MatchMeta> GetAvailableReplays() override;
+    static bool ParseInfosJson(const std::filesystem::path& jsonPath, MatchMeta& out);
 
 private:
     std::string m_folder_path;
-    static bool ParseInfosJson(const std::filesystem::path& jsonPath, MatchMeta& out);
     static void ParsePlayerArray(const void* jsonArray, std::vector<PlayerMeta>& out);
     static void ParseLordEvents(const std::filesystem::path& matchFolder, LordDamageData& out);
 };
@@ -138,7 +140,10 @@ private:
 class ReplayLibrary
 {
 public:
+    ReplayLibrary();
+
     void SetMatchDataFolder(const std::string& path);
+    void SetProvider(std::unique_ptr<IReplayProvider> provider);
     void ScanFolder();
     void Clear();
 
@@ -153,7 +158,7 @@ public:
     int GetMatchCount() const { return static_cast<int>(m_matches.size()); }
 
 private:
-    LocalReplayProvider m_provider;
+    std::unique_ptr<IReplayProvider> m_provider;
     std::vector<MatchMeta> m_matches;
     std::string m_folder_path;
     bool m_loaded = false;

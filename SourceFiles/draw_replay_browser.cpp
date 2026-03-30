@@ -110,7 +110,23 @@ static GuildLabel GetPartyGuild(const MatchMeta& m, const std::string& partyId)
 {
     GuildLabel result;
     auto pit = m.parties.find(partyId);
-    if (pit == m.parties.end()) { result.display = "?"; return result; }
+    if (pit == m.parties.end() || pit->second.players.empty())
+    {
+        // No player data (e.g. cloud-only match) — try guild lookup directly by party ID
+        auto git = m.guilds.find(partyId);
+        if (git != m.guilds.end() && !git->second.name.empty())
+        {
+            result.name = git->second.name;
+            result.tag = git->second.tag;
+            result.rank = git->second.rank;
+            result.display = result.name + " [" + result.tag + "]";
+        }
+        else
+        {
+            result.display = "?";
+        }
+        return result;
+    }
 
     std::map<int, int> guildCounts;
     for (const auto& p : pit->second.players)
@@ -1802,6 +1818,15 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
     ImGui::Text("MATCHES  (%d)", (int)filtered.size());
     ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
+    if (ImGui::SmallButton("Refresh"))
+        g_refreshMatchIndex = true;
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Re-fetch match list from cloud");
     ImGui::Separator();
 
     // Card mode for mobile
@@ -1816,7 +1841,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
     // Table mode for wider layouts
     float tableW = ImGui::GetContentRegionAvail().x;
-    float dateW = 82.0f;
+    float dateW = 100.0f;
     float occasionW = (mode == LayoutMode::Narrow) ? 100.0f : 130.0f;
     float mapW = std::max(90.0f, tableW * 0.13f);
     float teamW = std::clamp((tableW - dateW - mapW - occasionW) * 0.5f, 100.0f, 250.0f);
@@ -1873,6 +1898,12 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 }
 
                 ImGui::TableNextColumn();
+
+                // Reserve space for status icon, then render date
+                ImVec2 cellStart = ImGui::GetCursorScreenPos();
+                float iconW = ImGui::CalcTextSize("\xe2\x98\x81").x + 4.f;
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + iconW);
+
                 char dateBuf[16];
                 snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
                 if (ImGui::Selectable(dateBuf, isSelected,
@@ -1880,8 +1911,25 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 {
                     s_state.selectedMatchIndex = isSelected ? -1 : fm.originalIndex;
                 }
+                if (ImGui::IsItemHovered() && m.is_cloud_only)
+                    ImGui::SetTooltip("Cloud only - will download when opened");
                 if (ImGui::IsItemFocused() && !isSelected)
                     s_state.selectedMatchIndex = fm.originalIndex;
+
+                // Draw status icon on top of the selectable
+                {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const char* icon;
+                    ImU32 color;
+                    if (m.is_cloud_only) {
+                        icon = "\xe2\x98\x81"; // ☁
+                        color = IM_COL32(90, 160, 220, 230);
+                    } else {
+                        icon = "\xe2\x9c\x94"; // ✔
+                        color = IM_COL32(70, 190, 95, 230);
+                    }
+                    dl->AddText(cellStart, color, icon);
+                }
 
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(m.occasion.c_str());
@@ -2265,7 +2313,17 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         ImGui::PushStyleColor(ImGuiCol_Border,         colBorder);
         ImGui::PushStyleColor(ImGuiCol_Text,           kColorText);
 
-        bool clicked = ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+        if (g_cloudDownloadInProgress)
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
+            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+            ImGui::PopStyleVar();
+        }
+        else
+        {
+            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+        }
+        bool clicked = ImGui::IsItemClicked() && !g_cloudDownloadInProgress;
         bool hovered = ImGui::IsItemHovered();
         bool active  = ImGui::IsItemActive();
 

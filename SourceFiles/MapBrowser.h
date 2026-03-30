@@ -16,6 +16,10 @@
 #include "ReplayLibrary.h"
 #include "ReplayWindow.h"
 #include "FolderWatcher.h"
+#include "Net/HttpClient.h"
+#include "Net/MatchIndex.h"
+#include "Net/CloudReplayProvider.h"
+#include "Net/SyncEngine.h"
 #include <draw_extract_panel.h>
 
 using namespace std::chrono;
@@ -121,8 +125,29 @@ private:
     ReplayLibrary m_replay_library;
     FolderWatcher m_folderWatcher;
 
+    // Cloud storage system
+    HttpClient m_httpClient;
+    std::shared_ptr<MatchIndex> m_matchIndex;
+    std::unique_ptr<CloudReplayProvider> m_cloudProvider;
+    std::unique_ptr<SyncEngine> m_syncEngine;
+
     std::string m_error_msg = "";
     bool m_show_error_msg = false;
+
+    // Cloud match download-on-play state
+    enum class PlayDownloadState { Idle, Downloading, Complete, Error };
+    struct PlayDownloadCtx
+    {
+        std::atomic<PlayDownloadState> state{PlayDownloadState::Idle};
+        std::atomic<uint64_t> bytesReceived{0};
+        std::atomic<uint64_t> bytesTotal{0};
+        std::thread thread;
+        CloudReplayProvider::DownloadResult result;
+        MatchMeta originalMatch;
+        std::string errorMsg;
+    };
+    PlayDownloadCtx m_playDl;
+    void ProcessCloudDownloadResult();
 
     std::vector<std::unique_ptr<ReplayWindow>> m_replay_windows;
     void ProcessPendingReplayRequest();
