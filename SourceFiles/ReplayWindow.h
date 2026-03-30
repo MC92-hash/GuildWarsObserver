@@ -15,6 +15,7 @@
 #include "HeatmapData.h"
 #include "HeatmapRenderer.h"
 #include "HeatmapMenu.h"
+#include "AnnotationManager.h"
 #include <string>
 #include <memory>
 #include <variant>
@@ -680,6 +681,9 @@ private:
     void SaveHeatmapSettings();
     void LoadHeatmapSettings();
     void ResolveHeatmapLayers();
+
+    // --- Annotation / Drawing tools ---
+    AnnotationManager m_annotationMgr;
 
     static bool s_classRegistered;
     static constexpr wchar_t kWindowClassName[] = L"GWObsReplayWindowClass";

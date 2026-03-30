@@ -286,6 +286,7 @@
     <ClInclude Include="SourceFiles\HeatmapData.h" />
     <ClInclude Include="SourceFiles\HeatmapRenderer.h" />
     <ClInclude Include="SourceFiles\HeatmapMenu.h" />
+    <ClInclude Include="SourceFiles\AnnotationManager.h" />
     <ClInclude Include="SourceFiles\ReplayMapData.h" />
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
     <ClInclude Include="SourceFiles\miniz.h" />
@@ -492,6 +493,7 @@
     <ClCompile Include="SourceFiles\HeatmapData.cpp" />
     <ClCompile Include="SourceFiles\HeatmapRenderer.cpp" />
     <ClCompile Include="SourceFiles\HeatmapMenu.cpp" />
+    <ClCompile Include="SourceFiles\AnnotationManager.cpp" />
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp" />
     <ClCompile Include="SourceFiles\StoCParser.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />

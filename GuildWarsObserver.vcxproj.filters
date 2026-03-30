@@ -336,6 +336,9 @@
     <ClInclude Include="SourceFiles\HeatmapMenu.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\AnnotationManager.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\ReplayMapData.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -768,6 +771,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\HeatmapMenu.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\AnnotationManager.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp">

@@ -2906,6 +2906,13 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::EndMenu();
         }
 
+        if (ImGui::BeginMenu("Tools"))
+        {
+            ImGui::MenuItem("Drawing toolbar", nullptr, &m_annotationMgr.toolbar_visible);
+            ImGui::MenuItem("Bookmarks",       nullptr, &m_annotationMgr.bookmarks_visible);
+            ImGui::EndMenu();
+        }
+
         if (m_replayCtx.agentParseProgress && !m_replayCtx.agentsLoaded)
         {
             int done = m_replayCtx.agentParseProgress->files_done.load();
@@ -3003,6 +3010,25 @@ void ReplayWindow::DrawImGuiOverlay()
         DrawHeatmapLegend(m_heatmapSettings, lutGetter);
     }
 
+    {
+        Camera* cam = m_mapRenderer->GetCamera();
+        XMMATRIX annVP = cam->GetView() * cam->GetProj();
+        auto annViewport = m_deviceResources->GetScreenViewport();
+        m_annotationMgr.Update(m_terrain.get(), annVP,
+                               annViewport.Width, annViewport.Height,
+                               cam->GetPosition3f(), m_debugTimeline);
+    }
+    m_annotationMgr.RenderToolbar();
+    m_annotationMgr.RenderBookmarkPanel(m_debugTimeline, m_debugTimeline,
+                                        m_replayCtx.isPlaying);
+    {
+        Camera* cam = m_mapRenderer->GetCamera();
+        XMMATRIX annVP = cam->GetView() * cam->GetProj();
+        auto annViewport = m_deviceResources->GetScreenViewport();
+        m_annotationMgr.RenderDrawings(annVP, annViewport.Width,
+                                       annViewport.Height, m_debugTimeline);
+    }
+
     // Audio debug panel
     if (m_showAudioDebug && m_audioEngine) {
         ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
@@ -3082,7 +3108,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawMoraleBoostTimers();
 
     // Commit deferred left-click to pan if no agent was clicked
-    if (m_leftClickPending)
+    if (m_leftClickPending && !m_annotationMgr.draw_mode_active)
     {
         m_leftClickPending = false;
         m_leftMouseDown = true;
@@ -3100,7 +3126,9 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     // Keyboard shortcuts (checked after all windows so WantCaptureKeyboard is accurate)
-    if (!ImGui::GetIO().WantCaptureKeyboard && !m_clSkillSearchFocused)
+    // Suppressed when draw mode is active — tool shortcuts are handled by AnnotationManager
+    if (!ImGui::GetIO().WantCaptureKeyboard && !m_clSkillSearchFocused
+        && !m_annotationMgr.draw_mode_active)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape) && m_cameraMode == CameraMode::FollowAgent)
             ExitFollowMode();
@@ -4619,7 +4647,8 @@ void ReplayWindow::DrawAgentOverlay()
     const MapTransform& t = m_replayCtx.mapTransform;
 
     const bool canClickAgents = !ImGui::GetIO().WantCaptureMouse
-                                && !m_rightMouseDown;
+                                && !m_rightMouseDown
+                                && !m_annotationMgr.draw_mode_active;
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
     const float clickRadius = 14.f;
     m_hoveredAgentId = -1;
@@ -9794,6 +9823,11 @@ void ReplayWindow::DrawTimelineController()
             maj ? cGoldDim : cBorder, 1.f);
     }
 
+    m_annotationMgr.RenderTimelineMarkers(trackX, trackW,
+                                           trackBarY, TRKH + 12.f * sf,
+                                           maxT, m_debugTimeline,
+                                           m_displayTimeOffset);
+
     ImGui::SetCursorScreenPos(ImVec2(trackX, y0));
     ImGui::InvisibleButton("##Scrub", ImVec2(trackW, 20.f * sf));
     if (ImGui::IsItemActive())
@@ -12378,7 +12412,7 @@ void ReplayWindow::DrawPartyWindows()
             char btnId[32];
             snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
             ImGui::InvisibleButton(btnId, ImVec2(availW, barH));
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !m_annotationMgr.draw_mode_active)
             {
                 EnterFollowMode(agentId);
                 OpenPlayerInfoPanel(agentId);
@@ -13923,7 +13957,8 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         }
 
         imguiCaptureMouse = ImGui::GetIO().WantCaptureMouse;
-        imguiCaptureKeys  = ImGui::GetIO().WantTextInput || rw->m_clSkillSearchFocused;
+        imguiCaptureKeys  = ImGui::GetIO().WantTextInput || rw->m_clSkillSearchFocused
+                          || rw->m_annotationMgr.IsBookmarkPopupActive();
         ImGui::SetCurrentContext(prevCtx);
     }
 
@@ -13995,7 +14030,8 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_LBUTTONDOWN:
-        if (mouseAllowed && rw && rw->m_cameraMode != CameraMode::FollowAgent)
+        if (mouseAllowed && rw && rw->m_cameraMode != CameraMode::FollowAgent
+            && !rw->m_annotationMgr.draw_mode_active)
         {
             rw->m_leftClickPending = true;
             GetCursorPos(&rw->m_mouseDragOrigin);
@@ -14436,7 +14472,7 @@ void ReplayWindow::DrawPianoRollPanel()
                 dl->AddText(font, 12.f, ImVec2(cp.x + 26.f, rowTop + (kRowH - 12.f) * 0.5f), nameCol, pn);
 
                 if (rowHovered && ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + kNameColW, rowBot))
-                    && ImGui::IsMouseClicked(0))
+                    && ImGui::IsMouseClicked(0) && !m_annotationMgr.draw_mode_active)
                 {
                     OpenPlayerInfoPanel(agentId);
                 }
