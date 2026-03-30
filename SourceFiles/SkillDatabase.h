@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include <unordered_map>
 
 struct SkillInfo
@@ -36,6 +37,16 @@ public:
 
     static const char* GetTypeName(int typeId);
     static const char* GetAttributeName(int attrId);
+
+    static bool IsMartialProfession(int profId);
+    static bool IsWeaponAttack(int typeId);
+    static bool IsSpellType(int typeId);
+    static bool IsEnchantmentType(int typeId);
+    static bool IsResurrectionSkill(int skillId);
+    static int  GetProfessionForAttribute(int attrId);
+
+    std::vector<int> SortSkillsForDisplay(const std::vector<int>& skillIds,
+                                          int primaryProf, int secondaryProf) const;
 
 private:
     std::unordered_map<int, SkillInfo> m_skills;

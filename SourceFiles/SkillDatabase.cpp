@@ -2,6 +2,9 @@
 #include "SkillDatabase.h"
 #include <json.hpp>
 #include <fstream>
+#include <algorithm>
+#include <unordered_set>
+#include <tuple>
 
 using json = nlohmann::json;
 
@@ -190,4 +193,159 @@ const char* SkillDatabase::GetAttributeName(int attrId)
     case 109: return "Norn";
     default:  return "";
     }
+}
+
+bool SkillDatabase::IsMartialProfession(int profId)
+{
+    return profId == 1  // Warrior
+        || profId == 2  // Ranger
+        || profId == 7  // Assassin
+        || profId == 9  // Paragon
+        || profId == 10; // Dervish
+}
+
+bool SkillDatabase::IsWeaponAttack(int typeId)
+{
+    return (typeId >= 2 && typeId <= 12) || typeId == 31;
+}
+
+bool SkillDatabase::IsSpellType(int typeId)
+{
+    return (typeId >= 22 && typeId <= 28) || typeId == 33 || typeId == 34;
+}
+
+bool SkillDatabase::IsEnchantmentType(int typeId)
+{
+    return typeId == 23 || typeId == 33 || typeId == 34;
+}
+
+bool SkillDatabase::IsResurrectionSkill(int skillId)
+{
+    static const std::unordered_set<int> kResSkills = {
+        2,    // Resurrection Signet
+        1795, // Rebirth
+        2917, // Flesh of My Flesh
+        4399, // Resurrection Chant
+        5413, // Death Pact Signet
+        6841, // Sunspear Rebirth Signet
+        8029, // Flesh of My Flesh (PvP)
+        8059, // Death Pact Signet (PvP)
+    };
+    return kResSkills.count(skillId) > 0;
+}
+
+int SkillDatabase::GetProfessionForAttribute(int attrId)
+{
+    if (attrId >= 0  && attrId <= 3)  return 5;  // Mesmer
+    if (attrId >= 4  && attrId <= 7)  return 4;  // Necromancer
+    if (attrId >= 8  && attrId <= 12) return 6;  // Elementalist
+    if (attrId >= 13 && attrId <= 16) return 3;  // Monk
+    if (attrId >= 17 && attrId <= 21) return 1;  // Warrior
+    if (attrId >= 22 && attrId <= 25) return 2;  // Ranger
+    if (attrId >= 29 && attrId <= 31) return 7;  // Assassin
+    if (attrId >= 32 && attrId <= 34) return 8;  // Ritualist
+    if (attrId == 35)                 return 7;  // Assassin (Critical Strikes)
+    if (attrId == 36)                 return 8;  // Ritualist (Spawning Power)
+    if (attrId >= 37 && attrId <= 40) return 9;  // Paragon
+    if (attrId >= 41 && attrId <= 44) return 10; // Dervish
+    return 0; // No Attribute / special title tracks
+}
+
+std::vector<int> SkillDatabase::SortSkillsForDisplay(
+    const std::vector<int>& skillIds, int primaryProf, int secondaryProf) const
+{
+    if (skillIds.size() <= 1) return skillIds;
+
+    bool martial = IsMartialProfession(primaryProf);
+
+    struct SortKey {
+        int bucket       = 99;
+        int typeOrder    = 0;   // weapon attack sub-type for chain ordering (Lead→Off-Hand→Dual)
+        int attrGroup    = 999;
+        int skillId      = 0;
+        std::string name;
+    };
+
+    std::vector<std::pair<int, SortKey>> keyed;
+    keyed.reserve(skillIds.size());
+
+    for (int sid : skillIds)
+    {
+        SortKey k;
+        k.skillId = sid;
+
+        const SkillInfo* si = Get(sid);
+        if (!si) { keyed.push_back({ sid, k }); continue; }
+
+        k.name = si->name;
+        int attrProf = GetProfessionForAttribute(si->attribute);
+        bool isPrimary   = (attrProf == primaryProf) || (si->profession == primaryProf);
+        bool isSecondary = (attrProf == secondaryProf) || (si->profession == secondaryProf);
+        k.attrGroup = si->attribute;
+
+        // Martial buckets:  0 Elite | 1 Weapon attacks | 2 Primary skills | 3 Stances |
+        //                   4 Spells | 5 Other | 6 Secondary | 7 Res
+        // Caster buckets:   0 Elite | 1 Primary (by attr) | 2 Other | 3 Secondary |
+        //                   4 Stances | 5 Res
+
+        if (IsResurrectionSkill(sid))
+        {
+            k.bucket = martial ? 7 : 5;
+        }
+        else if (si->is_elite)
+        {
+            k.bucket = 0;
+        }
+        else if (si->type == 29) // Stances always in the stance bucket regardless of profession
+        {
+            k.bucket = martial ? 3 : 4;
+        }
+        else if (isSecondary && !isPrimary)
+        {
+            k.bucket = martial ? 6 : 3;
+        }
+        else if (martial)
+        {
+            if (IsWeaponAttack(si->type))
+            {
+                k.bucket = 1;
+                k.typeOrder = si->type; // Lead(5)→Off-Hand(6)→Dual(7) etc.
+            }
+            else if (isPrimary)
+                k.bucket = 2;
+            else if (IsSpellType(si->type))
+                k.bucket = 4;
+            else
+                k.bucket = 5;
+        }
+        else // caster — all primary skills grouped by attribute, no separate enchantment bucket
+        {
+            if (isPrimary)
+                k.bucket = 1;
+            else
+                k.bucket = 2;
+        }
+
+        keyed.push_back({ sid, k });
+    }
+
+    std::stable_sort(keyed.begin(), keyed.end(),
+        [](const auto& a, const auto& b)
+        {
+            if (a.second.bucket != b.second.bucket)
+                return a.second.bucket < b.second.bucket;
+            if (a.second.typeOrder != b.second.typeOrder)
+                return a.second.typeOrder < b.second.typeOrder;
+            if (a.second.attrGroup != b.second.attrGroup)
+                return a.second.attrGroup < b.second.attrGroup;
+            if (a.second.skillId != b.second.skillId)
+                return a.second.skillId < b.second.skillId;
+            return a.second.name < b.second.name;
+        });
+
+    std::vector<int> result;
+    result.reserve(keyed.size());
+    for (auto& [sid, k] : keyed)
+        result.push_back(sid);
+    return result;
 }

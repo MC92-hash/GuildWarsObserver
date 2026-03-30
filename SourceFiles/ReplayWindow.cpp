@@ -15484,20 +15484,20 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     sl.castsAtCurrent++;
             }
 
-            // Use used_skills order from match metadata (same as main UI)
             const std::vector<int>* usedSkills = nullptr;
+            const PlayerMeta* playerMeta = nullptr;
             for (const auto& [pid, party] : m_matchMeta.parties)
             {
                 for (const auto& pm : party.players)
                 {
                     if (pm.id == m_playerInfoAgentId && !pm.used_skills.empty())
-                    { usedSkills = &pm.used_skills; break; }
+                    { usedSkills = &pm.used_skills; playerMeta = &pm; break; }
                 }
                 if (usedSkills) break;
                 for (const auto& pm : party.others)
                 {
                     if (pm.id == m_playerInfoAgentId && !pm.used_skills.empty())
-                    { usedSkills = &pm.used_skills; break; }
+                    { usedSkills = &pm.used_skills; playerMeta = &pm; break; }
                 }
                 if (usedSkills) break;
             }
@@ -15524,6 +15524,27 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 [](const SkillSlot& a, const SkillSlot& b) { return a.firstUseTime < b.firstUseTime; });
             for (auto& e : extras)
                 slots.push_back(e);
+
+            // Sort slots by profession-aware priority buckets
+            if (playerMeta && slots.size() > 1)
+            {
+                std::vector<int> ids;
+                ids.reserve(slots.size());
+                for (auto& s : slots) ids.push_back(s.skillId);
+
+                auto sorted = GetSkillDatabase().SortSkillsForDisplay(
+                    ids, playerMeta->primary, playerMeta->secondary);
+
+                std::unordered_map<int, SkillSlot> slotById;
+                for (auto& s : slots) slotById[s.skillId] = s;
+                slots.clear();
+                for (int sid : sorted)
+                {
+                    auto it = slotById.find(sid);
+                    if (it != slotById.end())
+                        slots.push_back(it->second);
+                }
+            }
         }
 
         int numSlots = std::max((int)slots.size(), 1);

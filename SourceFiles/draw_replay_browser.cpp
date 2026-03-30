@@ -2197,10 +2197,12 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 ImGui::TableNextColumn();
                 if (!p.used_skills.empty())
                 {
-                    for (int ski = 0; ski < (int)p.used_skills.size(); ski++)
+                    auto sortedSkills = GetSkillDatabase().SortSkillsForDisplay(
+                        p.used_skills, p.primary, p.secondary);
+                    for (int ski = 0; ski < (int)sortedSkills.size(); ski++)
                     {
                         if (ski > 0) ImGui::SameLine(0, 2);
-                        int skillId = p.used_skills[ski];
+                        int skillId = sortedSkills[ski];
                         ImTextureID skillTex = GetSkillIcon(skillId);
                         if (skillTex)
                         {

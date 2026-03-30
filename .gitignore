@@ -375,3 +375,72 @@ FodyWeavers.xsd
 /.claude
 /nul
 /SourceFiles/build_config.local.h
+/build.bat
+
+# ============================================================
+# Unused textures, fonts, and build artifacts
+# ============================================================
+
+# Build distribution packages
+/dist/
+
+# Showcase GIFs (README assets, not used by app)
+/Textures/Github showcase/
+
+# GW1 loading screen collection (not used by app)
+/Textures/GW1 Loading Screens & Wallpapers/
+
+# Unused splash screen variant (only _1 is used)
+/Textures/Launch_screen/GWOBS_Loading_Screen_2.png
+
+# Alternate cursor set (app uses Textures/cursor/, not Cursors/)
+/Textures/Cursors/
+
+# NPC icons (loader exists but has no call sites)
+/Textures/NPC/
+
+# SVG transport icons (playback bar uses ImGui text, not SVGs)
+/Textures/timebar_UI/
+
+# SVG files in Others_UI (app loads .png/.webp, not .svg)
+/Textures/Others_UI/*.svg
+
+# Unused effect icons (only WeaponSpell.png is loaded)
+/Textures/effects/Blind.jpg
+/Textures/effects/Blind.png
+/Textures/effects/Crippled.jpg
+/Textures/effects/Crippled.png
+/Textures/effects/MoraleBoost.png
+
+# Unused skill metadata
+/Textures/skills/skills.json
+
+# Root logo files (not referenced by application code)
+/Textures/GW Logo.png
+/Textures/GWObsLogoWebTile.png
+/Textures/GWObsLogoWebTile.svg
+/Textures/GWObslogo_Dark.png
+/Textures/GWObslogo_White.png
+
+# Unused .ico files (only icon2.ico is compiled via resource.rc)
+/SourceFiles/directx.ico
+/SourceFiles/icon0.ico
+/SourceFiles/icon1.ico
+
+# Fonts: ignore all, then whitelist only the 15 used by the app
+/Textures/Fonts/*
+!/Textures/Fonts/Inter-Regular.otf
+!/Textures/Fonts/Inter-Bold.otf
+!/Textures/Fonts/segoeuithis.ttf
+!/Textures/Fonts/segoeuithibd.ttf
+!/Textures/Fonts/Roboto-Regular.ttf
+!/Textures/Fonts/Roboto-Bold.ttf
+!/Textures/Fonts/HelveticaNeueRoman.otf
+!/Textures/Fonts/HelveticaNeueBold.otf
+!/Textures/Fonts/Fontin-SmallCaps.otf
+!/Textures/Fonts/friz-quadrata-std-medium-5870338ec7ef8.otf
+!/Textures/Fonts/friz-quadrata-std-bold-587034a220f9f.otf
+!/Textures/Fonts/Montserrat-Regular.ttf
+!/Textures/Fonts/TB-Font.ttf
+!/Textures/Fonts/Lato-Regular.ttf
+!/Textures/Fonts/Lato-Bold.ttf
