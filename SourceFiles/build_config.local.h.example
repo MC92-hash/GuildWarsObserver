@@ -1,0 +1,6 @@
+#pragma once
+// Copy this file to build_config.local.h and fill in your values.
+// build_config.local.h is gitignored and will never be committed.
+
+#define GWO_CLOUD_ENABLED 1
+#define GWO_CLOUD_HOST "your-r2-public-url.r2.dev"

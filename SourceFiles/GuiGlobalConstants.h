@@ -1,6 +1,6 @@
 #pragma once
+#include "build_config.h"
 #include "imgui.h"
-#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <filesystem>
@@ -17,11 +17,8 @@ public:
 	inline static std::string saved_match_data_folder_path;
 
 	// Cloud storage settings
-	inline static std::string storage_mode = "local";   // "local", "full_cache", "online_only"
-	inline static std::string cloud_storage_host = [] {
-		const char* env = std::getenv("GW_CLOUD_HOST");
-		return env ? std::string(env) : std::string("pub-1565e36959704f5393b76ee393c9bf47.r2.dev");
-	}();
+	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
+	inline static std::string cloud_storage_host = GWO_CLOUD_HOST;
 
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;
