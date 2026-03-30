@@ -9,6 +9,7 @@ public:
     inline static std::string accepted_eula_date;
     inline static std::string dat_file_path;
     inline static std::string match_data_folder;
+    inline static std::string storage_mode;     // "local", "full_cache", "online_only"
 
     static void Load();
     static void Save();

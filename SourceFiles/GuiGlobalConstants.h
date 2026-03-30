@@ -1,4 +1,5 @@
 #pragma once
+#include "build_config.h"
 #include "imgui.h"
 #include <fstream>
 #include <string>
@@ -14,6 +15,10 @@ public:
 
 	// Persistent match data folder path (saved across sessions)
 	inline static std::string saved_match_data_folder_path;
+
+	// Cloud storage settings
+	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
+	inline static std::string cloud_storage_host = GWO_CLOUD_HOST;
 
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;
@@ -229,13 +234,24 @@ public:
 		}
 	}
 
-	// Get the settings file path (next to executable)
-	static std::filesystem::path GetSettingsFilePath()
+	// Get the directory where the executable lives
+	static std::filesystem::path GetExeDir()
 	{
 		wchar_t exePath[MAX_PATH];
 		GetModuleFileNameW(NULL, exePath, MAX_PATH);
-		std::filesystem::path exeDir = std::filesystem::path(exePath).parent_path();
-		return exeDir / "gui_settings.ini";
+		return std::filesystem::path(exePath).parent_path();
+	}
+
+	// Get the match cache directory (next to executable)
+	static std::string GetMatchCacheDir()
+	{
+		return (GetExeDir() / "MatchCache").string();
+	}
+
+	// Get the settings file path (next to executable)
+	static std::filesystem::path GetSettingsFilePath()
+	{
+		return GetExeDir() / "gui_settings.ini";
 	}
 
 	// Save window visibility settings to file

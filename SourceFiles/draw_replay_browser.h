@@ -9,5 +9,7 @@ struct PendingReplayRequest
 };
 
 inline PendingReplayRequest g_pendingReplay;
+inline bool g_cloudDownloadInProgress = false;
+inline bool g_refreshMatchIndex = false;
 
 void draw_replay_browser(ReplayLibrary& library);

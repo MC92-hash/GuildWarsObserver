@@ -12,6 +12,7 @@
 #include "ReplayLibrary.h"
 #include "FolderWatcher.h"
 #include "FontConfig.h"
+#include "Net/SyncEngine.h"
 #include <windows.h>
 #include <filesystem>
 
@@ -28,17 +29,135 @@ static bool s_preferences_open = false;
 static bool s_licenceModalOpen = false;
 static bool s_datSettingsModalOpen = false;
 
+// Cloud storage settings state
+static SyncEngine* s_syncEnginePtr = nullptr;
+static bool s_storageNeedsRestart = false;
+
 static void draw_preferences_window()
 {
 	if (!s_preferences_open) return;
 
-	ImGui::SetNextWindowSize(ImVec2(420, 220), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Preferences", &s_preferences_open, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return;
 	}
 
+	// ---- Data Source Section ----
+	ImGui::SeparatorText("Data Source");
+
+	const std::string& mode = GuiGlobalConstants::storage_mode;
+
+	// Mode selection
+	int modeChoice = (mode == "full_cache") ? 1 : (mode == "online_only") ? 2 : 0;
+	int prevChoice = modeChoice;
+
+	if (ImGui::RadioButton("Local", &modeChoice, 0)){}
+	ImGui::SameLine(0, 16);
+	if (ImGui::RadioButton("Cloud + Local Cache", &modeChoice, 1)){}
+	ImGui::SameLine(0, 16);
+	if (ImGui::RadioButton("Cloud Only", &modeChoice, 2)){}
+
+	// Description text for each mode
+	switch (modeChoice)
+	{
+	case 0:
+		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+			"Load matches from a local folder only.");
+		break;
+	case 1:
+		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+			"Download all matches from cloud storage and keep a local copy.");
+		break;
+	case 2:
+		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+			"Stream matches on demand from cloud storage. No permanent local copy.");
+		break;
+	}
+
+	if (modeChoice != prevChoice)
+	{
+		switch (modeChoice)
+		{
+		case 0: GuiGlobalConstants::storage_mode = "local";       break;
+		case 1: GuiGlobalConstants::storage_mode = "full_cache";  break;
+		case 2: GuiGlobalConstants::storage_mode = "online_only"; break;
+		}
+
+		// Auto-set cache dir for cloud modes
+		if (modeChoice > 0)
+		{
+			std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
+			std::filesystem::create_directories(cacheDir);
+			SetupConfig::match_data_folder = cacheDir;
+			GuiGlobalConstants::saved_match_data_folder_path = cacheDir;
+		}
+
+		SetupConfig::storage_mode = GuiGlobalConstants::storage_mode;
+		SetupConfig::Save();
+		GuiGlobalConstants::SaveSettings();
+		s_storageNeedsRestart = true;
+	}
+
+	// Sync status (shown for cloud modes)
+	if (s_syncEnginePtr && modeChoice > 0)
+	{
+		ImGui::Spacing();
+		auto syncState = s_syncEnginePtr->GetState();
+		ImGui::Text("Sync:");
+		ImGui::SameLine();
+		switch (syncState)
+		{
+		case SyncEngine::State::Idle:
+			ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "Idle");
+			break;
+		case SyncEngine::State::FetchingIndex:
+			ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.3f, 1.f), "Fetching index...");
+			break;
+		case SyncEngine::State::Downloading:
+		{
+			int dl = s_syncEnginePtr->GetDownloadedCount();
+			int total = s_syncEnginePtr->GetTotalToDownload();
+			float progress = s_syncEnginePtr->GetProgress();
+			ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.3f, 1.f), "Downloading %d / %d", dl, total);
+			ImGui::ProgressBar(progress, ImVec2(-1.f, 14.f));
+			break;
+		}
+		case SyncEngine::State::Complete:
+		{
+			int newCount = s_syncEnginePtr->GetNewMatchCount();
+			if (newCount > 0)
+				ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Synced (%d new)", newCount);
+			else
+				ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Up to date");
+			break;
+		}
+		case SyncEngine::State::Error:
+		{
+			ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f), "Error");
+			std::string err = s_syncEnginePtr->GetLastError();
+			if (!err.empty())
+			{
+				ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+				ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.4f, 1.f), "%s", err.c_str());
+				ImGui::PopTextWrapPos();
+			}
+			break;
+		}
+		}
+	}
+
+	// Restart notice
+	if (s_storageNeedsRestart)
+	{
+		ImGui::Spacing();
+		ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.3f, 1.f),
+		                   "Restart the application to apply changes.");
+	}
+
+	// ---- Font Section ----
+	ImGui::Spacing();
 	ImGui::SeparatorText("Font");
 
 	int currentFont = GuiGlobalConstants::saved_font_index;
@@ -79,8 +198,9 @@ static void draw_preferences_window()
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-	ReplayLibrary& replay_library, FolderWatcher& folder_watcher)
+	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine)
 {
+	s_syncEnginePtr = syncEngine;
 	// First-launch setup wizard (blocks everything until complete)
 	{
 		static bool s_setupDone = !SetupConfig::IsFirstLaunch();

@@ -227,6 +227,12 @@ static char s_matchFolderBuf[512] = "";
 static FolderValidation s_matchFolderValidation = FolderValidation::None;
 static bool s_matchFolderDialogOpen = false;
 
+// Data source choice: 0 = cloud (default), 1 = local folder
+static int  s_dataSourceChoice = 0;
+// Cloud sub-choice: 0 = full_cache, 1 = online_only (default to online_only)
+static int  s_cloudModeChoice = 1;
+// Cloud host is read from GW_CLOUD_HOST env var (see GuiGlobalConstants::cloud_storage_host)
+
 // ─── Background drawing ─────────────────────────────────────────────────────
 
 static void DrawWizardBackground(ImDrawList* dl, ImVec2 display)
@@ -775,87 +781,116 @@ static bool DrawStep2(ImVec2 display)
 
             ImGui::Dummy(ImVec2(0, 24.f));
 
-            // ── Match Data Folder section ────────────────────────────
-            ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "MATCH DATA FOLDER");
+            // ── Match Data Source section ────────────────────────────
+            ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "MATCH DATA SOURCE");
             ImGui::Dummy(ImVec2(0, 4.f));
 
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW);
             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.75f),
-                "GW Observer needs a folder containing match recording files. "
-                "This is the folder where your match data is stored locally.");
+                "How would you like to access match replay data?");
             ImGui::PopTextWrapPos();
-            ImGui::Dummy(ImVec2(0, 4.f));
-
-            {
-                const char* hint = "Example:  D:\\Guild Wars OBS\\Matches data\\Captures";
-                ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 0.70f), "%s", hint);
-            }
-
             ImGui::Dummy(ImVec2(0, 6.f));
 
-            // Folder input + Browse
+            // Radio: Cloud Storage
+            ImGui::RadioButton("Cloud Storage (Recommended)##datasrc", &s_dataSourceChoice, 0);
+            if (s_dataSourceChoice == 0)
             {
-                float browseW = 80.f;
-                float inputW = contentW - browseW - 12.f;
+                ImGui::Indent(24.f);
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW - 24.f);
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.60f),
+                    "Matches are downloaded from cloud storage and cached locally.");
+                ImGui::PopTextWrapPos();
+                ImGui::Dummy(ImVec2(0, 4.f));
 
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+                ImGui::RadioButton("Cloud + Local Cache -- download all matches##cmode", &s_cloudModeChoice, 0);
+                ImGui::RadioButton("Cloud Only -- stream matches on demand##cmode", &s_cloudModeChoice, 1);
 
-                ImGui::SetNextItemWidth(inputW);
-                if (ImGui::InputText("##matchfolder", s_matchFolderBuf, sizeof(s_matchFolderBuf)))
-                    s_matchFolderValidation = ValidateMatchFolder(s_matchFolderBuf);
-
-                ImGui::PopStyleColor(2);
-                ImGui::PopStyleVar(2);
-
-                ImGui::SameLine(0.f, 8.f);
-
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
-                if (ImGui::Button("Browse##folder", ImVec2(browseW, 0)))
-                {
-                    std::string initial = "C:\\";
-                    if (s_matchFolderBuf[0] != '\0')
-                    {
-                        std::filesystem::path p(s_matchFolderBuf);
-                        if (std::filesystem::exists(p) && std::filesystem::is_directory(p))
-                            initial = p.string();
-                        else if (std::filesystem::exists(p.parent_path()))
-                            initial = p.parent_path().string();
-                    }
-                    ImGuiFileDialog::Instance()->OpenDialog("SetupChooseMatchFolder",
-                        "Select Match Data Folder", nullptr, initial + "\\.");
-                    s_matchFolderDialogOpen = true;
-                }
-                ImGui::PopStyleVar();
+                ImGui::Unindent(24.f);
             }
+            ImGui::Dummy(ImVec2(0, 6.f));
 
-            // Folder validation feedback
+            // Radio: Local Folder
+            ImGui::RadioButton("Local Folder##datasrc", &s_dataSourceChoice, 1);
+            if (s_dataSourceChoice == 1)
             {
-                switch (s_matchFolderValidation)
+                ImGui::Indent(24.f);
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + contentW - 24.f);
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.60f),
+                    "Load matches from a folder on your computer.");
+                ImGui::PopTextWrapPos();
+                ImGui::Dummy(ImVec2(0, 4.f));
+
                 {
-                case FolderValidation::Valid:
-                    ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "OK - Folder found");
-                    break;
-                case FolderValidation::ValidEmpty:
-                    ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f),
-                        "No match files found in this folder. You can continue -- files can be added later.");
-                    break;
-                case FolderValidation::NotFound:
-                    ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  Folder not found at this path");
-                    break;
-                case FolderValidation::NotFolder:
-                    ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  This path is not a folder");
-                    break;
-                case FolderValidation::NotReadable:
-                    ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f),
-                        "X  Cannot read this folder -- check permissions");
-                    break;
-                default:
-                    ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
-                    break;
+                    const char* hint = "Example:  D:\\Guild Wars OBS\\Matches data\\Captures";
+                    ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 0.70f), "%s", hint);
                 }
+                ImGui::Dummy(ImVec2(0, 4.f));
+
+                // Folder input + Browse
+                {
+                    float browseW = 80.f;
+                    float inputW = contentW - browseW - 36.f;
+
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+                    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+
+                    ImGui::SetNextItemWidth(inputW);
+                    if (ImGui::InputText("##matchfolder", s_matchFolderBuf, sizeof(s_matchFolderBuf)))
+                        s_matchFolderValidation = ValidateMatchFolder(s_matchFolderBuf);
+
+                    ImGui::PopStyleColor(2);
+                    ImGui::PopStyleVar(2);
+
+                    ImGui::SameLine(0.f, 8.f);
+
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+                    if (ImGui::Button("Browse##folder", ImVec2(browseW, 0)))
+                    {
+                        std::string initial = "C:\\";
+                        if (s_matchFolderBuf[0] != '\0')
+                        {
+                            std::filesystem::path p(s_matchFolderBuf);
+                            if (std::filesystem::exists(p) && std::filesystem::is_directory(p))
+                                initial = p.string();
+                            else if (std::filesystem::exists(p.parent_path()))
+                                initial = p.parent_path().string();
+                        }
+                        ImGuiFileDialog::Instance()->OpenDialog("SetupChooseMatchFolder",
+                            "Select Match Data Folder", nullptr, initial + "\\.");
+                        s_matchFolderDialogOpen = true;
+                    }
+                    ImGui::PopStyleVar();
+                }
+
+                // Folder validation feedback
+                {
+                    switch (s_matchFolderValidation)
+                    {
+                    case FolderValidation::Valid:
+                        ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "OK - Folder found");
+                        break;
+                    case FolderValidation::ValidEmpty:
+                        ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f),
+                            "No match files found in this folder. You can continue -- files can be added later.");
+                        break;
+                    case FolderValidation::NotFound:
+                        ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  Folder not found at this path");
+                        break;
+                    case FolderValidation::NotFolder:
+                        ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  This path is not a folder");
+                        break;
+                    case FolderValidation::NotReadable:
+                        ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f),
+                            "X  Cannot read this folder -- check permissions");
+                        break;
+                    default:
+                        ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
+                        break;
+                    }
+                }
+                ImGui::Unindent(24.f);
             }
 
             ImGui::Dummy(ImVec2(0, 12.f));
@@ -868,8 +903,18 @@ static bool DrawStep2(ImVec2 display)
         // Launch button
         {
             bool datOk = (s_datValidation == DatValidation::Valid);
-            bool folderOk = (s_matchFolderValidation == FolderValidation::Valid ||
-                             s_matchFolderValidation == FolderValidation::ValidEmpty);
+            bool folderOk = false;
+            if (s_dataSourceChoice == 0)
+            {
+                // Cloud mode: valid if S3 URL is provided
+                folderOk = true; // Cloud URL is hardcoded
+            }
+            else
+            {
+                // Local mode: folder must be valid
+                folderOk = (s_matchFolderValidation == FolderValidation::Valid ||
+                            s_matchFolderValidation == FolderValidation::ValidEmpty);
+            }
             bool canLaunch = datOk && folderOk;
             const char* btnLabel = "Launch GW Observer";
             float btnW = 220.f;
@@ -987,12 +1032,28 @@ bool draw_setup_wizard()
             SetupConfig::accepted_eula = true;
             SetupConfig::accepted_eula_date = GetTodayString();
             SetupConfig::dat_file_path = datPath;
-            SetupConfig::match_data_folder = std::string(s_matchFolderBuf);
+
+            if (s_dataSourceChoice == 0)
+            {
+                // Cloud storage mode
+                SetupConfig::storage_mode = (s_cloudModeChoice == 0) ? "full_cache" : "online_only";
+                // Auto-set match folder to cache directory
+                std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
+                std::filesystem::create_directories(cacheDir);
+                SetupConfig::match_data_folder = cacheDir;
+            }
+            else
+            {
+                // Local folder mode
+                SetupConfig::storage_mode = "local";
+                SetupConfig::match_data_folder = std::string(s_matchFolderBuf);
+            }
             SetupConfig::Save();
 
             // Set globals so splash screen proceeds
             GuiGlobalConstants::saved_gw_dat_path = datPath;
-            GuiGlobalConstants::saved_match_data_folder_path = std::string(s_matchFolderBuf);
+            GuiGlobalConstants::saved_match_data_folder_path = SetupConfig::match_data_folder;
+            GuiGlobalConstants::storage_mode = SetupConfig::storage_mode;
             GuiGlobalConstants::SaveSettings();
 
             std::wstring wpath(datPath.begin(), datPath.end());

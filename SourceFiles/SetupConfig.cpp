@@ -55,6 +55,8 @@ void SetupConfig::Load()
             dat_file_path = val;
         else if (key == "match_data_folder")
             match_data_folder = val;
+        else if (key == "storage_mode")
+            storage_mode = val;
     }
     file.close();
 
@@ -62,6 +64,8 @@ void SetupConfig::Load()
         GuiGlobalConstants::saved_gw_dat_path = dat_file_path;
     if (!match_data_folder.empty())
         GuiGlobalConstants::saved_match_data_folder_path = match_data_folder;
+    if (!storage_mode.empty())
+        GuiGlobalConstants::storage_mode = storage_mode;
 }
 
 void SetupConfig::Save()
@@ -83,6 +87,9 @@ void SetupConfig::Save()
     file << "\n[Paths]\n";
     file << "dat_file_path=" << dat_file_path << "\n";
     file << "match_data_folder=" << match_data_folder << "\n";
+
+    file << "\n[Cloud]\n";
+    file << "storage_mode=" << storage_mode << "\n";
 
     file.close();
 }

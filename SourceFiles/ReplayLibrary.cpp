@@ -464,10 +464,23 @@ std::vector<MatchMeta> LocalReplayProvider::GetAvailableReplays()
 
 // --- ReplayLibrary ---
 
+ReplayLibrary::ReplayLibrary()
+    : m_provider(std::make_unique<LocalReplayProvider>())
+{
+}
+
+void ReplayLibrary::SetProvider(std::unique_ptr<IReplayProvider> provider)
+{
+    if (provider)
+        m_provider = std::move(provider);
+}
+
 void ReplayLibrary::SetMatchDataFolder(const std::string& path)
 {
     m_folder_path = path;
-    m_provider.SetFolder(path);
+    // SetFolder is only available on LocalReplayProvider
+    if (auto* local = dynamic_cast<LocalReplayProvider*>(m_provider.get()))
+        local->SetFolder(path);
 }
 
 void ReplayLibrary::ScanFolder()
@@ -477,7 +490,7 @@ void ReplayLibrary::ScanFolder()
 
     if (m_folder_path.empty()) return;
 
-    m_matches = m_provider.GetAvailableReplays();
+    m_matches = m_provider->GetAvailableReplays();
     m_loaded = true;
 }
 
@@ -486,7 +499,7 @@ int ReplayLibrary::RescanDiff()
     m_newMatchFolders.clear();
     if (m_folder_path.empty()) return 0;
 
-    auto fresh = m_provider.GetAvailableReplays();
+    auto fresh = m_provider->GetAvailableReplays();
 
     // Build set of existing folder_path values for fast lookup
     std::unordered_set<std::string> existingSet;
@@ -505,6 +518,22 @@ int ReplayLibrary::RescanDiff()
         std::remove_if(m_matches.begin(), m_matches.end(),
             [&](const MatchMeta& m) { return freshSet.find(m.folder_path) == freshSet.end(); }),
         m_matches.end());
+
+    // Sync cloud/local status: replace entries whose cloud state has changed
+    {
+        std::unordered_map<std::string, const MatchMeta*> freshByPath;
+        for (const auto& m : fresh)
+            freshByPath[m.folder_path] = &m;
+
+        for (auto& existing : m_matches)
+        {
+            auto it = freshByPath.find(existing.folder_path);
+            if (it == freshByPath.end()) continue;
+            // Replace if cloud status changed in either direction
+            if (existing.is_cloud_only != it->second->is_cloud_only)
+                existing = *(it->second);
+        }
+    }
 
     // Add new matches
     int added = 0;

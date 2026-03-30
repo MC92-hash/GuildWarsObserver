@@ -374,3 +374,4 @@ FodyWeavers.xsd
 /tinytiff/TinyTIFF-4.0.1.0
 /.claude
 /nul
+/SourceFiles/build_config.local.h

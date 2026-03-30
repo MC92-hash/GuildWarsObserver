@@ -8,6 +8,7 @@
 #include "draw_dat_load_progress_bar.h"
 #include "draw_picking_info.h"
 #include "draw_ui.h"
+#include "draw_sync_status.h"
 #include "draw_first_launch.h"
 #include "SetupConfig.h"
 #include "draw_timeline.h"
@@ -61,11 +62,16 @@ static void MergeUnicodeFallback(ImFontAtlas* atlas, float fontSize)
         "C:\\Windows\\Fonts\\arial.ttf",     // Arial (basic symbols)
     };
 
+    // Only merge if there's already a font loaded in the atlas
+    if (atlas->Fonts.Size == 0)
+        return;
+
     for (const char* path : symbolFonts)
     {
         if (std::filesystem::exists(path))
         {
-            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, symbolRanges);
+            auto* f = atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, symbolRanges);
+            if (!f) continue;  // font load failed, try next
             break;
         }
     }
@@ -99,7 +105,8 @@ static void MergeUnicodeFallback(ImFontAtlas* atlas, float fontSize)
     {
         if (std::filesystem::exists(path))
         {
-            atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, cjkRanges);
+            auto* f = atlas->AddFontFromFileTTF(path, fontSize, &mergeConfig, cjkRanges);
+            if (!f) continue;  // font load failed, try next
             return;
         }
     }
@@ -131,8 +138,9 @@ static void LoadSelectedFont(float fontSize)
 
         if (!fullPath.empty() && std::filesystem::exists(fullPath))
         {
-            io.Fonts->AddFontFromFileTTF(fullPath.c_str(), fontSize);
-            loaded = true;
+            auto* font = io.Fonts->AddFontFromFileTTF(fullPath.c_str(), fontSize);
+            if (font)
+                loaded = true;
         }
     }
 
@@ -192,6 +200,12 @@ MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
 
 MapBrowser::~MapBrowser()
 {
+    // Cancel and join any in-flight cloud download thread
+    if (m_playDl.state.load() == PlayDownloadState::Downloading && m_cloudProvider)
+        m_cloudProvider->CancelDownload();
+    if (m_playDl.thread.joinable())
+        m_playDl.thread.join();
+
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -315,8 +329,43 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     }
 
     // Auto-load match data folder from saved config
-    if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
+    if (GuiGlobalConstants::storage_mode == "full_cache" ||
+        GuiGlobalConstants::storage_mode == "online_only")
     {
+        // Cloud storage mode
+        auto mode = (GuiGlobalConstants::storage_mode == "full_cache")
+            ? CloudReplayProvider::Mode::FullCache
+            : CloudReplayProvider::Mode::OnlineOnly;
+
+        std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
+        std::wstring s3Host(GuiGlobalConstants::cloud_storage_host.begin(),
+                            GuiGlobalConstants::cloud_storage_host.end());
+
+        m_httpClient.SetBaseUrl(s3Host, true);
+
+        m_matchIndex = std::make_shared<MatchIndex>();
+        m_cloudProvider = std::make_unique<CloudReplayProvider>();
+        m_cloudProvider->Configure(mode, cacheDir, s3Host, true);
+        m_cloudProvider->SetIndex(m_matchIndex);
+
+        // Set the cloud provider on the replay library
+        // (we keep a raw pointer since ReplayLibrary takes ownership via unique_ptr)
+        auto providerForLibrary = std::make_unique<CloudReplayProvider>();
+        providerForLibrary->Configure(mode, cacheDir, s3Host, true);
+        providerForLibrary->SetIndex(m_matchIndex);
+        m_replay_library.SetProvider(std::move(providerForLibrary));
+        m_replay_library.SetMatchDataFolder(cacheDir);
+
+        // Evict expired cached matches (Cloud Only: 30-day retention)
+        m_cloudProvider->EvictExpired();
+
+        // Start background sync
+        m_syncEngine = std::make_unique<SyncEngine>();
+        m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient);
+    }
+    else if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
+    {
+        // Local storage mode (unchanged)
         std::filesystem::path matchFolder(GuiGlobalConstants::saved_match_data_folder_path);
         if (std::filesystem::exists(matchFolder) && std::filesystem::is_directory(matchFolder))
         {
@@ -336,7 +385,27 @@ void MapBrowser::Tick()
 
     // Always tick replay windows regardless of main window focus
     ProcessPendingReplayRequest();
+    ProcessCloudDownloadResult();
     TickReplayWindows();
+
+    // Check if cloud sync has new data
+    if (m_syncEngine && m_syncEngine->HasNewData())
+    {
+        m_replay_library.RescanDiff();
+        m_syncEngine->AcknowledgeNewData();
+    }
+
+    // Handle manual refresh request from replay browser
+    if (g_refreshMatchIndex && m_syncEngine && m_cloudProvider && m_matchIndex)
+    {
+        g_refreshMatchIndex = false;
+        auto syncState = m_syncEngine->GetState();
+        if (syncState != SyncEngine::State::FetchingIndex &&
+            syncState != SyncEngine::State::Downloading)
+        {
+            m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient);
+        }
+    }
 
     if (!is_extracting) {
         if (IsIconic(m_deviceResources->GetWindow())) {
@@ -832,7 +901,19 @@ void MapBrowser::Render()
     }
     else {
         draw_ui(m_dat_managers, m_dat_manager_to_show_in_dat_browser, m_map_renderer.get(), picking_info, m_csv_data, m_FPS_target, m_timer, m_extract_panel_info,
-            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher);
+            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher, m_syncEngine.get());
+
+        // Cloud sync status overlay
+        draw_sync_status(m_syncEngine.get());
+
+        // Cloud download-for-play progress overlay
+        {
+            auto dlState = m_playDl.state.load();
+            if (dlState == PlayDownloadState::Downloading || dlState == PlayDownloadState::Error)
+                draw_play_download_progress(
+                    m_playDl.bytesReceived.load(), m_playDl.bytesTotal.load(),
+                    dlState == PlayDownloadState::Error, m_playDl.errorMsg);
+        }
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active
@@ -1870,6 +1951,10 @@ void MapBrowser::ProcessPendingReplayRequest()
     if (!g_pendingReplay.requested) return;
     g_pendingReplay.requested = false;
 
+    // Don't start if a download is already in progress
+    if (m_playDl.state.load() == PlayDownloadState::Downloading)
+        return;
+
     // Require DAT to be loaded
     if (m_dat_managers.count(0) == 0 ||
         m_dat_managers[0]->m_initialization_state != InitializationState::Completed)
@@ -1888,9 +1973,126 @@ void MapBrowser::ProcessPendingReplayRequest()
         return;
     }
 
+    auto& match = g_pendingReplay.match;
+
+    // If cloud-only, start an async download
+    if (match.is_cloud_only && m_cloudProvider && m_matchIndex)
+    {
+        const RemoteMatchEntry* entry = m_matchIndex->FindEntry(match.folder_name);
+        if (!entry)
+        {
+            MessageBoxA(m_deviceResources->GetWindow(),
+                "Could not find this match in the cloud index.",
+                "Download Error", MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        // Clean up any previous download thread
+        if (m_playDl.thread.joinable())
+            m_playDl.thread.join();
+
+        m_playDl.originalMatch = match;
+        m_playDl.bytesReceived.store(0);
+        m_playDl.bytesTotal.store(entry->size_bytes);
+        m_playDl.errorMsg.clear();
+        m_playDl.state.store(PlayDownloadState::Downloading);
+        g_cloudDownloadInProgress = true;
+
+        // Capture entry by value for the background thread
+        RemoteMatchEntry entryCopy = *entry;
+        m_playDl.thread = std::thread([this, entryCopy]() {
+            auto progressFn = [this](uint64_t received, uint64_t total) {
+                m_playDl.bytesReceived.store(received);
+                if (total > 0)
+                    m_playDl.bytesTotal.store(total);
+            };
+            m_playDl.result = m_cloudProvider->EnsureMatchAvailable(entryCopy, progressFn);
+            if (m_playDl.result.success)
+                m_playDl.state.store(PlayDownloadState::Complete);
+            else
+            {
+                m_playDl.errorMsg = m_playDl.result.error;
+                m_playDl.state.store(PlayDownloadState::Error);
+            }
+        });
+        return; // Don't create ReplayWindow yet — ProcessCloudDownloadResult will do it
+    }
+
+    // Local match: open directly
+    // Update retention timestamp for cached matches in cloud mode
+    if (m_cloudProvider)
+        CloudReplayProvider::WriteLastPlayed(std::filesystem::path(match.folder_path));
+
     HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
     ReplayWindow* rw = ReplayWindow::Create(
-        hInst, g_pendingReplay.match, m_dat_managers[0].get(), m_hash_index);
+        hInst, match, m_dat_managers[0].get(), m_hash_index);
+
+    if (rw)
+        m_replay_windows.emplace_back(rw);
+}
+
+void MapBrowser::ProcessCloudDownloadResult()
+{
+    auto state = m_playDl.state.load();
+    if (state != PlayDownloadState::Complete && state != PlayDownloadState::Error)
+        return;
+
+    if (m_playDl.thread.joinable())
+        m_playDl.thread.join();
+
+    g_cloudDownloadInProgress = false;
+
+    if (state == PlayDownloadState::Error)
+    {
+        m_playDl.state.store(PlayDownloadState::Idle);
+        // Error toast will show via the overlay; no blocking messagebox
+        return;
+    }
+
+    // Download succeeded — rescan library to get full metadata from infos.json
+    m_replay_library.RescanDiff();
+
+    MatchMeta match = m_playDl.originalMatch;
+
+    // Find the freshly scanned match with full metadata
+    bool found = false;
+    for (const auto& scanned : m_replay_library.GetMatches())
+    {
+        if (scanned.folder_name == match.folder_name)
+        {
+            match = scanned;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        // Fallback: parse infos.json directly
+        auto infosPath = m_playDl.result.localPath / "infos.json";
+        MatchMeta directMeta;
+        if (LocalReplayProvider::ParseInfosJson(infosPath, directMeta))
+        {
+            directMeta.folder_name = m_playDl.originalMatch.folder_name;
+            directMeta.folder_path = m_playDl.result.localPath.string();
+            match = directMeta;
+        }
+        else
+        {
+            match.folder_path = m_playDl.result.localPath.string();
+            match.is_cloud_only = false;
+        }
+    }
+
+    m_playDl.state.store(PlayDownloadState::Idle);
+
+    // Ensure retention timestamp is written
+    CloudReplayProvider::WriteLastPlayed(m_playDl.result.localPath);
+
+    // Create the replay window with full metadata
+    HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
+    ReplayWindow* rw = ReplayWindow::Create(
+        hInst, match, m_dat_managers[0].get(), m_hash_index);
 
     if (rw)
         m_replay_windows.emplace_back(rw);
