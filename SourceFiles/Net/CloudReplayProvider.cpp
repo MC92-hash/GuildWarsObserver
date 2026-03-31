@@ -74,6 +74,7 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
             p.encoded_name = rp.encoded_name;
             p.primary = rp.primary;
             p.secondary = rp.secondary;
+            p.player_number = rp.player_number;
             p.used_skills = rp.used_skills;
             p.skill_template_code = rp.skill_template_code;
             p.kills = rp.kills;

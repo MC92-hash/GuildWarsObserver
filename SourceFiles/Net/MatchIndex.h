@@ -19,6 +19,7 @@ struct RemotePlayerInfo
     std::string encoded_name;
     int primary = 0;
     int secondary = 0;
+    int player_number = 0;
     std::vector<int> used_skills;
     std::string skill_template_code;
     int kills = 0;

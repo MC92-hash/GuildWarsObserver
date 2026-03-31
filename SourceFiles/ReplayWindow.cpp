@@ -2409,7 +2409,20 @@ namespace
                                             std::string& outName, std::string& outTag)
     {
         auto pit = m.parties.find(partyId);
-        if (pit == m.parties.end()) { outName = "?"; outTag = ""; return "?"; }
+        if (pit == m.parties.end() || pit->second.players.empty())
+        {
+            // No player data — try guild lookup directly by party ID
+            auto git = m.guilds.find(partyId);
+            if (git != m.guilds.end() && !git->second.name.empty())
+            {
+                outName = git->second.name;
+                outTag = git->second.tag;
+                return outName + " [" + outTag + "]";
+            }
+            outName = "?";
+            outTag = "";
+            return "?";
+        }
 
         std::map<int, int> guildCounts;
         for (const auto& p : pit->second.players)
@@ -2419,7 +2432,20 @@ namespace
         for (const auto& [gid, cnt] : guildCounts)
             if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
 
-        if (bestGuildId == 0) { outName = "Unknown"; outTag = ""; return "Unknown"; }
+        if (bestGuildId == 0)
+        {
+            // Players exist but no guild_id (cloud-only metadata) — fall back to party ID lookup
+            auto git = m.guilds.find(partyId);
+            if (git != m.guilds.end() && !git->second.name.empty())
+            {
+                outName = git->second.name;
+                outTag = git->second.tag;
+                return outName + " [" + outTag + "]";
+            }
+            outName = "Unknown";
+            outTag = "";
+            return "Unknown";
+        }
 
         auto guildIdStr = std::to_string(bestGuildId);
         auto git = m.guilds.find(guildIdStr);

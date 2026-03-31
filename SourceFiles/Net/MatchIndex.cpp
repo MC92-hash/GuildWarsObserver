@@ -116,6 +116,7 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
                     pj["encoded_name"] = p.encoded_name;
                     pj["primary"] = p.primary;
                     pj["secondary"] = p.secondary;
+                    pj["player_number"] = p.player_number;
                     pj["skill_template_code"] = p.skill_template_code;
                     pj["kills"] = p.kills;
                     pj["deaths"] = p.deaths;
@@ -231,6 +232,7 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                         pi.encoded_name = pj.value("encoded_name", "");
                         pi.primary = pj.value("primary", 0);
                         pi.secondary = pj.value("secondary", 0);
+                        pi.player_number = pj.value("player_number", 0);
                         pi.skill_template_code = pj.value("skill_template_code", "");
                         pi.kills = pj.value("kills", 0);
                         pi.deaths = pj.value("deaths", 0);

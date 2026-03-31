@@ -169,6 +169,7 @@ def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
                     "encoded_name": player.get("encoded_name", ""),
                     "primary": player.get("primary", 0),
                     "secondary": player.get("secondary", 0),
+                    "player_number": player.get("player_number", 0),
                     "used_skills": player.get("used_skills", []),
                     "skill_template_code": player.get("skill_template_code", ""),
                     "kills": player.get("kills", 0),
