@@ -157,9 +157,9 @@ def create_tar_gz(match_dir: Path, output_path: Path) -> int:
     """Package a match directory as a .tar.gz archive. Returns the archive size in bytes."""
     folder_name = match_dir.name
     with tarfile.open(output_path, "w:gz") as tar:
-        for item in sorted(match_dir.iterdir()):
+        for item in sorted(match_dir.rglob("*")):
             if item.is_file():
-                arcname = f"{folder_name}/{item.name}"
+                arcname = f"{folder_name}/{item.relative_to(match_dir)}"
                 tar.add(str(item), arcname=arcname)
     return output_path.stat().st_size
 
