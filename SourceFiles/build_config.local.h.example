@@ -2,5 +2,12 @@
 // Copy this file to build_config.local.h and fill in your values.
 // build_config.local.h is gitignored and will never be committed.
 
+// Cloud storage (used by the app)
 #define GWO_CLOUD_ENABLED 1
 #define GWO_CLOUD_HOST "your-r2-public-url.r2.dev"
+
+// R2 upload credentials (used by scripts/upload_to_r2.py)
+#define GWO_R2_ENDPOINT "https://your-account-id.r2.cloudflarestorage.com"
+#define GWO_R2_BUCKET "your-bucket-name"
+#define GWO_R2_ACCESS_KEY "your-access-key-id"
+#define GWO_R2_SECRET_KEY "your-secret-access-key"

@@ -14,6 +14,24 @@ struct RemoteGuildInfo
     std::string tag;
 };
 
+struct RemotePlayerInfo
+{
+    std::string encoded_name;
+    int primary = 0;
+    int secondary = 0;
+    int player_number = 0;
+    std::vector<int> used_skills;
+    std::string skill_template_code;
+    int kills = 0;
+    int deaths = 0;
+    int total_damage = 0;
+};
+
+struct RemotePartyInfo
+{
+    std::vector<RemotePlayerInfo> players;
+};
+
 struct RemoteMatchEntry
 {
     std::string folder;                             // S3 folder name (with spaces)
@@ -26,6 +44,9 @@ struct RemoteMatchEntry
     int winner = 0;                                 // party id (1 or 2)
     uint64_t size_bytes = 0;
     std::map<std::string, RemoteGuildInfo> guilds;  // keyed by party id "1", "2"
+    std::map<std::string, int> team_kills;
+    std::map<std::string, int> team_damage;
+    std::map<std::string, RemotePartyInfo> parties; // keyed by party id "1", "2"
 };
 
 class MatchIndex

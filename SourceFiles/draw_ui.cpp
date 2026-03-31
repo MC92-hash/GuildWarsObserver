@@ -25,26 +25,70 @@ bool dat_compare_filter_result_changed = false;
 bool custom_file_info_changed = false;
 std::unordered_set<uint32_t> dat_compare_filter_result;
 
-static bool s_preferences_open = false;
+static bool s_settingsOpen = false;
 static bool s_licenceModalOpen = false;
-static bool s_datSettingsModalOpen = false;
 
 // Cloud storage settings state
 static SyncEngine* s_syncEnginePtr = nullptr;
+static FolderWatcher* s_folderWatcherPtr = nullptr;
 static bool s_storageNeedsRestart = false;
 
-static void draw_preferences_window()
+static void draw_settings_window()
 {
-	if (!s_preferences_open) return;
+	if (!s_settingsOpen) return;
 
-	ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_FirstUseEver);
-	if (!ImGui::Begin("Preferences", &s_preferences_open, ImGuiWindowFlags_NoCollapse))
+	using Clock = std::chrono::steady_clock;
+
+	// File Paths state (persistent across frames while window is open)
+	static char datBuf[512] = "";
+	static DatValidation datVal = DatValidation::None;
+	static std::string autoDetectMsg;
+	static bool datDialogOpen = false;
+
+	static char folderBuf[512] = "";
+	static FolderValidation folderVal = FolderValidation::None;
+	static bool folderDialogOpen = false;
+
+	static bool initialized = false;
+	static Clock::time_point datSaveTime;
+	static bool datSaved = false;
+	static Clock::time_point folderSaveTime;
+	static bool folderSaved = false;
+
+	if (!initialized)
+	{
+		initialized = true;
+
+		std::string datCur = SetupConfig::dat_file_path;
+		if (datCur.empty()) datCur = GuiGlobalConstants::saved_gw_dat_path;
+		size_t dlen = std::min(datCur.size(), sizeof(datBuf) - 1);
+		if (dlen > 0) memcpy(datBuf, datCur.c_str(), dlen);
+		datBuf[dlen] = '\0';
+		if (datBuf[0] != '\0') datVal = ValidateDatPath(datBuf);
+
+		std::string folCur;
+		// For cloud modes, prefer the actual cache dir next to the executable
+		if (GuiGlobalConstants::storage_mode != "local")
+			folCur = GuiGlobalConstants::GetMatchCacheDir();
+		if (folCur.empty()) folCur = GuiGlobalConstants::saved_match_data_folder_path;
+		if (folCur.empty()) folCur = SetupConfig::match_data_folder;
+		size_t flen = std::min(folCur.size(), sizeof(folderBuf) - 1);
+		if (flen > 0) memcpy(folderBuf, folCur.c_str(), flen);
+		folderBuf[flen] = '\0';
+		if (folderBuf[0] != '\0') folderVal = ValidateMatchFolder(folderBuf);
+
+		datSaved = false;
+		folderSaved = false;
+	}
+
+	ImGui::SetNextWindowSize(ImVec2(580, 620), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin("Settings", &s_settingsOpen, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return;
 	}
 
-	// ---- Data Source Section ----
+	// ──── Data Source Section ────────────────────────────────────
 	ImGui::SeparatorText("Data Source");
 
 	const std::string& mode = GuiGlobalConstants::storage_mode;
@@ -156,7 +200,234 @@ static void draw_preferences_window()
 		                   "Restart the application to apply changes.");
 	}
 
-	// ---- Font Section ----
+	// ──── File Paths Section ────────────────────────────────────
+	ImGui::Spacing();
+	ImGui::SeparatorText("File Paths");
+
+	float contentW = ImGui::GetContentRegionAvail().x;
+	float browseW = 80.f;
+	float saveW = 70.f;
+	float inputW = contentW - browseW - saveW - 20.f;
+
+	// -- Guild Wars DAT File --
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Guild Wars DAT File");
+	ImGui::Dummy(ImVec2(0, 4.f));
+
+	{
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+
+		ImGui::SetNextItemWidth(inputW);
+		if (ImGui::InputText("##settingsdatpath", datBuf, sizeof(datBuf)))
+		{
+			datVal = ValidateDatPath(datBuf);
+			autoDetectMsg.clear();
+		}
+
+		ImGui::PopStyleColor(2);
+		ImGui::PopStyleVar(2);
+
+		ImGui::SameLine(0.f, 4.f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+		if (ImGui::Button("Browse##dat", ImVec2(browseW, 0)))
+		{
+			std::string initial = "C:\\";
+			if (datBuf[0] != '\0')
+			{
+				auto parent = std::filesystem::path(datBuf).parent_path();
+				if (std::filesystem::exists(parent))
+					initial = parent.string();
+			}
+			ImGuiFileDialog::Instance()->OpenDialog("SettingsChooseGwDat", "Select Gw.dat",
+				".dat", initial + "\\.");
+			datDialogOpen = true;
+		}
+		ImGui::PopStyleVar();
+
+		ImGui::SameLine(0.f, 4.f);
+		{
+			bool canSave = (datVal == DatValidation::Valid);
+			if (!canSave) ImGui::BeginDisabled();
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+			if (ImGui::Button("Save##dat", ImVec2(saveW, 0)) && canSave)
+			{
+				std::string p(datBuf);
+				SetupConfig::dat_file_path = p;
+				SetupConfig::Save();
+				GuiGlobalConstants::saved_gw_dat_path = p;
+				GuiGlobalConstants::SaveSettings();
+				std::wstring wp(p.begin(), p.end());
+				gw_dat_path = wp;
+				gw_dat_path_set = true;
+				datSaved = true;
+				datSaveTime = Clock::now();
+			}
+			ImGui::PopStyleVar();
+			if (!canSave) ImGui::EndDisabled();
+		}
+	}
+
+	// DAT validation feedback
+	{
+		switch (datVal)
+		{
+		case DatValidation::Valid:
+			ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "OK - DAT file found");
+			break;
+		case DatValidation::NotFound:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  File not found at this path");
+			break;
+		case DatValidation::WrongType:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f),
+				"X  This does not appear to be a Guild Wars DAT file");
+			break;
+		case DatValidation::TooSmall:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f),
+				"X  File too small -- is this the correct file?");
+			break;
+		default:
+			ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
+			break;
+		}
+
+		if (datSaved)
+		{
+			float elapsed = std::chrono::duration<float>(Clock::now() - datSaveTime).count();
+			if (elapsed < 2.f)
+			{
+				float alpha = std::max(0.f, 1.f - (elapsed - 1.5f) / 0.5f);
+				ImGui::SameLine();
+				ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, alpha), "Saved");
+			}
+			else
+				datSaved = false;
+		}
+
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.10f));
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.83f, 0.63f, 0.13f, 1.f));
+		if (ImGui::SmallButton("[ Auto-detect ]##settings"))
+		{
+			std::string found = TryAutoDetectDat();
+			if (!found.empty())
+			{
+				size_t len = std::min(found.size(), sizeof(datBuf) - 1);
+				memcpy(datBuf, found.c_str(), len);
+				datBuf[len] = '\0';
+				datVal = ValidateDatPath(datBuf);
+				autoDetectMsg.clear();
+			}
+			else
+				autoDetectMsg = "Could not auto-detect. Please browse manually.";
+		}
+		ImGui::PopStyleColor(4);
+		if (!autoDetectMsg.empty())
+			ImGui::TextColored(ImVec4(0.88f, 0.65f, 0.20f, 1.f), "%s", autoDetectMsg.c_str());
+	}
+
+	ImGui::Dummy(ImVec2(0, 12.f));
+
+	// -- Match Data Folder --
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Match Data Folder");
+	ImGui::Dummy(ImVec2(0, 4.f));
+
+	{
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+
+		ImGui::SetNextItemWidth(inputW);
+		if (ImGui::InputText("##settingsfolderpath", folderBuf, sizeof(folderBuf)))
+			folderVal = ValidateMatchFolder(folderBuf);
+
+		ImGui::PopStyleColor(2);
+		ImGui::PopStyleVar(2);
+
+		ImGui::SameLine(0.f, 4.f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+		if (ImGui::Button("Browse##folder", ImVec2(browseW, 0)))
+		{
+			std::string initial = "C:\\";
+			if (folderBuf[0] != '\0')
+			{
+				std::filesystem::path p(folderBuf);
+				if (std::filesystem::exists(p) && std::filesystem::is_directory(p))
+					initial = p.string();
+			}
+			ImGuiFileDialog::Instance()->OpenDialog("SettingsChooseMatchFolder",
+				"Select Match Data Folder", nullptr, initial + "\\.");
+			folderDialogOpen = true;
+		}
+		ImGui::PopStyleVar();
+
+		ImGui::SameLine(0.f, 4.f);
+		{
+			bool canSave = (folderVal == FolderValidation::Valid ||
+			                folderVal == FolderValidation::ValidEmpty);
+			if (!canSave) ImGui::BeginDisabled();
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+			if (ImGui::Button("Save##folder", ImVec2(saveW, 0)) && canSave)
+			{
+				std::string p(folderBuf);
+				SetupConfig::match_data_folder = p;
+				SetupConfig::Save();
+				GuiGlobalConstants::saved_match_data_folder_path = p;
+				GuiGlobalConstants::SaveSettings();
+				if (s_folderWatcherPtr)
+					s_folderWatcherPtr->Restart(p);
+				folderSaved = true;
+				folderSaveTime = Clock::now();
+			}
+			ImGui::PopStyleVar();
+			if (!canSave) ImGui::EndDisabled();
+		}
+	}
+
+	// Folder validation feedback
+	{
+		switch (folderVal)
+		{
+		case FolderValidation::Valid:
+			ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "OK - Folder found");
+			break;
+		case FolderValidation::ValidEmpty:
+			ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f),
+				"No match files found. You can still save -- files can be added later.");
+			break;
+		case FolderValidation::NotFound:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  Folder not found at this path");
+			break;
+		case FolderValidation::NotFolder:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f), "X  This path is not a folder");
+			break;
+		case FolderValidation::NotReadable:
+			ImGui::TextColored(ImVec4(0.8f, 0.19f, 0.19f, 1.f),
+				"X  Cannot read this folder -- check permissions");
+			break;
+		default:
+			ImGui::Dummy(ImVec2(0, ImGui::GetFontSize()));
+			break;
+		}
+
+		if (folderSaved)
+		{
+			float elapsed = std::chrono::duration<float>(Clock::now() - folderSaveTime).count();
+			if (elapsed < 2.f)
+			{
+				float alpha = std::max(0.f, 1.f - (elapsed - 1.5f) / 0.5f);
+				ImGui::SameLine();
+				ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, alpha), "Saved");
+			}
+			else
+				folderSaved = false;
+		}
+	}
+
+	// ──── Font Section ──────────────────────────────────────────
 	ImGui::Spacing();
 	ImGui::SeparatorText("Font");
 
@@ -193,6 +464,41 @@ static void draw_preferences_window()
 	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Font changes apply immediately.");
 
 	ImGui::End();
+
+	// ──── File dialogs (must be drawn outside the Settings window) ──
+	if (datDialogOpen && ImGuiFileDialog::Instance()->Display("SettingsChooseGwDat",
+		ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+	{
+		if (ImGuiFileDialog::Instance()->IsOk())
+		{
+			std::string fp = ImGuiFileDialog::Instance()->GetFilePathName();
+			size_t len = std::min(fp.size(), sizeof(datBuf) - 1);
+			memcpy(datBuf, fp.c_str(), len);
+			datBuf[len] = '\0';
+			datVal = ValidateDatPath(datBuf);
+			autoDetectMsg.clear();
+		}
+		ImGuiFileDialog::Instance()->Close();
+		datDialogOpen = false;
+	}
+
+	if (folderDialogOpen && ImGuiFileDialog::Instance()->Display("SettingsChooseMatchFolder",
+		ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+	{
+		if (ImGuiFileDialog::Instance()->IsOk())
+		{
+			std::string fp = ImGuiFileDialog::Instance()->GetCurrentPath();
+			size_t len = std::min(fp.size(), sizeof(folderBuf) - 1);
+			memcpy(folderBuf, fp.c_str(), len);
+			folderBuf[len] = '\0';
+			folderVal = ValidateMatchFolder(folderBuf);
+		}
+		ImGuiFileDialog::Instance()->Close();
+		folderDialogOpen = false;
+	}
+
+	if (!s_settingsOpen)
+		initialized = false;
 }
 
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
@@ -201,6 +507,8 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine)
 {
 	s_syncEnginePtr = syncEngine;
+	s_folderWatcherPtr = &folder_watcher;
+
 	// First-launch setup wizard (blocks everything until complete)
 	{
 		static bool s_setupDone = !SetupConfig::IsFirstLaunch();
@@ -260,31 +568,17 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	int initial_dat_manager_to_show = dat_manager_to_show;
 
-	// File dialog key used by both the menu item and the first-run prompt
-	static bool open_dat_file_dialog = false;
-	static bool open_match_folder_dialog = false;
-
 	// Main menu bar — always visible
 	if (ImGui::BeginMainMenuBar()) {
 		if (ImGui::BeginMenu("File")) {
-			if (ImGui::MenuItem("Load .dat File...")) {
-				open_dat_file_dialog = true;
-			}
-			if (ImGui::MenuItem("Load Match Data Folder...")) {
-				open_match_folder_dialog = true;
-			}
-			ImGui::Separator();
-			if (ImGui::MenuItem("Preferences...")) {
-				s_preferences_open = true;
+			if (ImGui::MenuItem("Settings...")) {
+				s_settingsOpen = true;
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Exit")) {
 				PostQuitMessage(0);
 			}
 			ImGui::EndMenu();
-		}
-		if (ImGui::MenuItem("Replay Browser", NULL, &GuiGlobalConstants::is_replay_browser_open)) {
-			GuiGlobalConstants::SaveSettings();
 		}
 		if (ImGui::BeginMenu("Debug")) {
 			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
@@ -320,15 +614,13 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		if (ImGui::BeginMenu("Help")) {
 			if (ImGui::MenuItem("Licence & Credits"))
 				s_licenceModalOpen = true;
-			if (ImGui::MenuItem("File Paths"))
-				s_datSettingsModalOpen = true;
 			ImGui::EndMenu();
 		}
 		ImGui::EndMainMenuBar();
 	}
 
 	// DAT file missing notification bar
-	if (!s_datSettingsModalOpen && gw_dat_path_set &&
+	if (!s_settingsOpen && gw_dat_path_set &&
 		!SetupConfig::dat_file_path.empty() &&
 		!std::filesystem::exists(SetupConfig::dat_file_path))
 	{
@@ -345,68 +637,11 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			ImGui::Text("DAT file not found at saved path.");
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Update Path"))
-				s_datSettingsModalOpen = true;
+				s_settingsOpen = true;
 		}
 		ImGui::End();
 		ImGui::PopStyleVar();
 		ImGui::PopStyleColor();
-	}
-
-	// Open file dialog triggered by File menu
-	if (open_dat_file_dialog) {
-		open_dat_file_dialog = false;
-
-		std::string initial_filepath = ".";
-		if (!GuiGlobalConstants::saved_gw_dat_path.empty()) {
-			auto parentDir = std::filesystem::path(GuiGlobalConstants::saved_gw_dat_path).parent_path();
-			if (std::filesystem::exists(parentDir))
-				initial_filepath = parentDir.string();
-		}
-		if (!std::filesystem::exists(initial_filepath) || !std::filesystem::is_directory(initial_filepath)) {
-			auto exe_dir = get_executable_directory();
-			if (exe_dir.has_value())
-				initial_filepath = exe_dir.value().string();
-		}
-
-		ImGuiFileDialog::Instance()->OpenDialog("ChooseGwDatKey", "Select Gw.dat", ".dat",
-			initial_filepath + "\\.");
-	}
-
-	// Display the file dialog (shared between menu and first-run)
-	if (ImGuiFileDialog::Instance()->Display("ChooseGwDatKey", ImGuiWindowFlags_NoCollapse,
-		ImVec2(500, 400)))
-	{
-		if (ImGuiFileDialog::Instance()->IsOk())
-		{
-			std::string filePathName = ImGuiFileDialog::Instance()->GetFilePathName();
-
-			GuiGlobalConstants::saved_gw_dat_path = filePathName;
-			GuiGlobalConstants::SaveSettings();
-
-			save_last_filepath(filePathName, "dat_browser_last_filepath.txt");
-
-			std::wstring wstr(filePathName.begin(), filePathName.end());
-			gw_dat_path = wstr;
-			gw_dat_path_set = true;
-		}
-		ImGuiFileDialog::Instance()->Close();
-	}
-
-	// Handle match data folder selection via Windows folder browser
-	if (open_match_folder_dialog) {
-		open_match_folder_dialog = false;
-
-		std::wstring wFolderPath = OpenDirectoryDialog();
-		if (!wFolderPath.empty())
-		{
-			std::string folderPath(wFolderPath.begin(), wFolderPath.end());
-			GuiGlobalConstants::saved_match_data_folder_path = folderPath;
-			GuiGlobalConstants::SaveSettings();
-
-			replay_library.SetMatchDataFolder(folderPath);
-			replay_library.ScanFolder();
-			folder_watcher.Restart(folderPath);
-		}
 	}
 
 	const auto& initialization_state = dat_managers[dat_manager_to_show]->m_initialization_state;
@@ -428,13 +663,11 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	// Debug panels (available regardless of DAT state)
 	draw_debug_match_metadata_panel(replay_library);
 
-	// Preferences window
-	draw_preferences_window();
+	// Settings window
+	draw_settings_window();
 
 	// Help menu modals
 	draw_licence_modal(&s_licenceModalOpen);
-	draw_dat_settings_modal(&s_datSettingsModalOpen, &folder_watcher);
 
 	dat_manager_to_show_changed = dat_manager_to_show != initial_dat_manager_to_show;
 }
-

@@ -62,6 +62,29 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
         meta.guilds[pid] = std::move(gm);
     }
 
+    meta.team_kills = entry.team_kills;
+    meta.team_damage = entry.team_damage;
+
+    for (const auto& [pid, party] : entry.parties)
+    {
+        PartyMeta pm;
+        for (const auto& rp : party.players)
+        {
+            PlayerMeta p;
+            p.encoded_name = rp.encoded_name;
+            p.primary = rp.primary;
+            p.secondary = rp.secondary;
+            p.player_number = rp.player_number;
+            p.used_skills = rp.used_skills;
+            p.skill_template_code = rp.skill_template_code;
+            p.kills = rp.kills;
+            p.deaths = rp.deaths;
+            p.total_damage = rp.total_damage;
+            pm.players.push_back(std::move(p));
+        }
+        meta.parties[pid] = std::move(pm);
+    }
+
     return meta;
 }
 
@@ -120,7 +143,9 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
 
     // Download the .tar.gz archive for this match
     std::string archivePathStr = "/matches/" + entry.folder + ".tar.gz";
-    std::wstring archivePath(archivePathStr.begin(), archivePathStr.end());
+    int wchars = MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, nullptr, 0);
+    std::wstring archivePath(wchars - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, archivePath.data(), wchars);
 
     auto downloadDir = m_cachePath / (entry.folder + ".downloading");
     std::error_code ec;
@@ -151,9 +176,37 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
     // Remove the archive file, keep only extracted content
     std::filesystem::remove(archiveFile, ec);
 
-    // Atomic rename: downloadDir → matchDir
-    std::filesystem::remove_all(matchDir, ec); // remove any stale partial
-    std::filesystem::rename(downloadDir, matchDir, ec);
+    // Find where infos.json actually ended up — archives may nest files
+    // inside a subfolder, producing downloadDir/subfolder/infos.json
+    std::filesystem::path infosLocation;
+    for (const auto& sub : std::filesystem::directory_iterator(downloadDir, ec))
+    {
+        if (sub.is_directory() && std::filesystem::exists(sub.path() / "infos.json"))
+        {
+            infosLocation = sub.path();
+            break;
+        }
+    }
+
+    if (!infosLocation.empty())
+    {
+        // Content is nested in a subfolder — use that subfolder as the match
+        std::filesystem::remove_all(matchDir, ec);
+        std::filesystem::rename(infosLocation, matchDir, ec);
+        std::filesystem::remove_all(downloadDir, ec);
+    }
+    else if (std::filesystem::exists(downloadDir / "infos.json"))
+    {
+        // Content is flat in downloadDir — rename directly
+        std::filesystem::remove_all(matchDir, ec);
+        std::filesystem::rename(downloadDir, matchDir, ec);
+    }
+    else
+    {
+        std::filesystem::remove_all(downloadDir, ec);
+        result.error = "Extracted archive does not contain infos.json";
+        return result;
+    }
     if (ec)
     {
         result.error = "Failed to finalize download: " + ec.message();
