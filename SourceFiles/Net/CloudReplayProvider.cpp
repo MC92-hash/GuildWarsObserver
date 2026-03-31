@@ -174,6 +174,19 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
     // Remove the archive file, keep only extracted content
     std::filesystem::remove(archiveFile, ec);
 
+    // Handle nested extraction: archive may contain folder_name/infos.json
+    // which results in downloadDir/folder_name/infos.json — flatten it
+    auto nestedDir = downloadDir / entry.folder;
+    if (std::filesystem::exists(nestedDir / "infos.json"))
+    {
+        // Move nested content up to downloadDir
+        auto tmpFlat = m_cachePath / (entry.folder + ".flatten");
+        std::filesystem::remove_all(tmpFlat, ec);
+        std::filesystem::rename(nestedDir, tmpFlat, ec);
+        std::filesystem::remove_all(downloadDir, ec);
+        std::filesystem::rename(tmpFlat, downloadDir, ec);
+    }
+
     // Atomic rename: downloadDir → matchDir
     std::filesystem::remove_all(matchDir, ec); // remove any stale partial
     std::filesystem::rename(downloadDir, matchDir, ec);
