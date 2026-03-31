@@ -2659,9 +2659,6 @@ static void DrawNotificationBar()
 
 void draw_replay_browser(ReplayLibrary& library)
 {
-    if (!GuiGlobalConstants::is_replay_browser_open)
-        return;
-
     // Process new matches from RescanDiff — populate highlights and notification
     if (!library.GetNewMatchFolders().empty())
     {

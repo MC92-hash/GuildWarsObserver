@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Net/SyncEngine.h"
 #include "Net/CloudReplayProvider.h"
+#include "Net/TarGzExtractor.h"
 #include "Net/MatchIndex.h"
 #include "Net/HttpClient.h"
 #include <set>
@@ -104,11 +105,95 @@ void SyncEngine::SyncThread()
     // Inform the provider about the index
     m_provider->SetIndex(m_index);
 
+    // --- Phase 1b: Extract any .tar / .tar.gz archives sitting in the cache ---
+    std::error_code ec;
+    if (std::filesystem::exists(cacheDir, ec))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec))
+        {
+            if (m_cancelRequested.load()) break;
+            if (!entry.is_regular_file()) continue;
+
+            auto ext = entry.path().extension().string();
+            auto stem = entry.path().stem();
+            bool isTarGz = (ext == ".gz" && stem.extension().string() == ".tar");
+            bool isTar = (ext == ".tar");
+
+            if (!isTarGz && !isTar)
+                continue;
+
+            // Derive folder name: "match.tar.gz" -> "match", "match.tar" -> "match"
+            std::string folderName = isTarGz ? stem.stem().string() : stem.string();
+            auto destDir = cacheDir / folderName;
+
+            // Skip if already extracted
+            if (std::filesystem::exists(destDir / "infos.json"))
+            {
+                // Archive already extracted — remove the archive to save space
+                std::filesystem::remove(entry.path(), ec);
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_textMutex);
+                m_statusText = "Extracting " + folderName + "...";
+            }
+
+            // Extract to a temp dir first, then rename atomically
+            auto tmpDir = cacheDir / (folderName + ".extracting");
+            std::filesystem::remove_all(tmpDir, ec);
+
+            bool extracted = isTarGz
+                ? TarGz::ExtractTarGz(entry.path(), tmpDir)
+                : TarGz::ExtractTar(entry.path(), tmpDir);
+
+            if (extracted)
+            {
+                // The archive may contain files at root or inside a subfolder.
+                // Check if infos.json ended up in tmpDir/folderName/ (nested) or tmpDir/ (flat).
+                if (std::filesystem::exists(tmpDir / folderName / "infos.json"))
+                {
+                    // Nested: rename the inner folder to the final destination
+                    std::filesystem::remove_all(destDir, ec);
+                    std::filesystem::rename(tmpDir / folderName, destDir, ec);
+                    std::filesystem::remove_all(tmpDir, ec);
+                }
+                else if (std::filesystem::exists(tmpDir / "infos.json"))
+                {
+                    // Flat: rename tmpDir itself
+                    std::filesystem::remove_all(destDir, ec);
+                    std::filesystem::rename(tmpDir, destDir, ec);
+                }
+                else
+                {
+                    // Extraction succeeded but no infos.json found — leave archive for inspection
+                    std::filesystem::remove_all(tmpDir, ec);
+                    continue;
+                }
+
+                // Remove the archive after successful extraction
+                std::filesystem::remove(entry.path(), ec);
+
+                // Signal the UI to pick up this match incrementally
+                m_hasNewData.store(true);
+            }
+            else
+            {
+                std::filesystem::remove_all(tmpDir, ec);
+            }
+        }
+    }
+
+    if (m_cancelRequested.load())
+    {
+        m_state.store(State::Idle);
+        return;
+    }
+
     // --- Phase 2: Determine new matches ---
 
     // Build set of locally cached folder names
     std::set<std::string> localFolders;
-    std::error_code ec;
     if (std::filesystem::exists(cacheDir, ec))
     {
         for (const auto& entry : std::filesystem::directory_iterator(cacheDir, ec))

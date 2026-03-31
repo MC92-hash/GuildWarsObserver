@@ -99,38 +99,18 @@ inline uint64_t ParseOctal(const char* p, size_t len)
     return val;
 }
 
-// Extract a .tar.gz archive to a destination directory.
+// Extract tar entries from raw tar data into destDir.
 // Returns true on success.
-inline bool ExtractTarGz(const std::filesystem::path& archivePath,
-                          const std::filesystem::path& destDir)
+inline bool ExtractTarData(const uint8_t* tarData, size_t tarSize,
+                            const std::filesystem::path& destDir)
 {
-    // Read the .tar.gz file
-    std::ifstream file(archivePath, std::ios::binary);
-    if (!file.is_open()) return false;
-
-    file.seekg(0, std::ios::end);
-    size_t fileSize = static_cast<size_t>(file.tellg());
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> gzData(fileSize);
-    file.read(reinterpret_cast<char*>(gzData.data()), fileSize);
-    file.close();
-
-    // Decompress gzip
-    std::vector<uint8_t> tarData;
-    if (!GzipDecompress(gzData, tarData))
-        return false;
-
-    gzData.clear(); // free memory
-
-    // Parse tar
     std::error_code ec;
     std::filesystem::create_directories(destDir, ec);
 
     size_t pos = 0;
-    while (pos + 512 <= tarData.size())
+    while (pos + 512 <= tarSize)
     {
-        const char* header = reinterpret_cast<const char*>(tarData.data() + pos);
+        const char* header = reinterpret_cast<const char*>(tarData + pos);
 
         // Check for end-of-archive (two zero blocks)
         if (header[0] == '\0')
@@ -154,7 +134,7 @@ inline bool ExtractTarGz(const std::filesystem::path& archivePath,
 
         pos += 512; // advance past header
 
-        if (typeFlag == '5' || name.back() == '/')
+        if (typeFlag == '5' || (!name.empty() && name.back() == '/'))
         {
             // Directory entry
             std::filesystem::create_directories(destDir / name, ec);
@@ -168,9 +148,9 @@ inline bool ExtractTarGz(const std::filesystem::path& archivePath,
             std::ofstream outFile(filePath, std::ios::binary);
             if (outFile.is_open() && fileSize64 > 0)
             {
-                if (pos + fileSize64 > tarData.size())
+                if (pos + fileSize64 > tarSize)
                     return false; // truncated archive
-                outFile.write(reinterpret_cast<const char*>(tarData.data() + pos),
+                outFile.write(reinterpret_cast<const char*>(tarData + pos),
                               static_cast<std::streamsize>(fileSize64));
             }
         }
@@ -180,6 +160,51 @@ inline bool ExtractTarGz(const std::filesystem::path& archivePath,
     }
 
     return true;
+}
+
+// Extract a .tar.gz archive to a destination directory.
+// Returns true on success.
+inline bool ExtractTarGz(const std::filesystem::path& archivePath,
+                          const std::filesystem::path& destDir)
+{
+    std::ifstream file(archivePath, std::ios::binary);
+    if (!file.is_open()) return false;
+
+    file.seekg(0, std::ios::end);
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> gzData(fileSize);
+    file.read(reinterpret_cast<char*>(gzData.data()), fileSize);
+    file.close();
+
+    // Decompress gzip
+    std::vector<uint8_t> tarData;
+    if (!GzipDecompress(gzData, tarData))
+        return false;
+
+    gzData.clear(); // free memory
+
+    return ExtractTarData(tarData.data(), tarData.size(), destDir);
+}
+
+// Extract a plain .tar archive to a destination directory.
+// Returns true on success.
+inline bool ExtractTar(const std::filesystem::path& archivePath,
+                        const std::filesystem::path& destDir)
+{
+    std::ifstream file(archivePath, std::ios::binary);
+    if (!file.is_open()) return false;
+
+    file.seekg(0, std::ios::end);
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> tarData(fileSize);
+    file.read(reinterpret_cast<char*>(tarData.data()), fileSize);
+    file.close();
+
+    return ExtractTarData(tarData.data(), tarData.size(), destDir);
 }
 
 } // namespace TarGz
