@@ -182,9 +182,41 @@ def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
     return entry
 
 
-def create_tar_gz(match_dir: Path, output_path: Path) -> int:
-    """Package a match directory as a .tar.gz archive. Returns the archive size in bytes."""
-    folder_name = match_dir.name
+def sanitize_folder_name(name: str) -> str:
+    """Replace non-ASCII characters in folder name with ASCII-safe substitutes.
+
+    R2 public URLs can't serve files with non-ASCII characters in the key.
+    Guild tags with Unicode chars (e.g. [戦戦戦戦]) get replaced, but the
+    real guild data is preserved in the index entry from infos.json.
+    """
+    if all(ord(c) < 128 for c in name):
+        return name  # already ASCII-safe
+
+    import re
+    # Replace content inside [...] brackets if it contains non-ASCII
+    def replace_bracket(m):
+        content = m.group(1)
+        if any(ord(c) >= 128 for c in content):
+            # Use a hash-based short identifier to keep it unique
+            import hashlib
+            short = hashlib.md5(content.encode("utf-8")).hexdigest()[:6]
+            return f"[{short}]"
+        return m.group(0)
+
+    sanitized = re.sub(r"\[([^\]]+)\]", replace_bracket, name)
+
+    # Replace any remaining non-ASCII characters
+    sanitized = "".join(c if ord(c) < 128 else "_" for c in sanitized)
+    return sanitized
+
+
+def create_tar_gz(match_dir: Path, output_path: Path, archive_folder_name: str | None = None) -> int:
+    """Package a match directory as a .tar.gz archive. Returns the archive size in bytes.
+
+    If archive_folder_name is provided, the files inside the tar will use that
+    name instead of the actual directory name (used for URL-safe renaming).
+    """
+    folder_name = archive_folder_name or match_dir.name
     with tarfile.open(output_path, "w:gz") as tar:
         for item in sorted(match_dir.rglob("*")):
             if item.is_file():
@@ -239,8 +271,11 @@ def cmd_upload(args, config: dict):
     local_matches = scan_local_matches(source_dir)
     print(f"  {len(local_matches)} match folders found locally.")
 
-    # Find new matches
-    new_matches = [m for m in local_matches if m.name not in remote_folders]
+    # Find new matches (check both original and sanitized names)
+    new_matches = [
+        m for m in local_matches
+        if m.name not in remote_folders and sanitize_folder_name(m.name) not in remote_folders
+    ]
     if not new_matches:
         print("\nNo new matches to upload. Everything is up to date.")
         return
@@ -259,7 +294,12 @@ def cmd_upload(args, config: dict):
     with tempfile.TemporaryDirectory() as tmp_dir:
         for i, match_dir in enumerate(new_matches, 1):
             folder_name = match_dir.name
+            safe_name = sanitize_folder_name(folder_name)
+            renamed = safe_name != folder_name
+
             print(f"\n[{i}/{len(new_matches)}] Uploading: {folder_name}")
+            if renamed:
+                print(f"  URL-safe name: {safe_name}")
 
             # Read metadata
             infos = read_infos_json(match_dir)
@@ -267,20 +307,20 @@ def cmd_upload(args, config: dict):
                 print(f"  Skipping (could not read infos.json)")
                 continue
 
-            # Create archive
-            archive_path = Path(tmp_dir) / f"{folder_name}.tar.gz"
+            # Create archive (using safe name for tar entries)
+            archive_path = Path(tmp_dir) / f"{safe_name}.tar.gz"
             print(f"  Packaging...")
-            archive_size = create_tar_gz(match_dir, archive_path)
+            archive_size = create_tar_gz(match_dir, archive_path, safe_name if renamed else None)
             size_mb = archive_size / (1024 * 1024)
             print(f"  Archive size: {size_mb:.1f} MB")
 
-            # Upload archive
-            r2_key = f"matches/{folder_name}.tar.gz"
+            # Upload archive with URL-safe key
+            r2_key = f"matches/{safe_name}.tar.gz"
             print(f"  Uploading to {r2_key}...")
             upload_file(s3, bucket, r2_key, archive_path)
 
-            # Build index entry
-            entry = build_index_entry(folder_name, infos, archive_size)
+            # Build index entry with safe folder name but real guild data from infos.json
+            entry = build_index_entry(safe_name, infos, archive_size)
             new_entries.append(entry)
 
             # Clean up temp archive
