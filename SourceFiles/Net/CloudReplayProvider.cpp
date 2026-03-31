@@ -143,7 +143,9 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
 
     // Download the .tar.gz archive for this match
     std::string archivePathStr = "/matches/" + entry.folder + ".tar.gz";
-    std::wstring archivePath(archivePathStr.begin(), archivePathStr.end());
+    int wchars = MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, nullptr, 0);
+    std::wstring archivePath(wchars - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, archivePath.data(), wchars);
 
     auto downloadDir = m_cachePath / (entry.folder + ".downloading");
     std::error_code ec;
