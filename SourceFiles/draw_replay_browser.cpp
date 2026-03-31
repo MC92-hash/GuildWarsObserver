@@ -136,7 +136,23 @@ static GuildLabel GetPartyGuild(const MatchMeta& m, const std::string& partyId)
     for (const auto& [gid, cnt] : guildCounts)
         if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
 
-    if (bestGuildId == 0) { result.display = "Unknown"; return result; }
+    if (bestGuildId == 0)
+    {
+        // No guild_id on players (e.g. cloud-only metadata) — fall back to guild by party ID
+        auto git = m.guilds.find(partyId);
+        if (git != m.guilds.end() && !git->second.name.empty())
+        {
+            result.name = git->second.name;
+            result.tag = git->second.tag;
+            result.rank = git->second.rank;
+            result.display = result.name + " [" + result.tag + "]";
+        }
+        else
+        {
+            result.display = "Unknown";
+        }
+        return result;
+    }
 
     auto guildIdStr = std::to_string(bestGuildId);
     auto git = m.guilds.find(guildIdStr);
