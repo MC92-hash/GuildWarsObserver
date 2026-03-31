@@ -62,6 +62,28 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
         meta.guilds[pid] = std::move(gm);
     }
 
+    meta.team_kills = entry.team_kills;
+    meta.team_damage = entry.team_damage;
+
+    for (const auto& [pid, party] : entry.parties)
+    {
+        PartyMeta pm;
+        for (const auto& rp : party.players)
+        {
+            PlayerMeta p;
+            p.encoded_name = rp.encoded_name;
+            p.primary = rp.primary;
+            p.secondary = rp.secondary;
+            p.used_skills = rp.used_skills;
+            p.skill_template_code = rp.skill_template_code;
+            p.kills = rp.kills;
+            p.deaths = rp.deaths;
+            p.total_damage = rp.total_damage;
+            pm.players.push_back(std::move(p));
+        }
+        meta.parties[pid] = std::move(pm);
+    }
+
     return meta;
 }
 

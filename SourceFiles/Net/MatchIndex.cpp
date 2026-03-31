@@ -89,6 +89,49 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
         }
         m["guilds"] = std::move(guildsObj);
 
+        // Team stats
+        if (!entry.team_kills.empty())
+        {
+            json tkObj = json::object();
+            for (const auto& [k, v] : entry.team_kills) tkObj[k] = v;
+            m["team_kills"] = std::move(tkObj);
+        }
+        if (!entry.team_damage.empty())
+        {
+            json tdObj = json::object();
+            for (const auto& [k, v] : entry.team_damage) tdObj[k] = v;
+            m["team_damage"] = std::move(tdObj);
+        }
+
+        // Parties
+        if (!entry.parties.empty())
+        {
+            json partiesObj = json::object();
+            for (const auto& [pid, party] : entry.parties)
+            {
+                json playersArr = json::array();
+                for (const auto& p : party.players)
+                {
+                    json pj;
+                    pj["encoded_name"] = p.encoded_name;
+                    pj["primary"] = p.primary;
+                    pj["secondary"] = p.secondary;
+                    pj["skill_template_code"] = p.skill_template_code;
+                    pj["kills"] = p.kills;
+                    pj["deaths"] = p.deaths;
+                    pj["total_damage"] = p.total_damage;
+                    json skills = json::array();
+                    for (int s : p.used_skills) skills.push_back(s);
+                    pj["used_skills"] = std::move(skills);
+                    playersArr.push_back(std::move(pj));
+                }
+                json partyJ;
+                partyJ["PLAYER"] = std::move(playersArr);
+                partiesObj[pid] = std::move(partyJ);
+            }
+            m["parties"] = std::move(partiesObj);
+        }
+
         matchesArr.push_back(std::move(m));
     }
     j["matches"] = std::move(matchesArr);
@@ -160,6 +203,47 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                 gi.name = gObj.value("name", "");
                 gi.tag = gObj.value("tag", "");
                 entry.guilds[pid] = std::move(gi);
+            }
+        }
+
+        if (item.contains("team_kills") && item["team_kills"].is_object())
+        {
+            for (auto& [k, v] : item["team_kills"].items())
+                entry.team_kills[k] = v.get<int>();
+        }
+
+        if (item.contains("team_damage") && item["team_damage"].is_object())
+        {
+            for (auto& [k, v] : item["team_damage"].items())
+                entry.team_damage[k] = v.get<int>();
+        }
+
+        if (item.contains("parties") && item["parties"].is_object())
+        {
+            for (auto& [pid, partyObj] : item["parties"].items())
+            {
+                RemotePartyInfo party;
+                if (partyObj.contains("PLAYER") && partyObj["PLAYER"].is_array())
+                {
+                    for (const auto& pj : partyObj["PLAYER"])
+                    {
+                        RemotePlayerInfo pi;
+                        pi.encoded_name = pj.value("encoded_name", "");
+                        pi.primary = pj.value("primary", 0);
+                        pi.secondary = pj.value("secondary", 0);
+                        pi.skill_template_code = pj.value("skill_template_code", "");
+                        pi.kills = pj.value("kills", 0);
+                        pi.deaths = pj.value("deaths", 0);
+                        pi.total_damage = pj.value("total_damage", 0);
+                        if (pj.contains("used_skills") && pj["used_skills"].is_array())
+                        {
+                            for (const auto& s : pj["used_skills"])
+                                pi.used_skills.push_back(s.get<int>());
+                        }
+                        party.players.push_back(std::move(pi));
+                    }
+                }
+                entry.parties[pid] = std::move(party);
             }
         }
 

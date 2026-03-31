@@ -150,6 +150,34 @@ def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
                     "tag": guild_obj.get("tag", ""),
                 }
 
+    # Team-level stats
+    entry["team_kills"] = infos.get("team_kills", {})
+    entry["team_damage"] = infos.get("team_damage", {})
+
+    # Party/player data for cloud-only preview
+    parties_raw = infos.get("parties", {})
+    if isinstance(parties_raw, dict):
+        parties_out = {}
+        for party_id, party_obj in parties_raw.items():
+            if not isinstance(party_obj, dict):
+                continue
+            players_out = []
+            for player in party_obj.get("PLAYER", []):
+                if not isinstance(player, dict):
+                    continue
+                players_out.append({
+                    "encoded_name": player.get("encoded_name", ""),
+                    "primary": player.get("primary", 0),
+                    "secondary": player.get("secondary", 0),
+                    "used_skills": player.get("used_skills", []),
+                    "skill_template_code": player.get("skill_template_code", ""),
+                    "kills": player.get("kills", 0),
+                    "deaths": player.get("deaths", 0),
+                    "total_damage": player.get("total_damage", 0),
+                })
+            parties_out[party_id] = {"PLAYER": players_out}
+        entry["parties"] = parties_out
+
     return entry
 
 
