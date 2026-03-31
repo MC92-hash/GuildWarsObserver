@@ -176,22 +176,37 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
     // Remove the archive file, keep only extracted content
     std::filesystem::remove(archiveFile, ec);
 
-    // Handle nested extraction: archive may contain folder_name/infos.json
-    // which results in downloadDir/folder_name/infos.json — flatten it
-    auto nestedDir = downloadDir / entry.folder;
-    if (std::filesystem::exists(nestedDir / "infos.json"))
+    // Find where infos.json actually ended up — archives may nest files
+    // inside a subfolder, producing downloadDir/subfolder/infos.json
+    std::filesystem::path infosLocation;
+    for (const auto& sub : std::filesystem::directory_iterator(downloadDir, ec))
     {
-        // Move nested content up to downloadDir
-        auto tmpFlat = m_cachePath / (entry.folder + ".flatten");
-        std::filesystem::remove_all(tmpFlat, ec);
-        std::filesystem::rename(nestedDir, tmpFlat, ec);
-        std::filesystem::remove_all(downloadDir, ec);
-        std::filesystem::rename(tmpFlat, downloadDir, ec);
+        if (sub.is_directory() && std::filesystem::exists(sub.path() / "infos.json"))
+        {
+            infosLocation = sub.path();
+            break;
+        }
     }
 
-    // Atomic rename: downloadDir → matchDir
-    std::filesystem::remove_all(matchDir, ec); // remove any stale partial
-    std::filesystem::rename(downloadDir, matchDir, ec);
+    if (!infosLocation.empty())
+    {
+        // Content is nested in a subfolder — use that subfolder as the match
+        std::filesystem::remove_all(matchDir, ec);
+        std::filesystem::rename(infosLocation, matchDir, ec);
+        std::filesystem::remove_all(downloadDir, ec);
+    }
+    else if (std::filesystem::exists(downloadDir / "infos.json"))
+    {
+        // Content is flat in downloadDir — rename directly
+        std::filesystem::remove_all(matchDir, ec);
+        std::filesystem::rename(downloadDir, matchDir, ec);
+    }
+    else
+    {
+        std::filesystem::remove_all(downloadDir, ec);
+        result.error = "Extracted archive does not contain infos.json";
+        return result;
+    }
     if (ec)
     {
         result.error = "Failed to finalize download: " + ec.message();
