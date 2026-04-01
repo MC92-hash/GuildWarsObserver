@@ -95,7 +95,7 @@ HLSL shaders are compiled to C++ headers. Multiple pixel/vertex shaders: NewMode
 
 ## Cloud Storage & Upload Pipeline
 
-Matches are distributed via Cloudflare R2 (`gwobserver-test` bucket). The app fetches `index.json` + `.tar.gz` archives from the public bucket URL.
+Matches are distributed via Cloudflare R2 (`gwobserver-prod` bucket), served publicly at `matches.gwobserver.com`. The app fetches `index.json` + `.tar.gz` archives from this domain.
 
 **Upload workflow:**
 1. Record matches → raw `.tar` files land in a local directory
