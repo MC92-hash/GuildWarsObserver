@@ -24,16 +24,7 @@
 
 class SpatialAudioEngine;
 
-struct ReplayHotkeys
-{
-    int rewind5s  = ImGuiKey_LeftArrow;
-    int forward5s = ImGuiKey_RightArrow;
-    int playPause = ImGuiKey_Space;
-
-    static ReplayHotkeys& Get();
-    void Save() const;
-    void Load();
-};
+#include "ReplayHotkeys.h"
 
 class ReplayWindow final : public DX::IDeviceNotify
 {
@@ -101,6 +92,11 @@ private:
 
     HWND m_hwnd = nullptr;
     bool m_alive = false;
+
+    // Edge detection for GetAsyncKeyState-based hotkey polling.
+    // Indexed by ImGuiKey value; true = key was down last frame.
+    bool m_prevKeyDown[ImGuiKey_NamedKey_COUNT] = {};
+    bool HotkeyPressed(int imguiKey);  // returns true on rising edge
 
     std::unique_ptr<DX::DeviceResources> m_deviceResources;
     std::unique_ptr<InputManager> m_inputManager;

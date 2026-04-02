@@ -12,6 +12,7 @@
 #include "ReplayLibrary.h"
 #include "FolderWatcher.h"
 #include "FontConfig.h"
+#include "ReplayHotkeys.h"
 #include "Net/SyncEngine.h"
 #include <windows.h>
 #include <filesystem>
@@ -81,7 +82,7 @@ static void draw_settings_window()
 		folderSaved = false;
 	}
 
-	ImGui::SetNextWindowSize(ImVec2(580, 620), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(580, 860), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin("Settings", &s_settingsOpen, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
@@ -463,6 +464,115 @@ static void draw_settings_window()
 	ImGui::Spacing();
 	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Font changes apply immediately.");
 
+	// ──── Keybindings Section ──────────────────────────────────────
+	ImGui::Spacing();
+	ImGui::SeparatorText("Keybindings");
+
+	static ReplayHotkeys editingKeys;
+	static bool keysNeedInit = true;
+	if (keysNeedInit)
+	{
+		editingKeys = ReplayHotkeys::Get();
+		keysNeedInit = false;
+	}
+
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Replay Transport");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	HotkeyInput("Rewind 5 seconds",    &editingKeys.rewind5s);
+	HotkeyInput("Forward 5 seconds",   &editingKeys.forward5s);
+	HotkeyInput("Play / Pause",        &editingKeys.playPause);
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Overlay Toggles");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	HotkeyInput("Range Rings",         &editingKeys.toggleRangeRings);
+	HotkeyInput("Morale Panel",        &editingKeys.toggleMoralePanel);
+	HotkeyInput("Event Timeline",      &editingKeys.toggleEventTimeline);
+	HotkeyInput("Lord Damage Panel",   &editingKeys.toggleLordDamage);
+	HotkeyInput("Heatmap",             &editingKeys.toggleHeatmap);
+	HotkeyInput("Piano Roll",          &editingKeys.togglePianoRoll);
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Camera & View");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	HotkeyInput("Auto Camera",         &editingKeys.toggleAutoCamera);
+	HotkeyInput("Fog of War",          &editingKeys.toggleFogOfWar);
+	HotkeyInput("Top View",            &editingKeys.toggleTopView);
+	HotkeyInput("Exit Follow Mode",    &editingKeys.exitFollowMode);
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Camera Movement");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	HotkeyInput("Move Forward",        &editingKeys.camForward);
+	HotkeyInput("Move Backward",       &editingKeys.camBackward);
+	HotkeyInput("Strafe Left",         &editingKeys.camStrafeLeft);
+	HotkeyInput("Strafe Right",        &editingKeys.camStrafeRight);
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Camera Options");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	ImGui::Checkbox("Invert Mouse X (horizontal)", &editingKeys.invertMouseX);
+	ImGui::Checkbox("Invert Mouse Y (vertical)",   &editingKeys.invertMouseY);
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+
+	// Duplicate key warning
+	{
+		int allKeys[] = {
+			editingKeys.rewind5s, editingKeys.forward5s, editingKeys.playPause,
+			editingKeys.toggleRangeRings, editingKeys.toggleMoralePanel,
+			editingKeys.toggleEventTimeline, editingKeys.toggleLordDamage,
+			editingKeys.toggleAutoCamera, editingKeys.toggleFogOfWar,
+			editingKeys.toggleTopView, editingKeys.togglePianoRoll,
+			editingKeys.toggleHeatmap, editingKeys.exitFollowMode,
+			editingKeys.camForward, editingKeys.camBackward,
+			editingKeys.camStrafeLeft, editingKeys.camStrafeRight
+		};
+		constexpr int count = sizeof(allKeys) / sizeof(allKeys[0]);
+		bool hasDupe = false;
+		for (int i = 0; i < count && !hasDupe; i++)
+			for (int j = i + 1; j < count && !hasDupe; j++)
+				if (allKeys[i] == allKeys[j]) hasDupe = true;
+		if (hasDupe)
+			ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f),
+				"Warning: Duplicate key bindings detected.");
+	}
+
+	static bool keySaved = false;
+	static std::chrono::steady_clock::time_point keySaveTime;
+
+	if (ImGui::Button("Save Keybindings", ImVec2(150, 0)))
+	{
+		ReplayHotkeys::Get() = editingKeys;
+		ReplayHotkeys::Get().Save();
+		keySaved = true;
+		keySaveTime = std::chrono::steady_clock::now();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Reset to Defaults", ImVec2(150, 0)))
+	{
+		editingKeys.ResetToDefaults();
+		ReplayHotkeys::Get() = editingKeys;
+		ReplayHotkeys::Get().Save();
+		keySaved = true;
+		keySaveTime = std::chrono::steady_clock::now();
+	}
+
+	if (keySaved)
+	{
+		float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - keySaveTime).count();
+		if (elapsed < 2.f)
+		{
+			float alpha = std::max(0.f, 1.f - (elapsed - 1.5f) / 0.5f);
+			ImGui::SameLine();
+			ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, alpha), "Saved");
+		}
+		else
+			keySaved = false;
+	}
+
 	ImGui::End();
 
 	// ──── File dialogs (must be drawn outside the Settings window) ──
@@ -498,7 +608,10 @@ static void draw_settings_window()
 	}
 
 	if (!s_settingsOpen)
+	{
 		initialized = false;
+		keysNeedInit = true;
+	}
 }
 
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,

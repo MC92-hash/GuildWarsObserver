@@ -4,6 +4,7 @@
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
 #include "SkillDatabase.h"
+#include "MatchRatings.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
@@ -703,6 +704,8 @@ struct BrowserState
     int  selectedMatchIndex = -1;
     int  sortColumn = 0;
     bool sortAscending = false;
+
+    int  minRatingFilter = 0;
 
     bool filtersBuilt = false;
     int  lastMatchCount = -1;
@@ -1425,6 +1428,14 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 continue;
         }
 
+        // Rating filter
+        if (s_state.minRatingFilter > 0)
+        {
+            int r = MatchRatings::Get().GetRating(m.folder_name);
+            if (r < s_state.minRatingFilter)
+                continue;
+        }
+
         GuildLabel g1 = GetPartyGuild(m, "1");
         GuildLabel g2 = GetPartyGuild(m, "2");
 
@@ -1506,6 +1517,8 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             case 2: r = a.mapName.compare(b.mapName); break;
             case 3: r = a.guild1.display.compare(b.guild1.display); break;
             case 4: r = a.guild2.display.compare(b.guild2.display); break;
+            case 5: r = MatchRatings::Get().GetRating(a.meta->folder_name)
+                      - MatchRatings::Get().GetRating(b.meta->folder_name); break;
             default: break;
             }
             return asc ? (r < 0) : (r > 0);
@@ -1707,8 +1720,28 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.dateTo = {};
         s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
         s_state.calBrowseToMonth = 0; s_state.calBrowseToYear = 0;
+        s_state.minRatingFilter = 0;
     }
     ImGui::PopStyleVar();
+
+    // ── Min Rating filter ──
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("Min Rating");
+    ImGui::PopStyleColor();
+    if (s_state.minRatingFilter > 0)
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+        if (ImGui::SmallButton("Clear##rating_clear"))
+            s_state.minRatingFilter = 0;
+        ImGui::PopStyleColor();
+    }
+    {
+        int res = DrawStarRating("##minRating", s_state.minRatingFilter);
+        if (res > 0) s_state.minRatingFilter = res;
+        else if (res == -1) s_state.minRatingFilter = 0;
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -1859,15 +1892,16 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float tableW = ImGui::GetContentRegionAvail().x;
     float dateW = 100.0f;
     float occasionW = (mode == LayoutMode::Narrow) ? 100.0f : 130.0f;
+    float ratingW = 72.0f;
     float mapW = std::max(90.0f, tableW * 0.13f);
-    float teamW = std::clamp((tableW - dateW - mapW - occasionW) * 0.5f, 100.0f, 250.0f);
+    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX;
 
-    if (ImGui::BeginTable("##match_table", 5, tableFlags))
+    if (ImGui::BeginTable("##match_table", 6, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Date",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
@@ -1875,6 +1909,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::TableSetupColumn("Map",      ImGuiTableColumnFlags_WidthFixed, mapW);
         ImGui::TableSetupColumn("Team 1",   ImGuiTableColumnFlags_WidthFixed, teamW);
         ImGui::TableSetupColumn("Team 2",   ImGuiTableColumnFlags_WidthFixed, teamW);
+        ImGui::TableSetupColumn("Rating",   ImGuiTableColumnFlags_WidthFixed, ratingW);
         ImGui::TableHeadersRow();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
@@ -1923,9 +1958,19 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 char dateBuf[16];
                 snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
                 if (ImGui::Selectable(dateBuf, isSelected,
-                    ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap
+                    | ImGuiSelectableFlags_AllowDoubleClick))
                 {
-                    s_state.selectedMatchIndex = isSelected ? -1 : fm.originalIndex;
+                    if (ImGui::IsMouseDoubleClicked(0) && !g_cloudDownloadInProgress)
+                    {
+                        s_state.selectedMatchIndex = fm.originalIndex;
+                        g_pendingReplay.requested = true;
+                        g_pendingReplay.match = m;
+                    }
+                    else
+                    {
+                        s_state.selectedMatchIndex = isSelected ? -1 : fm.originalIndex;
+                    }
                 }
                 if (ImGui::IsItemHovered() && m.is_cloud_only)
                     ImGui::SetTooltip("Cloud only - will download when opened");
@@ -1967,6 +2012,15 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 {
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
+                }
+
+                // Rating column
+                ImGui::TableNextColumn();
+                {
+                    int cur = MatchRatings::Get().GetRating(m.folder_name);
+                    int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(), cur);
+                    if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
+                    else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
                 }
 
                 ImGui::PopID();
@@ -2492,6 +2546,19 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
         }
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
+
+        // ── Rating ──
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+        ImGui::TextUnformatted("Rating");
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        {
+            int cur = MatchRatings::Get().GetRating(m.folder_name);
+            int res = DrawStarRating("##detailRating", cur);
+            if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
+            else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
+        }
 
         // ── Lord Damage summary ──
         {
