@@ -582,6 +582,118 @@ static void ParseLordEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Lifecycle events (AGENT_ADD / AGENT_REMOVE)
+// ---------------------------------------------------------------------------
+
+static void ParseLifecycleEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[8];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 8);
+                if (n >= 2)
+                {
+                    std::string_view typeName(tok[0].begin,
+                                              tok[0].end - tok[0].begin);
+                    if (typeName == "AGENT_ADD" && n >= 7)
+                    {
+                        LifecycleEvent ev;
+                        ev.time       = li.time;
+                        ev.isAdd      = true;
+                        ev.agent_id   = ToInt(tok[1].begin, tok[1].end);
+                        ev.agent_type = static_cast<uint32_t>(
+                            strtoul(std::string(tok[2].begin, tok[2].end).c_str(), nullptr, 10));
+                        ev.type_code  = ToInt(tok[3].begin, tok[3].end);
+                        ev.x          = ToFloat(tok[4].begin, tok[4].end);
+                        ev.y          = ToFloat(tok[5].begin, tok[5].end);
+                        ev.speed      = ToFloat(tok[6].begin, tok[6].end);
+                        data.lifecycle.push_back(std::move(ev));
+                    }
+                    else if (typeName == "AGENT_REMOVE" && n >= 2)
+                    {
+                        LifecycleEvent ev;
+                        ev.time     = li.time;
+                        ev.isAdd    = false;
+                        ev.agent_id = ToInt(tok[1].begin, tok[1].end);
+                        data.lifecycle.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Map object manipulation events (MAP_OBJECT / MAP_OBJECT_STATE)
+// ---------------------------------------------------------------------------
+
+static void ParseMapObjectEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[6];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 6);
+                if (n >= 4)
+                {
+                    std::string_view typeName(tok[0].begin,
+                                              tok[0].end - tok[0].begin);
+                    if (typeName == "MAP_OBJECT" && n >= 4)
+                    {
+                        MapObjectEvent ev;
+                        ev.time            = li.time;
+                        ev.isState         = false;
+                        ev.object_id       = static_cast<uint32_t>(
+                            strtoul(std::string(tok[1].begin, tok[1].end).c_str(), nullptr, 10));
+                        ev.animation_type  = ToInt(tok[2].begin, tok[2].end);
+                        ev.animation_stage = ToInt(tok[3].begin, tok[3].end);
+                        data.mapObject.push_back(std::move(ev));
+                    }
+                    else if (typeName == "MAP_OBJECT_STATE" && n >= 4)
+                    {
+                        MapObjectEvent ev;
+                        ev.time      = li.time;
+                        ev.isState   = true;
+                        ev.object_id = static_cast<uint32_t>(
+                            strtoul(std::string(tok[1].begin, tok[1].end).c_str(), nullptr, 10));
+                        ev.unk1      = ToInt(tok[2].begin, tok[2].end);
+                        ev.state     = ToInt(tok[3].begin, tok[3].end);
+                        data.mapObject.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File dispatch table
 // ---------------------------------------------------------------------------
 
@@ -592,14 +704,16 @@ struct StoCFileEntry
 };
 
 static const StoCFileEntry kStoCFiles[] = {
-    { "agent_events",       ParseAgentEvents },
-    { "skill_events",       ParseSkillEvents },
-    { "attack_skill_events", ParseAttackSkillEvents },
-    { "basic_attack_events", ParseBasicAttackEvents },
-    { "combat_events",      ParseCombatEvents },
-    { "jumbo_messages",     ParseJumboMessages },
-    { "unknown_events",     ParseUnknownEvents },
-    { "lord_events",        ParseLordEvents },
+    { "agent_events",                  ParseAgentEvents },
+    { "skill_events",                  ParseSkillEvents },
+    { "attack_skill_events",           ParseAttackSkillEvents },
+    { "basic_attack_events",           ParseBasicAttackEvents },
+    { "combat_events",                 ParseCombatEvents },
+    { "jumbo_messages",                ParseJumboMessages },
+    { "unknown_events",                ParseUnknownEvents },
+    { "lord_events",                   ParseLordEvents },
+    { "lifecycle_events",              ParseLifecycleEvents },
+    { "manipulate_map_object_events",  ParseMapObjectEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

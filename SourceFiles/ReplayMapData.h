@@ -116,6 +116,7 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
         { 4278, { 3019, "Spirit of Bloodsong" } },
         { 5766, { 1730, "Spirit of Infuriating Heat" } },
         { 4286, { 1213, "Spirit of Tranquility" } },
+        { 2932, { 470,  "Spirit of Predatory Season" } },
     };
     for (auto& e : table)
         if (e.modelId == modelId) return &e.info;
@@ -136,6 +137,7 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
     // --- Ranger Nature Rituals ---
     case 2927: // Edge of Extinction
     case 2929: // Fertile Season
+    case 2932: // Predatory Season
     case 2936: // Energizing Wind
     case 2937: // Quickening Zephyr
     case 2938: // Nature's Renewal
@@ -166,6 +168,8 @@ inline const char* LookupMapItem(int mapId, uint32_t itemId)
     case 171: // Warrior's Isle
         if (itemId == 59 || itemId == 60) return "Repair Kit";
         break;
+    // TODO: Hunter's Isle (172) — flag and repair kit item_ids unknown
+    // TODO: Wizard's Isle (173) — flag and repair kit item_ids unknown
     }
     return nullptr;
 }
@@ -359,9 +363,19 @@ struct SkillUseEvent
     bool  wasFastRecast    = false; // true if next cast happened before normal recharge expired
 };
 
+// Tracks one lifecycle incarnation of an agent (agent IDs are recycled by the game)
+struct AgentIncarnation {
+    int originalAgentId;
+    float startTime;
+    float endTime;   // FLT_MAX if no AGENT_REMOVE observed
+};
+
 struct AgentReplayData
 {
     int agent_id = 0;
+    int originalAgentId = -1; // -1 = this IS the original; >= 0 = split from that agent
+    float lifecycleStart = -1.f; // AGENT_ADD time (-1 if unknown)
+    float lifecycleEnd   = -1.f; // AGENT_REMOVE time (-1 if unknown)
     std::vector<AgentSnapshot> snapshots;
 
     AgentType type = AgentType::Unknown;
@@ -379,6 +393,9 @@ struct AgentReplayData
     // Spirit-specific metadata
     int      spiritSkillId = 0;
     std::string spiritSkillName;
+
+    // Incarnation break indices (snapshot indices where INCARNATION_BREAK was found)
+    std::vector<int> incarnationBreaks;
 
     // Per-agent MOVE_TO_POINT events (built from StoC after both parsers finish)
     std::vector<MoveToPointEvent> moveEvents;
@@ -649,7 +666,7 @@ struct CombatLogRow {
 
 enum class StoCCategory : uint8_t
 {
-    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, _Count
+    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, Lifecycle, MapObject, _Count
 };
 
 inline const char* StoCCategoryName(StoCCategory c)
@@ -662,6 +679,8 @@ inline const char* StoCCategoryName(StoCCategory c)
     case StoCCategory::Combat:        return "Combat Events";
     case StoCCategory::Jumbo:         return "Jumbo Messages";
     case StoCCategory::Unknown:       return "Unknown Events";
+    case StoCCategory::Lifecycle:     return "Lifecycle Events";
+    case StoCCategory::MapObject:     return "Map Object Events";
     default:                          return "?";
     }
 }
@@ -743,6 +762,64 @@ struct StoCLordDamageEvent
     int   damage_after    = 0;
 };
 
+// ---------------------------------------------------------------------------
+// Bundle type classification for items that can be picked up as bundles
+// ---------------------------------------------------------------------------
+
+enum class BundleType : uint8_t { Unknown, Flag, RepairKit, VineSeed };
+
+inline BundleType LookupBundleType(int mapId, uint32_t itemId)
+{
+    if (IsFlagItemId(mapId, itemId)) return BundleType::Flag;
+    const char* name = LookupMapItem(mapId, itemId);
+    if (!name) return BundleType::Unknown;
+    if (strcmp(name, "Repair Kit") == 0) return BundleType::RepairKit;
+    if (strcmp(name, "Vine Seed") == 0)  return BundleType::VineSeed;
+    return BundleType::Unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle events (AGENT_ADD / AGENT_REMOVE from lifecycle_events.txt)
+// ---------------------------------------------------------------------------
+
+struct LifecycleEvent
+{
+    float    time = 0.f;
+    int      agent_id = 0;
+    bool     isAdd = true;
+    uint32_t agent_type = 0;
+    int      type_code = 0;
+    float    x = 0, y = 0, z = 0;
+    float    speed = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Map object manipulation events (from manipulate_map_object_events.txt)
+// ---------------------------------------------------------------------------
+
+struct MapObjectEvent
+{
+    float    time = 0.f;
+    uint32_t object_id = 0;
+    int      animation_type = 0;
+    int      animation_stage = 0;
+    bool     isState = false;
+    int      state = 0;
+    int      unk1 = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Bundle carry interval — tracks what a player is holding over time
+// ---------------------------------------------------------------------------
+
+struct BundleCarryInterval
+{
+    float      startTime = 0.f;
+    float      endTime   = FLT_MAX;
+    BundleType type      = BundleType::Unknown;
+    int        itemAgentId = -1;
+};
+
 struct StoCData
 {
     std::vector<AgentMovementEvent>     agentMovement;
@@ -753,6 +830,8 @@ struct StoCData
     std::vector<JumboMessageEvent>      jumbo;
     std::vector<UnknownEvent>           unknown;
     std::vector<StoCLordDamageEvent>    lordDamage;
+    std::vector<LifecycleEvent>         lifecycle;
+    std::vector<MapObjectEvent>         mapObject;
 };
 
 struct StoCParseProgress

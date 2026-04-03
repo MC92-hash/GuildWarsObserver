@@ -19,3 +19,10 @@ bool PollAgentParseCompletion(ReplayContext& ctx);
 // and classify each agent as Player / NPC / Gadget / Flag / Unknown.
 void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
                     const MatchMeta& meta, int mapId);
+
+// Split agent files that contain mixed incarnations due to agent ID recycling.
+// Uses lifecycle AGENT_ADD/AGENT_REMOVE events to define incarnation windows.
+// Falls back to detecting item_id/model_id changes when lifecycle data is absent.
+// New incarnations get synthetic IDs starting at kSyntheticIdBase.
+void SplitRecycledAgents(std::unordered_map<int, AgentReplayData>& agents,
+                         const std::vector<LifecycleEvent>& lifecycle);

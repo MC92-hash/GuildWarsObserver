@@ -327,6 +327,9 @@
     <ClInclude Include="SourceFiles\ReplayWindow.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\CatapultLeverState.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\HeatmapData.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -762,6 +765,9 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\CatapultLeverState.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\HeatmapData.cpp">

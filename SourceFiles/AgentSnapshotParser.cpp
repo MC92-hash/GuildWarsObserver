@@ -324,6 +324,17 @@ static bool ParseAgentFile(const std::filesystem::path& filePath,
 
         if (effectiveEnd > ptr)
         {
+            // Detect recorder incarnation break markers
+            constexpr const char kBreakMarker[] = "# INCARNATION_BREAK";
+            size_t lineLen = static_cast<size_t>(effectiveEnd - ptr);
+            if (lineLen >= sizeof(kBreakMarker) - 1
+                && memcmp(ptr, kBreakMarker, sizeof(kBreakMarker) - 1) == 0)
+            {
+                out.incarnationBreaks.push_back(static_cast<int>(out.snapshots.size()));
+                ptr = lineEnd + 1;
+                continue;
+            }
+
             totalLines++;
             AgentSnapshot snap;
             snap.raw_line.assign(ptr, effectiveEnd);
@@ -542,6 +553,7 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
         {
             ard.type         = AgentType::Item;
             ard.categoryName = itemName;
+            ard.teamId       = 0;
             continue;
         }
 
@@ -590,5 +602,183 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
 
         ard.type         = AgentType::Unknown;
         ard.categoryName = "Unknown";
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SplitRecycledAgents — detect agent ID recycling and split mixed agent files
+// into separate incarnations so each entry has consistent item_id / model_id.
+// ---------------------------------------------------------------------------
+
+static constexpr int kSyntheticIdBase = 1'000'000;
+
+void SplitRecycledAgents(std::unordered_map<int, AgentReplayData>& agents,
+                         const std::vector<LifecycleEvent>& lifecycle)
+{
+    // Phase 1: Build lifecycle windows per agent_id
+    struct Window { float addTime; float removeTime; };
+    std::unordered_map<int, std::vector<Window>> windowsMap;
+
+    for (auto& ev : lifecycle)
+    {
+        if (ev.isAdd)
+        {
+            windowsMap[ev.agent_id].push_back({ ev.time, FLT_MAX });
+        }
+        else
+        {
+            auto& wins = windowsMap[ev.agent_id];
+            if (!wins.empty() && wins.back().removeTime == FLT_MAX)
+                wins.back().removeTime = ev.time;
+            else
+                wins.push_back({ 0.f, ev.time }); // pre-existing agent removed (no ADD seen)
+        }
+    }
+
+    int nextSyntheticId = kSyntheticIdBase;
+
+    // Phase 2: For agents with lifecycle data, split by windows
+    std::vector<std::pair<int, AgentReplayData>> toInsert;
+
+    for (auto& [agentId, ard] : agents)
+    {
+        if (ard.snapshots.empty()) continue;
+
+        auto wit = windowsMap.find(agentId);
+        bool hasLifecycle = (wit != windowsMap.end() && wit->second.size() > 1);
+
+        if (hasLifecycle)
+        {
+            auto& windows = wit->second;
+            constexpr float kTolerance = 0.5f;
+
+            // Sort windows by addTime
+            std::sort(windows.begin(), windows.end(),
+                      [](const Window& a, const Window& b) { return a.addTime < b.addTime; });
+
+            // Assign snapshots to windows
+            std::vector<std::vector<AgentSnapshot>> perWindow(windows.size());
+            for (auto& snap : ard.snapshots)
+            {
+                int bestWin = -1;
+                float bestDist = FLT_MAX;
+                for (int w = 0; w < static_cast<int>(windows.size()); w++)
+                {
+                    float lo = windows[w].addTime - kTolerance;
+                    float hi = (windows[w].removeTime < FLT_MAX)
+                             ? windows[w].removeTime + kTolerance
+                             : FLT_MAX;
+                    if (snap.time >= lo && snap.time <= hi)
+                    {
+                        float dist = (snap.time < windows[w].addTime)
+                                   ? windows[w].addTime - snap.time
+                                   : 0.f;
+                        if (dist < bestDist)
+                        {
+                            bestDist = dist;
+                            bestWin = w;
+                        }
+                    }
+                }
+                if (bestWin >= 0)
+                    perWindow[bestWin].push_back(snap);
+            }
+
+            // Keep window 0 in the original agent entry
+            ard.lifecycleStart = windows[0].addTime;
+            ard.lifecycleEnd   = (windows[0].removeTime < FLT_MAX) ? windows[0].removeTime : -1.f;
+            if (!perWindow[0].empty())
+            {
+                ard.snapshots = std::move(perWindow[0]);
+                ard.modelId = ard.snapshots.front().model_id;
+            }
+            else
+            {
+                ard.snapshots.clear();
+            }
+
+            // Create new entries for windows 1+
+            for (int w = 1; w < static_cast<int>(windows.size()); w++)
+            {
+                if (perWindow[w].empty()) continue;
+                AgentReplayData newArd;
+                newArd.agent_id = nextSyntheticId++;
+                newArd.originalAgentId = agentId;
+                newArd.lifecycleStart = windows[w].addTime;
+                newArd.lifecycleEnd   = (windows[w].removeTime < FLT_MAX) ? windows[w].removeTime : -1.f;
+                newArd.snapshots = std::move(perWindow[w]);
+                newArd.modelId = newArd.snapshots.front().model_id;
+                toInsert.push_back({ newArd.agent_id, std::move(newArd) });
+            }
+        }
+        else
+        {
+            // Use incarnation break markers and/or item_id/model_id changes
+            // to detect recycling when lifecycle events are absent or incomplete
+            std::vector<size_t> splitPoints;
+
+            // First, use explicit break markers from the recorder
+            for (int bp : ard.incarnationBreaks)
+            {
+                if (bp > 0 && bp < static_cast<int>(ard.snapshots.size()))
+                    splitPoints.push_back(static_cast<size_t>(bp));
+            }
+
+            // Also detect item_id or model_id changes (handles old recordings)
+            for (size_t i = 1; i < ard.snapshots.size(); i++)
+            {
+                auto& prev = ard.snapshots[i - 1];
+                auto& cur  = ard.snapshots[i];
+                bool itemChanged  = (prev.item_id != 0 || cur.item_id != 0)
+                                  && prev.item_id != cur.item_id;
+                bool modelChanged = (prev.model_id != 0 || cur.model_id != 0)
+                                  && prev.model_id != cur.model_id;
+                if (itemChanged || modelChanged)
+                    splitPoints.push_back(i);
+            }
+
+            // Deduplicate and sort
+            std::sort(splitPoints.begin(), splitPoints.end());
+            splitPoints.erase(std::unique(splitPoints.begin(), splitPoints.end()),
+                              splitPoints.end());
+
+            if (!splitPoints.empty())
+            {
+                std::vector<AgentSnapshot> origSnaps;
+                origSnaps.assign(ard.snapshots.begin(),
+                                 ard.snapshots.begin() + splitPoints[0]);
+
+                for (size_t s = 0; s < splitPoints.size(); s++)
+                {
+                    size_t from = splitPoints[s];
+                    size_t to = (s + 1 < splitPoints.size())
+                              ? splitPoints[s + 1]
+                              : ard.snapshots.size();
+                    AgentReplayData newArd;
+                    newArd.agent_id = nextSyntheticId++;
+                    newArd.originalAgentId = agentId;
+                    newArd.snapshots.assign(ard.snapshots.begin() + from,
+                                            ard.snapshots.begin() + to);
+                    if (!newArd.snapshots.empty())
+                        newArd.modelId = newArd.snapshots.front().model_id;
+                    toInsert.push_back({ newArd.agent_id, std::move(newArd) });
+                }
+
+                ard.snapshots = std::move(origSnaps);
+                if (!ard.snapshots.empty())
+                    ard.modelId = ard.snapshots.front().model_id;
+            }
+        }
+    }
+
+    // Phase 3: Insert new incarnation entries
+    for (auto& [id, newArd] : toInsert)
+        agents[id] = std::move(newArd);
+
+    if (!toInsert.empty())
+    {
+        OutputDebugStringA(std::format(
+            "[SplitRecycledAgents] Created {} new incarnation entries\n",
+            toInsert.size()).c_str());
     }
 }

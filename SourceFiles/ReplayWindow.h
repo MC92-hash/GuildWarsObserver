@@ -13,6 +13,7 @@
 #include "AMAT_file.h"
 #include "TextureCache.h"
 #include "HeatmapData.h"
+#include "CatapultLeverState.h"
 #include "HeatmapRenderer.h"
 #include "HeatmapMenu.h"
 #include "AnnotationManager.h"
@@ -196,6 +197,8 @@ private:
         float x = 0, y = 0, z = 0;
         int carrierAgentId = -1;
         int flagAgentId = -1;   // when >= 0, use this agent's position (moves with carrier)
+        bool isCaptureEvent = false;
+        bool isReturnEvent  = false;
     };
 
     struct FlagTeamState {
@@ -210,10 +213,50 @@ private:
     float m_flagStandX = 0, m_flagStandY = 0, m_flagStandZ = 0;
     bool  m_flagStandFound = false;
     bool  m_flagStateBuilt = false;
+    std::unordered_map<uint32_t, int> m_flagItemIdToTeam;
 
     FlagEvent EvaluateFlagState(int teamIdx, float time) const;
     void BuildFlagStateTimeline();
     void DrawFlags();
+
+    // --- Flag allegiance debug panel ---
+    bool m_showFlagDebugWindow = false;
+    void DrawFlagDebugWindow();
+
+    // --- Bundle carry tracking (repair kits, vine seeds) ---
+    struct LeverCapEvent {
+        float time = 0.f;
+        uint32_t objectId = 0;
+        float x = 0, y = 0, z = 0;
+        int teamIdx = -1;
+    };
+    struct VineBridgeEvent {
+        float time = 0.f;
+        uint32_t objectId = 0;
+        float x = 0, y = 0, z = 0;
+        int teamIdx = -1;
+    };
+
+    std::unordered_map<int, std::vector<BundleCarryInterval>> m_bundleCarry;
+    std::unordered_map<int, float> m_itemRemoveTime;
+    std::vector<LeverCapEvent>     m_leverCaps;
+    std::vector<VineBridgeEvent>   m_vineBridgeEvents;
+    bool m_bundleCarryBuilt = false;
+
+    // --- Catapult lever state tracking (Warrior's Isle) ---
+    static constexpr int kWarriorsIsleMapId = 171;
+    std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
+
+    void BuildBundleCarryTimeline();
+    BundleType GetPlayerBundleType(int agentId, float time) const;
+    void DrawBundleItems();
+
+    // --- Agent incarnation routing (for recycled agent IDs) ---
+    // Maps originalAgentId -> list of synthetic incarnation IDs
+    std::unordered_map<int, std::vector<int>> m_incarnationMap;
+    // Given an original agent_id and a timestamp, find the incarnation entry
+    // whose snapshot range covers that time. Returns agentId if no split exists.
+    int ResolveAgentAtTime(int agentId, float time) const;
 
     // --- Scene overlays (timer, jumbo, morale) ---
     float m_matchStartOffset = 60.f;
@@ -600,8 +643,8 @@ private:
         uint8_t  mainType = 0;   // weapon_item_type  (for icon resolution)
         uint8_t  offType  = 0;   // offhand_item_type (informational)
         float    firstSeen = 0.f; // timestamp of first appearance
-        int      disambig  = 0;   // >0 if multiple sets share same icon appearance (subscript number)
-        bool     isFlag    = false;
+        int        disambig   = 0;   // >0 if multiple sets share same icon appearance (subscript number)
+        BundleType bundleType = BundleType::Unknown;
     };
     struct PlayerWeaponSets {
         int agentId = -1;
