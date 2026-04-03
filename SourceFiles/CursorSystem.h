@@ -95,6 +95,7 @@ struct GWOCursors
 inline GWOCursors g_Cursors;
 inline CursorMode g_CurrentCursor = CursorMode::Normal;
 inline bool       g_DraggingWindow = false;
+inline bool       g_CursorInClientArea = true;
 
 // Determine the correct cursor mode from ImGui state.
 // Does NOT call SetCursor — callers can apply overrides before committing.
@@ -154,6 +155,7 @@ inline void ApplyCursor()
 {
     if (!g_Cursors.loaded) return;
     if (g_CurrentCursor == CursorMode::Hidden) return;
+    if (!g_CursorInClientArea) return;  // let Windows handle non-client cursors
     HCURSOR cur = g_Cursors.Get(g_CurrentCursor);
     if (cur) ::SetCursor(cur);
 }

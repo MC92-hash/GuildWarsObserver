@@ -2113,4 +2113,5 @@ void MapBrowser::TickReplayWindows()
             it = m_replay_windows.erase(it);
         }
     }
+
 }

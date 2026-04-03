@@ -1,5 +1,6 @@
 #pragma once
 #include "InputManager.h"
+#include "ReplayHotkeys.h"
 #include "Camera.h"
 #include "MeshManager.h"
 #include "TextureManager.h"
@@ -914,16 +915,22 @@ public:
 
         if (!m_disableMovementInput)
         {
+            const auto& hk = ReplayHotkeys::Get();
+            UINT vkFwd   = ReplayHotkeys::ImGuiKeyToVK(hk.camForward);
+            UINT vkBack  = ReplayHotkeys::ImGuiKeyToVK(hk.camBackward);
+            UINT vkLeft  = ReplayHotkeys::ImGuiKeyToVK(hk.camStrafeLeft);
+            UINT vkRight = ReplayHotkeys::ImGuiKeyToVK(hk.camStrafeRight);
+
             // Walk
-            if (m_input_manager->IsKeyDown('W'))
+            if (vkFwd   && m_input_manager->IsKeyDown(vkFwd))
                 m_user_camera->Walk(WalkDirection::Forward, dt_seconds);
-            if (m_input_manager->IsKeyDown('S'))
+            if (vkBack  && m_input_manager->IsKeyDown(vkBack))
                 m_user_camera->Walk(WalkDirection::Backward, dt_seconds);
 
             // Strafe
-            if (m_input_manager->IsKeyDown('Q') || (m_input_manager->IsKeyDown('A')))
+            if (vkLeft  && m_input_manager->IsKeyDown(vkLeft))
                 m_user_camera->Strafe(StrafeDirection::Left, dt_seconds);
-            if (m_input_manager->IsKeyDown('E') || (m_input_manager->IsKeyDown('D')))
+            if (vkRight && m_input_manager->IsKeyDown(vkRight))
                 m_user_camera->Strafe(StrafeDirection::Right, dt_seconds);
         }
 

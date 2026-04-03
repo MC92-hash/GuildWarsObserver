@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ReplayWindow.h"
+#include "MatchRatings.h"
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
@@ -51,15 +52,74 @@ ReplayHotkeys& ReplayHotkeys::Get()
     return instance;
 }
 
+UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
+{
+    if (imguiKey >= ImGuiKey_A && imguiKey <= ImGuiKey_Z)
+        return 'A' + (imguiKey - ImGuiKey_A);
+    if (imguiKey >= ImGuiKey_0 && imguiKey <= ImGuiKey_9)
+        return '0' + (imguiKey - ImGuiKey_0);
+    switch (imguiKey)
+    {
+    case ImGuiKey_Space:       return VK_SPACE;
+    case ImGuiKey_LeftArrow:   return VK_LEFT;
+    case ImGuiKey_RightArrow:  return VK_RIGHT;
+    case ImGuiKey_UpArrow:     return VK_UP;
+    case ImGuiKey_DownArrow:   return VK_DOWN;
+    case ImGuiKey_Tab:         return VK_TAB;
+    case ImGuiKey_Escape:      return VK_ESCAPE;
+    case ImGuiKey_Enter:       return VK_RETURN;
+    case ImGuiKey_Backspace:   return VK_BACK;
+    case ImGuiKey_Delete:      return VK_DELETE;
+    case ImGuiKey_Insert:      return VK_INSERT;
+    case ImGuiKey_Home:        return VK_HOME;
+    case ImGuiKey_End:         return VK_END;
+    case ImGuiKey_PageUp:      return VK_PRIOR;
+    case ImGuiKey_PageDown:    return VK_NEXT;
+    case ImGuiKey_MouseRight:  return VK_RBUTTON;
+    case ImGuiKey_MouseMiddle: return VK_MBUTTON;
+    case ImGuiKey_MouseX1:     return VK_XBUTTON1;
+    case ImGuiKey_MouseX2:     return VK_XBUTTON2;
+    default:                   return 0;
+    }
+}
+
+bool ReplayHotkeys::IsValidBindableKey(int k)
+{
+    // Keyboard keys
+    if (k >= ImGuiKey_NamedKey_BEGIN && k < ImGuiKey_MouseLeft)
+        return true;
+    // Mouse buttons (right, middle, X1, X2) — but not left-click or wheel
+    if (k == ImGuiKey_MouseRight || k == ImGuiKey_MouseMiddle ||
+        k == ImGuiKey_MouseX1    || k == ImGuiKey_MouseX2)
+        return true;
+    return false;
+}
+
 void ReplayHotkeys::Save() const
 {
     auto path = GetHotkeysFilePath();
     std::ofstream f(path);
     if (!f.is_open()) return;
     f << "{\n"
-      << "  \"rewind5s\": "  << rewind5s  << ",\n"
-      << "  \"forward5s\": " << forward5s << ",\n"
-      << "  \"playPause\": " << playPause << "\n"
+      << "  \"rewind5s\": "            << rewind5s            << ",\n"
+      << "  \"forward5s\": "           << forward5s           << ",\n"
+      << "  \"playPause\": "           << playPause           << ",\n"
+      << "  \"toggleRangeRings\": "    << toggleRangeRings    << ",\n"
+      << "  \"toggleMoralePanel\": "   << toggleMoralePanel   << ",\n"
+      << "  \"toggleEventTimeline\": " << toggleEventTimeline << ",\n"
+      << "  \"toggleLordDamage\": "    << toggleLordDamage    << ",\n"
+      << "  \"toggleAutoCamera\": "    << toggleAutoCamera    << ",\n"
+      << "  \"toggleFogOfWar\": "      << toggleFogOfWar      << ",\n"
+      << "  \"toggleTopView\": "       << toggleTopView       << ",\n"
+      << "  \"togglePianoRoll\": "     << togglePianoRoll     << ",\n"
+      << "  \"toggleHeatmap\": "       << toggleHeatmap       << ",\n"
+      << "  \"exitFollowMode\": "      << exitFollowMode      << ",\n"
+      << "  \"camForward\": "          << camForward          << ",\n"
+      << "  \"camBackward\": "         << camBackward         << ",\n"
+      << "  \"camStrafeLeft\": "       << camStrafeLeft       << ",\n"
+      << "  \"camStrafeRight\": "      << camStrafeRight      << ",\n"
+      << "  \"invertMouseX\": "        << (invertMouseX ? 1 : 0) << ",\n"
+      << "  \"invertMouseY\": "        << (invertMouseY ? 1 : 0) << "\n"
       << "}\n";
 }
 
@@ -71,10 +131,38 @@ void ReplayHotkeys::Load()
     try {
         nlohmann::json j;
         f >> j;
-        if (j.contains("rewind5s"))  rewind5s  = j["rewind5s"].get<int>();
-        if (j.contains("forward5s")) forward5s = j["forward5s"].get<int>();
-        if (j.contains("playPause")) playPause = j["playPause"].get<int>();
-    } catch (...) {}
+
+        // Helper: only accept valid bindable keys (keyboard + mouse buttons, not wheel)
+        auto readKey = [&](const char* name, int& field) {
+            if (!j.contains(name)) return;
+            int v = j[name].get<int>();
+            if (IsValidBindableKey(v))
+                field = v;
+        };
+
+        readKey("rewind5s",            rewind5s);
+        readKey("forward5s",           forward5s);
+        readKey("playPause",           playPause);
+        readKey("toggleRangeRings",    toggleRangeRings);
+        readKey("toggleMoralePanel",   toggleMoralePanel);
+        readKey("toggleEventTimeline", toggleEventTimeline);
+        readKey("toggleLordDamage",    toggleLordDamage);
+        readKey("toggleAutoCamera",    toggleAutoCamera);
+        readKey("toggleFogOfWar",      toggleFogOfWar);
+        readKey("toggleTopView",       toggleTopView);
+        readKey("togglePianoRoll",     togglePianoRoll);
+        readKey("toggleHeatmap",       toggleHeatmap);
+        readKey("exitFollowMode",      exitFollowMode);
+        readKey("camForward",          camForward);
+        readKey("camBackward",         camBackward);
+        readKey("camStrafeLeft",       camStrafeLeft);
+        readKey("camStrafeRight",      camStrafeRight);
+        if (j.contains("invertMouseX")) invertMouseX = j["invertMouseX"].get<int>() != 0;
+        if (j.contains("invertMouseY")) invertMouseY = j["invertMouseY"].get<int>() != 0;
+    } catch (...) {
+        // File corrupted — reset everything to defaults
+        *this = ReplayHotkeys{};
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2860,6 +2948,7 @@ void ReplayWindow::RenderLoadingScreen()
     if (shouldTransition) {
         m_loadingPhase = LoadingPhase::Ready;
         InitAudioEngine();
+        m_replayCtx.isPlaying = true;
     }
 }
 
@@ -2877,6 +2966,7 @@ void ReplayWindow::DrawImGuiOverlay()
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+
     ImGui::NewFrame();
 
     // Top menu bar
@@ -2890,6 +2980,21 @@ void ReplayWindow::DrawImGuiOverlay()
                     m_showShortcutPreferences = true;
                 if (ImGui::MenuItem("Interface"))
                     m_showInterfacePrefs = true;
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Rate Match"))
+            {
+                int cur = MatchRatings::Get().GetRating(m_matchMeta.folder_name);
+                for (int i = 1; i <= 5; i++)
+                {
+                    char label[16];
+                    snprintf(label, sizeof(label), "%d Star%s", i, i > 1 ? "s" : "");
+                    if (ImGui::MenuItem(label, nullptr, cur == i))
+                        MatchRatings::Get().SetRating(m_matchMeta.folder_name, (cur == i) ? 0 : i);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Clear Rating", nullptr, false, cur > 0))
+                    MatchRatings::Get().SetRating(m_matchMeta.folder_name, 0);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -2914,30 +3019,36 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::Separator();
             ImGui::MenuItem("Skill Icons", nullptr, &m_showSkillIcons);
             ImGui::MenuItem("Skill Lasers", nullptr, &m_showSkillLasers);
-            ImGui::MenuItem("Range Rings (R)", nullptr, &m_showRangeRings);
-            {
-                bool fogOn = (m_fogPerspective > 0);
-                if (ImGui::MenuItem("Fog of War (F)", nullptr, &fogOn)) {
-                    if (fogOn) m_fogPerspective = m_fogLastActive;
-                    else { m_fogLastActive = m_fogPerspective; m_fogPerspective = 0; m_fogPlayerAgent = -1; }
-                }
-            }
-            ImGui::MenuItem("Morale (M)", nullptr, &m_showMoralePanel);
-            ImGui::MenuItem("Lord Damage (G)", nullptr, &m_showLordDamagePanel);
-            ImGui::MenuItem("Event Timeline (T)", nullptr, &m_showEventTimeline);
-            ImGui::MenuItem("Auto Camera (A)", nullptr, &m_showAutoCameraPanel);
-            {
-                bool tvOn = m_topViewActive;
-                if (ImGui::MenuItem("Top View (V)", nullptr, &tvOn)) {
-                    if (tvOn) EnterTopView(); else ExitTopView();
-                }
-            }
-            ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
-            ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
-            ImGui::MenuItem("Piano Roll (P)", nullptr, &m_showPianoRoll);
-            ImGui::Separator();
 
-            ImGui::MenuItem("Heatmap (H)", nullptr, &m_heatmapSettings.show);
+            {
+                const auto& hk = ReplayHotkeys::Get();
+                auto kn = [](int k) { return ImGui::GetKeyName((ImGuiKey)k); };
+
+                ImGui::MenuItem(std::format("Range Rings ({})", kn(hk.toggleRangeRings)).c_str(), nullptr, &m_showRangeRings);
+                {
+                    bool fogOn = (m_fogPerspective > 0);
+                    if (ImGui::MenuItem(std::format("Fog of War ({})", kn(hk.toggleFogOfWar)).c_str(), nullptr, &fogOn)) {
+                        if (fogOn) m_fogPerspective = m_fogLastActive;
+                        else { m_fogLastActive = m_fogPerspective; m_fogPerspective = 0; m_fogPlayerAgent = -1; }
+                    }
+                }
+                ImGui::MenuItem(std::format("Morale ({})", kn(hk.toggleMoralePanel)).c_str(), nullptr, &m_showMoralePanel);
+                ImGui::MenuItem(std::format("Lord Damage ({})", kn(hk.toggleLordDamage)).c_str(), nullptr, &m_showLordDamagePanel);
+                ImGui::MenuItem(std::format("Event Timeline ({})", kn(hk.toggleEventTimeline)).c_str(), nullptr, &m_showEventTimeline);
+                ImGui::MenuItem(std::format("Auto Camera ({})", kn(hk.toggleAutoCamera)).c_str(), nullptr, &m_showAutoCameraPanel);
+                {
+                    bool tvOn = m_topViewActive;
+                    if (ImGui::MenuItem(std::format("Top View ({})", kn(hk.toggleTopView)).c_str(), nullptr, &tvOn)) {
+                        if (tvOn) EnterTopView(); else ExitTopView();
+                    }
+                }
+                ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
+                ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
+                ImGui::MenuItem(std::format("Piano Roll ({})", kn(hk.togglePianoRoll)).c_str(), nullptr, &m_showPianoRoll);
+                ImGui::Separator();
+
+                ImGui::MenuItem(std::format("Heatmap ({})", kn(hk.toggleHeatmap)).c_str(), nullptr, &m_heatmapSettings.show);
+            }
 
             ImGui::Separator();
             ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
@@ -3181,85 +3292,93 @@ void ReplayWindow::DrawImGuiOverlay()
         }
     }
 
-    // Keyboard shortcuts (checked after all windows so WantCaptureKeyboard is accurate)
-    // Suppressed when draw mode is active — tool shortcuts are handled by AnnotationManager
-    if (!ImGui::GetIO().WantCaptureKeyboard && !m_clSkillSearchFocused
-        && !m_annotationMgr.draw_mode_active)
+    // Keyboard shortcuts — uses GetAsyncKeyState directly so hotkeys work even
+    // without Win32 keyboard focus.  Only active when our process is in the
+    // foreground and no text input / annotation mode is active.
     {
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape) && m_cameraMode == CameraMode::FollowAgent)
-            ExitFollowMode();
+        DWORD fgPid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
+        bool processActive = (fgPid == GetCurrentProcessId());
 
-        const auto& hk = ReplayHotkeys::Get();
-        float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
-
-        // Configurable 5s hotkeys (skip if bound to arrow keys — arrows are handled below)
-        bool rew5isArrow = (hk.rewind5s  == ImGuiKey_LeftArrow  || hk.rewind5s  == ImGuiKey_RightArrow);
-        bool fwd5isArrow = (hk.forward5s == ImGuiKey_LeftArrow  || hk.forward5s == ImGuiKey_RightArrow);
-        if (!rew5isArrow && ImGui::IsKeyPressed((ImGuiKey)hk.rewind5s))
-            m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
-        if (!fwd5isArrow && ImGui::IsKeyPressed((ImGuiKey)hk.forward5s))
-            m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
-
-        // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
-        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
-            m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
-            m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
-
-        if (ImGui::IsKeyPressed((ImGuiKey)hk.playPause))
-            m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
-
-        if (ImGui::IsKeyPressed(ImGuiKey_R))
+        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused
+            && !m_annotationMgr.draw_mode_active)
         {
-            m_showRangeRings = !m_showRangeRings;
-            if (!m_showRangeRings)
-                m_ringAgentFilter = -1;
-        }
+            const auto& hk = ReplayHotkeys::Get();
 
-        if (ImGui::IsKeyPressed(ImGuiKey_M))
-            m_showMoralePanel = !m_showMoralePanel;
-
-        if (ImGui::IsKeyPressed(ImGuiKey_T))
-            m_showEventTimeline = !m_showEventTimeline;
-
-        if (ImGui::IsKeyPressed(ImGuiKey_G))
-            m_showLordDamagePanel = !m_showLordDamagePanel;
-
-        if (ImGui::IsKeyPressed(ImGuiKey_A))
-        {
-            m_autoCameraEnabled = !m_autoCameraEnabled;
-            if (m_autoCameraEnabled)
-                m_autoCamState = AutoCameraState{};
-            else
+            if (HotkeyPressed(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent)
                 ExitFollowMode();
-        }
 
-        if (ImGui::IsKeyPressed(ImGuiKey_F) && !m_topViewActive)
-        {
-            if (m_fogPerspective > 0) {
-                m_fogLastActive = m_fogPerspective;
-                m_fogPerspective = 0;
-                m_fogPlayerAgent = -1;
-            } else {
-                m_fogPerspective = m_fogLastActive;
+            float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+
+            // Configurable 5s hotkeys (skip if bound to arrow keys — arrows are handled below)
+            bool rew5isArrow = (hk.rewind5s  == ImGuiKey_LeftArrow  || hk.rewind5s  == ImGuiKey_RightArrow);
+            bool fwd5isArrow = (hk.forward5s == ImGuiKey_LeftArrow  || hk.forward5s == ImGuiKey_RightArrow);
+            if (!rew5isArrow && HotkeyPressed(hk.rewind5s))
+                m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
+            if (!fwd5isArrow && HotkeyPressed(hk.forward5s))
+                m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
+
+            // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+                m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+                m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
+
+            if (HotkeyPressed(hk.playPause))
+                m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
+
+            if (HotkeyPressed(hk.toggleRangeRings))
+            {
+                m_showRangeRings = !m_showRangeRings;
+                if (!m_showRangeRings)
+                    m_ringAgentFilter = -1;
             }
-        }
 
-        if (ImGui::IsKeyPressed(ImGuiKey_V))
-        {
-            if (m_topViewActive)
-                ExitTopView();
-            else
-                EnterTopView();
-        }
+            if (HotkeyPressed(hk.toggleMoralePanel))
+                m_showMoralePanel = !m_showMoralePanel;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_P))
-            m_showPianoRoll = !m_showPianoRoll;
+            if (HotkeyPressed(hk.toggleEventTimeline))
+                m_showEventTimeline = !m_showEventTimeline;
 
-        if (ImGui::IsKeyPressed(ImGuiKey_H))
-        {
-            m_heatmapSettings.show = !m_heatmapSettings.show;
-            SaveHeatmapSettings();
+            if (HotkeyPressed(hk.toggleLordDamage))
+                m_showLordDamagePanel = !m_showLordDamagePanel;
+
+            if (HotkeyPressed(hk.toggleAutoCamera))
+            {
+                m_autoCameraEnabled = !m_autoCameraEnabled;
+                if (m_autoCameraEnabled)
+                    m_autoCamState = AutoCameraState{};
+                else
+                    ExitFollowMode();
+            }
+
+            if (HotkeyPressed(hk.toggleFogOfWar) && !m_topViewActive)
+            {
+                if (m_fogPerspective > 0) {
+                    m_fogLastActive = m_fogPerspective;
+                    m_fogPerspective = 0;
+                    m_fogPlayerAgent = -1;
+                } else {
+                    m_fogPerspective = m_fogLastActive;
+                }
+            }
+
+            if (HotkeyPressed(hk.toggleTopView))
+            {
+                if (m_topViewActive)
+                    ExitTopView();
+                else
+                    EnterTopView();
+            }
+
+            if (HotkeyPressed(hk.togglePianoRoll))
+                m_showPianoRoll = !m_showPianoRoll;
+
+            if (HotkeyPressed(hk.toggleHeatmap))
+            {
+                m_heatmapSettings.show = !m_heatmapSettings.show;
+                SaveHeatmapSettings();
+            }
         }
     }
 
@@ -10606,42 +10725,96 @@ void ReplayWindow::DrawInterpolationWindow()
 }
 
 // ---------------------------------------------------------------------------
+// GetAsyncKeyState-based edge detection (bypass ImGui focus issues)
+// ---------------------------------------------------------------------------
+
+bool ReplayWindow::HotkeyPressed(int imguiKey)
+{
+    UINT vk = ReplayHotkeys::ImGuiKeyToVK(imguiKey);
+    if (!vk) return false;
+    int idx = imguiKey - ImGuiKey_NamedKey_BEGIN;
+    if (idx < 0 || idx >= ImGuiKey_NamedKey_COUNT) return false;
+    bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    bool wasDown = m_prevKeyDown[idx];
+    m_prevKeyDown[idx] = down;
+    return down && !wasDown;
+}
+
+// ---------------------------------------------------------------------------
 // Shortcut Preferences modal
 // ---------------------------------------------------------------------------
 
-static bool HotkeyInput(const char* label, int* key)
+bool HotkeyInput(const char* label, int* key)
 {
+    // Track which widget is currently capturing a key press.
+    // Only one can be active at a time across all HotkeyInput calls.
+    static ImGuiID s_capturingID = 0;
+
     ImGui::Text("%s", label);
     ImGui::SameLine(200);
 
+    ImGui::PushID(label);
+    ImGuiID thisID = ImGui::GetID("##hotkey");
+
+    bool capturing = (s_capturingID == thisID);
+
     char buf[64];
-    if (*key != 0)
+    if (capturing)
+        snprintf(buf, sizeof(buf), "Press a key...");
+    else if (*key != 0)
         snprintf(buf, sizeof(buf), "%s", ImGui::GetKeyName((ImGuiKey)*key));
     else
-        snprintf(buf, sizeof(buf), "Press a key...");
+        snprintf(buf, sizeof(buf), "(none)");
 
-    ImGui::PushID(label);
-    ImGui::Button(buf, ImVec2(150, 0));
+    // Snapshot for balanced Push/Pop — 'capturing' may change inside the click handler
+    bool wasCapturing = capturing;
 
-    if (ImGui::IsItemActive())
+    if (wasCapturing)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+
+    if (ImGui::Button(buf, ImVec2(150, 0)))
     {
-        for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++)
+        // Toggle capture on click
+        s_capturingID = wasCapturing ? 0 : thisID;
+        capturing = (s_capturingID == thisID);
+    }
+
+    if (wasCapturing)
+        ImGui::PopStyleColor();
+
+    bool changed = false;
+    if (capturing)
+    {
+        // Cancel on Escape
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape))
         {
-            if (ImGui::IsKeyPressed((ImGuiKey)k))
+            s_capturingID = 0;
+        }
+        else
+        {
+            for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; k++)
             {
-                *key = k;
-                ImGui::PopID();
-                return true;
+                // Only accept valid bindable keys (keyboard + RMB/MMB/X1/X2, not LMB or wheel)
+                if (!ReplayHotkeys::IsValidBindableKey(k))
+                    continue;
+                if (ImGui::IsKeyPressed((ImGuiKey)k))
+                {
+                    *key = k;
+                    s_capturingID = 0;
+                    changed = true;
+                    break;
+                }
             }
         }
     }
+
     ImGui::PopID();
-    return false;
+    return changed;
 }
 
 void ReplayWindow::DrawShortcutPreferences()
 {
-    ImGui::SetNextWindowSize(ImVec2(420, 260), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 720), ImGuiCond_FirstUseEver);
     if (!ImGui::BeginPopupModal("Shortcut Preferences", nullptr, ImGuiWindowFlags_NoResize))
         return;
 
@@ -10649,13 +10822,53 @@ void ReplayWindow::DrawShortcutPreferences()
     static bool needsInit = true;
     if (needsInit) { editing = ReplayHotkeys::Get(); needsInit = false; }
 
-    ImGui::Text("Replay Controls");
+    ImGui::Text("Replay Transport");
     ImGui::Separator();
     ImGui::Spacing();
 
     HotkeyInput("Rewind 5 seconds",  &editing.rewind5s);
     HotkeyInput("Forward 5 seconds", &editing.forward5s);
     HotkeyInput("Play / Pause",      &editing.playPause);
+
+    ImGui::Spacing();
+    ImGui::Text("Overlay Toggles");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    HotkeyInput("Range Rings",         &editing.toggleRangeRings);
+    HotkeyInput("Morale Panel",        &editing.toggleMoralePanel);
+    HotkeyInput("Event Timeline",      &editing.toggleEventTimeline);
+    HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage);
+    HotkeyInput("Heatmap",             &editing.toggleHeatmap);
+    HotkeyInput("Piano Roll",          &editing.togglePianoRoll);
+
+    ImGui::Spacing();
+    ImGui::Text("Camera & View");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    HotkeyInput("Auto Camera",         &editing.toggleAutoCamera);
+    HotkeyInput("Fog of War",          &editing.toggleFogOfWar);
+    HotkeyInput("Top View",            &editing.toggleTopView);
+    HotkeyInput("Exit Follow Mode",    &editing.exitFollowMode);
+
+    ImGui::Spacing();
+    ImGui::Text("Camera Movement");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    HotkeyInput("Move Forward",        &editing.camForward);
+    HotkeyInput("Move Backward",       &editing.camBackward);
+    HotkeyInput("Strafe Left",         &editing.camStrafeLeft);
+    HotkeyInput("Strafe Right",        &editing.camStrafeRight);
+
+    ImGui::Spacing();
+    ImGui::Text("Camera Options");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Invert Mouse X (horizontal)", &editing.invertMouseX);
+    ImGui::Checkbox("Invert Mouse Y (vertical)",   &editing.invertMouseY);
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -10667,6 +10880,11 @@ void ReplayWindow::DrawShortcutPreferences()
         ReplayHotkeys::Get().Save();
         needsInit = true;
         ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset to Defaults", ImVec2(120, 0)))
+    {
+        editing.ResetToDefaults();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120, 0)))
@@ -11130,6 +11348,19 @@ void ReplayWindow::DrawTimelineController()
         dl->PopClipRect();
     }
 
+    // ── Star rating (between status chip and transport) ──────────────────
+    {
+        float starX = x0 + 66.f + 10.f * sf;
+        float starY = cy + (BTN_H - ImGui::GetTextLineHeight()) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(starX, starY));
+        int cur = MatchRatings::Get().GetRating(m_matchMeta.folder_name);
+        int res = DrawStarRating("##barRating", cur);
+        if (res > 0)
+            MatchRatings::Get().SetRating(m_matchMeta.folder_name, res);
+        else if (res == -1)
+            MatchRatings::Get().SetRating(m_matchMeta.folder_name, 0);
+    }
+
     // ── Centered transport group ─────────────────────────────────────────
     float cx = transportX;
 
@@ -11322,7 +11553,10 @@ void ReplayWindow::DrawTimelineController()
             else
                 ExitFollowMode();
         }
-        if (hov) ImGui::SetTooltip(m_autoCameraEnabled ? "Auto Camera: ON (A)" : "Auto Camera: OFF (A)");
+        if (hov) {
+            const char* acKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().toggleAutoCamera);
+            ImGui::SetTooltip(m_autoCameraEnabled ? "Auto Camera: ON (%s)" : "Auto Camera: OFF (%s)", acKey);
+        }
         cx += acW;
     }
 
@@ -11366,7 +11600,10 @@ void ReplayWindow::DrawTimelineController()
             else
                 EnterTopView();
         }
-        if (hov) ImGui::SetTooltip(m_topViewActive ? "Exit Top View (V)" : "Top View (V)");
+        if (hov) {
+            const char* tvKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().toggleTopView);
+            ImGui::SetTooltip(m_topViewActive ? "Exit Top View (%s)" : "Top View (%s)", tvKey);
+        }
         cx += tvW;
     }
 
@@ -15368,8 +15605,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
 
                     if (rw->m_rightMouseDown && !rw->m_topViewActive)
                     {
-                        float radX = DirectX::XMConvertToRadians(0.25f * dx);
-                        float radY = DirectX::XMConvertToRadians(0.25f * dy);
+                        const auto& hk = ReplayHotkeys::Get();
+                        float radX = DirectX::XMConvertToRadians(0.25f * dx) * (hk.invertMouseX ? -1.f : 1.f);
+                        float radY = DirectX::XMConvertToRadians(0.25f * dy) * (hk.invertMouseY ? -1.f : 1.f);
 
                         if (rw->m_cameraMode == CameraMode::FollowAgent)
                         {
@@ -15494,7 +15732,8 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && g_Cursors.loaded)
+        g_CursorInClientArea = (LOWORD(lParam) == HTCLIENT);
+        if (g_CursorInClientArea && g_Cursors.loaded)
         {
             if (rw && rw->m_leftMouseDown)
                 return TRUE;  // cursor hidden during left-drag pan
@@ -15551,10 +15790,12 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             info->ptMinTrackSize.y = 200;
         }
         break;
+
     }
 
     return DefWindowProc(hWnd, message, wParam, lParam);
 }
+
 
 // ---------------------------------------------------------------------------
 // Piano Roll Panel

@@ -614,7 +614,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && g_Cursors.loaded)
+        g_CursorInClientArea = (LOWORD(lParam) == HTCLIENT);
+        if (g_CursorInClientArea && g_Cursors.loaded)
         {
             if (g_DraggingWindow)
             {
