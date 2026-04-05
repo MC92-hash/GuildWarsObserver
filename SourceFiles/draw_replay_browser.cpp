@@ -5,6 +5,7 @@
 #include "TextureCache.h"
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
+#include "MatchNotes.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
@@ -723,6 +724,10 @@ struct BrowserState
 
     // New-match highlight flash (folder_path -> highlight start time)
     std::unordered_map<std::string, float> highlightStartTimes;
+
+    // Inline notes editor state
+    std::string browserNoteBuffer;
+    std::string browserNoteMatchId;
 
     // Notification bar
     int   notifyNewCount = 0;
@@ -1894,14 +1899,15 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float occasionW = (mode == LayoutMode::Narrow) ? 100.0f : 130.0f;
     float ratingW = 72.0f;
     float mapW = std::max(90.0f, tableW * 0.13f);
-    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW) * 0.5f, 100.0f, 250.0f);
+    float notesColW = 20.0f;
+    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW - notesColW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX;
 
-    if (ImGui::BeginTable("##match_table", 6, tableFlags))
+    if (ImGui::BeginTable("##match_table", 7, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Date",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
@@ -1910,6 +1916,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::TableSetupColumn("Team 1",   ImGuiTableColumnFlags_WidthFixed, teamW);
         ImGui::TableSetupColumn("Team 2",   ImGuiTableColumnFlags_WidthFixed, teamW);
         ImGui::TableSetupColumn("Rating",   ImGuiTableColumnFlags_WidthFixed, ratingW);
+        ImGui::TableSetupColumn("##notes",  ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW);
         ImGui::TableHeadersRow();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
@@ -2021,6 +2028,15 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(), cur);
                     if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
                     else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
+                }
+
+                // Notes indicator
+                ImGui::TableNextColumn();
+                if (MatchNotes::Get().HasNote(m.folder_name))
+                {
+                    ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Has notes");
                 }
 
                 ImGui::PopID();
@@ -2558,6 +2574,25 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
             int res = DrawStarRating("##detailRating", cur);
             if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
             else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
+        }
+
+        // ── Notes ──
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+        ImGui::TextUnformatted("Notes");
+        ImGui::PopStyleColor();
+        {
+            if (s_state.browserNoteMatchId != m.folder_name)
+            {
+                s_state.browserNoteBuffer  = MatchNotes::Get().GetNote(m.folder_name);
+                s_state.browserNoteMatchId = m.folder_name;
+            }
+            float editH = ImGui::GetTextLineHeight() * 4 + ImGui::GetStyle().FramePadding.y * 2;
+            if (ImGui::InputTextMultiline("##detailNotes", &s_state.browserNoteBuffer,
+                                          ImVec2(mapAreaW, editH)))
+            {
+                MatchNotes::Get().SetNote(m.folder_name, s_state.browserNoteBuffer);
+            }
         }
 
         // ── Lord Damage summary ──

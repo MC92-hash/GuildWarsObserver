@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ReplayWindow.h"
 #include "MatchRatings.h"
+#include "MatchNotes.h"
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
@@ -2358,7 +2359,7 @@ void ReplayWindow::Update(double elapsedMs)
 {
     float dt = static_cast<float>(elapsedMs / 1000.0);
     if (m_inputManager)
-        m_inputManager->SetSuppressKeyPolling(m_clSkillSearchFocused);
+        m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused);
     UpdateTopViewTransition(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
@@ -2366,11 +2367,17 @@ void ReplayWindow::Update(double elapsedMs)
         UpdateFollowCamera(dt);
     m_mapRenderer->Update(dt);
 
+    if (m_pipEnabled)
+        UpdatePiPTarget();
+
     UpdateAudioPlayback(m_debugTimeline, dt);
 }
 
 void ReplayWindow::Render()
 {
+    if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
+        RenderPiP();
+
     Clear();
 
     m_mapRenderer->Render(
@@ -3052,6 +3059,8 @@ void ReplayWindow::DrawImGuiOverlay()
 
             ImGui::Separator();
             ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
+            ImGui::MenuItem("Agent Names", nullptr, &m_showNameFilterPanel);
+            ImGui::MenuItem("Split Camera", nullptr, &m_pipEnabled);
             ImGui::Separator();
             ImGui::MenuItem("Sound FX", nullptr, &m_audioEnabled);
             ImGui::EndMenu();
@@ -3073,6 +3082,7 @@ void ReplayWindow::DrawImGuiOverlay()
         {
             ImGui::MenuItem("Drawing toolbar", nullptr, &m_annotationMgr.toolbar_visible);
             ImGui::MenuItem("Bookmarks",       nullptr, &m_annotationMgr.bookmarks_visible);
+            ImGui::MenuItem("Notepad",         nullptr, &m_showNotepad);
             ImGui::EndMenu();
         }
 
@@ -3130,6 +3140,9 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawCombatLog();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
+    DrawNotepad();
+    DrawNameFilterPanel();
+    DrawPiPPanel();
 
     {
         auto lutGetter = [this](HeatmapPalette p) -> ID3D11ShaderResourceView* {
@@ -3389,6 +3402,9 @@ void ReplayWindow::DrawImGuiOverlay()
     else if (m_rightMouseDown)
         g_CurrentCursor = CursorMode::Precision;
     ApplyCursor();
+
+    // Cache for next Update() — suppresses WASD camera polling while a text widget is active
+    m_imguiWantTextInput = ImGui::GetIO().WantTextInput;
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
@@ -5535,7 +5551,7 @@ void ReplayWindow::DrawAgentOverlay()
             }
         }
 
-        if (m_show3DLabels)
+        if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
         {
             std::string label = GetAgentLabel(ard);
             ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
@@ -5563,8 +5579,8 @@ void ReplayWindow::DrawAgentOverlay()
             }
         }
 
-        // Top View: collect tooltip hit candidates
-        if (m_topViewActive)
+        // Top View: collect tooltip hit candidates (skip when names already visible)
+        if (m_topViewActive && !m_show3DLabels)
         {
             const float pad = 4.f;
             float hitSz = showDot ? std::clamp(vpH * 0.020f, 12.f, 22.f) : 24.f;
@@ -5579,8 +5595,8 @@ void ReplayWindow::DrawAgentOverlay()
         }
     }
 
-    // Top View: draw agent name tooltip on hover
-    if (m_topViewActive && !topViewTooltipCandidates.empty())
+    // Top View: draw agent name tooltip on hover (skip when names already visible)
+    if (m_topViewActive && !m_show3DLabels && !topViewTooltipCandidates.empty())
     {
         const float mx = mousePos.x, my = mousePos.y;
         int bestIdx = -1;
@@ -9752,6 +9768,7 @@ void ReplayWindow::EnterTopView()
     m_tvSavedSkillLasers  = m_showSkillLasers;
     m_tvSavedLodEnabled   = m_uiLayout.lodEnabled;
     m_tvSavedShow3DLabels = m_show3DLabels;
+    m_tvSavedNamePanel    = m_showNameFilterPanel;
 
     // Pause auto camera if active
     m_tvSavedAutoCam = m_autoCameraEnabled;
@@ -9777,6 +9794,7 @@ void ReplayWindow::EnterTopView()
     m_showSkillLasers     = false;
     m_uiLayout.lodEnabled = true;
     m_show3DLabels        = false;
+    m_showNameFilterPanel = true;
 
     // Set up transition
     m_topViewTransitioning = true;
@@ -9814,6 +9832,7 @@ void ReplayWindow::ExitTopView()
     m_showSkillLasers     = m_tvSavedSkillLasers;
     m_uiLayout.lodEnabled = m_tvSavedLodEnabled;
     m_show3DLabels        = m_tvSavedShow3DLabels;
+    m_showNameFilterPanel = m_tvSavedNamePanel;
 
     // Restore follow mode if was active
     if (m_tvSavedCamMode == CameraMode::FollowAgent && m_tvSavedFollowId >= 0)
@@ -18801,4 +18820,674 @@ void ReplayWindow::SaveHeatmapSettings()
 void ReplayWindow::LoadHeatmapSettings()
 {
     m_heatmapSettings = HeatmapSettings{};
+}
+
+// ---------------------------------------------------------------------------
+// Match Notepad — floating text panel for per-match notes
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawNotepad()
+{
+    if (!m_showNotepad) return;
+
+    // Sync buffer when match changes or on first open
+    if (m_notepadMatchId != m_matchMeta.folder_name)
+    {
+        m_notepadBuffer  = MatchNotes::Get().GetNote(m_matchMeta.folder_name);
+        m_notepadMatchId = m_matchMeta.folder_name;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    float vpW = io.DisplaySize.x;
+    float vpH = io.DisplaySize.y;
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(250.f, 150.f), ImVec2(vpW, vpH));
+    ImGui::SetNextWindowSize(ImVec2(380.f, 300.f), ImGuiCond_FirstUseEver);
+
+    // Gold-accented dark panel styling (matches CombatLog / other panels)
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,              ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,        ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,               ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,              ImVec4(0.04f, 0.05f, 0.06f, 0.80f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,          ImVec4(1.f, 1.f, 1.f, 0.04f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,        ImVec4(0.80f, 0.68f, 0.30f, 0.60f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(1.f, 0.84f, 0.39f, 0.80f));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive,  ImVec4(1.f, 0.84f, 0.39f, 1.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,    6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,  1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 4.f);
+
+    if (!ImGui::Begin("Match Notepad", &m_showNotepad))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(9);
+        return;
+    }
+
+    // Clamp window to viewport
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, 0.f, std::max(0.f, vpW - sz.x));
+        float cy = std::clamp(pos.y, 0.f, std::max(0.f, vpH - sz.y));
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    // Match name header
+    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "%s", m_matchMeta.folder_name.c_str());
+    ImGui::Separator();
+
+    // Multiline text editor filling remaining space
+    if (ImGui::InputTextMultiline("##notepad", &m_notepadBuffer,
+                                  ImVec2(-FLT_MIN, -FLT_MIN)))
+    {
+        MatchNotes::Get().SetNote(m_matchMeta.folder_name, m_notepadBuffer);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(9);
+}
+
+// ---------------------------------------------------------------------------
+// Name Filter — per-agent name visibility toggles
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawNameFilterPanel()
+{
+    if (!m_showNameFilterPanel || !m_agentsClassified) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    float vpW = io.DisplaySize.x;
+    float vpH = io.DisplaySize.y;
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(220.f, 140.f), ImVec2(vpW, vpH));
+    ImGui::SetNextWindowSize(ImVec2(260.f, 380.f), ImGuiCond_FirstUseEver);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,              ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,        ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,               ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark,            ImVec4(0.90f, 0.76f, 0.30f, 1.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,    6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,  1.f);
+
+    if (!ImGui::Begin("Agent Names", &m_showNameFilterPanel))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
+        return;
+    }
+
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, 0.f, std::max(0.f, vpW - sz.x));
+        float cy = std::clamp(pos.y, 0.f, std::max(0.f, vpH - sz.y));
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    // Master toggle
+    ImGui::Checkbox("Show Names", &m_show3DLabels);
+    ImGui::Separator();
+
+    // Per-player filter (only meaningful when names are on)
+    bool dimmed = !m_show3DLabels;
+    if (dimmed)
+        ImGui::BeginDisabled();
+
+    // Show All / Hide All
+    if (ImGui::SmallButton("Show All"))
+        m_hiddenNameAgents.clear();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Hide All"))
+    {
+        for (int id : m_playerIds)
+            m_hiddenNameAgents.insert(id);
+    }
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    const float iconSz = 16.f;
+
+    auto DrawTeam = [&](const char* header, const std::vector<int>& ids)
+    {
+        if (ImGui::TreeNodeEx(header, ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            for (int id : ids)
+            {
+                auto it = m_replayCtx.agents.find(id);
+                if (it == m_replayCtx.agents.end()) continue;
+                const auto& ard = it->second;
+
+                bool visible = !m_hiddenNameAgents.count(id);
+
+                ImTextureID profTex = (ard.primaryProf > 0)
+                    ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
+                if (profTex)
+                {
+                    ImGui::Image(profTex, ImVec2(iconSz, iconSz));
+                    ImGui::SameLine(0, 4);
+                }
+
+                if (ImGui::Checkbox(("##name_" + std::to_string(id)).c_str(), &visible))
+                {
+                    if (visible)
+                        m_hiddenNameAgents.erase(id);
+                    else
+                        m_hiddenNameAgents.insert(id);
+                }
+                ImGui::SameLine(0, 4);
+                std::string label = ard.playerName.empty()
+                    ? ard.categoryName : ard.playerName;
+                ImGui::TextUnformatted(label.c_str());
+            }
+            ImGui::TreePop();
+        }
+    };
+
+    DrawTeam("Team 1", m_team1PlayerIds);
+    DrawTeam("Team 2", m_team2PlayerIds);
+
+    if (dimmed)
+        ImGui::EndDisabled();
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(5);
+}
+
+// ---------------------------------------------------------------------------
+// Picture-in-Picture (Split Camera)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::InitPiPResources()
+{
+    m_pipTexture.Reset();
+    m_pipRTV.Reset();
+    m_pipDepthTexture.Reset();
+    m_pipDSV.Reset();
+    m_pipSRV.Reset();
+    m_pipResourcesReady = false;
+
+    auto* dev = m_deviceResources->GetD3DDevice();
+    DXGI_FORMAT colorFmt = m_deviceResources->GetBackBufferFormat();
+    DXGI_FORMAT depthFmt = m_deviceResources->GetDepthBufferFormat();
+
+    // Color texture (non-MSAA, usable as shader resource)
+    CD3D11_TEXTURE2D_DESC texDesc(colorFmt, m_pipWidth, m_pipHeight, 1, 1,
+        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+    if (FAILED(dev->CreateTexture2D(&texDesc, nullptr, m_pipTexture.GetAddressOf())))
+        return;
+
+    // RTV
+    CD3D11_RENDER_TARGET_VIEW_DESC rtvDesc(D3D11_RTV_DIMENSION_TEXTURE2D, colorFmt);
+    if (FAILED(dev->CreateRenderTargetView(m_pipTexture.Get(), &rtvDesc, m_pipRTV.GetAddressOf())))
+        return;
+
+    // SRV for ImGui display
+    CD3D11_SHADER_RESOURCE_VIEW_DESC srvDesc(D3D11_SRV_DIMENSION_TEXTURE2D, colorFmt, 0, 1);
+    if (FAILED(dev->CreateShaderResourceView(m_pipTexture.Get(), &srvDesc, m_pipSRV.GetAddressOf())))
+        return;
+
+    // Depth texture
+    CD3D11_TEXTURE2D_DESC depthDesc(depthFmt, m_pipWidth, m_pipHeight, 1, 1,
+        D3D11_BIND_DEPTH_STENCIL);
+    if (FAILED(dev->CreateTexture2D(&depthDesc, nullptr, m_pipDepthTexture.GetAddressOf())))
+        return;
+
+    // DSV
+    CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2D);
+    if (FAILED(dev->CreateDepthStencilView(m_pipDepthTexture.Get(), &dsvDesc, m_pipDSV.GetAddressOf())))
+        return;
+
+    m_pipResourcesReady = true;
+}
+
+void ReplayWindow::UpdatePiPTarget()
+{
+    if (!m_agentsClassified) return;
+
+    // Manual override: always follow the pinned agent
+    if (m_pipManualAgent >= 0)
+    {
+        m_pipTargetAgent = m_pipManualAgent;
+        return;
+    }
+
+    float now = m_debugTimeline;
+    int bestAgent = -1;
+    float bestDistSq = 0.f;
+
+    auto CheckTeam = [&](const std::vector<int>& teamIds)
+    {
+        // Compute alive centroid
+        float cx = 0.f, cy = 0.f;
+        int aliveCount = 0;
+        for (int id : teamIds)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end()) continue;
+            const auto& ard = it->second;
+            const AgentSnapshot* snap = FindSnapshotAtTime(ard, now);
+            if (!snap || snap->is_dead) continue;
+            cx += snap->x;
+            cy += snap->y;
+            aliveCount++;
+        }
+        if (aliveCount < 2) return; // need at least 2 alive to have a split
+        cx /= aliveCount;
+        cy /= aliveCount;
+
+        // Find the most isolated alive player
+        for (int id : teamIds)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end()) continue;
+            const auto& ard = it->second;
+            if (!IsAgentIsolated(ard, now)) continue;
+
+            const AgentSnapshot* snap = FindSnapshotAtTime(ard, now);
+            if (!snap || snap->is_dead) continue;
+
+            float dx = snap->x - cx;
+            float dy = snap->y - cy;
+            float distSq = dx * dx + dy * dy;
+            if (distSq > bestDistSq)
+            {
+                bestDistSq = distSq;
+                bestAgent = id;
+            }
+        }
+    };
+
+    CheckTeam(m_team1PlayerIds);
+    CheckTeam(m_team2PlayerIds);
+
+    // Dwell: don't switch targets too rapidly
+    if (bestAgent >= 0 && bestAgent != m_pipPrevTarget)
+    {
+        m_pipDwellTimer += 1.f / 60.f; // approximate dt
+        if (m_pipDwellTimer < 2.0f && m_pipTargetAgent >= 0)
+            return; // keep current target for at least 2 seconds
+        m_pipDwellTimer = 0.f;
+        m_pipPrevTarget = bestAgent;
+    }
+    else
+    {
+        m_pipDwellTimer = 0.f;
+    }
+
+    m_pipTargetAgent = bestAgent;
+}
+
+void ReplayWindow::RenderPiP()
+{
+    if (!m_pipResourcesReady || m_pipTargetAgent < 0) return;
+
+    auto it = m_replayCtx.agents.find(m_pipTargetAgent);
+    if (it == m_replayCtx.agents.end()) return;
+    const auto& ard = it->second;
+    if (ard.snapshots.empty()) return;
+
+    // Get target world position
+    float sx, sy, sz;
+    InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
+    XMFLOAT3 targetWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+
+    // Compute PiP camera position (spherical offset from target)
+    float cosP = cosf(m_pipFollowPitch);
+    float camX = targetWorld.x + m_pipFollowDist * sinf(m_pipFollowYaw) * cosP;
+    float camY = targetWorld.y + m_pipFollowDist * sinf(m_pipFollowPitch);
+    float camZ = targetWorld.z + m_pipFollowDist * cosf(m_pipFollowYaw) * cosP;
+    XMFLOAT3 pipCamPos(camX, camY, camZ);
+
+    float aspect = static_cast<float>(m_pipWidth) / static_cast<float>(m_pipHeight);
+    float fovRad = 50.0f * XM_PI / 180.0f;
+
+    // --- Save main camera state ---
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMFLOAT3 savedCamPos = cam->GetPosition3f();
+    float savedYaw    = cam->GetYaw();
+    float savedPitch  = cam->GetPitch();
+    float savedFov    = cam->GetFovY();
+    float savedAspect = cam->GetAspectRatio();
+    float savedNear   = cam->GetNearZ();
+    float savedFar    = cam->GetFarZ();
+
+    // --- Set camera to PiP position, looking at target ---
+    cam->SetFrustumAsPerspective(fovRad, aspect, savedNear, savedFar, true);
+    cam->LookAt(XMLoadFloat3(&pipCamPos), XMLoadFloat3(&targetWorld),
+                XMVectorSet(0.f, 1.f, 0.f, 0.f));
+
+    // Update rebuilds view matrix + uploads constant buffer with PiP camera
+    m_mapRenderer->Update(0);
+
+    // Cache view*proj for overlay projection in DrawPiPPanel
+    XMStoreFloat4x4(&m_pipViewProj, cam->GetView() * cam->GetProj());
+    m_pipCamPos = pipCamPos;
+
+    auto* ctx = m_deviceResources->GetD3DDeviceContext();
+
+    // Save main viewport
+    UINT numVP = 1;
+    D3D11_VIEWPORT savedVP;
+    ctx->RSGetViewports(&numVP, &savedVP);
+
+    // Set PiP viewport
+    D3D11_VIEWPORT pipVP = { 0.f, 0.f, (float)m_pipWidth, (float)m_pipHeight, 0.f, 1.f };
+    ctx->RSSetViewports(1, &pipVP);
+
+    // Clear PiP targets
+    float clearColor[4] = { 0.02f, 0.02f, 0.04f, 1.f };
+    ctx->ClearRenderTargetView(m_pipRTV.Get(), clearColor);
+    ctx->ClearDepthStencilView(m_pipDSV.Get(), D3D11_CLEAR_DEPTH, 0.f, 0);
+
+    // Render terrain/props/water to PiP target
+    m_mapRenderer->Render(m_pipRTV.Get(), nullptr, m_pipDSV.Get());
+
+    // Rebind PiP render targets for cylinder pass (Render may have changed them)
+    ID3D11RenderTargetView* pipRTV = m_pipRTV.Get();
+    ctx->OMSetRenderTargets(1, &pipRTV, m_pipDSV.Get());
+
+    // Render agent cylinders — camera is already set to PiP position,
+    // view matrix is up-to-date, LOD uses correct PiP camera distance
+    DrawAgentCylinders();
+
+    // --- Restore main camera ---
+    cam->SetPosition(savedCamPos.x, savedCamPos.y, savedCamPos.z);
+    cam->SetOrientation(savedPitch, savedYaw);
+    cam->SetFrustumAsPerspective(savedFov, savedAspect, savedNear, savedFar, true);
+    m_mapRenderer->Update(0);  // rebuilds view matrix + constant buffer for main camera
+
+    // Unbind PiP render targets so main render isn't corrupted
+    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+
+    // Restore main viewport
+    ctx->RSSetViewports(1, &savedVP);
+}
+
+void ReplayWindow::DrawPiPPanel()
+{
+    if (!m_pipEnabled) return;
+
+    // Lazy init resources
+    if (!m_pipResourcesReady)
+        InitPiPResources();
+    if (!m_pipResourcesReady) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    float vpW = io.DisplaySize.x;
+    float vpH = io.DisplaySize.y;
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(260.f, 200.f), ImVec2(vpW, vpH));
+    ImGui::SetNextWindowSize(ImVec2((float)m_pipWidth + 16.f, (float)m_pipHeight + 80.f), ImGuiCond_FirstUseEver);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.04f, 0.04f, 0.06f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,              ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,        ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,               ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,    6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,  1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,     ImVec2(4.f, 4.f));
+
+    if (!ImGui::Begin("Split Camera", &m_pipEnabled))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(4);
+        return;
+    }
+
+    // Clamp to viewport
+    {
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, 0.f, std::max(0.f, vpW - sz.x));
+        float cy = std::clamp(pos.y, 0.f, std::max(0.f, vpH - sz.y));
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+    }
+
+    // Player selector combo
+    if (m_agentsClassified)
+    {
+        // Build current label
+        std::string currentLabel = "Auto-detect split";
+        if (m_pipManualAgent >= 0)
+        {
+            auto it = m_replayCtx.agents.find(m_pipManualAgent);
+            if (it != m_replayCtx.agents.end())
+                currentLabel = it->second.playerName.empty()
+                    ? it->second.categoryName : it->second.playerName;
+        }
+
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##pip_target", currentLabel.c_str()))
+        {
+            if (ImGui::Selectable("Auto-detect split", m_pipManualAgent < 0))
+                m_pipManualAgent = -1;
+
+            auto DrawTeamItems = [&](const char* label, const std::vector<int>& ids)
+            {
+                ImGui::Separator();
+                ImGui::TextDisabled("%s", label);
+                for (int id : ids)
+                {
+                    auto it = m_replayCtx.agents.find(id);
+                    if (it == m_replayCtx.agents.end()) continue;
+                    const auto& ard = it->second;
+                    std::string name = ard.playerName.empty()
+                        ? ard.categoryName : ard.playerName;
+                    bool selected = (m_pipManualAgent == id);
+                    if (ImGui::Selectable(name.c_str(), selected))
+                        m_pipManualAgent = id;
+                }
+            };
+
+            DrawTeamItems("Team 1", m_team1PlayerIds);
+            DrawTeamItems("Team 2", m_team2PlayerIds);
+            ImGui::EndCombo();
+        }
+    }
+
+    if (m_pipTargetAgent >= 0)
+    {
+        // Resize PiP render target to match window content area
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        float imgW = std::max(64.f, avail.x);
+        float imgH = std::max(64.f, avail.y);
+        {
+            int newW = (int)imgW;
+            int newH = (int)imgH;
+            if (newW != m_pipWidth || newH != m_pipHeight)
+            {
+                m_pipWidth = newW;
+                m_pipHeight = newH;
+                InitPiPResources();
+            }
+        }
+
+        if (imgW > 0.f && imgH > 0.f)
+        {
+            ImVec2 imgPos = ImGui::GetCursorScreenPos();
+
+            // InvisibleButton captures mouse so left-drag works for camera orbit
+            // (without this, ImGui uses left-drag to move the window)
+            ImGui::InvisibleButton("##pip_interact", ImVec2(imgW, imgH));
+            ImGui::GetWindowDrawList()->AddImage(
+                (ImTextureID)m_pipSRV.Get(), imgPos,
+                ImVec2(imgPos.x + imgW, imgPos.y + imgH));
+
+            // Camera controls — drag image to orbit, scroll to zoom
+            if (ImGui::IsItemActive())
+            {
+                ImVec2 md = ImGui::GetIO().MouseDelta;
+                m_pipFollowYaw   += md.x * 0.01f;
+                m_pipFollowPitch  = std::clamp(m_pipFollowPitch - md.y * 0.01f, 0.05f, 1.55f);
+            }
+            if (ImGui::IsItemHovered() && io.MouseWheel != 0.f)
+                m_pipFollowDist = std::clamp(m_pipFollowDist - io.MouseWheel * 40.f, 100.f, 2000.f);
+
+            // Sliders for direct height/distance control
+            ImGui::SliderFloat("Height", &m_pipFollowPitch, 0.05f, 1.55f, "%.2f");
+            ImGui::SliderFloat("Distance", &m_pipFollowDist, 100.f, 2000.f, "%.0f");
+
+            // Overlay agent names + cast bars on top of PiP image
+            if (m_agentsClassified && m_skillUseTimelineBuilt)
+            {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                XMMATRIX vp = XMLoadFloat4x4(&m_pipViewProj);
+                ImFont* font = ImGui::GetFont();
+                float fontSize = 11.f;
+                const float barW = 36.f;
+                const float barH = 4.f;
+                const MapTransform& mt = m_replayCtx.mapTransform;
+                const InterpolationSettings& is = m_replayCtx.interpSettings;
+                float now = m_debugTimeline;
+
+                // Helper: project world position to PiP image coords
+                auto ProjectToImage = [&](const XMFLOAT3& pos, float& outX, float& outY) -> bool
+                {
+                    XMVECTOR wp = XMVectorSet(pos.x, pos.y + 40.f, pos.z, 1.f);
+                    XMVECTOR cl = XMVector4Transform(wp, vp);
+                    float cw = XMVectorGetW(cl);
+                    if (cw < 0.001f) return false;
+                    float nx = XMVectorGetX(cl) / cw;
+                    float ny = XMVectorGetY(cl) / cw;
+                    outX = imgPos.x + (nx * 0.5f + 0.5f) * imgW;
+                    outY = imgPos.y + (1.f - ny) * 0.5f * imgH;
+                    return true;
+                };
+
+                auto InBounds = [&](float x, float y) {
+                    return x >= imgPos.x && x <= imgPos.x + imgW
+                        && y >= imgPos.y && y <= imgPos.y + imgH;
+                };
+
+                // Pass 1: Name labels + cast bars (bounds-clipped per agent)
+                for (auto& [agentId, ard] : m_replayCtx.agents)
+                {
+                    if (ard.snapshots.empty()) continue;
+                    if (ard.type != AgentType::Player && ard.type != AgentType::NPC
+                        && ard.type != AgentType::Gadget && ard.type != AgentType::Flag)
+                        continue;
+
+                    const AgentSnapshot* snap = FindSnapshotAtTime(ard, now);
+                    if (!snap || snap->is_dead) continue;
+
+                    float sx, sy, sz;
+                    InterpolateAgentPosition(ard, now, is, sx, sy, sz);
+                    XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
+
+                    float scrX, scrY;
+                    if (!ProjectToImage(pos, scrX, scrY)) continue;
+                    if (!InBounds(scrX, scrY)) continue;
+
+                    std::string label = GetAgentLabel(ard);
+                    ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
+                    float lx = scrX - textSz.x * 0.5f;
+                    float ly = scrY;
+
+                    dl->AddRectFilled(ImVec2(lx - 2.f, ly - 1.f),
+                                      ImVec2(lx + textSz.x + 2.f, ly + textSz.y + 1.f),
+                                      IM_COL32(0, 0, 0, 160), 2.f);
+                    dl->AddText(font, fontSize, ImVec2(lx, ly),
+                                IM_COL32(255, 255, 255, 220), label.c_str());
+
+                    if (ard.type == AgentType::Player)
+                    {
+                        auto sv = ard.skillVisualAtTime(now);
+                        if (sv.skillId > 0 && sv.alpha > 0.01f)
+                        {
+                            int alpha = (int)(255 * sv.alpha);
+                            float iconSz = 18.f;
+                            float gap = 2.f;
+
+                            // Skill icon above name
+                            float ikX = scrX - iconSz * 0.5f;
+                            float ikY = ly - iconSz - gap;
+                            ImTextureID skillTex = LoadSkillIcon(
+                                const_cast<ReplayWindow*>(this),
+                                m_deviceResources->GetD3DDevice(),
+                                sv.skillId, m_skillIconIndex, m_skillIconCache);
+                            if (skillTex)
+                            {
+                                dl->AddImage(skillTex, ImVec2(ikX, ikY),
+                                             ImVec2(ikX + iconSz, ikY + iconSz),
+                                             ImVec2(0, 0), ImVec2(1, 1),
+                                             IM_COL32(255, 255, 255, alpha));
+                            }
+
+                            // Cast bar below icon (only if actively casting/cancelled/interrupted)
+                            if (sv.isCasting || sv.cancelled || sv.interrupted)
+                            {
+                                float cbW = iconSz + 8.f;
+                                float cbH = 5.f;
+                                float cbX = scrX - cbW * 0.5f;
+                                float cbY = ikY + iconSz + 1.f;
+                                ImU32 barBg = IM_COL32(0, 0, 0, (int)(180 * sv.alpha));
+                                ImU32 barFg;
+                                if (sv.interrupted)      barFg = IM_COL32(180, 80, 220, alpha);
+                                else if (sv.cancelled)   barFg = IM_COL32(230, 180, 40, alpha);
+                                else                     barFg = IM_COL32(60, 210, 100, alpha);
+                                dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW, cbY + cbH), barBg, 1.f);
+                                dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW * sv.progress, cbY + cbH), barFg, 1.f);
+                            }
+                        }
+                    }
+                }
+
+                // Pass 2: Skill laser lines (separate pass — not bounds-clipped by caster)
+                for (auto& [agentId, ard] : m_replayCtx.agents)
+                {
+                    if (ard.type != AgentType::Player) continue;
+                    if (ard.snapshots.empty()) continue;
+
+                    auto laser = ard.skillLaserAtTime(now);
+                    if (laser.targetId < 0 || laser.alpha < 0.01f) continue;
+
+                    auto tgtIt = m_replayCtx.agents.find(laser.targetId);
+                    if (tgtIt == m_replayCtx.agents.end()) continue;
+                    const auto& tgtArd = tgtIt->second;
+                    if (tgtArd.snapshots.empty()) continue;
+
+                    // Project caster
+                    float csx, csy, csz;
+                    InterpolateAgentPosition(ard, now, is, csx, csy, csz);
+                    XMFLOAT3 cpos = ApplyMapTransformToPos(csx, csy, csz, mt);
+                    float cscrX, cscrY;
+                    if (!ProjectToImage(cpos, cscrX, cscrY)) continue;
+
+                    // Project target
+                    float tsx, tsy, tsz;
+                    InterpolateAgentPosition(tgtArd, now, is, tsx, tsy, tsz);
+                    XMFLOAT3 tpos = ApplyMapTransformToPos(tsx, tsy, tsz, mt);
+                    float tscrX, tscrY;
+                    if (!ProjectToImage(tpos, tscrX, tscrY)) continue;
+
+                    // Draw if either end is in bounds
+                    if (InBounds(cscrX, cscrY) || InBounds(tscrX, tscrY))
+                    {
+                        ImU32 col = (ard.teamId == tgtArd.teamId)
+                            ? IM_COL32(60, 255, 120, (int)(200 * laser.alpha))
+                            : IM_COL32(255, 60, 60, (int)(200 * laser.alpha));
+                        dl->AddLine(ImVec2(cscrX, cscrY), ImVec2(tscrX, tscrY), col, 2.f);
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "No split detected");
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(4);
 }

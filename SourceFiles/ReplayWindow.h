@@ -303,7 +303,11 @@ private:
     bool m_showSkillIcons   = true;
     bool m_showSkillLasers  = true;
     bool m_show3DLabels     = true;
+    bool m_showNameFilterPanel = false;
+    std::unordered_set<int> m_hiddenNameAgents;   // agent IDs whose names are hidden
+
     void DrawSkillLasers();
+    void DrawNameFilterPanel();
 
     ImTextureID m_deathIconTex = nullptr;
     bool m_deathIconLoaded = false;
@@ -604,6 +608,7 @@ private:
     bool               m_tvSavedSkillLasers = true;
     bool               m_tvSavedLodEnabled = false;
     bool               m_tvSavedShow3DLabels = true;
+    bool               m_tvSavedNamePanel    = false;
 
     // Transition interpolation endpoints
     DirectX::XMFLOAT3 m_tvTransFrom{};
@@ -627,6 +632,43 @@ private:
     float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
 
     void DrawPianoRollPanel();
+
+    // Cached from ImGui overlay for use in Update() (suppresses camera keys)
+    bool m_imguiWantTextInput = false;
+
+    // --- Match Notepad ---
+    bool m_showNotepad = false;
+    std::string m_notepadBuffer;
+    std::string m_notepadMatchId;
+
+    void DrawNotepad();
+
+    // --- Picture-in-Picture (Split Camera) ---
+    bool  m_pipEnabled       = false;
+    int   m_pipTargetAgent   = -1;
+    int   m_pipPrevTarget    = -1;
+    int   m_pipManualAgent   = -1;   // -1 = auto-detect, >=0 = pinned to specific agent
+    float m_pipDwellTimer    = 0.f;
+    float m_pipFollowDist    = 350.f;
+    float m_pipFollowYaw     = 0.f;
+    float m_pipFollowPitch   = 0.6f;
+    int   m_pipWidth         = 480;
+    int   m_pipHeight        = 270;
+
+    DirectX::XMFLOAT4X4 m_pipViewProj{};              // cached for overlay projection
+    DirectX::XMFLOAT3   m_pipCamPos{};
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_pipTexture;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_pipRTV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_pipDepthTexture;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView>   m_pipDSV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_pipSRV;
+    bool m_pipResourcesReady = false;
+
+    void InitPiPResources();
+    void RenderPiP();
+    void UpdatePiPTarget();
+    void DrawPiPPanel();
 
     // --- Player Info Panel ---
     bool m_showPlayerInfoPanel = false;
