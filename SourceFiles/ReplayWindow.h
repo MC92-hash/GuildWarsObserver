@@ -88,6 +88,7 @@ private:
     void DrawMatchTimer();
     void DrawJumboMessages();
     void DrawMoraleBoostTimers();
+    void DrawAssetInspectorWindow();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -218,6 +219,16 @@ private:
     // --- Flag allegiance debug panel ---
     bool m_showFlagDebugWindow = false;
     void DrawFlagDebugWindow();
+
+    // --- Asset Inspector / Blacklist ---
+    bool m_showAssetInspector = false;
+    bool m_assetSelectionEnabled = false;
+    int  m_pickedPropIndex = -1;
+    int  m_hoveredPropMeshId = -1;
+    std::unordered_map<int, uint32_t> m_meshIdToPropIndex;
+    void SetPickedProp(int newPropIndex);
+    void SetPropHighlight(int propIndex, uint32_t state);
+    void SetPropAlpha(int propIndex, float alpha);
 
     // --- Bundle carry tracking (repair kits, vine seeds) ---
     struct LeverCapEvent {
