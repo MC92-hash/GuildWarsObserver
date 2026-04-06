@@ -80,6 +80,76 @@ def fetch_remote_index(s3, bucket: str) -> list[dict]:
         raise
 
 
+def extract_archives(source_dir: Path) -> int:
+    """Auto-extract .tar, .tar.gz, and .tar.gz.zip archives in source_dir.
+
+    Extracted folders are placed next to the archive. Processed archives are
+    moved to a 'processed/' subdirectory so they aren't re-extracted.
+    Returns the number of archives extracted.
+    """
+    import shutil
+    import zipfile
+
+    processed_dir = source_dir / "processed"
+    count = 0
+
+    for entry in sorted(source_dir.iterdir()):
+        if not entry.is_file():
+            continue
+
+        name = entry.name.lower()
+
+        # Handle .tar.gz.zip (double-compressed from Tolkano)
+        if name.endswith(".tar.gz.zip"):
+            print(f"  Extracting (zip->tar.gz->folder): {entry.name}")
+            try:
+                with zipfile.ZipFile(entry, "r") as zf:
+                    tar_gz_names = [n for n in zf.namelist() if n.endswith(".tar.gz") or n.endswith(".tar")]
+                    if not tar_gz_names:
+                        print(f"    Warning: no .tar.gz found inside zip, skipping")
+                        continue
+                    with tempfile.TemporaryDirectory() as tmp:
+                        zf.extractall(tmp)
+                        for tgz_name in tar_gz_names:
+                            tgz_path = Path(tmp) / tgz_name
+                            with tarfile.open(tgz_path, "r:*") as tar:
+                                tar.extractall(source_dir, filter="data")
+                processed_dir.mkdir(exist_ok=True)
+                shutil.move(str(entry), str(processed_dir / entry.name))
+                count += 1
+            except Exception as e:
+                print(f"    Error extracting {entry.name}: {e}")
+            continue
+
+        # Handle .tar.gz
+        if name.endswith(".tar.gz") or name.endswith(".tgz"):
+            print(f"  Extracting (tar.gz->folder): {entry.name}")
+            try:
+                with tarfile.open(entry, "r:gz") as tar:
+                    tar.extractall(source_dir, filter="data")
+                processed_dir.mkdir(exist_ok=True)
+                shutil.move(str(entry), str(processed_dir / entry.name))
+                count += 1
+            except Exception as e:
+                print(f"    Error extracting {entry.name}: {e}")
+            continue
+
+        # Handle plain .tar
+        if name.endswith(".tar"):
+            print(f"  Extracting (tar->folder): {entry.name}")
+            try:
+                with tarfile.open(entry, "r:") as tar:
+                    tar.extractall(source_dir, filter="data")
+                processed_dir.mkdir(exist_ok=True)
+                shutil.move(str(entry), str(processed_dir / entry.name))
+                count += 1
+            except Exception as e:
+                print(f"    Error extracting {entry.name}: {e}")
+            continue
+
+    return count
+
+
 def scan_local_matches(source_dir: Path) -> list[Path]:
     """Find all match directories containing infos.json."""
     matches = []
@@ -88,7 +158,7 @@ def scan_local_matches(source_dir: Path) -> list[Path]:
         return matches
 
     for entry in sorted(source_dir.iterdir()):
-        if entry.is_dir() and (entry / "infos.json").exists():
+        if entry.is_dir() and entry.name != "processed" and (entry / "infos.json").exists():
             matches.append(entry)
     return matches
 
@@ -260,6 +330,14 @@ def cmd_upload(args, config: dict):
     print(f"Source directory: {source_dir}")
     print(f"R2 bucket: {bucket}")
     print()
+
+    # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
+    print("Checking for archives to extract...")
+    extracted = extract_archives(source_dir)
+    if extracted:
+        print(f"  Extracted {extracted} archive(s).\n")
+    else:
+        print("  No new archives found.\n")
 
     # Fetch existing index
     print("Fetching remote index.json...")

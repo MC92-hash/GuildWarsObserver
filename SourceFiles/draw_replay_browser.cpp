@@ -10,6 +10,140 @@
 #include <set>
 #include <unordered_map>
 
+// ─── Build composition system ────────────────────────────────────────────────
+
+static const char* GetProfAbbrev(int id)
+{
+    switch (id) {
+    case 1: return "W"; case 2: return "R"; case 3: return "Mo"; case 4: return "N";
+    case 5: return "Me"; case 6: return "E"; case 7: return "A"; case 8: return "Rt";
+    case 9: return "P"; case 10: return "D"; default: return "?";
+    }
+}
+
+struct SkillCountReq { int skillId; int minPlayers; };
+
+struct BuildDef {
+    std::string name;
+    std::map<std::string, int> professions;   // exact prof counts (empty = skip check)
+    std::vector<int> keySkills;               // any-of: at least 1 player uses one
+    std::vector<SkillCountReq> skillCounts;   // each: at least N players use skill
+};
+
+static std::vector<BuildDef> s_buildDefs;
+static bool s_buildDefsLoaded = false;
+
+static void LoadBuildDefs()
+{
+    if (s_buildDefsLoaded) return;
+    s_buildDefsLoaded = true;
+
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+
+    // Search up to 5 parent dirs for settings/builds.json
+    for (int i = 0; i < 5; i++)
+    {
+        auto p = dir / "settings" / "builds.json";
+        if (std::filesystem::exists(p))
+        {
+            std::ifstream f(p);
+            if (!f.is_open()) break;
+            try {
+                nlohmann::json j;
+                f >> j;
+                for (auto& b : j["builds"])
+                {
+                    BuildDef def;
+                    def.name = b.value("name", "");
+                    if (b.contains("professions") && b["professions"].is_object())
+                        for (auto& [k, v] : b["professions"].items())
+                            def.professions[k] = v.get<int>();
+                    if (b.contains("key_skills") && b["key_skills"].is_array())
+                        for (auto& s : b["key_skills"])
+                            def.keySkills.push_back(s.get<int>());
+                    if (b.contains("skill_counts") && b["skill_counts"].is_array())
+                        for (auto& sc : b["skill_counts"])
+                            def.skillCounts.push_back({ sc.value("skill", 0), sc.value("min", 1) });
+                    if (!def.name.empty())
+                        s_buildDefs.push_back(std::move(def));
+                }
+            } catch (...) {}
+            return;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+}
+
+static std::string ComputeProfSignature(const std::map<std::string, int>& counts)
+{
+    // Sort by abbreviation alphabetically, format as "2A/2E/1Me/2Mo/1W"
+    std::vector<std::pair<std::string, int>> sorted(counts.begin(), counts.end());
+    std::sort(sorted.begin(), sorted.end());
+    std::string sig;
+    for (auto& [abbr, cnt] : sorted)
+    {
+        if (!sig.empty()) sig += "/";
+        sig += std::to_string(cnt) + abbr;
+    }
+    return sig;
+}
+
+static std::string ComputeTeamBuild(const PartyMeta& party)
+{
+    LoadBuildDefs();
+
+    // Count primary professions and per-player skill sets
+    std::map<std::string, int> profCounts;
+    std::vector<std::set<int>> playerSkills;
+    for (const auto& p : party.players)
+    {
+        if (p.primary >= 1 && p.primary <= 10)
+            profCounts[GetProfAbbrev(p.primary)]++;
+        playerSkills.emplace_back(p.used_skills.begin(), p.used_skills.end());
+    }
+
+    if (profCounts.empty()) return "";
+
+    // Try matching against build definitions
+    for (const auto& def : s_buildDefs)
+    {
+        // Profession check (skip if empty — pure skill-based match)
+        if (!def.professions.empty() && def.professions != profCounts) continue;
+
+        // key_skills: at least 1 player uses any of these
+        if (!def.keySkills.empty())
+        {
+            bool hasKey = false;
+            for (const auto& ps : playerSkills)
+                for (int sk : def.keySkills)
+                    if (ps.count(sk)) { hasKey = true; break; }
+            if (!hasKey) continue;
+        }
+
+        // skill_counts: for each entry, at least N players must use that skill
+        if (!def.skillCounts.empty())
+        {
+            bool allMet = true;
+            for (const auto& sc : def.skillCounts)
+            {
+                int count = 0;
+                for (const auto& ps : playerSkills)
+                    if (ps.count(sc.skillId)) count++;
+                if (count < sc.minPlayers) { allMet = false; break; }
+            }
+            if (!allMet) continue;
+        }
+
+        return def.name;
+    }
+
+    // Fallback: profession signature
+    return ComputeProfSignature(profCounts);
+}
+
 // ─── Profession helpers ──────────────────────────────────────────────────────
 
 static const char* GetProfessionName(int id)
@@ -708,6 +842,11 @@ struct BrowserState
 
     int  minRatingFilter = 0;
 
+    // Build composition filter
+    std::set<std::string> selectedBuilds;
+    char buildSearchBuf[128] = {};
+    std::vector<std::string> buildNames;
+
     bool filtersBuilt = false;
     int  lastMatchCount = -1;
 
@@ -876,6 +1015,21 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
     s_state.allTeams.assign(teams.begin(), teams.end());
     s_state.allPlayers.assign(players.begin(), players.end());
     s_state.allTags.assign(tags.begin(), tags.end());
+
+    // Collect all build compositions
+    {
+        std::set<std::string> builds;
+        for (const auto& m : matches)
+        {
+            for (const auto& [pid, party] : m.parties)
+            {
+                std::string b = ComputeTeamBuild(party);
+                if (!b.empty()) builds.insert(b);
+            }
+        }
+        s_state.buildNames = ToVec(builds);
+    }
+
     s_state.filtersBuilt = true;
     s_state.lastMatchCount = (int)matches.size();
 }
@@ -1382,6 +1536,8 @@ struct FilteredMatch
     GuildLabel guild1;
     GuildLabel guild2;
     std::string mapName;
+    std::string build1;
+    std::string build2;
 };
 
 static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& matches)
@@ -1494,12 +1650,30 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             if (!found) continue;
         }
 
+        // Compute team build compositions
+        std::string b1, b2;
+        {
+            auto pit1 = m.parties.find("1");
+            auto pit2 = m.parties.find("2");
+            if (pit1 != m.parties.end()) b1 = ComputeTeamBuild(pit1->second);
+            if (pit2 != m.parties.end()) b2 = ComputeTeamBuild(pit2->second);
+        }
+
+        // Build filter (multi-select)
+        if (!s_state.selectedBuilds.empty())
+        {
+            bool match = s_state.selectedBuilds.count(b1) || s_state.selectedBuilds.count(b2);
+            if (!match) continue;
+        }
+
         FilteredMatch fm;
         fm.originalIndex = i;
         fm.meta = &m;
         fm.guild1 = g1;
         fm.guild2 = g2;
         fm.mapName = mapName;
+        fm.build1 = std::move(b1);
+        fm.build2 = std::move(b2);
         result.push_back(fm);
     }
 
@@ -1521,8 +1695,10 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             case 1: r = a.meta->occasion.compare(b.meta->occasion); break;
             case 2: r = a.mapName.compare(b.mapName); break;
             case 3: r = a.guild1.display.compare(b.guild1.display); break;
-            case 4: r = a.guild2.display.compare(b.guild2.display); break;
-            case 5: r = MatchRatings::Get().GetRating(a.meta->folder_name)
+            case 4: r = a.build1.compare(b.build1); break;
+            case 5: r = a.guild2.display.compare(b.guild2.display); break;
+            case 6: r = a.build2.compare(b.build2); break;
+            case 7: r = MatchRatings::Get().GetRating(a.meta->folder_name)
                       - MatchRatings::Get().GetRating(b.meta->folder_name); break;
             default: break;
             }
@@ -1547,6 +1723,7 @@ static int CountActiveFilters()
     if (!s_state.selectedMaps.empty()) n++;
     if (!s_state.selectedFluxes.empty()) n++;
     if (!s_state.selectedOccasions.empty()) n++;
+    if (!s_state.selectedBuilds.empty()) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
     return n;
 }
@@ -1697,6 +1874,13 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.occasionNames, s_state.selectedOccasions, "occasion", false);
 
     ImGui::Spacing();
+
+    // ── Build composition filter (multi-select) ──
+    DrawMultiSelectFilter("Build", "Search builds...",
+        s_state.buildSearchBuf, sizeof(s_state.buildSearchBuf),
+        s_state.buildNames, s_state.selectedBuilds, "build", true);
+
+    ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
@@ -1718,9 +1902,11 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.selectedMaps.clear();
         s_state.selectedFluxes.clear();
         s_state.selectedOccasions.clear();
+        s_state.selectedBuilds.clear();
         s_state.mapSearchBuf[0] = '\0';
         s_state.fluxSearchBuf[0] = '\0';
         s_state.occasionSearchBuf[0] = '\0';
+        s_state.buildSearchBuf[0] = '\0';
         s_state.dateFrom = {};
         s_state.dateTo = {};
         s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
@@ -1898,23 +2084,26 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float dateW = 100.0f;
     float occasionW = (mode == LayoutMode::Narrow) ? 100.0f : 130.0f;
     float ratingW = 72.0f;
+    float compW = 80.0f;
     float mapW = std::max(90.0f, tableW * 0.13f);
     float notesColW = 20.0f;
-    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW - notesColW) * 0.5f, 100.0f, 250.0f);
+    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW - compW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX;
 
-    if (ImGui::BeginTable("##match_table", 7, tableFlags))
+    if (ImGui::BeginTable("##match_table", 9, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Date",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
         ImGui::TableSetupColumn("Occasion", ImGuiTableColumnFlags_WidthFixed, occasionW);
         ImGui::TableSetupColumn("Map",      ImGuiTableColumnFlags_WidthFixed, mapW);
         ImGui::TableSetupColumn("Team 1",   ImGuiTableColumnFlags_WidthFixed, teamW);
+        ImGui::TableSetupColumn("Comp 1",   ImGuiTableColumnFlags_WidthFixed, compW);
         ImGui::TableSetupColumn("Team 2",   ImGuiTableColumnFlags_WidthFixed, teamW);
+        ImGui::TableSetupColumn("Comp 2",   ImGuiTableColumnFlags_WidthFixed, compW);
         ImGui::TableSetupColumn("Rating",   ImGuiTableColumnFlags_WidthFixed, ratingW);
         ImGui::TableSetupColumn("##notes",  ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW);
         ImGui::TableHeadersRow();
@@ -2013,6 +2202,10 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
                 }
 
+                // Comp 1
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.f), "%s", fm.build1.c_str());
+
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(fm.guild2.display.c_str());
                 if (m.winner_party_id == 2 && cupTex)
@@ -2020,6 +2213,10 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
                 }
+
+                // Comp 2
+                ImGui::TableNextColumn();
+                ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.f), "%s", fm.build2.c_str());
 
                 // Rating column
                 ImGui::TableNextColumn();
