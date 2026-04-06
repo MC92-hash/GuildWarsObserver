@@ -1,80 +1,173 @@
 {
   "builds": [
     {
+      "min_professions": {
+        "A": 1
+      },
       "name": "Singust",
-      "comment": "2+ Gust users with at least 1 Assassin",
-      "professions": {},
-      "min_professions": { "A": 1 },
       "skill_counts": [
-        { "skill": 843, "min": 2 }
+        {
+          "min": 2,
+          "skill": 843
+        }
       ]
     },
     {
       "name": "Warrior Gust",
-      "comment": "2+ Gust users without Assassins (e.g. Warriors with Gust)",
-      "professions": {},
       "skill_counts": [
-        { "skill": 843, "min": 2 }
+        {
+          "min": 2,
+          "skill": 843
+        }
       ]
     },
     {
+      "key_skills": [
+        1730,
+        470,
+        476,
+        1213
+      ],
       "name": "Spiritway",
-      "comment": "4W/1R/2Rt/1Mo with nature spirits",
-      "professions": { "W": 4, "R": 1, "Rt": 2, "Mo": 1 },
-      "key_skills": [1730, 470, 476, 1213]
+      "professions": {
+        "Mo": 1,
+        "R": 1,
+        "Rt": 2,
+        "W": 4
+      }
     },
     {
+      "key_skills": [
+        1518,
+        1521
+      ],
       "name": "Triple Melee",
-      "comment": "1W/2D/2Me/3Mo - AoB Derv + Lyssa Derv + Warrior",
-      "professions": { "W": 1, "D": 2, "Me": 2, "Mo": 3 },
-      "key_skills": [1518, 1521]
+      "professions": {
+        "D": 2,
+        "Me": 2,
+        "Mo": 3,
+        "W": 1
+      }
     },
     {
+      "key_skills": [
+        1722
+      ],
       "name": "Ranger Spike",
-      "comment": "3R/1P/1Rt/3Mo with Forked Arrow",
-      "professions": { "R": 3, "P": 1, "Rt": 1, "Mo": 3 },
-      "key_skills": [1722]
+      "professions": {
+        "Mo": 3,
+        "P": 1,
+        "R": 3,
+        "Rt": 1
+      }
     },
     {
+      "key_skills": [
+        878
+      ],
       "name": "VoR Hex",
-      "professions": { "Me": 2, "N": 2, "Mo": 2, "E": 1, "W": 1 },
-      "key_skills": [878]
+      "professions": {
+        "E": 1,
+        "Me": 2,
+        "Mo": 2,
+        "N": 2,
+        "W": 1
+      }
     },
     {
+      "key_skills": [
+        39
+      ],
       "name": "eSurge",
-      "professions": { "Me": 3, "Mo": 2, "E": 1, "N": 1, "W": 1 },
-      "key_skills": [39]
+      "professions": {
+        "E": 1,
+        "Me": 3,
+        "Mo": 2,
+        "N": 1,
+        "W": 1
+      }
     },
     {
+      "key_skills": [
+        205
+      ],
       "name": "LSurge Balance",
-      "comment": "1W/1D(Balth)/3Me(2x eSurge + 1x LSurge)/3Mo",
-      "professions": { "W": 1, "D": 1, "Me": 3, "Mo": 3 },
-      "key_skills": [205]
+      "professions": {
+        "D": 1,
+        "Me": 3,
+        "Mo": 3,
+        "W": 1
+      }
     },
     {
+      "key_skills": [
+        1129
+      ],
       "name": "Smite Balance",
-      "comment": "1W/1D(Balth)/2Me(eSurge)/4Mo(1x Word of Censure)",
-      "professions": { "W": 1, "D": 1, "Me": 2, "Mo": 4 },
-      "key_skills": [1129]
+      "professions": {
+        "D": 1,
+        "Me": 2,
+        "Mo": 4,
+        "W": 1
+      }
     },
     {
       "name": "6dmg",
-      "comment": "4E/1Me/2Mo/1D variant",
-      "professions": { "E": 4, "Me": 1, "Mo": 2, "D": 1 }
+      "professions": {
+        "D": 1,
+        "E": 4,
+        "Me": 1,
+        "Mo": 2
+      }
     },
     {
       "name": "6dmg",
-      "comment": "4E/1Me/2Mo/1Rt variant",
-      "professions": { "E": 4, "Me": 1, "Mo": 2, "Rt": 1 }
+      "professions": {
+        "E": 4,
+        "Me": 1,
+        "Mo": 2,
+        "Rt": 1
+      }
     },
     {
       "name": "Necro Balance",
-      "comment": "1W/1D/1R/1N/1Me/3Mo",
-      "professions": { "W": 1, "D": 1, "R": 1, "N": 1, "Me": 1, "Mo": 3 }
+      "professions": {
+        "D": 1,
+        "Me": 1,
+        "Mo": 3,
+        "N": 1,
+        "R": 1,
+        "W": 1
+      }
     },
     {
       "name": "Balanced",
-      "professions": { "W": 2, "Mo": 2, "E": 1, "Me": 1, "R": 1, "N": 1 }
+      "professions": {
+        "E": 1,
+        "Me": 1,
+        "Mo": 2,
+        "N": 1,
+        "R": 1,
+        "W": 2
+      }
+    },
+    {
+      "name": "Famine E-Drain",
+      "professions": {
+        "Me": 2,
+        "Mo": 3,
+        "P": 1,
+        "R": 2
+      }
+    },
+    {
+      "name": "Spiritway 2 Monks",
+      "professions": {
+        "Mo": 2,
+        "R": 1,
+        "Rt": 1,
+        "W": 4
+      }
     }
   ]
 }

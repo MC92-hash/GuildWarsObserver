@@ -377,6 +377,7 @@ FodyWeavers.xsd
 /SourceFiles/build_config.local.h
 /build.bat
 /scripts/r2_config.env
+/scripts/contributor_keys.env
 
 # ============================================================
 # Unused textures, fonts, and build artifacts

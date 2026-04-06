@@ -27,6 +27,9 @@ except ImportError:
 VALID_KEY_HASHES = {
     # Default admin key hash — replace with real hashes
     hashlib.sha256(b"gwobserver-contributor-2026").hexdigest(),
+    # Test contributor keys (see scripts/contributor_keys.env)
+    "eecef75586867da0205f6465d667f8ae2f63a68b52c79ff657f59d56af8c6655",
+    "1330209e5c93f5d82bb38ea2cf5382a525bfaf8ffbfa6e81cb91fc3562761d98",
 }
 
 
