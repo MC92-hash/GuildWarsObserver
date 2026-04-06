@@ -2,10 +2,18 @@
   "builds": [
     {
       "name": "Singust",
-      "comment": "2x WotA assassins + 2x Gust users (any primary prof)",
+      "comment": "2+ Gust users with at least 1 Assassin",
+      "professions": {},
+      "min_professions": { "A": 1 },
+      "skill_counts": [
+        { "skill": 843, "min": 2 }
+      ]
+    },
+    {
+      "name": "Warrior Gust",
+      "comment": "2+ Gust users without Assassins (e.g. Warriors with Gust)",
       "professions": {},
       "skill_counts": [
-        { "skill": 1649, "min": 2 },
         { "skill": 843, "min": 2 }
       ]
     },
@@ -36,6 +44,33 @@
       "name": "eSurge",
       "professions": { "Me": 3, "Mo": 2, "E": 1, "N": 1, "W": 1 },
       "key_skills": [39]
+    },
+    {
+      "name": "LSurge Balance",
+      "comment": "1W/1D(Balth)/3Me(2x eSurge + 1x LSurge)/3Mo",
+      "professions": { "W": 1, "D": 1, "Me": 3, "Mo": 3 },
+      "key_skills": [205]
+    },
+    {
+      "name": "Smite Balance",
+      "comment": "1W/1D(Balth)/2Me(eSurge)/4Mo(1x Word of Censure)",
+      "professions": { "W": 1, "D": 1, "Me": 2, "Mo": 4 },
+      "key_skills": [1129]
+    },
+    {
+      "name": "6dmg",
+      "comment": "4E/1Me/2Mo/1D variant",
+      "professions": { "E": 4, "Me": 1, "Mo": 2, "D": 1 }
+    },
+    {
+      "name": "6dmg",
+      "comment": "4E/1Me/2Mo/1Rt variant",
+      "professions": { "E": 4, "Me": 1, "Mo": 2, "Rt": 1 }
+    },
+    {
+      "name": "Necro Balance",
+      "comment": "1W/1D/1R/1N/1Me/3Mo",
+      "professions": { "W": 1, "D": 1, "R": 1, "N": 1, "Me": 1, "Mo": 3 }
     },
     {
       "name": "Balanced",

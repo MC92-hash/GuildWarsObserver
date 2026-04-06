@@ -573,6 +573,33 @@ static void draw_settings_window()
 			keySaved = false;
 	}
 
+	ImGui::SeparatorText("Contributor");
+	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+		"Enter a contributor key to enable build naming in the replay browser.");
+
+	static char contribBuf[256] = "";
+	static bool contribInit = false;
+	if (!contribInit)
+	{
+		contribInit = true;
+		size_t len = std::min(GuiGlobalConstants::contributor_key.size(), sizeof(contribBuf) - 1);
+		if (len > 0) memcpy(contribBuf, GuiGlobalConstants::contributor_key.c_str(), len);
+		contribBuf[len] = '\0';
+	}
+
+	ImGui::SetNextItemWidth(-1);
+	if (ImGui::InputTextWithHint("##contributor_key", "Contributor Key", contribBuf, sizeof(contribBuf),
+		ImGuiInputTextFlags_Password))
+	{
+		GuiGlobalConstants::contributor_key = contribBuf;
+		GuiGlobalConstants::SaveSettings();
+	}
+
+	if (contribBuf[0] != '\0')
+		ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Key set. Build naming enabled.");
+	else
+		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No key set. Builds are read-only.");
+
 	ImGui::End();
 
 	// ──── File dialogs (must be drawn outside the Settings window) ──

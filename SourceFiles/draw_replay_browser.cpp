@@ -6,9 +6,11 @@
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "Net/HttpClient.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
+#include <thread>
 
 // ─── Build composition system ────────────────────────────────────────────────
 
@@ -25,56 +27,157 @@ struct SkillCountReq { int skillId; int minPlayers; };
 
 struct BuildDef {
     std::string name;
-    std::map<std::string, int> professions;   // exact prof counts (empty = skip check)
-    std::vector<int> keySkills;               // any-of: at least 1 player uses one
-    std::vector<SkillCountReq> skillCounts;   // each: at least N players use skill
+    std::map<std::string, int> professions;    // exact prof counts (empty = skip check)
+    std::map<std::string, int> minProfessions; // minimum prof counts (at least N)
+    std::vector<int> keySkills;                // any-of: at least 1 player uses one
+    std::vector<SkillCountReq> skillCounts;    // each: at least N players use skill
 };
 
 static std::vector<BuildDef> s_buildDefs;
 static bool s_buildDefsLoaded = false;
+static std::filesystem::path s_buildDefsPath; // resolved local path for saving
+
+static void ParseBuildDefs(const nlohmann::json& j, std::vector<BuildDef>& out)
+{
+    if (!j.contains("builds") || !j["builds"].is_array()) return;
+    for (auto& b : j["builds"])
+    {
+        BuildDef def;
+        def.name = b.value("name", "");
+        if (b.contains("professions") && b["professions"].is_object())
+            for (auto& [k, v] : b["professions"].items())
+                def.professions[k] = v.get<int>();
+        if (b.contains("min_professions") && b["min_professions"].is_object())
+            for (auto& [k, v] : b["min_professions"].items())
+                def.minProfessions[k] = v.get<int>();
+        if (b.contains("key_skills") && b["key_skills"].is_array())
+            for (auto& s : b["key_skills"])
+                def.keySkills.push_back(s.get<int>());
+        if (b.contains("skill_counts") && b["skill_counts"].is_array())
+            for (auto& sc : b["skill_counts"])
+                def.skillCounts.push_back({ sc.value("skill", 0), sc.value("min", 1) });
+        if (!def.name.empty())
+            out.push_back(std::move(def));
+    }
+}
+
+static nlohmann::json SerializeBuildDefs(const std::vector<BuildDef>& defs)
+{
+    nlohmann::json j;
+    j["builds"] = nlohmann::json::array();
+    for (const auto& def : defs)
+    {
+        nlohmann::json b;
+        b["name"] = def.name;
+        if (!def.professions.empty()) b["professions"] = def.professions;
+        if (!def.minProfessions.empty()) b["min_professions"] = def.minProfessions;
+        if (!def.keySkills.empty()) b["key_skills"] = def.keySkills;
+        if (!def.skillCounts.empty())
+        {
+            b["skill_counts"] = nlohmann::json::array();
+            for (const auto& sc : def.skillCounts)
+                b["skill_counts"].push_back({{"skill", sc.skillId}, {"min", sc.minPlayers}});
+        }
+        j["builds"].push_back(b);
+    }
+    return j;
+}
+
+static void SaveBuildDefs()
+{
+    if (s_buildDefsPath.empty()) return;
+    auto settingsDir = s_buildDefsPath.parent_path();
+    if (!std::filesystem::exists(settingsDir))
+        std::filesystem::create_directories(settingsDir);
+    std::ofstream f(s_buildDefsPath);
+    if (!f.is_open()) return;
+    f << SerializeBuildDefs(s_buildDefs).dump(2) << "\n";
+}
+
+static void PushBuildsToCloud()
+{
+    if (s_buildDefsPath.empty()) return;
+    // Find the scripts directory (search up from exe)
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+    for (int i = 0; i < 5; i++)
+    {
+        auto script = dir / "scripts" / "push_builds.py";
+        if (std::filesystem::exists(script))
+        {
+            std::string cmd = "python \"" + script.string() + "\" \"" + s_buildDefsPath.string() + "\"";
+            if (!GuiGlobalConstants::contributor_key.empty())
+                cmd += " --key \"" + GuiGlobalConstants::contributor_key + "\"";
+            // Fire and forget (async would be better but this is rare)
+            std::thread([cmd]() { std::system(cmd.c_str()); }).detach();
+            return;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+        dir = dir.parent_path();
+    }
+}
 
 static void LoadBuildDefs()
 {
     if (s_buildDefsLoaded) return;
     s_buildDefsLoaded = true;
 
+    // 1. Try fetching from cloud
+    try {
+        HttpClient http;
+        std::wstring host(GuiGlobalConstants::cloud_storage_host.begin(),
+                          GuiGlobalConstants::cloud_storage_host.end());
+        http.SetBaseUrl(host, true);
+        auto resp = http.Get(L"/builds.json");
+        if (resp.IsOk() && !resp.body.empty())
+        {
+            std::string body(resp.body.begin(), resp.body.end());
+            auto j = nlohmann::json::parse(body, nullptr, false);
+            if (!j.is_discarded())
+                ParseBuildDefs(j, s_buildDefs);
+        }
+    } catch (...) {}
+
+    // 2. Resolve local path and merge local builds
     wchar_t exePath[MAX_PATH];
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     auto dir = std::filesystem::path(exePath).parent_path();
 
-    // Search up to 5 parent dirs for settings/builds.json
     for (int i = 0; i < 5; i++)
     {
         auto p = dir / "settings" / "builds.json";
         if (std::filesystem::exists(p))
         {
+            s_buildDefsPath = p;
             std::ifstream f(p);
-            if (!f.is_open()) break;
-            try {
-                nlohmann::json j;
-                f >> j;
-                for (auto& b : j["builds"])
-                {
-                    BuildDef def;
-                    def.name = b.value("name", "");
-                    if (b.contains("professions") && b["professions"].is_object())
-                        for (auto& [k, v] : b["professions"].items())
-                            def.professions[k] = v.get<int>();
-                    if (b.contains("key_skills") && b["key_skills"].is_array())
-                        for (auto& s : b["key_skills"])
-                            def.keySkills.push_back(s.get<int>());
-                    if (b.contains("skill_counts") && b["skill_counts"].is_array())
-                        for (auto& sc : b["skill_counts"])
-                            def.skillCounts.push_back({ sc.value("skill", 0), sc.value("min", 1) });
-                    if (!def.name.empty())
-                        s_buildDefs.push_back(std::move(def));
-                }
-            } catch (...) {}
+            if (f.is_open())
+            {
+                try {
+                    nlohmann::json j;
+                    f >> j;
+                    // Merge: add local defs not already present (by name)
+                    std::set<std::string> existingNames;
+                    for (const auto& d : s_buildDefs)
+                        existingNames.insert(d.name);
+
+                    std::vector<BuildDef> localDefs;
+                    ParseBuildDefs(j, localDefs);
+                    for (auto& ld : localDefs)
+                    {
+                        if (!existingNames.count(ld.name))
+                            s_buildDefs.push_back(std::move(ld));
+                    }
+                } catch (...) {}
+            }
             return;
         }
         if (!dir.has_parent_path() || dir == dir.parent_path()) break;
         dir = dir.parent_path();
     }
+
+    // Fallback: use exe-adjacent settings dir
+    s_buildDefsPath = std::filesystem::path(exePath).parent_path() / "settings" / "builds.json";
 }
 
 static std::string ComputeProfSignature(const std::map<std::string, int>& counts)
@@ -112,6 +215,18 @@ static std::string ComputeTeamBuild(const PartyMeta& party)
     {
         // Profession check (skip if empty — pure skill-based match)
         if (!def.professions.empty() && def.professions != profCounts) continue;
+
+        // Minimum profession check (at least N of each listed prof)
+        if (!def.minProfessions.empty())
+        {
+            bool met = true;
+            for (const auto& [abbr, minCnt] : def.minProfessions)
+            {
+                auto it = profCounts.find(abbr);
+                if (it == profCounts.end() || it->second < minCnt) { met = false; break; }
+            }
+            if (!met) continue;
+        }
 
         // key_skills: at least 1 player uses any of these
         if (!def.keySkills.empty())
@@ -877,6 +992,14 @@ struct BrowserState
 
 static BrowserState s_state;
 
+// Build naming popup state
+static struct {
+    char nameBuf[128] = {};
+    std::string profSig;
+    std::map<std::string, int> profCounts;
+    int existingDefIdx = -1;
+} s_buildNaming;
+
 static void NotifyNewMatches(int count, const std::string& matchName)
 {
     s_state.notifyNewCount = count;
@@ -1538,6 +1661,10 @@ struct FilteredMatch
     std::string mapName;
     std::string build1;
     std::string build2;
+    std::string profSig1;
+    std::string profSig2;
+    std::map<std::string, int> profCounts1;
+    std::map<std::string, int> profCounts2;
 };
 
 static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& matches)
@@ -1650,13 +1777,24 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             if (!found) continue;
         }
 
-        // Compute team build compositions
+        // Compute team build compositions + prof counts
         std::string b1, b2;
+        std::map<std::string, int> pc1, pc2;
         {
             auto pit1 = m.parties.find("1");
             auto pit2 = m.parties.find("2");
-            if (pit1 != m.parties.end()) b1 = ComputeTeamBuild(pit1->second);
-            if (pit2 != m.parties.end()) b2 = ComputeTeamBuild(pit2->second);
+            if (pit1 != m.parties.end())
+            {
+                for (const auto& p : pit1->second.players)
+                    if (p.primary >= 1 && p.primary <= 10) pc1[GetProfAbbrev(p.primary)]++;
+                b1 = ComputeTeamBuild(pit1->second);
+            }
+            if (pit2 != m.parties.end())
+            {
+                for (const auto& p : pit2->second.players)
+                    if (p.primary >= 1 && p.primary <= 10) pc2[GetProfAbbrev(p.primary)]++;
+                b2 = ComputeTeamBuild(pit2->second);
+            }
         }
 
         // Build filter (multi-select)
@@ -1674,6 +1812,10 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
         fm.mapName = mapName;
         fm.build1 = std::move(b1);
         fm.build2 = std::move(b2);
+        fm.profCounts1 = std::move(pc1);
+        fm.profCounts2 = std::move(pc2);
+        fm.profSig1 = ComputeProfSignature(fm.profCounts1);
+        fm.profSig2 = ComputeProfSignature(fm.profCounts2);
         result.push_back(fm);
     }
 
@@ -2204,7 +2346,84 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
                 // Comp 1
                 ImGui::TableNextColumn();
-                ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.f), "%s", fm.build1.c_str());
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.70f, 0.75f, 1.f));
+                ImGui::TextUnformatted(fm.build1.c_str());
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered() && !fm.profSig1.empty())
+                    ImGui::SetTooltip("%s", fm.profSig1.c_str());
+                if (!GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc1_" + std::to_string(fm.originalIndex)).c_str()))
+                {
+                    // Initialize popup state
+                    if (s_buildNaming.profSig != fm.profSig1)
+                    {
+                        s_buildNaming.profSig = fm.profSig1;
+                        s_buildNaming.profCounts = fm.profCounts1;
+                        s_buildNaming.existingDefIdx = -1;
+                        // Find existing def with same exact professions (no skill constraints)
+                        for (int di = 0; di < (int)s_buildDefs.size(); di++)
+                        {
+                            if (s_buildDefs[di].professions == fm.profCounts1
+                                && s_buildDefs[di].keySkills.empty()
+                                && s_buildDefs[di].skillCounts.empty()
+                                && s_buildDefs[di].minProfessions.empty())
+                            {
+                                s_buildNaming.existingDefIdx = di;
+                                break;
+                            }
+                        }
+                        std::string pre = (s_buildNaming.existingDefIdx >= 0)
+                            ? s_buildDefs[s_buildNaming.existingDefIdx].name : "";
+                        size_t len = std::min(pre.size(), sizeof(s_buildNaming.nameBuf) - 1);
+                        memcpy(s_buildNaming.nameBuf, pre.c_str(), len);
+                        s_buildNaming.nameBuf[len] = '\0';
+                    }
+                    ImGui::TextColored(ImVec4(0.90f, 0.76f, 0.30f, 1.f), "%s", fm.profSig1.c_str());
+                    ImGui::Separator();
+                    bool confirmed = ImGui::InputText("##bname", s_buildNaming.nameBuf,
+                        sizeof(s_buildNaming.nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+                    if (ImGui::Button("Save") || confirmed)
+                    {
+                        if (s_buildNaming.nameBuf[0] != '\0')
+                        {
+                            if (s_buildNaming.existingDefIdx >= 0)
+                                s_buildDefs[s_buildNaming.existingDefIdx].name = s_buildNaming.nameBuf;
+                            else
+                            {
+                                BuildDef def;
+                                def.name = s_buildNaming.nameBuf;
+                                def.professions = s_buildNaming.profCounts;
+                                s_buildDefs.push_back(std::move(def));
+                            }
+                            SaveBuildDefs();
+                            PushBuildsToCloud();
+                            s_state.filtersBuilt = false;
+                        }
+                        s_buildNaming.profSig.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel"))
+                    {
+                        s_buildNaming.profSig.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (s_buildNaming.existingDefIdx >= 0)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.1f, 0.1f, 0.8f));
+                        if (ImGui::Button("Delete"))
+                        {
+                            s_buildDefs.erase(s_buildDefs.begin() + s_buildNaming.existingDefIdx);
+                            SaveBuildDefs();
+                            PushBuildsToCloud();
+                            s_state.filtersBuilt = false;
+                            s_buildNaming.profSig.clear();
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::EndPopup();
+                }
 
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(fm.guild2.display.c_str());
@@ -2216,7 +2435,82 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
                 // Comp 2
                 ImGui::TableNextColumn();
-                ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.75f, 1.f), "%s", fm.build2.c_str());
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.70f, 0.75f, 1.f));
+                ImGui::TextUnformatted(fm.build2.c_str());
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered() && !fm.profSig2.empty())
+                    ImGui::SetTooltip("%s", fm.profSig2.c_str());
+                if (!GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc2_" + std::to_string(fm.originalIndex)).c_str()))
+                {
+                    if (s_buildNaming.profSig != fm.profSig2)
+                    {
+                        s_buildNaming.profSig = fm.profSig2;
+                        s_buildNaming.profCounts = fm.profCounts2;
+                        s_buildNaming.existingDefIdx = -1;
+                        for (int di = 0; di < (int)s_buildDefs.size(); di++)
+                        {
+                            if (s_buildDefs[di].professions == fm.profCounts2
+                                && s_buildDefs[di].keySkills.empty()
+                                && s_buildDefs[di].skillCounts.empty()
+                                && s_buildDefs[di].minProfessions.empty())
+                            {
+                                s_buildNaming.existingDefIdx = di;
+                                break;
+                            }
+                        }
+                        std::string pre = (s_buildNaming.existingDefIdx >= 0)
+                            ? s_buildDefs[s_buildNaming.existingDefIdx].name : "";
+                        size_t len = std::min(pre.size(), sizeof(s_buildNaming.nameBuf) - 1);
+                        memcpy(s_buildNaming.nameBuf, pre.c_str(), len);
+                        s_buildNaming.nameBuf[len] = '\0';
+                    }
+                    ImGui::TextColored(ImVec4(0.90f, 0.76f, 0.30f, 1.f), "%s", fm.profSig2.c_str());
+                    ImGui::Separator();
+                    bool confirmed = ImGui::InputText("##bname2", s_buildNaming.nameBuf,
+                        sizeof(s_buildNaming.nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+                    if (ImGui::Button("Save") || confirmed)
+                    {
+                        if (s_buildNaming.nameBuf[0] != '\0')
+                        {
+                            if (s_buildNaming.existingDefIdx >= 0)
+                                s_buildDefs[s_buildNaming.existingDefIdx].name = s_buildNaming.nameBuf;
+                            else
+                            {
+                                BuildDef def;
+                                def.name = s_buildNaming.nameBuf;
+                                def.professions = s_buildNaming.profCounts;
+                                s_buildDefs.push_back(std::move(def));
+                            }
+                            SaveBuildDefs();
+                            PushBuildsToCloud();
+                            s_state.filtersBuilt = false;
+                        }
+                        s_buildNaming.profSig.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel"))
+                    {
+                        s_buildNaming.profSig.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (s_buildNaming.existingDefIdx >= 0)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.1f, 0.1f, 0.8f));
+                        if (ImGui::Button("Delete##2"))
+                        {
+                            s_buildDefs.erase(s_buildDefs.begin() + s_buildNaming.existingDefIdx);
+                            SaveBuildDefs();
+                            PushBuildsToCloud();
+                            s_state.filtersBuilt = false;
+                            s_buildNaming.profSig.clear();
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::PopStyleColor();
+                    }
+                    ImGui::EndPopup();
+                }
 
                 // Rating column
                 ImGui::TableNextColumn();

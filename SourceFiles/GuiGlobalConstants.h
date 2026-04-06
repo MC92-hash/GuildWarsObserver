@@ -20,6 +20,9 @@ public:
 	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
 	inline static std::string cloud_storage_host = GWO_CLOUD_HOST;
 
+	// Contributor key for build naming (empty = read-only)
+	inline static std::string contributor_key;
+
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;
 	inline static const int right_panel_width = 450;
@@ -309,6 +312,8 @@ public:
 		file << "\n[Config]\n";
 		file << "gw_dat_path=" << saved_gw_dat_path << "\n";
 		file << "match_data_folder=" << saved_match_data_folder_path << "\n";
+		if (!contributor_key.empty())
+			file << "contributor_key=" << contributor_key << "\n";
 
 		file.close();
 	}
@@ -338,6 +343,10 @@ public:
 			}
 			if (key == "match_data_folder") {
 				saved_match_data_folder_path = val_str;
+				continue;
+			}
+			if (key == "contributor_key") {
+				contributor_key = val_str;
 				continue;
 			}
 
