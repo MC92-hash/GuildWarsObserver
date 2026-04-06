@@ -168,6 +168,14 @@
         "Rt": 1,
         "W": 4
       }
+    },
+    {
+      "name": "Hexway, Smiter, 2 Lsurge",
+      "professions": {
+        "E": 2,
+        "Me": 3,
+        "Mo": 3
+      }
     }
   ]
 }
