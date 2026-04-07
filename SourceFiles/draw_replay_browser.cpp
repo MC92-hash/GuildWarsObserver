@@ -2351,7 +2351,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered() && !fm.profSig1.empty())
                     ImGui::SetTooltip("%s", fm.profSig1.c_str());
-                if (!GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc1_" + std::to_string(fm.originalIndex)).c_str()))
+                if (GuiGlobalConstants::IsDeveloperMode() && !GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc1_" + std::to_string(fm.originalIndex)).c_str()))
                 {
                     // Initialize popup state
                     if (s_buildNaming.profSig != fm.profSig1)
@@ -2440,7 +2440,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered() && !fm.profSig2.empty())
                     ImGui::SetTooltip("%s", fm.profSig2.c_str());
-                if (!GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc2_" + std::to_string(fm.originalIndex)).c_str()))
+                if (GuiGlobalConstants::IsDeveloperMode() && !GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc2_" + std::to_string(fm.originalIndex)).c_str()))
                 {
                     if (s_buildNaming.profSig != fm.profSig2)
                     {

@@ -99,10 +99,12 @@ static void draw_settings_window()
 	int prevChoice = modeChoice;
 
 	if (ImGui::RadioButton("Local", &modeChoice, 0)){}
+#if GWO_CLOUD_ENABLED
 	ImGui::SameLine(0, 16);
 	if (ImGui::RadioButton("Cloud + Local Cache", &modeChoice, 1)){}
 	ImGui::SameLine(0, 16);
 	if (ImGui::RadioButton("Cloud Only", &modeChoice, 2)){}
+#endif
 
 	// Description text for each mode
 	switch (modeChoice)
@@ -573,32 +575,41 @@ static void draw_settings_window()
 			keySaved = false;
 	}
 
-	ImGui::SeparatorText("Contributor");
-	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
-		"Enter a contributor key to enable build naming in the replay browser.");
-
-	static char contribBuf[256] = "";
-	static bool contribInit = false;
-	if (!contribInit)
+	if constexpr (GuiGlobalConstants::IsDeveloperMode())
 	{
-		contribInit = true;
-		size_t len = std::min(GuiGlobalConstants::contributor_key.size(), sizeof(contribBuf) - 1);
-		if (len > 0) memcpy(contribBuf, GuiGlobalConstants::contributor_key.c_str(), len);
-		contribBuf[len] = '\0';
-	}
+		ImGui::SeparatorText("Contributor");
+		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+			"Enter a contributor key to enable build naming.");
 
-	ImGui::SetNextItemWidth(-1);
-	if (ImGui::InputTextWithHint("##contributor_key", "Contributor Key", contribBuf, sizeof(contribBuf),
-		ImGuiInputTextFlags_Password))
-	{
-		GuiGlobalConstants::contributor_key = contribBuf;
-		GuiGlobalConstants::SaveSettings();
-	}
+		static char contribBuf[256] = "";
+		static bool contribInit = false;
+		static bool contribValid = false;
+		if (!contribInit)
+		{
+			contribInit = true;
+			size_t len = std::min(GuiGlobalConstants::contributor_key.size(), sizeof(contribBuf) - 1);
+			if (len > 0) memcpy(contribBuf, GuiGlobalConstants::contributor_key.c_str(), len);
+			contribBuf[len] = '\0';
+			if (contribBuf[0] != '\0')
+				contribValid = GuiGlobalConstants::ValidateContributorKey(contribBuf);
+		}
 
-	if (contribBuf[0] != '\0')
-		ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Key set. Build naming enabled.");
-	else
-		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No key set. Builds are read-only.");
+		ImGui::SetNextItemWidth(-1);
+		if (ImGui::InputTextWithHint("##contributor_key", "Contributor Key", contribBuf, sizeof(contribBuf),
+			ImGuiInputTextFlags_Password))
+		{
+			GuiGlobalConstants::contributor_key = contribBuf;
+			contribValid = (contribBuf[0] != '\0') && GuiGlobalConstants::ValidateContributorKey(contribBuf);
+			GuiGlobalConstants::SaveSettings();
+		}
+
+		if (contribBuf[0] == '\0')
+			ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No key set. Builds are read-only.");
+		else if (contribValid)
+			ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Valid key. Build naming enabled.");
+		else
+			ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Invalid key.");
+	}
 
 	ImGui::End();
 
@@ -720,7 +731,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			}
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Debug")) {
+		if (GuiGlobalConstants::IsDeveloperMode() && ImGui::BeginMenu("Debug")) {
 			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
 				GuiGlobalConstants::SaveSettings();
 			}

@@ -1,10 +1,14 @@
 #pragma once
 // Copy this file to build_config.local.h and fill in your values.
 // build_config.local.h is gitignored and will never be committed.
+// Alternatively, clone gwobserver-private next to this repo.
 
 // Cloud storage (used by the app)
 #define GWO_CLOUD_ENABLED 1
 #define GWO_CLOUD_HOST "your-r2-public-url.r2.dev"
+
+// Developer mode — enables debug menus, build naming, and contributor tools
+#define GWO_DEVELOPER 1
 
 // R2 upload credentials (used by scripts/upload_to_r2.py)
 #define GWO_R2_ENDPOINT "https://your-account-id.r2.cloudflarestorage.com"

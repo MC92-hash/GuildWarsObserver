@@ -3126,14 +3126,20 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::BeginMenu("Debug"))
         {
-            ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
-            ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
-            ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
-            ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
-            ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            if (GuiGlobalConstants::IsDeveloperMode())
+            {
+                ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
+                ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
+                ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
+                ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
+                ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            }
             ImGui::MenuItem("Audio Debug", nullptr, &m_showAudioDebug);
-            ImGui::MenuItem("Flag Allegiance", nullptr, &m_showFlagDebugWindow);
-            ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+            if (GuiGlobalConstants::IsDeveloperMode())
+            {
+                ImGui::MenuItem("Flag Allegiance", nullptr, &m_showFlagDebugWindow);
+                ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+            }
             ImGui::EndMenu();
         }
 

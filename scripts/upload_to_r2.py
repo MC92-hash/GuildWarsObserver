@@ -480,11 +480,17 @@ def main():
     parser = argparse.ArgumentParser(
         description="Upload GvG match recordings to Cloudflare R2."
     )
+    # Default env file: check private repo first, then local scripts/
+    script_dir = Path(__file__).parent
+    private_env = script_dir.parent.parent / "gwobserver-private" / "r2_config.env"
+    local_env = script_dir / "r2_config.env"
+    default_env = private_env if private_env.exists() else local_env
+
     parser.add_argument(
         "--env-file",
         type=Path,
-        default=Path(__file__).parent / "r2_config.env",
-        help="Path to config .env file (default: scripts/r2_config.env)",
+        default=default_env,
+        help="Path to config .env file (default: gwobserver-private/r2_config.env or scripts/r2_config.env)",
     )
     parser.add_argument(
         "--source-dir",

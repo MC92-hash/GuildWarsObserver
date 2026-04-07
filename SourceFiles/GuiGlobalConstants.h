@@ -23,6 +23,12 @@ public:
 	// Contributor key for build naming (empty = read-only)
 	inline static std::string contributor_key;
 
+	// Developer mode: compile-time gated via GWO_DEVELOPER from build_config.h
+	static constexpr bool IsDeveloperMode() { return GWO_DEVELOPER != 0; }
+
+	// Validate a contributor key against known hashes (returns true if valid)
+	static bool ValidateContributorKey(const std::string& key);
+
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;
 	inline static const int right_panel_width = 450;
