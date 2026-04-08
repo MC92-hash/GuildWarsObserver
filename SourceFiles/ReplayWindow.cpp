@@ -17228,12 +17228,15 @@ void ReplayWindow::DrawPlayerInfoPanel()
         };
         std::vector<SkillSlot> slots;
         {
-            // Count casts per skill from history
+            const auto& sdb = GetSkillDatabase();
+
+            // Count casts per skill from history, resolving PvE skills to their PvP variant
             std::unordered_map<int, SkillSlot> slotMap;
             for (const auto& ev : ard.skillUseHistory)
             {
-                auto& sl = slotMap[ev.skillId];
-                if (sl.skillId == 0) { sl.skillId = ev.skillId; sl.firstUseTime = ev.startTime; }
+                int resolved = sdb.ResolvePvpSkillId(ev.skillId);
+                auto& sl = slotMap[resolved];
+                if (sl.skillId == 0) { sl.skillId = resolved; sl.firstUseTime = ev.startTime; }
                 sl.castsTotal++;
                 if (ev.startTime <= m_debugTimeline)
                     sl.castsAtCurrent++;
@@ -17262,12 +17265,13 @@ void ReplayWindow::DrawPlayerInfoPanel()
             {
                 for (int sid : *usedSkills)
                 {
-                    auto it = slotMap.find(sid);
+                    int resolved = sdb.ResolvePvpSkillId(sid);
+                    if (!placed.insert(resolved).second) continue;
+                    auto it = slotMap.find(resolved);
                     if (it != slotMap.end())
                         slots.push_back(it->second);
                     else
-                        slots.push_back({ sid, 0, 0, 1e9f });
-                    placed.insert(sid);
+                        slots.push_back({ resolved, 0, 0, 1e9f });
                 }
             }
             // Append any skills from history not in used_skills, ordered by first use

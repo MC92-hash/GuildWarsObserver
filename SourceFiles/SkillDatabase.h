@@ -23,6 +23,10 @@ struct SkillInfo
     int sacrifice = 0;
     int upkeep = 0;
     int overcast = 0;
+
+    bool is_pvp = false;
+    bool pvp_split = false;
+    int  split_id = 0;
 };
 
 class SkillDatabase
@@ -47,6 +51,8 @@ public:
 
     std::vector<int> SortSkillsForDisplay(const std::vector<int>& skillIds,
                                           int primaryProf, int secondaryProf) const;
+
+    int ResolvePvpSkillId(int skillId) const;
 
 private:
     std::unordered_map<int, SkillInfo> m_skills;

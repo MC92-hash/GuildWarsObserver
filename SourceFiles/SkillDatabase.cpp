@@ -66,6 +66,9 @@ bool SkillDatabase::Load(const std::string& dataDir)
             si.sacrifice = val.value("sacrifice", 0);
             si.upkeep = val.value("upkeep", 0);
             si.overcast = val.value("overcast", 0);
+            si.is_pvp = val.value("is_pvp", false);
+            si.pvp_split = val.value("pvp_split", false);
+            si.split_id = val.value("split_id", 0);
         }
     }
 
@@ -348,4 +351,14 @@ std::vector<int> SkillDatabase::SortSkillsForDisplay(
     for (auto& [sid, k] : keyed)
         result.push_back(sid);
     return result;
+}
+
+int SkillDatabase::ResolvePvpSkillId(int skillId) const
+{
+    auto it = m_skills.find(skillId);
+    if (it == m_skills.end()) return skillId;
+    const SkillInfo& si = it->second;
+    if (si.pvp_split && si.split_id > 0)
+        return si.split_id;
+    return skillId;
 }
