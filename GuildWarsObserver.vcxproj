@@ -308,6 +308,7 @@
     <ClInclude Include="SourceFiles\SkillSoundTable.h" />
     <ClInclude Include="SourceFiles\DXMathHelpers.h" />
     <ClInclude Include="SourceFiles\Extract_BASS_DLL_resource.h" />
+    <ClInclude Include="SourceFiles\FlagTimelineBuilder.h" />
     <ClInclude Include="SourceFiles\FFNAType.h" />
     <ClInclude Include="SourceFiles\FFNA_MapFile.h" />
     <ClInclude Include="SourceFiles\FFNA_ModelFile.h" />
@@ -520,6 +521,7 @@
     <ClCompile Include="SourceFiles\SkillSoundTable.cpp" />
     <ClCompile Include="SourceFiles\DXMathHelpers.cpp" />
     <ClCompile Include="SourceFiles\Extract_BASS_DLL_resource.cpp" />
+    <ClCompile Include="SourceFiles\FlagTimelineBuilder.cpp" />
     <ClCompile Include="SourceFiles\FFNA_MapFile.cpp" />
     <ClCompile Include="SourceFiles\FFNA_ModelFile.cpp" />
     <ClCompile Include="SourceFiles\GuiGlobalConstants.cpp" />

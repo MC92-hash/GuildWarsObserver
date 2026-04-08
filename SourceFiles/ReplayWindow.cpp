@@ -1494,7 +1494,21 @@ void ReplayWindow::Tick()
     if (m_replayCtx.agentsLoaded && m_replayCtx.stocLoaded
         && !m_agentsClassified && !m_replayCtx.agents.empty())
     {
-        SplitRecycledAgents(m_replayCtx.agents, m_replayCtx.stocData.lifecycle);
+        // Build set of flag agent IDs to skip during splitting (flags are handled
+        // by FlagTimelineBuilder via StoC events, not by agent incarnation tracking)
+        std::unordered_set<int> flagAgentSkipIds;
+        {
+            std::unordered_set<uint32_t> flagItemIds;
+            for (auto& e : m_replayCtx.stocData.flagEvents.items)
+                flagItemIds.insert(static_cast<uint32_t>(e.item_id));
+            for (auto& [id, ard] : m_replayCtx.agents) {
+                if (ard.snapshots.empty()) continue;
+                uint32_t iid = ard.snapshots.front().item_id;
+                if (iid != 0 && (IsFlagItemId(m_replayCtx.mapId, iid) || flagItemIds.count(iid)))
+                    flagAgentSkipIds.insert(id);
+            }
+        }
+        SplitRecycledAgents(m_replayCtx.agents, m_replayCtx.stocData.lifecycle, &flagAgentSkipIds);
 
         // Build incarnation reverse map before classification so we can remap events
         m_incarnationMap.clear();
@@ -1513,6 +1527,22 @@ void ReplayWindow::Tick()
         }
 
         ClassifyAgents(m_replayCtx.agents, m_matchMeta, m_replayCtx.mapId);
+
+        // Re-classify flag agents using FLAG_ITEM data (catches dynamic item_ids
+        // not in the hardcoded IsFlagItemId table, e.g. respawned flags)
+        if (!m_replayCtx.stocData.flagEvents.items.empty()) {
+            std::unordered_set<uint32_t> flagItemIds;
+            for (auto& e : m_replayCtx.stocData.flagEvents.items)
+                flagItemIds.insert(static_cast<uint32_t>(e.item_id));
+            for (auto& [id, ard] : m_replayCtx.agents) {
+                if (ard.type != AgentType::Unknown) continue;
+                if (ard.snapshots.empty()) continue;
+                if (flagItemIds.count(ard.snapshots.front().item_id)) {
+                    ard.type = AgentType::Flag;
+                    ard.categoryName = "Flag";
+                }
+            }
+        }
 
         m_sortedAgentIds.reserve(m_replayCtx.agents.size());
         for (auto& [id, ard] : m_replayCtx.agents)
@@ -2301,15 +2331,16 @@ void ReplayWindow::Tick()
         m_combatLogBuilt = true;
     }
 
+    // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
+    // so flag return events can be included in the UI timeline)
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagTimelineBuilt)
+        BuildFlagTimeline();
+
     if (m_combatLogBuilt && !m_timeline.computed)
         BuildTimelineData();
 
     if (m_combatLogBuilt && !m_lordDamageBuilt)
         BuildLordDamageData();
-
-    // Build flag state timeline (needs both agents and StoC for jumbo events)
-    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_flagStateBuilt)
-        BuildFlagStateTimeline();
 
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_bundleCarryBuilt)
         BuildBundleCarryTimeline();
@@ -3132,7 +3163,7 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
             ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
             ImGui::MenuItem("Audio Debug", nullptr, &m_showAudioDebug);
-            ImGui::MenuItem("Flag Allegiance", nullptr, &m_showFlagDebugWindow);
+            ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
             ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
             ImGui::EndMenu();
         }
@@ -3338,6 +3369,7 @@ void ReplayWindow::DrawImGuiOverlay()
     UpdateIncomingEffects();
     RenderIncomingEffects();
     DrawRangeRings();
+    DrawSpiritRanges();
     DrawRangeRingToolbar();
     DrawFogOfWarToolbar();
     DrawMoralePanel();
@@ -3346,6 +3378,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawAutoCameraDebugPanel();
 
     DrawMatchTimer();
+    DrawFlagEventMessages();
     DrawJumboMessages();
     DrawMoraleBoostTimers();
 
@@ -3853,380 +3886,57 @@ static bool ProjectToScreen(XMMATRIX viewProj, float vpW, float vpH,
 }
 
 // ---------------------------------------------------------------------------
-// Flag state machine — pre-compute a timeline of flag events per team
+// Flag Timeline — delegates to FlagTimelineBuilder
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::BuildFlagStateTimeline()
+void ReplayWindow::BuildFlagTimeline()
 {
-    m_flagStateBuilt = true;
-    m_flagState[0] = {};
-    m_flagState[1] = {};
-    m_flagStandFound = false;
-    m_captureEvents.clear();
-
-    // 1. Find Guild Lord positions per team
-    float gl1x = 0, gl1y = 0, gl2x = 0, gl2y = 0;
-    bool gl1found = false, gl2found = false;
-    for (int id : m_npcIds)
-    {
-        auto& ard = m_replayCtx.agents[id];
-        if (ard.categoryName != "Guild Lord" || ard.snapshots.empty()) continue;
-        const auto& s = ard.snapshots.front();
-        if (ard.teamId == 1 && !gl1found) { gl1x = s.x; gl1y = s.y; gl1found = true; }
-        if (ard.teamId == 2 && !gl2found) { gl2x = s.x; gl2y = s.y; gl2found = true; }
-    }
-    if (!gl1found || !gl2found) return;
-
-    // 2. Find Tower Flag Stand gadget position
-    for (int id : m_gadgetIds)
-    {
-        auto& ard = m_replayCtx.agents[id];
-        if (ard.categoryName == "Tower Flag Stand" && !ard.snapshots.empty())
-        {
-            const auto& s = ard.snapshots.front();
-            m_flagStandX = s.x;
-            m_flagStandY = s.y;
-            m_flagStandZ = s.z;
-            m_flagStandFound = true;
-            break;
-        }
-    }
-
-    // 3. Assign flag agents to teams using spawn-location state machine.
-    // GW1 reuses flag entity item_ids interchangeably between teams, so
-    // item_id CANNOT determine team.  Team is assigned per-instance:
-    //   - Spawns near a base -> that base's team (deterministic)
-    //   - Mid-field drops    -> team whose flag is currently "carried"
-    //   - Fallback           -> proximity to Guild Lords
-
-    std::vector<int> sortedFlags = m_flagIds;
-    if (sortedFlags.empty()) return;
-    std::sort(sortedFlags.begin(), sortedFlags.end(), [&](int a, int b) {
-        return m_replayCtx.agents[a].snapshots.front().time <
-               m_replayCtx.agents[b].snapshots.front().time;
-    });
-
-    float baseRefX[2] = { gl1x, gl2x };
-    float baseRefY[2] = { gl1y, gl2y };
-
-    bool  flagCarried[2] = { false, false };
-    float flagEndTime[2] = { -1.f, -1.f };
-
-    constexpr float kBaseAssignDistSq = 1500.f * 1500.f;
-
-    // Capture events reset carried state (flag delivered to stand, new flag at base)
-    struct CaptureRef { float time; int teamIdx; };
-    std::vector<CaptureRef> captures;
-    if (m_replayCtx.stocLoaded) {
-        for (auto& ev : m_replayCtx.stocData.jumbo) {
-            if (ev.message != "CAPTURED_TOWER") continue;
-            int ci = (ev.party_value == 1635021873) ? 0
-                   : (ev.party_value == 1635021874) ? 1 : -1;
-            if (ci >= 0) captures.push_back({ ev.time, ci });
-        }
-        std::sort(captures.begin(), captures.end(),
-                  [](const CaptureRef& a, const CaptureRef& b) { return a.time < b.time; });
-    }
-    int capIdx = 0;
-
-    m_flagItemIdToTeam.clear();
-    for (int id : sortedFlags)
-    {
-        auto& ard = m_replayCtx.agents[id];
-        if (ard.snapshots.empty()) continue;
-
-        float spawnTime = ard.snapshots.front().time;
-        float fx = ard.snapshots.front().x;
-        float fy = ard.snapshots.front().y;
-
-        for (int ti = 0; ti < 2; ti++) {
-            if (!flagCarried[ti] && flagEndTime[ti] >= 0 &&
-                flagEndTime[ti] < spawnTime)
-                flagCarried[ti] = true;
-        }
-
-        while (capIdx < static_cast<int>(captures.size()) && captures[capIdx].time < spawnTime) {
-            int ct = captures[capIdx].teamIdx;
-            flagCarried[ct] = false;
-            flagEndTime[ct] = -1.f;
-            capIdx++;
-        }
-
-        float d0sq = (fx - baseRefX[0]) * (fx - baseRefX[0]) +
-                     (fy - baseRefY[0]) * (fy - baseRefY[0]);
-        float d1sq = (fx - baseRefX[1]) * (fx - baseRefX[1]) +
-                     (fy - baseRefY[1]) * (fy - baseRefY[1]);
-
-        int teamIdx = -1;
-
-        if (d0sq < kBaseAssignDistSq && d0sq < d1sq)
-            teamIdx = 0;
-        else if (d1sq < kBaseAssignDistSq && d1sq < d0sq)
-            teamIdx = 1;
-        else {
-            if (flagCarried[0] && !flagCarried[1])
-                teamIdx = 0;
-            else if (flagCarried[1] && !flagCarried[0])
-                teamIdx = 1;
-            else
-                teamIdx = (d0sq < d1sq) ? 0 : 1;
-        }
-
-        m_flagState[teamIdx].flagAgentIds.push_back(id);
-        flagCarried[teamIdx] = false;
-        flagEndTime[teamIdx] = (ard.lifecycleEnd >= 0) ? ard.lifecycleEnd
-                                                        : ard.snapshots.back().time;
-
-        uint32_t iid = ard.snapshots.front().item_id;
-        if (iid != 0)
-            m_flagItemIdToTeam[iid] = teamIdx;
-    }
-
-    // 4. Build timeline per team
-    constexpr float kBaseDistSq  = 300.f * 300.f;
-    constexpr float kStandDistSq = 300.f * 300.f;
-
-    for (int ti = 0; ti < 2; ti++)
-    {
-        auto& fs = m_flagState[ti];
-        if (fs.flagAgentIds.empty()) continue;
-        fs.valid = true;
-
-        // Sort flag agents by first snapshot time
-        std::sort(fs.flagAgentIds.begin(), fs.flagAgentIds.end(),
-                  [&](int a, int b) {
-                      return m_replayCtx.agents[a].snapshots.front().time <
-                             m_replayCtx.agents[b].snapshots.front().time;
-                  });
-
-        // Base position = first snapshot of the team's first flag agent
-        {
-            auto& first = m_replayCtx.agents[fs.flagAgentIds[0]];
-            fs.baseX = first.snapshots.front().x;
-            fs.baseY = first.snapshots.front().y;
-            fs.baseZ = first.snapshots.front().z;
-        }
-
-        // For each flag agent, emit appear/disappear events
-        for (int flagId : fs.flagAgentIds)
-        {
-            auto& ard = m_replayCtx.agents[flagId];
-            float t0 = ard.snapshots.front().time;
-            float t1 = ard.snapshots.back().time;
-            float sx = ard.snapshots.front().x;
-            float sy = ard.snapshots.front().y;
-            float sz = ard.snapshots.front().z;
-
-            // Classify the appear location
-            float dBaseSq = (sx - fs.baseX) * (sx - fs.baseX) + (sy - fs.baseY) * (sy - fs.baseY);
-            FlagLocationType loc = FlagLocationType::Ground;
-            if (dBaseSq < kBaseDistSq)
-                loc = FlagLocationType::Base;
-            else if (m_flagStandFound)
-            {
-                float dStandSq = (sx - m_flagStandX) * (sx - m_flagStandX) + (sy - m_flagStandY) * (sy - m_flagStandY);
-                if (dStandSq < kStandDistSq)
-                    loc = FlagLocationType::Stand;
-            }
-
-            // Flag appears — store flagAgentId so we use its live position (moves with carrier)
-            FlagEvent appearEv = { t0, loc, sx, sy, sz, -1, flagId };
-            fs.timeline.push_back(appearEv);
-
-            // Flag disappears — try to find carrier (same-team player with weapon_type 0)
-            float ex = ard.snapshots.back().x;
-            float ey = ard.snapshots.back().y;
-            float ez = ard.snapshots.back().z;
-
-            int carrierId = -1;
-            float bestDistSq = FLT_MAX;
-            int teamId = ti + 1;
-            constexpr float kCarrierDistSqBuild = 1500.f * 1500.f;
-            auto tryPlayerSnapshot = [&](const AgentReplayData& pard, const AgentSnapshot* psnap, int playerId) {
-                if (!psnap || psnap->weapon_type != 0 || psnap->is_dead) return;
-                if (pard.teamId != teamId) return;
-                // Only match actual flag carriers, not repair kit / vine seed holders
-                if (m_bundleCarryBuilt) {
-                    BundleType bt = GetPlayerBundleType(playerId, psnap->time);
-                    if (bt != BundleType::Flag && bt != BundleType::Unknown) return;
-                }
-                float dx = psnap->x - ex;
-                float dy = psnap->y - ey;
-                float dsq = dx * dx + dy * dy;
-                if (dsq < bestDistSq && dsq < kCarrierDistSqBuild)
-                {
-                    bestDistSq = dsq;
-                    carrierId = playerId;
-                }
-            };
-
-            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
-            for (int pid : *teamPlayers)
-            {
-                auto it = m_replayCtx.agents.find(pid);
-                if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
-                auto& pard = it->second;
-
-                const AgentSnapshot* psnap = nullptr;
-                {
-                    int lo = 0, hi = static_cast<int>(pard.snapshots.size()) - 1;
-                    if (t1 >= pard.snapshots.back().time) psnap = &pard.snapshots.back();
-                    else if (t1 <= pard.snapshots.front().time) psnap = &pard.snapshots.front();
-                    else {
-                        while (lo < hi) {
-                            int mid = lo + (hi - lo + 1) / 2;
-                            if (pard.snapshots[mid].time <= t1) lo = mid; else hi = mid - 1;
-                        }
-                        psnap = &pard.snapshots[lo];
-                    }
-                }
-                tryPlayerSnapshot(pard, psnap, pid);
-
-                if (carrierId < 0 && t1 < pard.snapshots.back().time)
-                {
-                    int idx = 0;
-                    while (idx < static_cast<int>(pard.snapshots.size()) && pard.snapshots[idx].time <= t1)
-                        idx++;
-                    if (idx < static_cast<int>(pard.snapshots.size()) &&
-                        pard.snapshots[idx].time <= t1 + 0.5f)
-                    {
-                        tryPlayerSnapshot(pard, &pard.snapshots[idx], pid);
-                    }
-                }
-            }
-
-            if (carrierId >= 0) {
-                // Same-team carrier found — flag is genuinely being carried
-                fs.timeline.push_back({ t1 + 0.001f, FlagLocationType::Carried,
-                                        ex, ey, ez, carrierId, -1 });
-            } else if (m_replayCtx.stocLoaded) {
-                bool hasRemoval = (ard.lifecycleEnd >= 0);
-                bool removalNearEnd = hasRemoval &&
-                                      std::abs(ard.lifecycleEnd - t1) < 2.0f;
-
-                if (removalNearEnd) {
-                    // Before assuming enemy return, check if a same-team
-                    // player picked it up at the actual AGENT_REMOVE time.
-                    float removeT = ard.lifecycleEnd;
-                    for (int pid : *teamPlayers)
-                    {
-                        auto it2 = m_replayCtx.agents.find(pid);
-                        if (it2 == m_replayCtx.agents.end() || it2->second.snapshots.empty()) continue;
-                        auto& pard2 = it2->second;
-                        const AgentSnapshot* psnap2 = nullptr;
-                        {
-                            int lo2 = 0, hi2 = static_cast<int>(pard2.snapshots.size()) - 1;
-                            if (removeT >= pard2.snapshots.back().time) psnap2 = &pard2.snapshots.back();
-                            else if (removeT <= pard2.snapshots.front().time) psnap2 = &pard2.snapshots.front();
-                            else {
-                                while (lo2 < hi2) {
-                                    int mid2 = lo2 + (hi2 - lo2 + 1) / 2;
-                                    if (pard2.snapshots[mid2].time <= removeT) lo2 = mid2; else hi2 = mid2 - 1;
-                                }
-                                psnap2 = &pard2.snapshots[lo2];
-                            }
-                        }
-                        tryPlayerSnapshot(pard2, psnap2, pid);
-                        if (carrierId >= 0) break;
-                    }
-
-                    if (carrierId >= 0) {
-                        // Teammate picked it up at removal time — Carried
-                        fs.timeline.push_back({ t1 + 0.001f, FlagLocationType::Carried,
-                                                ex, ey, ez, carrierId, -1 });
-                    } else {
-                        // No carrier at removal time — genuine enemy return
-                        FlagEvent retEv = { t1 + 0.001f, FlagLocationType::Base,
-                                            fs.baseX, fs.baseY, fs.baseZ, -1, -1 };
-                        retEv.isReturnEvent = true;
-                        fs.timeline.push_back(retEv);
-                    }
-                } else if (hasRemoval) {
-                    // AGENT_REMOVE far from snapshot end (dedup gap) —
-                    // keep Carried for render-time carrier detection
-                    fs.timeline.push_back({ t1 + 0.001f, FlagLocationType::Carried,
-                                            ex, ey, ez, -1, -1 });
-                }
-                // else: no AGENT_REMOVE — flag still exists (dedup), no state change
-            } else {
-                // No lifecycle data — fall back to old behavior
-                fs.timeline.push_back({ t1 + 0.001f, FlagLocationType::Carried,
-                                        ex, ey, ez, carrierId });
-            }
-        }
-
-        // 5. CAPTURED_TOWER: flag stays on stand until other team captures; new flag spawns at base
-        int teamPartyValue = (ti == 0) ? 1635021873 : 1635021874;
-        for (auto& ev : m_replayCtx.stocData.jumbo)
-        {
-            if (ev.message != "CAPTURED_TOWER") continue;
-            if (ev.party_value != teamPartyValue) continue;
-            m_captureEvents.push_back({ ev.time, ti });
-            // New flag spawns at base (the respawned one) — at capture time
-            FlagEvent capEv = { ev.time, FlagLocationType::Base,
-                                fs.baseX, fs.baseY, fs.baseZ, -1, -1 };
-            capEv.isCaptureEvent = true;
-            fs.timeline.push_back(capEv);
-        }
-
-        // Sort the final timeline by time
-        std::sort(fs.timeline.begin(), fs.timeline.end(),
-                  [](const FlagEvent& a, const FlagEvent& b) {
-                      return a.time < b.time;
-                  });
-
-        // 6. Post-process: capture Base events must not be overridden by
-        //    stale Carried/Ground events from flag agents whose snapshots
-        //    lag past the capture time.
-        for (size_t i = 0; i < fs.timeline.size(); i++)
-        {
-            if (!fs.timeline[i].isCaptureEvent) continue;
-            for (size_t j = i + 1; j < fs.timeline.size(); j++)
-            {
-                if (fs.timeline[j].flagAgentId >= 0)
-                    break;
-                if (fs.timeline[j].isCaptureEvent)
-                    break;
-                fs.timeline[j].location = FlagLocationType::Base;
-                fs.timeline[j].x = fs.baseX;
-                fs.timeline[j].y = fs.baseY;
-                fs.timeline[j].z = fs.baseZ;
-            }
-        }
-    }
-
-    // Sort capture events by time (only one team's flag on stand at a time)
-    std::sort(m_captureEvents.begin(), m_captureEvents.end(),
-              [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
-                  return a.first < b.first;
-              });
+    FlagTimelineBuilder::Input input;
+    input.flagEvents = &m_replayCtx.stocData.flagEvents;
+    input.lifecycle  = &m_replayCtx.stocData.lifecycle;
+    input.mapObject  = &m_replayCtx.stocData.mapObject;
+    input.agents     = &m_replayCtx.agents;
+    input.mapId      = m_replayCtx.mapId;
+    m_flagTimeline = FlagTimelineBuilder::Build(input);
+    m_flagTimelineBuilt = true;
+    BuildFlagMessages();
 }
 
 // ---------------------------------------------------------------------------
-// Per-frame flag state evaluation — binary search into pre-computed timeline
+// Build display messages from flag timeline events
 // ---------------------------------------------------------------------------
 
-ReplayWindow::FlagEvent ReplayWindow::EvaluateFlagState(int teamIdx, float time) const
+void ReplayWindow::BuildFlagMessages()
 {
-    const auto& fs = m_flagState[teamIdx];
-    if (!fs.valid || fs.timeline.empty())
-        return { time, FlagLocationType::Base, fs.baseX, fs.baseY, fs.baseZ, -1 };
+    m_flagMessages.clear();
+    if (!m_flagTimeline.valid) return;
 
-    // Before first event → flag at base
-    if (time < fs.timeline.front().time)
-        return { time, FlagLocationType::Base, fs.baseX, fs.baseY, fs.baseZ, -1 };
-
-    // Binary search for the latest event with time <= current
-    int lo = 0, hi = static_cast<int>(fs.timeline.size()) - 1;
-    while (lo < hi)
+    for (auto& ev : m_flagTimeline.allEvents)
     {
-        int mid = lo + (hi - lo + 1) / 2;
-        if (fs.timeline[mid].time <= time)
-            lo = mid;
-        else
-            hi = mid - 1;
+        if (ev.eventType == FlagTimelineEventType::Spawn ||
+            ev.eventType == FlagTimelineEventType::GroundSpawn)
+            continue;
+
+        FlagEventMessage msg;
+        msg.time      = ev.time;
+        msg.flagTeam  = static_cast<int>(ev.flagTeam);
+        msg.eventType = ev.eventType;
+
+        int actorId = ev.actorAgentId;
+        if (actorId >= 0) {
+            auto it = m_replayCtx.agents.find(actorId);
+            if (it != m_replayCtx.agents.end()) {
+                msg.playerName = it->second.playerName.empty()
+                    ? it->second.categoryName : it->second.playerName;
+                msg.playerTeam = (it->second.teamId == 2) ? 1 : 0;
+            }
+        }
+
+        if (msg.playerName.empty() && ev.eventType != FlagTimelineEventType::Return)
+            continue;
+
+        m_flagMessages.push_back(std::move(msg));
     }
-    return fs.timeline[lo];
 }
 
 // ---------------------------------------------------------------------------
@@ -5187,6 +4897,13 @@ void ReplayWindow::DrawAgentOverlay()
 
         if (ard.type == AgentType::Flag) continue;
 
+        // Skip empty agents (no model, no gadget) and bodyguard model 166
+        {
+            const auto& fs = ard.snapshots.front();
+            if (fs.model_id == 0 && fs.gadget_id == 0) continue;
+            if (fs.model_id == 166) continue;
+        }
+
         if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
         {
             if (!m_fogGhostMode) continue;
@@ -5502,12 +5219,15 @@ void ReplayWindow::DrawAgentOverlay()
                                         ard.categoryName == "Obelisk Flag Stand" ||
                                         ard.categoryName == "Resurrection Shrine" ||
                                         ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                        ard.categoryName == "Southern Health Shrine" ||
                                         ard.categoryName == "Lever");
                 ImU32 dotColor;
                 if (isSpecialGadget)
                     dotColor = IM_COL32(220, 200, 120, 255);
                 else if (ard.type == AgentType::Spirit)
-                    dotColor = IM_COL32(0x80, 0xFF, 0x80, 0xFF);
+                    dotColor = IsNatureRitual(ard.modelId)
+                        ? IM_COL32(0x80, 0xFF, 0x80, 0xFF)
+                        : GetAgentTeamColor(ard.teamId);
                 else if (ard.type == AgentType::Item)
                     dotColor = IM_COL32(0xFF, 0xA5, 0x00, 0xFF);
                 else
@@ -5635,6 +5355,7 @@ void ReplayWindow::DrawAgentOverlay()
                                    ard.categoryName == "Obelisk Flag Stand" ||
                                    ard.categoryName == "Resurrection Shrine" ||
                                    ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                   ard.categoryName == "Southern Health Shrine" ||
                                    ard.categoryName == "Lever");
             float pad = 2.f;
             dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
@@ -5726,539 +5447,290 @@ static ImTextureID LoadNPCIcon(ID3D11Device* device, const char* filename);
 static const AgentSnapshot* FindSnapshotAtTime(const AgentReplayData& ard, float t);
 
 // ---------------------------------------------------------------------------
-// Flag rendering — draw team-colored flag PNG icons based on state machine
+// Flag rendering — draw team-colored flag icons from FlagTimeline
 // ---------------------------------------------------------------------------
 
 void ReplayWindow::DrawFlags()
 {
-    if (!m_flagStateBuilt) return;
+    if (!m_flagTimelineBuilt || !m_flagTimeline.valid) return;
     if (!m_agentsClassified) return;
 
-    const auto& t = m_replayCtx.mapTransform;
     Camera* cam = m_mapRenderer->GetCamera();
     if (!cam) return;
 
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
     auto* vp = ImGui::GetMainViewport();
     float vpW = vp->Size.x;
     float vpH = vp->Size.y;
-
-    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    const MapTransform& t = m_replayCtx.mapTransform;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
     ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
-
     const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);
 
-    // Helper: which team's flag is on the stand at time t, and when was it captured?
-    int standTeam = -1;
-    float standCaptureTime = 0.f;
-    if (!m_captureEvents.empty() && m_debugTimeline >= m_captureEvents.front().first)
+    auto DrawFlagAt = [&](float worldX, float worldY, float worldZ,
+                          ImTextureID tex, int teamIdx, const char* label)
     {
-        int lo = 0, hi = static_cast<int>(m_captureEvents.size()) - 1;
-        while (lo < hi) {
-            int mid = lo + (hi - lo + 1) / 2;
-            if (m_captureEvents[mid].first <= m_debugTimeline) lo = mid; else hi = mid - 1;
-        }
-        if (m_captureEvents[lo].first <= m_debugTimeline)
-        {
-            standTeam = m_captureEvents[lo].second;
-            standCaptureTime = m_captureEvents[lo].first;
-        }
-    }
-    if (m_flagStandFound && standTeam >= 0)
-    {
-        ImTextureID standTex = (standTeam == 0) ? texBlue : texRed;
-        if (standTex)
-        {
-            XMFLOAT3 standPos = ApplyMapTransformToPos(m_flagStandX, m_flagStandY, m_flagStandZ, t);
-            float standScrX, standScrY;
-            if (ProjectToScreen(viewProj, vpW, vpH, standPos, standScrX, standScrY))
-            {
-                float offsetY = iconSz * 0.8f;
-                ImVec2 iconTL(standScrX - iconSz * 0.5f, standScrY - offsetY - iconSz);
-                ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-
-                // Subtle pulsing glow behind the captured flag
-                ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
-                float glowRadius = iconSz * 0.75f;
-                float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
-                ImU32 glowCol = (standTeam == 0)
-                    ? IM_COL32(60, 130, 255, (int)(50 * pulse))
-                    : IM_COL32(255, 60, 50,  (int)(50 * pulse));
-                dl->AddCircleFilled(center, glowRadius, glowCol, 32);
-
-                dl->AddImage(standTex, iconTL, iconBR);
-            }
-        }
-    }
-
-    for (int ti = 0; ti < 2; ti++)
-    {
-        if (!m_flagState[ti].valid) continue;
-
-        ImTextureID tex = (ti == 0) ? texBlue : texRed;
-        if (!tex) continue;
-
-        // 2. Draw active flag (Base / Carried / Ground / Stand)
-        FlagEvent ev = EvaluateFlagState(ti, m_debugTimeline);
-        float worldX = ev.x, worldY = ev.y, worldZ = ev.z;
-        bool isCarried = false;
-
-        // Capture override flag — set when this team captured the stand and
-        // the timeline hasn't caught up yet.  Applied AFTER carrier detection
-        // so an actively-carried flag still follows the player.
-        bool captureForceBase = false;
-        if (standTeam == ti && standCaptureTime > 0.f
-            && m_debugTimeline >= standCaptureTime
-            && ev.location != FlagLocationType::Base)
-        {
-            bool isFromNewFlag = (ev.flagAgentId >= 0 && ev.time > standCaptureTime + 0.5f)
-                              || (ev.time > standCaptureTime + 2.0f);
-            if (!isFromNewFlag)
-                captureForceBase = true;
-        }
-
-        // Grace period: skip carrier detection for the first 2s of the match
-        // to avoid false positives from default weapon_type == 0 in early snapshots.
-        float firstEventTime = m_flagState[ti].timeline.empty()
-            ? FLT_MAX : m_flagState[ti].timeline.front().time;
-        bool inGracePeriod = (m_debugTimeline < firstEventTime + 2.f);
-        if (!inGracePeriod)
-        {
-            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
-            int carrierId = -1;
-            float carrierX = 0, carrierY = 0, carrierZ = 0;
-            for (int pid : *teamPlayers)
-            {
-                auto it = m_replayCtx.agents.find(pid);
-                if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
-                const auto& pard = it->second;
-                const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
-                if (!psnap || psnap->weapon_type != 0 || psnap->is_dead) continue;
-
-                // Use bundle carry timeline to confirm this is actually a flag
-                if (m_bundleCarryBuilt)
-                {
-                    BundleType bt = GetPlayerBundleType(pid, m_debugTimeline);
-                    if (bt != BundleType::Flag && bt != BundleType::Unknown) continue;
-                }
-
-                // After this team captures (jumbo CAPTURED_TOWER), skip carrier
-                // detection for 5s — the player just delivered, weapon_type lags
-                if (standTeam == ti && (m_debugTimeline - standCaptureTime) < 5.f)
-                    continue;
-
-                float cx, cy, cz;
-                InterpolateAgentPosition(pard, m_debugTimeline,
-                                         m_replayCtx.interpSettings, cx, cy, cz);
-                carrierId = pid;
-                carrierX = cx; carrierY = cy; carrierZ = cz;
-                break;
-            }
-            if (carrierId >= 0)
-            {
-                worldX = carrierX;
-                worldY = carrierY;
-                worldZ = carrierZ;
-                isCarried = true;
-            }
-        }
-
-        // Apply captureForceBase only if no carrier is actively carrying
-        if (captureForceBase && !isCarried)
-        {
-            worldX = m_flagState[ti].baseX;
-            worldY = m_flagState[ti].baseY;
-            worldZ = m_flagState[ti].baseZ;
-        }
-
-        // If not carried, use the flag agent's live position when available
-        if (!captureForceBase && !isCarried && ev.flagAgentId >= 0)
-        {
-            auto it = m_replayCtx.agents.find(ev.flagAgentId);
-            if (it != m_replayCtx.agents.end() && !it->second.snapshots.empty())
-            {
-                const auto& fard = it->second;
-                float curT = m_debugTimeline;
-                if (curT >= fard.snapshots.front().time && curT <= fard.snapshots.back().time)
-                {
-                    float fx, fy, fz;
-                    SnapAgentPosition(fard, curT, fx, fy, fz);
-                    worldX = fx;
-                    worldY = fy;
-                    worldZ = fz;
-                }
-                else
-                {
-                    // Flag agent snapshots ended — find the drop location by
-                    // detecting the weapon_type transition: 0 → non-0 means drop.
-                    const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
-                    float bestDropTime = -1.f;
-                    for (int pid : *teamPlayers)
-                    {
-                        auto pit = m_replayCtx.agents.find(pid);
-                        if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) continue;
-                        const auto& pard = pit->second;
-                        const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
-                        if (!psnap || psnap->is_dead) continue;
-                        if (psnap->weapon_type == 0) continue; // still carrying, not a drop
-                        int idx = static_cast<int>(psnap - &pard.snapshots[0]);
-                        for (int k = idx - 1; k >= 0 && pard.snapshots[k].time > m_debugTimeline - 15.f; --k)
-                        {
-                            if (pard.snapshots[k].weapon_type == 0 && !pard.snapshots[k].is_dead)
-                            {
-                                if (m_bundleCarryBuilt)
-                                {
-                                    BundleType bt = GetPlayerBundleType(pid, pard.snapshots[k].time);
-                                    if (bt != BundleType::Flag && bt != BundleType::Unknown) break;
-                                }
-                                float dropT = pard.snapshots[k + 1].time;
-                                if (dropT > bestDropTime)
-                                {
-                                    bestDropTime = dropT;
-                                    worldX = pard.snapshots[k + 1].x;
-                                    worldY = pard.snapshots[k + 1].y;
-                                    worldZ = pard.snapshots[k + 1].z;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Same fallback when no flag agent at all (event position is stale)
-        else if (!captureForceBase && !isCarried && ev.flagAgentId < 0 && ev.location != FlagLocationType::Base)
-        {
-            const std::vector<int>* teamPlayers = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
-            float bestDropTime = -1.f;
-            for (int pid : *teamPlayers)
-            {
-                auto pit = m_replayCtx.agents.find(pid);
-                if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) continue;
-                const auto& pard = pit->second;
-                const AgentSnapshot* psnap = FindSnapshotAtTime(pard, m_debugTimeline);
-                if (!psnap || psnap->is_dead) continue;
-                if (psnap->weapon_type == 0) continue; // still carrying
-                int idx = static_cast<int>(psnap - &pard.snapshots[0]);
-                for (int k = idx - 1; k >= 0 && pard.snapshots[k].time > m_debugTimeline - 15.f; --k)
-                {
-                    if (pard.snapshots[k].weapon_type == 0 && !pard.snapshots[k].is_dead)
-                    {
-                        if (m_bundleCarryBuilt)
-                        {
-                            BundleType bt = GetPlayerBundleType(pid, pard.snapshots[k].time);
-                            if (bt != BundleType::Flag && bt != BundleType::Unknown) break;
-                        }
-                        float dropT = pard.snapshots[k + 1].time;
-                        if (dropT > bestDropTime)
-                        {
-                            bestDropTime = dropT;
-                            worldX = pard.snapshots[k + 1].x;
-                            worldY = pard.snapshots[k + 1].y;
-                            worldZ = pard.snapshots[k + 1].z;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
         XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
-
         float scrX, scrY;
-        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
+        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) return;
 
-        // Draw a clickable dot at the flag's ground position
         constexpr float kFlagDotRadius = 5.f;
-        ImU32 dotColor = (ti == 0) ? IM_COL32(100, 160, 255, 200) : IM_COL32(255, 100, 90, 200);
+        ImU32 dotColor = (teamIdx == 0) ? IM_COL32(100, 160, 255, 200)
+                                        : IM_COL32(255, 100, 90, 200);
         dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius, dotColor);
         dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
 
-        // Draw the flag icon centered above the dot
-        float offsetY = iconSz * 0.8f;
-        ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
-        ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-        dl->AddImage(tex, iconTL, iconBR);
-
-        // Green pulsing focus ring when this flag is the followed agent
-        int flagAgentId = ev.flagAgentId;
-        if (flagAgentId < 0 && !m_flagState[ti].flagAgentIds.empty())
-            flagAgentId = m_flagState[ti].flagAgentIds.front();
-
-        if (m_cameraMode == CameraMode::FollowAgent && flagAgentId >= 0
-            && flagAgentId == m_followedAgentId)
+        if (tex)
         {
-            float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.5f);
-            float ringR = kFlagDotRadius + 6.f + pulse * 3.f;
-            ImU8  alpha = (ImU8)(180 + (int)(75.f * pulse));
-            dl->AddCircle(ImVec2(scrX, scrY), ringR,
-                          IM_COL32(0, 255, 120, alpha), 0, 2.f);
-            dl->AddCircle(ImVec2(scrX, scrY), ringR + 3.f,
-                          IM_COL32(0, 255, 120, (ImU8)(alpha / 3)), 0, 2.f);
+            float offsetY = iconSz * 0.8f;
+            ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
+            ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+            dl->AddImage(tex, iconTL, iconBR);
         }
 
-        // Click / hover handling — mirror the agent overlay pattern
-
-        if (flagAgentId >= 0
-            && !ImGui::GetIO().WantCaptureMouse
-            && !m_rightMouseDown
-            && !m_annotationMgr.draw_mode_active)
-        {
-            ImVec2 mp = ImGui::GetIO().MousePos;
-            float dx = mp.x - scrX;
-            float dy = mp.y - scrY;
-            constexpr float kFlagClickRadius = 14.f;
-            if (dx * dx + dy * dy <= kFlagClickRadius * kFlagClickRadius)
-            {
-                m_hoveredAgentId = flagAgentId;
-                dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius + 4.f,
-                              IM_COL32(255, 255, 255, 100), 0, 1.5f);
-
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                {
-                    EnterFollowMode(flagAgentId);
-                    OpenPlayerInfoPanel(flagAgentId);
-                }
-            }
-        }
-
-        // Only show a label for non-obvious states (Carried / Dropped)
-        const char* locLabel = nullptr;
-        if (isCarried)
-            locLabel = "Flag (Carried)";
-        else if (!captureForceBase && ev.location != FlagLocationType::Base && ev.location != FlagLocationType::Stand)
-            locLabel = "Flag (Dropped)";
-
-        if (locLabel)
+        if (label)
         {
             ImFont* font = ImGui::GetFont();
-            ImVec2 textSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, locLabel);
+            float fontSize = font->FontSize;
+            ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label);
             float tx = scrX - textSz.x * 0.5f;
-            float ty = iconBR.y + 2.f;
-            dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), locLabel);
-            dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), locLabel);
+            float offsetY = iconSz * 0.8f;
+            float ty = scrY - offsetY - iconSz - fontSize - 2.f;
+            dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
+            dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
         }
+    };
+
+    // --- Captured flag on stand (pulsing glow + icon) ---
+    StandOwner standOwner = m_flagTimeline.stand.ownerAtTime(m_debugTimeline);
+    if (standOwner != StandOwner::Neutral)
+    {
+        int standTi = (standOwner == StandOwner::Blue) ? 0 : 1;
+        ImTextureID standTex = (standTi == 0) ? texBlue : texRed;
+        float sx = m_flagTimeline.stand.standX;
+        float sy = m_flagTimeline.stand.standY;
+        float sz = m_flagTimeline.stand.standZ;
+
+        XMFLOAT3 standPos = ApplyMapTransformToPos(sx, sy, sz, t);
+        float standScrX, standScrY;
+        if (ProjectToScreen(viewProj, vpW, vpH, standPos, standScrX, standScrY) && standTex)
+        {
+            float offsetY = iconSz * 0.8f;
+            ImVec2 iconTL(standScrX - iconSz * 0.5f, standScrY - offsetY - iconSz);
+            ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+
+            ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
+            float glowRadius = iconSz * 0.75f;
+            float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
+            ImU32 glowCol = (standTi == 0)
+                ? IM_COL32(60, 130, 255, (int)(50 * pulse))
+                : IM_COL32(255, 60, 50,  (int)(50 * pulse));
+            dl->AddCircleFilled(center, glowRadius, glowCol, 32);
+            dl->AddImage(standTex, iconTL, iconBR);
+        }
+    }
+
+    // --- Active flag per team ---
+    for (int ti = 0; ti < 2; ti++)
+    {
+        auto& ft = m_flagTimeline.teams[ti];
+        if (ft.events.empty()) continue;
+
+        ImTextureID tex = (ti == 0) ? texBlue : texRed;
+        FlagLocation loc = ft.locationAtTime(m_debugTimeline);
+
+        if (loc == FlagLocation::Stand) continue;
+
+        float worldX = 0, worldY = 0, worldZ = 0;
+        const char* label = nullptr;
+
+        if (loc == FlagLocation::Carried)
+        {
+            int carrierId = ft.carrierAtTime(m_debugTimeline);
+            if (carrierId >= 0)
+            {
+                auto it = m_replayCtx.agents.find(carrierId);
+                if (it != m_replayCtx.agents.end() && !it->second.snapshots.empty())
+                {
+                    InterpolateAgentPosition(it->second, m_debugTimeline,
+                                             m_replayCtx.interpSettings, worldX, worldY, worldZ);
+                }
+                else
+                {
+                    ft.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
+                }
+            }
+            else
+            {
+                ft.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
+            }
+            label = "Flag (Carried)";
+        }
+        else
+        {
+            ft.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
+            if (loc == FlagLocation::Ground)
+                label = "Flag (Dropped)";
+        }
+
+        DrawFlagAt(worldX, worldY, worldZ, tex, ti, label);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Flag Allegiance Debug Panel
+// Flag Debug Window — shows reconstructed FlagTimeline
 // ---------------------------------------------------------------------------
+
+static const char* FlagLocationName(FlagLocation loc)
+{
+    switch (loc) {
+    case FlagLocation::Base:    return "Base";
+    case FlagLocation::Carried: return "Carried";
+    case FlagLocation::Ground:  return "Ground";
+    case FlagLocation::Stand:   return "Stand";
+    }
+    return "?";
+}
+
+static const char* FlagEventTypeName(FlagTimelineEventType t)
+{
+    switch (t) {
+    case FlagTimelineEventType::Spawn:       return "Spawn";
+    case FlagTimelineEventType::Pickup:      return "Pickup";
+    case FlagTimelineEventType::Drop:        return "Drop";
+    case FlagTimelineEventType::Stick:       return "Stick";
+    case FlagTimelineEventType::Return:      return "Return";
+    case FlagTimelineEventType::GroundSpawn: return "GroundSpawn";
+    }
+    return "?";
+}
+
+static const char* StandOwnerName(StandOwner o)
+{
+    switch (o) {
+    case StandOwner::Neutral: return "Neutral";
+    case StandOwner::Blue:    return "Blue";
+    case StandOwner::Red:     return "Red";
+    }
+    return "?";
+}
 
 void ReplayWindow::DrawFlagDebugWindow()
 {
-    auto FlagLocName = [](FlagLocationType loc) -> const char* {
-        switch (loc) {
-        case FlagLocationType::Base:    return "Base";
-        case FlagLocationType::Carried: return "Carried";
-        case FlagLocationType::Ground:  return "Ground";
-        case FlagLocationType::Stand:   return "Stand";
-        }
-        return "?";
-    };
-
-    ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Flag Allegiance", &m_showFlagDebugWindow))
+    ImGui::SetNextWindowSize(ImVec2(950, 650), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Flag Timeline", &m_showFlagDebugWindow))
     {
         ImGui::End();
         return;
     }
 
-    if (!m_agentsClassified)
+    if (!m_flagTimelineBuilt || !m_flagTimeline.valid)
     {
-        ImGui::TextWrapped("Waiting for agent classification...");
-        ImGui::End();
-        return;
-    }
-
-    int mapId = m_replayCtx.mapId;
-
-    // =========================================================================
-    // Section 4 (at top): Current State Summary
-    // =========================================================================
-    if (m_flagStateBuilt)
-    {
-        ImGui::SeparatorText("Current State");
-        float t = m_debugTimeline;
-        char timeBuf[32];
-        int sec = static_cast<int>(t);
-        int ms  = static_cast<int>((t - sec) * 1000.f);
-        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d.%03d", sec / 60, sec % 60, ms);
-        ImGui::Text("Playback: %s", timeBuf);
-
-        for (int ti = 0; ti < 2; ti++)
-        {
-            const char* teamLabel = (ti == 0) ? "Blue" : "Red";
-            if (!m_flagState[ti].valid) {
-                ImGui::Text("%s Flag: [no data]", teamLabel);
-                continue;
-            }
-            FlagEvent ev = EvaluateFlagState(ti, t);
-
-            // Live carrier detection (mirrors DrawFlags logic)
-            const char* effectiveState = FlagLocName(ev.location);
-            int liveCarrierId = -1;
-            float firstEvT = m_flagState[ti].timeline.empty()
-                ? FLT_MAX : m_flagState[ti].timeline.front().time;
-            if (t >= firstEvT + 2.f) {
-                const auto* tp = (ti == 0) ? &m_team1PlayerIds : &m_team2PlayerIds;
-                for (int pid : *tp) {
-                    auto pit = m_replayCtx.agents.find(pid);
-                    if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) continue;
-                    const AgentSnapshot* ps = FindSnapshotAtTime(pit->second, t);
-                    if (!ps || ps->weapon_type != 0 || ps->is_dead) continue;
-                    if (m_bundleCarryBuilt) {
-                        BundleType bt = GetPlayerBundleType(pid, t);
-                        if (bt != BundleType::Flag && bt != BundleType::Unknown) continue;
-                    }
-                    liveCarrierId = pid;
-                    break;
-                }
-            }
-            if (liveCarrierId >= 0)
-                effectiveState = "Carried (live)";
-            else if (ev.location != FlagLocationType::Base && ev.location != FlagLocationType::Stand)
-                effectiveState = "Ground (live)";
-
-            ImGui::Text("%s Flag: [%s] at (%.0f, %.0f) | carrier %d | flagAgent %d",
-                        teamLabel, effectiveState,
-                        ev.x, ev.y, liveCarrierId, ev.flagAgentId);
-        }
-
-        int standTeam = -1;
-        float standTime = 0.f;
-        if (!m_captureEvents.empty())
-        {
-            for (auto& [ct, ci] : m_captureEvents)
-            {
-                if (ct <= t) { standTeam = ci; standTime = ct; }
-            }
-        }
-        if (standTeam >= 0)
-        {
-            int ss = static_cast<int>(standTime);
-            ImGui::Text("Stand: %s (captured at %02d:%02d)",
-                        (standTeam == 0) ? "Blue" : "Red", ss / 60, ss % 60);
-        }
+        if (!m_replayCtx.stocLoaded)
+            ImGui::TextWrapped("Waiting for StoC data to load...");
+        else if (!m_agentsClassified)
+            ImGui::TextWrapped("Waiting for agent classification...");
+        else if (m_replayCtx.stocData.flagEvents.empty())
+            ImGui::TextWrapped("No flag_events.txt data in this replay.");
         else
-        {
-            ImGui::Text("Stand: empty");
-        }
-        ImGui::Spacing();
+            ImGui::TextWrapped("Flag timeline not yet built.");
+        ImGui::End();
+        return;
     }
 
-    // =========================================================================
-    // Section 5: item_id -> Team Mapping (debug only — NOT used for assignment)
-    // =========================================================================
-    // Reverse lookup: agent_id -> teamIdx (used by multiple sections below)
-    std::unordered_map<int, int> agentTeam;
+    float t = m_debugTimeline;
+    char timeBuf[32];
+    int sec = static_cast<int>(t);
+    int ms  = static_cast<int>((t - sec) * 1000.f);
+    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d.%03d", sec / 60, sec % 60, ms);
+
+    // Current State Summary
+    ImGui::SeparatorText("Current State");
+    ImGui::Text("Playback: %s", timeBuf);
+
     for (int ti = 0; ti < 2; ti++)
-        for (int aid : m_flagState[ti].flagAgentIds)
-            agentTeam[aid] = ti;
-
-    if (!m_flagItemIdToTeam.empty())
     {
-        ImGui::SeparatorText("item_id to Team (latest, NOT authoritative)");
-        ImGui::TextWrapped("Note: item_id does NOT determine team. GW reuses "
-                           "flag item_ids interchangeably. Team is assigned "
-                           "per-instance by spawn location.");
-        for (auto& [iid, ti] : m_flagItemIdToTeam)
-        {
-            ImGui::BulletText("item_id %u  ->  %s (last seen)",
-                              iid, (ti == 0) ? "Blue" : "Red");
+        const char* teamLabel = (ti == 0) ? "Blue" : "Red";
+        auto& ft = m_flagTimeline.teams[ti];
+        if (ft.events.empty()) {
+            ImGui::Text("%s Flag: [no data]", teamLabel);
+            continue;
         }
-        ImGui::Spacing();
+        FlagLocation loc = ft.locationAtTime(t);
+        int carrierId = ft.carrierAtTime(t);
+        float fx, fy, fz;
+        ft.positionAtTime(t, fx, fy, fz);
+
+        ImGui::Text("%s Flag: [%s] at (%.0f, %.0f, %.0f) | carrier %d | base (%.0f, %.0f)",
+                    teamLabel, FlagLocationName(loc), fx, fy, fz, carrierId,
+                    ft.spawnX, ft.spawnY);
     }
 
-    // =========================================================================
-    // Section 1: Lifecycle Flag Events
-    // =========================================================================
-    if (m_replayCtx.stocLoaded && ImGui::CollapsingHeader("Lifecycle Flag Events", ImGuiTreeNodeFlags_DefaultOpen))
+    StandOwner standOwner = m_flagTimeline.stand.ownerAtTime(t);
+    ImGui::Text("Stand: %s (at %.0f, %.0f)", StandOwnerName(standOwner),
+                m_flagTimeline.stand.standX, m_flagTimeline.stand.standY);
+    ImGui::Spacing();
+
+    // Merged Event Timeline
+    if (ImGui::CollapsingHeader("All Events (chronological)", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        auto& lifecycle = m_replayCtx.stocData.lifecycle;
-
-        // Build set of known flag agent_ids (post-classification) to show AGENT_REMOVE events
-        std::unordered_set<int> flagAgentSet(m_flagIds.begin(), m_flagIds.end());
-        // Also include original agent_ids from incarnation map that map to flag agents
-        for (int fid : m_flagIds)
-        {
-            auto it = m_replayCtx.agents.find(fid);
-            if (it != m_replayCtx.agents.end() && it->second.originalAgentId >= 0)
-                flagAgentSet.insert(it->second.originalAgentId);
-        }
-
-        if (ImGui::BeginTable("##lifecycle_flags", 7,
+        if (ImGui::BeginTable("##flag_tl_all", 8,
                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
-                ImVec2(0, 200)))
+                ImVec2(0, 250)))
         {
             ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("Time",       ImGuiTableColumnFlags_WidthFixed, 80.f);
-            ImGui::TableSetupColumn("Action",     ImGuiTableColumnFlags_WidthFixed, 90.f);
-            ImGui::TableSetupColumn("Agent ID",   ImGuiTableColumnFlags_WidthFixed, 70.f);
-            ImGui::TableSetupColumn("type_code",  ImGuiTableColumnFlags_WidthFixed, 70.f);
-            ImGui::TableSetupColumn("Position",   ImGuiTableColumnFlags_WidthFixed, 150.f);
-            ImGui::TableSetupColumn("Is Flag?",   ImGuiTableColumnFlags_WidthFixed, 55.f);
-            ImGui::TableSetupColumn("Team",       ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed, 80.f);
+            ImGui::TableSetupColumn("Team",     ImGuiTableColumnFlags_WidthFixed, 45.f);
+            ImGui::TableSetupColumn("Event",    ImGuiTableColumnFlags_WidthFixed, 80.f);
+            ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_WidthFixed, 65.f);
+            ImGui::TableSetupColumn("Actor",    ImGuiTableColumnFlags_WidthFixed, 55.f);
+            ImGui::TableSetupColumn("Carrier",  ImGuiTableColumnFlags_WidthFixed, 55.f);
+            ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_WidthFixed, 150.f);
+            ImGui::TableSetupColumn("Flag Agent", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
-            for (auto& ev : lifecycle)
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(m_flagTimeline.allEvents.size()));
+            while (clipper.Step())
             {
-                bool isFlagAdd = ev.isAdd && IsFlagItemId(mapId, static_cast<uint32_t>(ev.type_code));
-                bool isFlagRemove = !ev.isAdd && flagAgentSet.count(ev.agent_id);
-
-                // Also show item AGENT_ADD events (repair kit / vine seed) for context
-                bool isItemAdd = ev.isAdd && LookupMapItem(mapId, static_cast<uint32_t>(ev.type_code)) != nullptr;
-
-                if (!isFlagAdd && !isFlagRemove && !isItemAdd)
-                    continue;
-
-                ImGui::TableNextRow();
-
-                // Highlight current-time vicinity
-                bool nearCurrent = (ev.time >= m_debugTimeline - 1.f && ev.time <= m_debugTimeline + 1.f);
-                if (nearCurrent)
-                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(80, 80, 40, 100));
-
-                char tb[32];
-                int s = static_cast<int>(ev.time);
-                int ms = static_cast<int>((ev.time - s) * 1000.f);
-                snprintf(tb, sizeof(tb), "%02d:%02d.%03d", s / 60, s % 60, ms);
-
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(tb);
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(ev.isAdd ? "AGENT_ADD" : "AGENT_REMOVE");
-                ImGui::TableNextColumn(); ImGui::Text("%d", ev.agent_id);
-                ImGui::TableNextColumn();
-                if (ev.isAdd) ImGui::Text("%d", ev.type_code);
-                else ImGui::TextUnformatted("-");
-                ImGui::TableNextColumn();
-                if (ev.isAdd) ImGui::Text("%.0f, %.0f", ev.x, ev.y);
-                else ImGui::TextUnformatted("-");
-                ImGui::TableNextColumn();
-                if (isFlagAdd)       ImGui::TextColored(ImVec4(0.3f, 1.f, 0.3f, 1.f), "Yes");
-                else if (isItemAdd)  ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Item");
-                else                 ImGui::TextUnformatted("-");
-                ImGui::TableNextColumn();
-                if (isFlagAdd)
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
                 {
-                    auto ait = agentTeam.find(ev.agent_id);
-                    if (ait != agentTeam.end())
-                        ImGui::Text("%s", (ait->second == 0) ? "Blue" : "Red");
-                    else
-                        ImGui::TextUnformatted("?");
-                }
-                else if (isItemAdd)
-                {
-                    const char* name = LookupMapItem(mapId, static_cast<uint32_t>(ev.type_code));
-                    ImGui::TextUnformatted(name ? name : "?");
-                }
-                else
-                {
-                    ImGui::TextUnformatted("-");
+                    auto& ev = m_flagTimeline.allEvents[row];
+                    ImGui::TableNextRow();
+
+                    bool nearCurrent = (ev.time >= t - 1.f && ev.time <= t + 1.f);
+                    if (nearCurrent)
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(80, 80, 40, 100));
+
+                    int s = static_cast<int>(ev.time);
+                    int m = static_cast<int>((ev.time - s) * 1000.f);
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::Selectable(std::format("{:02d}:{:02d}.{:03d}##ftl{}", s/60, s%60, m, row).c_str(),
+                                          false, ImGuiSelectableFlags_SpanAllColumns))
+                        m_debugTimeline = ev.time;
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(ev.flagTeam == FlagTeam::Blue ? "Blue" : "Red");
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(FlagEventTypeName(ev.eventType));
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(FlagLocationName(ev.newLocation));
+                    ImGui::TableNextColumn();
+                    if (ev.actorAgentId >= 0) ImGui::Text("%d", ev.actorAgentId);
+                    else ImGui::TextUnformatted("-");
+                    ImGui::TableNextColumn();
+                    if (ev.carrierAgentId >= 0) ImGui::Text("%d", ev.carrierAgentId);
+                    else ImGui::TextUnformatted("-");
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%.0f, %.0f, %.0f", ev.x, ev.y, ev.z);
+                    ImGui::TableNextColumn();
+                    if (ev.flagWorldAgentId >= 0) ImGui::Text("%d", ev.flagWorldAgentId);
+                    else if (ev.standAgentId >= 0) ImGui::Text("stand:%d", ev.standAgentId);
+                    else ImGui::TextUnformatted("-");
                 }
             }
             ImGui::EndTable();
@@ -6266,208 +5738,116 @@ void ReplayWindow::DrawFlagDebugWindow()
         ImGui::Spacing();
     }
 
-    // =========================================================================
-    // Section 2: Flag Agents Table
-    // =========================================================================
-    if (ImGui::CollapsingHeader("Flag Agents", ImGuiTreeNodeFlags_DefaultOpen))
+    // Stand Control Timeline
+    if (ImGui::CollapsingHeader("Stand Control Timeline", ImGuiTreeNodeFlags_DefaultOpen))
     {
+        ImGui::Text("Stand Agent: %d  Position: (%.0f, %.0f, %.0f)",
+                    m_flagTimeline.stand.standAgentId,
+                    m_flagTimeline.stand.standX, m_flagTimeline.stand.standY, m_flagTimeline.stand.standZ);
 
-        if (ImGui::BeginTable("##flag_agents", 8,
+        if (ImGui::BeginTable("##stand_tl", 4,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+                ImVec2(0, 150)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",          ImGuiTableColumnFlags_WidthFixed, 80.f);
+            ImGui::TableSetupColumn("Owner",         ImGuiTableColumnFlags_WidthFixed, 60.f);
+            ImGui::TableSetupColumn("Morale Expiry", ImGuiTableColumnFlags_WidthFixed, 100.f);
+            ImGui::TableSetupColumn("Stand Agent",   ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (int i = 0; i < static_cast<int>(m_flagTimeline.stand.events.size()); i++)
+            {
+                auto& sc = m_flagTimeline.stand.events[i];
+                ImGui::TableNextRow();
+
+                bool nearCurrent = (sc.time >= t - 1.f && sc.time <= t + 1.f);
+                if (nearCurrent)
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(80, 80, 40, 100));
+
+                int s = static_cast<int>(sc.time);
+                int m = static_cast<int>((sc.time - s) * 1000.f);
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%02d:%02d.%03d", s/60, s%60, m);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(StandOwnerName(sc.owner));
+                ImGui::TableNextColumn();
+                if (sc.moraleExpiry > 0) {
+                    int es = static_cast<int>(sc.moraleExpiry);
+                    ImGui::Text("%02d:%02d", es/60, es%60);
+                } else ImGui::TextUnformatted("-");
+                ImGui::TableNextColumn();
+                ImGui::Text("%d", sc.standAgentId);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Spacing();
+    }
+
+    // Per-Team Event Timelines
+    for (int ti = 0; ti < 2; ti++)
+    {
+        const char* label = (ti == 0) ? "Blue Team Timeline" : "Red Team Timeline";
+        if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen))
+            continue;
+
+        auto& ft = m_flagTimeline.teams[ti];
+        ImGui::Text("  Base: (%.0f, %.0f, %.0f) | Events: %d",
+                    ft.spawnX, ft.spawnY, ft.spawnZ, static_cast<int>(ft.events.size()));
+
+        if (ImGui::BeginTable(std::format("##team_tl_{}", ti).c_str(), 7,
                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
                 ImVec2(0, 180)))
         {
             ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("Agent ID",     ImGuiTableColumnFlags_WidthFixed, 80.f);
-            ImGui::TableSetupColumn("Orig. Agent",  ImGuiTableColumnFlags_WidthFixed, 80.f);
-            ImGui::TableSetupColumn("item_id",      ImGuiTableColumnFlags_WidthFixed, 60.f);
-            ImGui::TableSetupColumn("Team",         ImGuiTableColumnFlags_WidthFixed, 50.f);
-            ImGui::TableSetupColumn("Snaps",        ImGuiTableColumnFlags_WidthFixed, 45.f);
-            ImGui::TableSetupColumn("Time Range",   ImGuiTableColumnFlags_WidthFixed, 140.f);
-            ImGui::TableSetupColumn("Lifecycle",    ImGuiTableColumnFlags_WidthFixed, 140.f);
-            ImGui::TableSetupColumn("First Pos",    ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed, 80.f);
+            ImGui::TableSetupColumn("Event",    ImGuiTableColumnFlags_WidthFixed, 80.f);
+            ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_WidthFixed, 65.f);
+            ImGui::TableSetupColumn("Actor",    ImGuiTableColumnFlags_WidthFixed, 55.f);
+            ImGui::TableSetupColumn("Carrier",  ImGuiTableColumnFlags_WidthFixed, 55.f);
+            ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_WidthFixed, 150.f);
+            ImGui::TableSetupColumn("Flag Agent", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
-            for (int id : m_flagIds)
+            for (int row = 0; row < static_cast<int>(ft.events.size()); row++)
             {
-                auto it = m_replayCtx.agents.find(id);
-                if (it == m_replayCtx.agents.end()) continue;
-                auto& ard = it->second;
-
+                auto& ev = ft.events[row];
                 ImGui::TableNextRow();
-                ImGui::PushID(id);
+
+                bool nearCurrent = (ev.time >= t - 1.f && ev.time <= t + 1.f);
+                if (nearCurrent)
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(80, 80, 40, 100));
+
+                int s = static_cast<int>(ev.time);
+                int m = static_cast<int>((ev.time - s) * 1000.f);
 
                 ImGui::TableNextColumn();
-                if (ImGui::Selectable(std::format("{}", id).c_str(),
+                if (ImGui::Selectable(std::format("{:02d}:{:02d}.{:03d}##ttl{}_{}", s/60, s%60, m, ti, row).c_str(),
                                       false, ImGuiSelectableFlags_SpanAllColumns))
-                {
-                    EnterFollowMode(id);
-                }
+                    m_debugTimeline = ev.time;
                 ImGui::TableNextColumn();
-                if (ard.originalAgentId >= 0)
-                    ImGui::Text("%d", ard.originalAgentId);
-                else
-                    ImGui::TextUnformatted("-");
-
+                ImGui::TextUnformatted(FlagEventTypeName(ev.eventType));
                 ImGui::TableNextColumn();
-                ImGui::Text("%u", ard.snapshots.empty() ? 0u : ard.snapshots.front().item_id);
-
+                ImGui::TextUnformatted(FlagLocationName(ev.newLocation));
                 ImGui::TableNextColumn();
-                auto tit = agentTeam.find(id);
-                if (tit != agentTeam.end())
-                    ImGui::Text("%s", (tit->second == 0) ? "Blue" : "Red");
-                else
-                    ImGui::TextUnformatted("?");
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%d", static_cast<int>(ard.snapshots.size()));
-
-                ImGui::TableNextColumn();
-                if (!ard.snapshots.empty())
-                {
-                    float t0 = ard.snapshots.front().time;
-                    float t1 = ard.snapshots.back().time;
-                    int s0 = static_cast<int>(t0), s1 = static_cast<int>(t1);
-                    ImGui::Text("%02d:%02d.%01d..%02d:%02d.%01d",
-                                s0/60, s0%60, static_cast<int>((t0-s0)*10),
-                                s1/60, s1%60, static_cast<int>((t1-s1)*10));
-                }
+                if (ev.actorAgentId >= 0) ImGui::Text("%d", ev.actorAgentId);
                 else ImGui::TextUnformatted("-");
-
                 ImGui::TableNextColumn();
-                if (ard.lifecycleStart >= 0)
-                {
-                    float ls = ard.lifecycleStart;
-                    int ls0 = static_cast<int>(ls);
-                    if (ard.lifecycleEnd >= 0)
-                    {
-                        float le = ard.lifecycleEnd;
-                        int le0 = static_cast<int>(le);
-                        ImGui::Text("%02d:%02d.%01d..%02d:%02d.%01d",
-                                    ls0/60, ls0%60, static_cast<int>((ls-ls0)*10),
-                                    le0/60, le0%60, static_cast<int>((le-le0)*10));
-                    }
-                    else
-                    {
-                        ImGui::Text("%02d:%02d.%01d..END",
-                                    ls0/60, ls0%60, static_cast<int>((ls-ls0)*10));
-                    }
-                }
-                else ImGui::TextUnformatted("N/A");
-
+                if (ev.carrierAgentId >= 0) ImGui::Text("%d", ev.carrierAgentId);
+                else ImGui::TextUnformatted("-");
                 ImGui::TableNextColumn();
-                if (!ard.snapshots.empty())
-                    ImGui::Text("%.0f, %.0f", ard.snapshots.front().x, ard.snapshots.front().y);
-                else
-                    ImGui::TextUnformatted("-");
-
-                ImGui::PopID();
+                ImGui::Text("%.0f, %.0f, %.0f", ev.x, ev.y, ev.z);
+                ImGui::TableNextColumn();
+                if (ev.flagWorldAgentId >= 0) ImGui::Text("%d", ev.flagWorldAgentId);
+                else if (ev.standAgentId >= 0) ImGui::Text("stand:%d", ev.standAgentId);
+                else ImGui::TextUnformatted("-");
             }
             ImGui::EndTable();
         }
         ImGui::Spacing();
-    }
-
-    // =========================================================================
-    // Section 3: Per-Team State Timelines
-    // =========================================================================
-    if (m_flagStateBuilt)
-    {
-        for (int ti = 0; ti < 2; ti++)
-        {
-            const char* label = (ti == 0) ? "Blue Team Timeline" : "Red Team Timeline";
-            if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen))
-                continue;
-
-            auto& fs = m_flagState[ti];
-            if (!fs.valid)
-            {
-                ImGui::TextUnformatted("  No flag data for this team.");
-                continue;
-            }
-
-            ImGui::Text("  Base: (%.0f, %.0f, %.0f)", fs.baseX, fs.baseY, fs.baseZ);
-
-            // Flag agent chain
-            ImGui::Text("  Flag agents (%d):", static_cast<int>(fs.flagAgentIds.size()));
-            ImGui::SameLine();
-            for (size_t i = 0; i < fs.flagAgentIds.size(); i++)
-            {
-                if (i > 0) ImGui::SameLine();
-                int fid = fs.flagAgentIds[i];
-                auto fit = m_replayCtx.agents.find(fid);
-                if (fit != m_replayCtx.agents.end() && !fit->second.snapshots.empty())
-                {
-                    float ft0 = fit->second.snapshots.front().time;
-                    float ft1 = fit->second.snapshots.back().time;
-                    int s0 = static_cast<int>(ft0), s1 = static_cast<int>(ft1);
-                    ImGui::Text("[%d: %02d:%02d..%02d:%02d]", fid, s0/60, s0%60, s1/60, s1%60);
-                }
-                else
-                    ImGui::Text("[%d]", fid);
-            }
-
-            // Determine which timeline row is active
-            int activeRow = -1;
-            if (!fs.timeline.empty())
-            {
-                for (int i = static_cast<int>(fs.timeline.size()) - 1; i >= 0; i--)
-                {
-                    if (fs.timeline[i].time <= m_debugTimeline) { activeRow = i; break; }
-                }
-            }
-
-            // Timeline events table
-            if (ImGui::BeginTable(ti == 0 ? "##blue_tl" : "##red_tl", 7,
-                    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
-                    ImVec2(0, 160)))
-            {
-                ImGui::TableSetupScrollFreeze(0, 1);
-                ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed, 80.f);
-                ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_WidthFixed, 65.f);
-                ImGui::TableSetupColumn("Source",   ImGuiTableColumnFlags_WidthFixed, 45.f);
-                ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_WidthFixed, 130.f);
-                ImGui::TableSetupColumn("Carrier",  ImGuiTableColumnFlags_WidthFixed, 65.f);
-                ImGui::TableSetupColumn("FlagAgent",ImGuiTableColumnFlags_WidthFixed, 75.f);
-                ImGui::TableSetupColumn("Active",   ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableHeadersRow();
-
-                for (int i = 0; i < static_cast<int>(fs.timeline.size()); i++)
-                {
-                    auto& te = fs.timeline[i];
-                    ImGui::TableNextRow();
-                    if (i == activeRow)
-                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(40, 100, 40, 120));
-
-                    char tb[32];
-                    int s = static_cast<int>(te.time);
-                    int ms = static_cast<int>((te.time - s) * 1000.f);
-                    snprintf(tb, sizeof(tb), "%02d:%02d.%03d", s / 60, s % 60, ms);
-
-                    ImGui::TableNextColumn(); ImGui::TextUnformatted(tb);
-                    ImGui::TableNextColumn(); ImGui::TextUnformatted(FlagLocName(te.location));
-                    ImGui::TableNextColumn();
-                    if (te.isCaptureEvent)
-                        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.2f, 1.f), "CAP");
-                    else if (te.isReturnEvent)
-                        ImGui::TextColored(ImVec4(0.4f, 0.9f, 1.f, 1.f), "RET");
-                    else
-                        ImGui::TextUnformatted("-");
-                    ImGui::TableNextColumn(); ImGui::Text("%.0f, %.0f", te.x, te.y);
-                    ImGui::TableNextColumn();
-                    if (te.carrierAgentId >= 0) ImGui::Text("%d", te.carrierAgentId);
-                    else ImGui::TextUnformatted("-");
-                    ImGui::TableNextColumn();
-                    if (te.flagAgentId >= 0) ImGui::Text("%d", te.flagAgentId);
-                    else ImGui::TextUnformatted("-");
-                    ImGui::TableNextColumn();
-                    if (i == activeRow) ImGui::TextUnformatted(">>>");
-                    else ImGui::TextUnformatted("");
-                }
-                ImGui::EndTable();
-            }
-        }
     }
 
     ImGui::End();
@@ -7543,6 +6923,103 @@ void ReplayWindow::DrawRangeRings()
                     accum += segLen;
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spirit Range Circles — drawn for hovered or selected spirits
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawSpiritRanges()
+{
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    if (m_hoveredAgentId < 0 && m_followedAgentId < 0) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x;
+    float vpH = vp->Size.y;
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const MapTransform& t = m_replayCtx.mapTransform;
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+
+    constexpr int kSamples = 48;
+    constexpr float kPI2 = 6.28318530718f;
+    constexpr float kZOffset = 2.f;
+    constexpr float kFillAlpha = 0.12f;
+    constexpr float kEdgeThickness = 1.5f;
+
+    for (int sid : m_spiritIds)
+    {
+        if (sid != m_hoveredAgentId && sid != m_followedAgentId) continue;
+
+        auto it = m_replayCtx.agents.find(sid);
+        if (it == m_replayCtx.agents.end()) continue;
+        const auto& ard = it->second;
+        if (ard.type != AgentType::Spirit) continue;
+        if (ard.snapshots.empty()) continue;
+
+        if (m_debugTimeline < ard.snapshots.front().time ||
+            m_debugTimeline > ard.snapshots.back().time)
+            continue;
+        if (ard.overlapHidden) continue;
+        if (ard.isDeadAtTime(m_debugTimeline) || !ard.isAliveAtTime(m_debugTimeline))
+            continue;
+
+        float radius = GetSpiritRange(ard.modelId);
+        if (radius <= 0.f) continue;
+
+        ImU32 baseColor = IsNatureRitual(ard.modelId)
+            ? IM_COL32(0x80, 0xFF, 0x80, 0xFF)
+            : GetAgentTeamColor(ard.teamId);
+
+        float sx, sy, sz;
+        SnapAgentPosition(ard, m_debugTimeline, sx, sy, sz);
+
+        ImVec2 pts[kSamples];
+        bool vis[kSamples];
+        int visCount = 0;
+
+        for (int i = 0; i < kSamples; ++i)
+        {
+            float angle = (float(i) / kSamples) * kPI2;
+            float wx = sx + cosf(angle) * radius;
+            float wy = sy + sinf(angle) * radius;
+
+            XMFLOAT3 mp = ApplyMapTransformToPos(wx, wy, sz, t);
+            if (terrain)
+                mp.y = terrain->get_height_at(mp.x, mp.z) + kZOffset;
+
+            float scrX, scrY;
+            vis[i] = ProjectToScreen(viewProj, vpW, vpH, mp, scrX, scrY);
+            pts[i] = ImVec2(scrX, scrY);
+            if (vis[i]) visCount++;
+        }
+
+        if (visCount < 3) continue;
+
+        // Fill pass
+        {
+            ImU32 fillCol = (baseColor & 0x00FFFFFF) | ((ImU32)(kFillAlpha * 255.f) << 24);
+            ImVector<ImVec2> polyPts;
+            for (int i = 0; i < kSamples; ++i)
+                if (vis[i]) polyPts.push_back(pts[i]);
+            if (polyPts.Size >= 3)
+                dl->AddConvexPolyFilled(polyPts.Data, polyPts.Size, fillCol);
+        }
+
+        // Edge pass
+        ImU32 edgeCol = (baseColor & 0x00FFFFFF) | (0xC0u << 24);
+        for (int i = 0; i < kSamples; ++i)
+        {
+            int j = (i + 1) % kSamples;
+            if (vis[i] && vis[j])
+                dl->AddLine(pts[i], pts[j], edgeCol, kEdgeThickness);
         }
     }
 }
@@ -8858,9 +8335,7 @@ void ReplayWindow::BuildLordDamageData()
             ld.attackers.resize(8);
     }
 
-    // Auto-show if any lord took damage
-    if (m_lordDmg[0].totalDmgAbs > 0 || m_lordDmg[1].totalDmgAbs > 0)
-        m_showLordDamagePanel = true;
+    // Lord damage panel is toggled via menu, not auto-shown
 }
 
 void ReplayWindow::BuildTimelineData()
@@ -8971,6 +8446,19 @@ void ReplayWindow::BuildTimelineData()
         else continue;
 
         m_timeline.events.push_back(te);
+    }
+
+    // Add flag return events from the flag timeline
+    if (m_flagTimelineBuilt && m_flagTimeline.valid) {
+        for (auto& ev : m_flagTimeline.allEvents) {
+            if (ev.eventType != FlagTimelineEventType::Return) continue;
+            TimelineEvent te;
+            te.time = ev.time;
+            te.type = TimelineEventType::FlagReturn;
+            te.teamId = (ev.flagTeam == FlagTeam::Blue) ? 1 : 2;
+            te.label = "Flag returned";
+            m_timeline.events.push_back(std::move(te));
+        }
     }
 
     std::sort(m_timeline.events.begin(), m_timeline.events.end(),
@@ -9346,6 +8834,7 @@ void ReplayWindow::DrawEventTimeline()
 
         FilterPill("Death",   m_tlFilterDeath,  deathTex,  IM_COL32(208,  72,  72, 255));
         FilterPill("Flag",    m_tlFilterFlag,   flagTex,   IM_COL32(255, 200,  60, 255));
+        FilterPill("Return",  m_tlFilterFlagReturn, flagTex, IM_COL32(40, 200, 40, 255));
         FilterPill("Morale",  m_tlFilterMorale, moraleTex, IM_COL32(212, 160,  32, 255));
         FilterPill("Lord",    m_tlFilterLord,   lordTex,   IM_COL32(255,  90,  90, 255));
     }
@@ -9437,6 +8926,7 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::Death:        return m_tlFilterDeath;
         case TimelineEventType::Resurrection: return false;
         case TimelineEventType::FlagCapture:  return m_tlFilterFlag;
+        case TimelineEventType::FlagReturn:   return m_tlFilterFlagReturn;
         case TimelineEventType::MoraleBoost:  return m_tlFilterMorale;
         case TimelineEventType::LordAttacked: return m_tlFilterLord;
         case TimelineEventType::Victory:      return false;
@@ -9460,7 +8950,7 @@ void ReplayWindow::DrawEventTimeline()
         float ex = chartX0 + (e.time / maxT) * chartW;
         float ey;
 
-        if (e.type == TimelineEventType::FlagCapture)
+        if (e.type == TimelineEventType::FlagCapture || e.type == TimelineEventType::FlagReturn)
         {
             ey = bottomRowY;
         }
@@ -9498,6 +8988,7 @@ void ReplayWindow::DrawEventTimeline()
     {
         const auto& e = m_timeline.events[markers[mi].idx];
         if (e.type == TimelineEventType::FlagCapture ||
+            e.type == TimelineEventType::FlagReturn ||
             e.type == TimelineEventType::MoraleBoost)
             continue;
 
@@ -9506,6 +8997,7 @@ void ReplayWindow::DrawEventTimeline()
         {
             const auto& eo = m_timeline.events[markers[mj].idx];
             if (eo.type == TimelineEventType::FlagCapture ||
+                eo.type == TimelineEventType::FlagReturn ||
                 eo.type == TimelineEventType::MoraleBoost)
                 continue;
 
@@ -9577,6 +9069,29 @@ void ReplayWindow::DrawEventTimeline()
                     ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
                     IM_COL32(255, 255, 255, 255), "F");
             }
+            break;
+        }
+        case TimelineEventType::FlagReturn: {
+            const char* flagFile = (e.teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+            ImTextureID tex = LoadFlagIcon(dev, flagFile);
+            if (tex)
+                dl->AddImage(tex, iconMin, iconMax);
+            else {
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "R");
+            }
+            // Green left-pointing arrow overlay
+            float arrowX = iconMin.x - 2.f;
+            float arrowCY = (iconMin.y + iconMax.y) * 0.5f;
+            float arrowH = (iconMax.y - iconMin.y) * 0.35f;
+            dl->AddTriangleFilled(
+                ImVec2(arrowX - 6.f, arrowCY),
+                ImVec2(arrowX, arrowCY - arrowH),
+                ImVec2(arrowX, arrowCY + arrowH),
+                IM_COL32(40, 200, 40, 220));
+            dl->AddLine(ImVec2(arrowX, arrowCY), ImVec2(arrowX + 5.f, arrowCY),
+                        IM_COL32(40, 200, 40, 220), 2.f);
             break;
         }
         case TimelineEventType::MoraleBoost: {
@@ -9670,6 +9185,7 @@ void ReplayWindow::DrawEventTimeline()
         switch (e.type) {
         case TimelineEventType::Death:        typeName = "Death"; break;
         case TimelineEventType::FlagCapture:  typeName = "Flag Capture"; break;
+        case TimelineEventType::FlagReturn:   typeName = "Flag Return"; break;
         case TimelineEventType::MoraleBoost:  typeName = "Morale Boost"; break;
         case TimelineEventType::LordAttacked: typeName = "Lord Attacked"; break;
         default: break;
@@ -9842,6 +9358,140 @@ void ReplayWindow::DrawMatchTimer()
     HandleOverlayDrag(3, &m_uiLayout.timerX, &m_uiLayout.timerY, boxTL, boxBR);
 }
 
+// ---------------------------------------------------------------------------
+// Flag event messages — displayed below the Time Elapsed counter
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawFlagEventMessages()
+{
+    if (m_flagMessages.empty()) return;
+
+    float curTime = m_debugTimeline;
+
+    constexpr float kDisplayDuration = 5.0f;
+    constexpr float kFadeStart      = 4.0f;
+    constexpr int   kMaxVisible     = 2;
+
+    // Collect up to kMaxVisible active messages (most recent first)
+    struct ActiveMsg { const FlagEventMessage* msg; float age; };
+    std::vector<ActiveMsg> actives;
+    for (auto& msg : m_flagMessages)
+    {
+        float age = curTime - msg.time;
+        if (age < 0.f || age > kDisplayDuration) continue;
+        actives.push_back({ &msg, age });
+    }
+    if (actives.empty()) return;
+
+    // Sort by time descending (newest first), keep up to kMaxVisible
+    std::sort(actives.begin(), actives.end(),
+        [](const ActiveMsg& a, const ActiveMsg& b) { return a.msg->time > b.msg->time; });
+    if (static_cast<int>(actives.size()) > kMaxVisible)
+        actives.resize(kMaxVisible);
+    // Reverse so oldest draws on top, newest on bottom (chat order)
+    std::reverse(actives.begin(), actives.end());
+
+    ImFont* font = m_latoRegular ? m_latoRegular : ImGui::GetFont();
+    float fontSize = font->FontSize;
+    float lineH = fontSize + 6.f;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float posX = m_uiLayout.useCustom ? m_uiLayout.timerX : 0.50f;
+    float posY = m_uiLayout.useCustom ? m_uiLayout.timerY : 0.12f;
+    float cx = vp->Pos.x + vp->Size.x * posX;
+    float baseY = vp->Pos.y + vp->Size.y * posY;
+    float msgStartY = baseY + fontSize * 2.f + 30.f;
+
+    struct Segment { std::string text; ImU32 color; };
+
+    auto drawSegmentsCentered = [&](const std::vector<Segment>& segs, float y, float alpha)
+    {
+        int a = static_cast<int>(alpha * 255);
+        ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(alpha * 230));
+        float totalW = 0.f;
+        for (auto& s : segs)
+            totalW += font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, s.text.c_str()).x;
+        float x = cx - totalW * 0.5f;
+        for (auto& s : segs) {
+            ImU32 col = (s.color & 0x00FFFFFF) | (static_cast<ImU32>(a) << 24);
+            dl->AddText(font, fontSize, ImVec2(x, y + 1), shadow, s.text.c_str());
+            dl->AddText(font, fontSize, ImVec2(x, y), col, s.text.c_str());
+            x += font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, s.text.c_str()).x;
+        }
+        return totalW;
+    };
+
+    float curY = msgStartY;
+
+    for (auto& am : actives)
+    {
+        const auto* active = am.msg;
+        float alpha = 1.f;
+        if (am.age > kFadeStart)
+            alpha = std::clamp(kDisplayDuration - am.age, 0.f, 1.f) / (kDisplayDuration - kFadeStart);
+        if (alpha <= 0.f) continue;
+
+        ImU32 whiteCol = IM_COL32(255, 255, 255, 255);
+        ImU32 blueCol  = IM_COL32(0x99, 0xCB, 0xFD, 255);
+        ImU32 redCol   = IM_COL32(0xFF, 0x99, 0x9A, 255);
+
+        ImU32 playerCol = (active->playerTeam == 0) ? blueCol : redCol;
+        ImU32 flagCol   = (active->flagTeam == 0)   ? blueCol : redCol;
+        const char* flagTeamName = (active->flagTeam == 0) ? "blue" : "red";
+
+        std::vector<Segment> line1, line2;
+
+        switch (active->eventType)
+        {
+        case FlagTimelineEventType::Pickup:
+            line1.push_back({ active->playerName, playerCol });
+            line1.push_back({ " picked up ", whiteCol });
+            line1.push_back({ flagTeamName, flagCol });
+            line1.push_back({ "'s team flag!", whiteCol });
+            break;
+        case FlagTimelineEventType::Drop:
+            line1.push_back({ active->playerName, playerCol });
+            line1.push_back({ " has dropped ", whiteCol });
+            line1.push_back({ flagTeamName, flagCol });
+            line1.push_back({ "'s team flag!", whiteCol });
+            break;
+        case FlagTimelineEventType::Return:
+            if (!active->playerName.empty()) {
+                line1.push_back({ active->playerName, playerCol });
+                line1.push_back({ " has returned ", whiteCol });
+            } else {
+                const char* returnTeamName = (active->flagTeam == 0) ? "Red" : "Blue";
+                ImU32 returnTeamCol = (active->flagTeam == 0) ? redCol : blueCol;
+                line1.push_back({ returnTeamName, returnTeamCol });
+                line1.push_back({ " team has returned ", whiteCol });
+            }
+            line1.push_back({ flagTeamName, flagCol });
+            line1.push_back({ "'s team flag!", whiteCol });
+            break;
+        case FlagTimelineEventType::Stick:
+        {
+            const char* teamName = (active->flagTeam == 0) ? "Blue" : "Red";
+            line1.push_back({ active->playerName, playerCol });
+            line1.push_back({ " has taken control of the watchtower!", whiteCol });
+            line2.push_back({ teamName, flagCol });
+            line2.push_back({ " team will earn a morale boost every two minutes they hold the watchtower.", whiteCol });
+            break;
+        }
+        default:
+            continue;
+        }
+
+        drawSegmentsCentered(line1, curY, alpha);
+        curY += lineH;
+
+        if (!line2.empty()) {
+            drawSegmentsCentered(line2, curY, alpha);
+            curY += lineH;
+        }
+    }
+}
+
 void ReplayWindow::DrawJumboMessages()
 {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -9924,7 +9574,8 @@ void ReplayWindow::DrawJumboMessages()
 
 void ReplayWindow::DrawMoraleBoostTimers()
 {
-    if (m_captureEvents.empty() && m_draggingUIElement != 1 && m_draggingUIElement != 2)
+    auto& standEvents = m_flagTimeline.stand.events;
+    if (standEvents.empty() && m_draggingUIElement != 1 && m_draggingUIElement != 2)
         return;
 
     float curTime = m_debugTimeline;
@@ -9932,11 +9583,12 @@ void ReplayWindow::DrawMoraleBoostTimers()
     float lastCapTime[2] = { -1.f, -1.f };
     int   lastCapTeam = -1;
 
-    for (auto& [t, teamIdx] : m_captureEvents)
+    for (auto& sc : standEvents)
     {
-        if (t > curTime) break;
-        lastCapTime[teamIdx] = t;
-        lastCapTeam = teamIdx;
+        if (sc.time > curTime) break;
+        if (sc.owner == StandOwner::Blue)        { lastCapTime[0] = sc.time; lastCapTeam = 0; }
+        else if (sc.owner == StandOwner::Red)     { lastCapTime[1] = sc.time; lastCapTeam = 1; }
+        else if (sc.owner == StandOwner::Neutral) { lastCapTeam = -1; }
     }
 
     ImFont* font = m_latoBold ? m_latoBold : ImGui::GetFont();
@@ -10534,15 +10186,13 @@ void ReplayWindow::UpdateAutoCamera(float dt)
     }
 
     // Score flag pickup
-    if (cfg.focusFlag)
+    if (cfg.focusFlag && m_flagTimelineBuilt && m_flagTimeline.valid)
     {
         for (int ti = 0; ti < 2; ++ti)
         {
-            if (!m_flagState[ti].valid) continue;
-            const auto& tl = m_flagState[ti].timeline;
-            for (const auto& fe : tl)
+            for (const auto& fe : m_flagTimeline.teams[ti].events)
             {
-                if (fe.location == FlagLocationType::Carried &&
+                if (fe.newLocation == FlagLocation::Carried &&
                     fe.carrierAgentId >= 0 &&
                     std::abs(fe.time - now) < 2.f)
                 {
@@ -13125,7 +12775,8 @@ static void DrawPartyHealthBar(
     ImDrawList* dl, ImVec2 barTL, float barW, float barH,
     const AgentSnapshot* snap, uint8_t teamId, bool isDead,
     const char* name, const PartyIcons& icons,
-    int followedAgentId, int agentId, bool fogHidden = false)
+    int followedAgentId, int agentId, bool fogHidden = false,
+    ImTextureID flagTex = nullptr)
 {
     ImVec2 barBR(barTL.x + barW, barTL.y + barH);
 
@@ -13275,6 +12926,13 @@ static void DrawPartyHealthBar(
         {
             iconX -= iconSz;
             dl->AddImage(icons.hexed, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if (flagTex)
+        {
+            iconX -= iconSz;
+            dl->AddImage(flagTex, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
         }
     }
 }
@@ -14265,10 +13923,24 @@ void ReplayWindow::DrawPartyWindows()
             }
 
             bool isFogHidden = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
+
+            ImTextureID carriedFlagTex = nullptr;
+            if (m_flagTimelineBuilt && m_flagTimeline.valid) {
+                ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+                for (int fti = 0; fti < 2; fti++) {
+                    if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == agentId) {
+                        carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
+                            ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png");
+                        break;
+                    }
+                }
+            }
+
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,
                                ard.partyBarLabel.c_str(), icons,
-                               m_followedAgentId, agentId, isFogHidden);
+                               m_followedAgentId, agentId, isFogHidden,
+                               carriedFlagTex);
         }
     };
 
@@ -14845,6 +14517,7 @@ static ImU32 StoCCategoryColor(StoCCategory cat)
     case StoCCategory::Unknown:       return IM_COL32(220, 220, 220, 255);
     case StoCCategory::Lifecycle:     return IM_COL32(100, 220, 160, 255);
     case StoCCategory::MapObject:     return IM_COL32(220, 180, 100, 255);
+    case StoCCategory::FlagEvent:     return IM_COL32(60,  200, 60,  255);
     default:                          return IM_COL32(255, 255, 255, 255);
     }
 }
@@ -14861,6 +14534,7 @@ static int StoCCategoryCount(const StoCData& d, StoCCategory cat)
     case StoCCategory::Unknown:       return static_cast<int>(d.unknown.size());
     case StoCCategory::Lifecycle:     return static_cast<int>(d.lifecycle.size());
     case StoCCategory::MapObject:     return static_cast<int>(d.mapObject.size());
+    case StoCCategory::FlagEvent:     return d.flagEvents.totalCount();
     default: return 0;
     }
 }
@@ -14980,6 +14654,23 @@ void ReplayWindow::DrawStoCWindow()
             PlotEvents(sd.lifecycle, StoCCategory::Lifecycle);
         if (m_selectedStoCCategory == StoCCategory::MapObject || m_selectedStoCCategory == StoCCategory::_Count)
             PlotEvents(sd.mapObject, StoCCategory::MapObject);
+        if (m_selectedStoCCategory == StoCCategory::FlagEvent || m_selectedStoCCategory == StoCCategory::_Count)
+        {
+            auto PlotFlagSub = [&](const auto& vec) {
+                ImU32 col = StoCCategoryColor(StoCCategory::FlagEvent);
+                for (auto& ev : vec) {
+                    float xp = canvasPos.x + (ev.time / maxT) * canvasW;
+                    dl->AddLine(ImVec2(xp, canvasPos.y), ImVec2(xp, canvasPos.y + canvasH), col, 1.0f);
+                }
+            };
+            PlotFlagSub(sd.flagEvents.pickups);
+            PlotFlagSub(sd.flagEvents.drops);
+            PlotFlagSub(sd.flagEvents.states);
+            PlotFlagSub(sd.flagEvents.items);
+            PlotFlagSub(sd.flagEvents.stands);
+            PlotFlagSub(sd.flagEvents.spawns);
+            PlotFlagSub(sd.flagEvents.announces);
+        }
 
         if (ImGui::IsItemClicked())
             m_debugTimeline = ((ImGui::GetIO().MousePos.x - canvasPos.x) / canvasW) * maxT;
@@ -15504,6 +15195,104 @@ void ReplayWindow::DrawStoCWindow()
                 }
             }
             ImGui::EndTable();
+        }
+        break;
+    }
+
+    // ====================== FLAG EVENTS ======================
+    case StoCCategory::FlagEvent:
+    {
+        auto& fe = sd.flagEvents;
+        ImGui::Text("Flag Events: %d", fe.totalCount());
+
+        struct MergedFlagRow { float time; int code; std::string detail; const std::string* raw; };
+        static std::vector<MergedFlagRow> mergedRows;
+        static int lastTotalCount = -1;
+        int curTotal = fe.totalCount();
+        if (curTotal != lastTotalCount)
+        {
+            lastTotalCount = curTotal;
+            mergedRows.clear();
+            mergedRows.reserve(curTotal);
+            for (auto& e : fe.pickups)
+                mergedRows.push_back({ e.time, 0,
+                    std::format("item={} player={} tc={}", e.item_id, e.player_agent_id, e.team_code), &e.raw_line });
+            for (auto& e : fe.drops)
+                mergedRows.push_back({ e.time, 1,
+                    std::format("player={} tc={}", e.player_agent_id, e.team_code), &e.raw_line });
+            for (auto& e : fe.states)
+                mergedRows.push_back({ e.time, 2,
+                    std::format("tc={} item={} state={}", e.team_code, e.item_id, e.state), &e.raw_line });
+            for (auto& e : fe.items)
+                mergedRows.push_back({ e.time, 3,
+                    std::format("item={} model={} extra={} type={}", e.item_id, e.model_id, e.extra_id, e.type), &e.raw_line });
+            for (auto& e : fe.stands)
+                mergedRows.push_back({ e.time, 4,
+                    std::format("stand={} sub={} val={}", e.stand_agent_id, e.sub_field, e.value), &e.raw_line });
+            for (auto& e : fe.spawns)
+                mergedRows.push_back({ e.time, 5,
+                    std::format("agent={} unk={} obj={}", e.agent_id, e.unk, e.object_id), &e.raw_line });
+            for (auto& e : fe.announces)
+                mergedRows.push_back({ e.time, 6,
+                    std::format("action={} tmpl={} team={}", e.action == 0 ? "RETURN" : "STICK", e.template_id, e.team), &e.raw_line });
+            std::stable_sort(mergedRows.begin(), mergedRows.end(),
+                [](const MergedFlagRow& a, const MergedFlagRow& b) { return a.time < b.time; });
+        }
+
+        static const char* kFlagCodeNames[] = {
+            "PICKUP", "DROP", "STATE", "ITEM", "STAND", "SPAWN", "ANNOUNCE"
+        };
+
+        if (ImGui::BeginTable("FETable", 4,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",   ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Code",   ImGuiTableColumnFlags_WidthFixed, 75);
+            ImGui::TableSetupColumn("Type",   ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableSetupColumn("Detail", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(mergedRows.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& r = mergedRows[row];
+                    ImGui::TableNextRow();
+
+                    bool nearCurrent = (r.time >= m_debugTimeline - 0.5f && r.time <= m_debugTimeline + 0.5f);
+                    if (nearCurrent)
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, IM_COL32(80, 80, 40, 100));
+
+                    ImGui::TableSetColumnIndex(0);
+                    int sec = static_cast<int>(r.time);
+                    int ms  = static_cast<int>((r.time - sec) * 1000.f);
+                    if (ImGui::Selectable(std::format("{:02d}:{:02d}.{:03d}##fe{}", sec / 60, sec % 60, ms, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                    {
+                        m_selectedStoCEventIdx = row;
+                        m_debugTimeline = r.time;
+                    }
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%d", r.code);
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::TextUnformatted((r.code >= 0 && r.code <= 6) ? kFlagCodeNames[r.code] : "?");
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(r.detail.c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+        if (m_stocShowRaw && m_selectedStoCEventIdx >= 0 &&
+            m_selectedStoCEventIdx < static_cast<int>(mergedRows.size()))
+        {
+            ImGui::Separator();
+            ImGui::TextWrapped("Raw: %s", mergedRows[m_selectedStoCEventIdx].raw->c_str());
         }
         break;
     }
