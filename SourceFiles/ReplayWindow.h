@@ -17,6 +17,7 @@
 #include "HeatmapRenderer.h"
 #include "HeatmapMenu.h"
 #include "AnnotationManager.h"
+#include "FlagTimelineBuilder.h"
 #include <string>
 #include <memory>
 #include <variant>
@@ -185,38 +186,26 @@ private:
     void EnsureSkillIconIndex();
     std::unordered_map<int, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_skillIconCache;
 
-    // --- Flag state machine ---
-    enum class FlagLocationType { Base, Carried, Ground, Stand };
+    // --- Flag Timeline (from FlagTimelineBuilder) ---
+    FlagTimeline m_flagTimeline;
+    bool m_flagTimelineBuilt = false;
 
-    struct FlagEvent {
-        float time = 0.f;
-        FlagLocationType location = FlagLocationType::Base;
-        float x = 0, y = 0, z = 0;
-        int carrierAgentId = -1;
-        int flagAgentId = -1;   // when >= 0, use this agent's position (moves with carrier)
-        bool isCaptureEvent = false;
-        bool isReturnEvent  = false;
-    };
-
-    struct FlagTeamState {
-        bool valid = false;
-        float baseX = 0, baseY = 0, baseZ = 0;
-        std::vector<int> flagAgentIds;
-        std::vector<FlagEvent> timeline;
-    };
-
-    FlagTeamState m_flagState[2];
-    std::vector<std::pair<float, int>> m_captureEvents;  // (time, teamIdx) — only one flag on stand at a time
-    float m_flagStandX = 0, m_flagStandY = 0, m_flagStandZ = 0;
-    bool  m_flagStandFound = false;
-    bool  m_flagStateBuilt = false;
-    std::unordered_map<uint32_t, int> m_flagItemIdToTeam;
-
-    FlagEvent EvaluateFlagState(int teamIdx, float time) const;
-    void BuildFlagStateTimeline();
+    void BuildFlagTimeline();
     void DrawFlags();
 
-    // --- Flag allegiance debug panel ---
+    // --- Flag event messages (displayed below timer) ---
+    struct FlagEventMessage {
+        float time = 0.f;
+        std::string playerName;
+        int playerTeam = 0;    // 0=blue, 1=red
+        int flagTeam   = 0;    // 0=blue, 1=red
+        FlagTimelineEventType eventType = FlagTimelineEventType::Spawn;
+    };
+    std::vector<FlagEventMessage> m_flagMessages;
+    void BuildFlagMessages();
+    void DrawFlagEventMessages();
+
+    // --- Flag debug panel ---
     bool m_showFlagDebugWindow = false;
     void DrawFlagDebugWindow();
 
@@ -391,7 +380,7 @@ public:
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
-    enum class TimelineEventType { Death, Resurrection, FlagCapture, MoraleBoost, LordAttacked, Victory };
+    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory };
     struct TimelineEvent {
         float time = 0.f;
         TimelineEventType type = TimelineEventType::Death;
@@ -411,6 +400,7 @@ public:
     bool m_tlFilterDeath = true;
     bool m_tlFilterRes = true;
     bool m_tlFilterFlag = true;
+    bool m_tlFilterFlagReturn = true;
     bool m_tlFilterMorale = true;
     bool m_tlFilterLord = true;
     bool m_tlFilterVictory = true;
@@ -437,6 +427,7 @@ public:
     bool m_ringSoloActive  = false;
     bool m_ringSoloPrev[kRingTypeCount] = {};
     void DrawRangeRings();
+    void DrawSpiritRanges();
     void DrawRangeRingToolbar();
 
 private:

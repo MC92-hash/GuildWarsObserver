@@ -613,7 +613,8 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
 static constexpr int kSyntheticIdBase = 1'000'000;
 
 void SplitRecycledAgents(std::unordered_map<int, AgentReplayData>& agents,
-                         const std::vector<LifecycleEvent>& lifecycle)
+                         const std::vector<LifecycleEvent>& lifecycle,
+                         const std::unordered_set<int>* skipAgentIds)
 {
     // Phase 1: Build lifecycle windows per agent_id
     struct Window { float addTime; float removeTime; };
@@ -643,6 +644,7 @@ void SplitRecycledAgents(std::unordered_map<int, AgentReplayData>& agents,
     for (auto& [agentId, ard] : agents)
     {
         if (ard.snapshots.empty()) continue;
+        if (skipAgentIds && skipAgentIds->count(agentId)) continue;
 
         auto wit = windowsMap.find(agentId);
         bool hasLifecycle = (wit != windowsMap.end() && wit->second.size() > 1);

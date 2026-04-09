@@ -155,6 +155,62 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
 }
 
 // ---------------------------------------------------------------------------
+// Spirit type classification: nature ritual vs binding ritual
+// ---------------------------------------------------------------------------
+
+inline bool IsNatureRitual(uint32_t modelId)
+{
+    switch (modelId) {
+    case 2927: case 2929: case 2932: case 2936: case 2937:
+    case 2938: case 2939: case 4289: case 5767: case 5766:
+    case 4286:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spirit effect range (game units) for drawing range circles
+// ---------------------------------------------------------------------------
+
+inline float GetSpiritRange(uint32_t modelId)
+{
+    switch (modelId) {
+    // Binding Rituals
+    case 5905: return 1012.f;  // Agony
+    case 5771: return 322.f;   // Anguish
+    case 4278: return 322.f;   // Bloodsong
+    case 4266: return 322.f;   // Destruction
+    case 4276: return 322.f;   // Disenchantment
+    case 4268: return 2512.f;  // Displacement
+    case 4272: return 322.f;   // Dissonance
+    case 4273: return 2512.f;  // Earthbind
+    case 5773: return 322.f;   // Gaze of Fury
+    case 4269: return 2512.f;  // Life
+    case 4270: return 322.f;   // Preservation
+    case 5770: return 2512.f;  // Recovery
+    case 4271: return 2512.f;  // Recuperation
+    case 5904: return 1012.f;  // Rejuvenation
+    case 4277: return 2512.f;  // Restoration
+    case 4264: return 322.f;   // Shadowsong
+    case 4274: return 2512.f;  // Shelter
+    case 4267: return 2512.f;  // Soothing
+    case 4275: return 2512.f;  // Union
+    case 4279: return 322.f;   // Wanderlust
+    case 4265: return 322.f;   // Pain
+
+    // Nature Rituals (all 3500)
+    case 2927: case 2929: case 2932: case 2936: case 2937:
+    case 2938: case 2939: case 4289: case 5767: case 5766:
+    case 4286:
+        return 3500.f;
+
+    default: return 0.f;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Map-specific item_id lookup (non-flag items like Vine Seed, Repair Kit)
 // ---------------------------------------------------------------------------
 
@@ -666,7 +722,7 @@ struct CombatLogRow {
 
 enum class StoCCategory : uint8_t
 {
-    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, Lifecycle, MapObject, _Count
+    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, Lifecycle, MapObject, FlagEvent, _Count
 };
 
 inline const char* StoCCategoryName(StoCCategory c)
@@ -681,6 +737,7 @@ inline const char* StoCCategoryName(StoCCategory c)
     case StoCCategory::Unknown:       return "Unknown Events";
     case StoCCategory::Lifecycle:     return "Lifecycle Events";
     case StoCCategory::MapObject:     return "Map Object Events";
+    case StoCCategory::FlagEvent:     return "Flag Events";
     default:                          return "?";
     }
 }
@@ -809,6 +866,94 @@ struct MapObjectEvent
 };
 
 // ---------------------------------------------------------------------------
+// Flag events (from flag_events.txt — GvG flag StoC packets)
+// ---------------------------------------------------------------------------
+
+struct FlagPickupEvent
+{
+    float time = 0.f;
+    int   item_id = 0;
+    int   player_agent_id = 0;
+    int   team_code = 0;
+    std::string raw_line;
+};
+
+struct FlagDropEvent
+{
+    float time = 0.f;
+    int   player_agent_id = 0;
+    int   team_code = 0;
+    std::string raw_line;
+};
+
+struct FlagStateEvent
+{
+    float    time = 0.f;
+    int      team_code = 0;
+    int      item_id = 0;
+    uint32_t state = 0;
+    std::string raw_line;
+};
+
+struct FlagItemEvent
+{
+    float    time = 0.f;
+    int      item_id = 0;
+    int      model_id = 0;
+    uint32_t extra_id = 0;
+    int      type = 0;
+    std::string raw_line;
+};
+
+struct FlagStandEvent
+{
+    float time = 0.f;
+    int   stand_agent_id = 0;
+    int   sub_field = 0;
+    int   value = 0;
+    std::string raw_line;
+};
+
+struct FlagSpawnEvent
+{
+    float time = 0.f;
+    int   agent_id = 0;
+    int   unk = 0;
+    int   object_id = 0;
+    std::string raw_line;
+};
+
+struct FlagAnnounceEvent
+{
+    float time = 0.f;
+    int   action = 0;      // 0=RETURN, 1=STICK
+    int   template_id = 0;
+    int   team = 0;        // 0=unknown, 1=blue, 2=red
+    std::string raw_line;
+};
+
+struct FlagEventData
+{
+    std::vector<FlagPickupEvent>   pickups;
+    std::vector<FlagDropEvent>     drops;
+    std::vector<FlagStateEvent>    states;
+    std::vector<FlagItemEvent>     items;
+    std::vector<FlagStandEvent>    stands;
+    std::vector<FlagSpawnEvent>    spawns;
+    std::vector<FlagAnnounceEvent> announces;
+
+    bool empty() const {
+        return pickups.empty() && drops.empty() && states.empty()
+            && items.empty() && stands.empty() && spawns.empty()
+            && announces.empty();
+    }
+    int totalCount() const {
+        return static_cast<int>(pickups.size() + drops.size() + states.size()
+            + items.size() + stands.size() + spawns.size() + announces.size());
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Bundle carry interval — tracks what a player is holding over time
 // ---------------------------------------------------------------------------
 
@@ -832,6 +977,7 @@ struct StoCData
     std::vector<StoCLordDamageEvent>    lordDamage;
     std::vector<LifecycleEvent>         lifecycle;
     std::vector<MapObjectEvent>         mapObject;
+    FlagEventData                       flagEvents;
 };
 
 struct StoCParseProgress

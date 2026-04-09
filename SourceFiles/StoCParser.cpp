@@ -694,6 +694,127 @@ static void ParseMapObjectEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Flag events (flag_events.txt — GvG flag StoC packets, codes 0-6)
+// ---------------------------------------------------------------------------
+
+static void ParseFlagEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[6];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 6);
+                if (n >= 1)
+                {
+                    int code = ToInt(tok[0].begin, tok[0].end);
+                    switch (code)
+                    {
+                    case 0: // FLAG_PICKUP: 0;item_id;player_agent_id;team_code
+                        if (n >= 4) {
+                            FlagPickupEvent ev;
+                            ev.time             = li.time;
+                            ev.item_id          = ToInt(tok[1].begin, tok[1].end);
+                            ev.player_agent_id  = ToInt(tok[2].begin, tok[2].end);
+                            ev.team_code        = ToInt(tok[3].begin, tok[3].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.pickups.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 1: // FLAG_DROP: 1;player_agent_id;team_code
+                        if (n >= 3) {
+                            FlagDropEvent ev;
+                            ev.time             = li.time;
+                            ev.player_agent_id  = ToInt(tok[1].begin, tok[1].end);
+                            ev.team_code        = ToInt(tok[2].begin, tok[2].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.drops.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 2: // FLAG_STATE: 2;team_code;item_id;state
+                        if (n >= 4) {
+                            FlagStateEvent ev;
+                            ev.time      = li.time;
+                            ev.team_code = ToInt(tok[1].begin, tok[1].end);
+                            ev.item_id   = ToInt(tok[2].begin, tok[2].end);
+                            ev.state     = static_cast<uint32_t>(
+                                strtoul(std::string(tok[3].begin, tok[3].end).c_str(), nullptr, 10));
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.states.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 3: // FLAG_ITEM: 3;item_id;model_id;extra_id;type
+                        if (n >= 5) {
+                            FlagItemEvent ev;
+                            ev.time     = li.time;
+                            ev.item_id  = ToInt(tok[1].begin, tok[1].end);
+                            ev.model_id = ToInt(tok[2].begin, tok[2].end);
+                            ev.extra_id = static_cast<uint32_t>(
+                                strtoul(std::string(tok[3].begin, tok[3].end).c_str(), nullptr, 10));
+                            ev.type     = ToInt(tok[4].begin, tok[4].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.items.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 4: // FLAG_STAND: 4;stand_agent_id;sub_field;value
+                        if (n >= 4) {
+                            FlagStandEvent ev;
+                            ev.time           = li.time;
+                            ev.stand_agent_id = ToInt(tok[1].begin, tok[1].end);
+                            ev.sub_field      = ToInt(tok[2].begin, tok[2].end);
+                            ev.value          = ToInt(tok[3].begin, tok[3].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.stands.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 5: // FLAG_SPAWN: 5;agent_id;unk;object_id
+                        if (n >= 4) {
+                            FlagSpawnEvent ev;
+                            ev.time      = li.time;
+                            ev.agent_id  = ToInt(tok[1].begin, tok[1].end);
+                            ev.unk       = ToInt(tok[2].begin, tok[2].end);
+                            ev.object_id = ToInt(tok[3].begin, tok[3].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.spawns.push_back(std::move(ev));
+                        }
+                        break;
+
+                    case 6: // FLAG_ANNOUNCE: 6;action;template_id;team
+                        if (n >= 4) {
+                            FlagAnnounceEvent ev;
+                            ev.time        = li.time;
+                            ev.action      = ToInt(tok[1].begin, tok[1].end);
+                            ev.template_id = ToInt(tok[2].begin, tok[2].end);
+                            ev.team        = ToInt(tok[3].begin, tok[3].end);
+                            ev.raw_line.assign(ptr, effectiveEnd);
+                            data.flagEvents.announces.push_back(std::move(ev));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File dispatch table
 // ---------------------------------------------------------------------------
 
@@ -714,6 +835,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "lord_events",                   ParseLordEvents },
     { "lifecycle_events",              ParseLifecycleEvents },
     { "manipulate_map_object_events",  ParseMapObjectEvents },
+    { "flag_events",                   ParseFlagEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

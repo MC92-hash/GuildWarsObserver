@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <thread>
+#include <unordered_set>
 
 // Launches async parsing of all agent snapshot files inside matchFolder/Agents/.
 // Results are accumulated in the shared AgentParseProgress and later moved
@@ -25,4 +26,5 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
 // Falls back to detecting item_id/model_id changes when lifecycle data is absent.
 // New incarnations get synthetic IDs starting at kSyntheticIdBase.
 void SplitRecycledAgents(std::unordered_map<int, AgentReplayData>& agents,
-                         const std::vector<LifecycleEvent>& lifecycle);
+                         const std::vector<LifecycleEvent>& lifecycle,
+                         const std::unordered_set<int>* skipAgentIds = nullptr);
