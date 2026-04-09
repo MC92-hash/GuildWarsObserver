@@ -723,13 +723,6 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 				updateInfo.repo = "MC92-hash/gwobserver";
 			}
 
-			// TODO: remove test override
-			updateInfo.available = true;
-			updateInfo.currentVersion = GWO_VERSION;
-			updateInfo.latestVersion = "v1.0.3";
-			updateInfo.releaseUrl = "https://github.com/MC92-hash/gwobserver/releases";
-			updateInfo.repo = "MC92-hash/gwobserver";
-
 			if (draw_first_launch(lp, updateInfo.available ? &updateInfo : nullptr))
 				s_loadingScreenDone = true;
 			else
