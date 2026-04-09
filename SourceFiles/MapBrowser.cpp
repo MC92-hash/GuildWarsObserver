@@ -4,6 +4,7 @@
 #include "MapBrowser.h"
 #include "draw_dat_browser.h"
 #include "GuiGlobalConstants.h"
+#include "Net/S3Auth.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_dat_load_progress_bar.h"
 #include "draw_picking_info.h"
@@ -338,20 +339,65 @@ void MapBrowser::Initialize(HWND window, int width, int height)
             : CloudReplayProvider::Mode::OnlineOnly;
 
         std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
-        std::wstring s3Host(GuiGlobalConstants::cloud_storage_host.begin(),
-                            GuiGlobalConstants::cloud_storage_host.end());
+        std::string bucket = GuiGlobalConstants::r2_bucket;
+
+        // Determine the S3 host: use R2 endpoint if read keys are configured,
+        // otherwise fall back to the public custom domain.
+        std::wstring s3Host;
+        HttpClient::SigningFn signingFn;
+        if (!GuiGlobalConstants::r2_read_access_key.empty() &&
+            !GuiGlobalConstants::r2_endpoint.empty())
+        {
+            // Authenticated mode: connect to R2 S3 API endpoint
+            std::string endpoint = GuiGlobalConstants::r2_endpoint;
+            // Strip "https://" prefix to get bare host
+            if (endpoint.starts_with("https://"))
+                endpoint = endpoint.substr(8);
+            else if (endpoint.starts_with("http://"))
+                endpoint = endpoint.substr(7);
+            s3Host = std::wstring(endpoint.begin(), endpoint.end());
+
+            // Build shared credentials + signing function
+            auto creds = std::make_shared<S3Auth::Credentials>();
+            creds->accessKey = GuiGlobalConstants::r2_read_access_key;
+            creds->secretKey = GuiGlobalConstants::r2_read_secret_key;
+            creds->region = "auto";
+            creds->service = "s3";
+
+            signingFn = [creds](const std::wstring& method,
+                                const std::wstring& host,
+                                const std::wstring& path) -> std::wstring
+            {
+                return S3Auth::SignHeaders(method, host, path, *creds);
+            };
+        }
+        else
+        {
+            // Unauthenticated fallback: public custom domain, no bucket prefix
+            s3Host = std::wstring(GuiGlobalConstants::cloud_storage_host.begin(),
+                                  GuiGlobalConstants::cloud_storage_host.end());
+            bucket.clear();
+        }
 
         m_httpClient.SetBaseUrl(s3Host, true);
+        if (signingFn)
+            m_httpClient.SetSigningFunction(signingFn);
 
         m_matchIndex = std::make_shared<MatchIndex>();
         m_cloudProvider = std::make_unique<CloudReplayProvider>();
         m_cloudProvider->Configure(mode, cacheDir, s3Host, true);
+        m_cloudProvider->SetBucket(bucket);
+        if (signingFn)
+            m_cloudProvider->SetSigningFunction(signingFn);
         m_cloudProvider->SetIndex(m_matchIndex);
 
         // Set the cloud provider on the replay library
         // (we keep a raw pointer since ReplayLibrary takes ownership via unique_ptr)
         auto providerForLibrary = std::make_unique<CloudReplayProvider>();
         providerForLibrary->Configure(mode, cacheDir, s3Host, true);
+        providerForLibrary->SetBucket(bucket);
+        if (signingFn)
+            providerForLibrary->SetSigningFunction(signingFn);
         providerForLibrary->SetIndex(m_matchIndex);
         m_replay_library.SetProvider(std::move(providerForLibrary));
         m_replay_library.SetMatchDataFolder(cacheDir);
@@ -361,7 +407,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
         // Start background sync
         m_syncEngine = std::make_unique<SyncEngine>();
-        m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient);
+        m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient, bucket);
     }
     else if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
     {
@@ -374,6 +420,9 @@ void MapBrowser::Initialize(HWND window, int width, int height)
             m_folderWatcher.Start(GuiGlobalConstants::saved_match_data_folder_path, []{});
         }
     }
+
+    // Start background update check
+    m_updateChecker.Check(GWO_VERSION);
 }
 
 #pragma region Frame Update
@@ -901,7 +950,7 @@ void MapBrowser::Render()
     }
     else {
         draw_ui(m_dat_managers, m_dat_manager_to_show_in_dat_browser, m_map_renderer.get(), picking_info, m_csv_data, m_FPS_target, m_timer, m_extract_panel_info,
-            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher, m_syncEngine.get());
+            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher, m_syncEngine.get(), &m_updateChecker);
 
         // Cloud sync status overlay
         draw_sync_status(m_syncEngine.get());

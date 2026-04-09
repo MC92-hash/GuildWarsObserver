@@ -426,6 +426,7 @@ public:
     int  m_ringHoveredType = -1;
     bool m_ringSoloActive  = false;
     bool m_ringSoloPrev[kRingTypeCount] = {};
+    std::unordered_set<int> m_ringHiddenAgents;
     void DrawRangeRings();
     void DrawSpiritRanges();
     void DrawRangeRingToolbar();

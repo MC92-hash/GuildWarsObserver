@@ -15,7 +15,8 @@ SyncEngine::~SyncEngine()
 
 void SyncEngine::Start(CloudReplayProvider& provider,
                         std::shared_ptr<MatchIndex> index,
-                        HttpClient& http)
+                        HttpClient& http,
+                        const std::string& bucket)
 {
     if (m_state.load() == State::FetchingIndex || m_state.load() == State::Downloading)
         return; // Already running
@@ -26,6 +27,7 @@ void SyncEngine::Start(CloudReplayProvider& provider,
     m_provider = &provider;
     m_index = std::move(index);
     m_http = &http;
+    m_bucket = bucket;
     m_cancelRequested.store(false);
     m_hasNewData.store(false);
     m_progress.store(0.f);
@@ -70,7 +72,13 @@ void SyncEngine::SyncThread()
     m_index->LoadFromCache(indexCachePath);
 
     // Fetch fresh index from remote
-    bool fetchedRemote = m_index->FetchFromRemote(*m_http);
+    std::wstring indexPath = L"/index.json";
+    if (!m_bucket.empty())
+    {
+        std::wstring wBucket(m_bucket.begin(), m_bucket.end());
+        indexPath = L"/" + wBucket + L"/index.json";
+    }
+    bool fetchedRemote = m_index->FetchFromRemote(*m_http, indexPath);
 
     if (m_cancelRequested.load())
     {

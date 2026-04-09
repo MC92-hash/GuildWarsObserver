@@ -20,6 +20,7 @@
 #include "Net/MatchIndex.h"
 #include "Net/CloudReplayProvider.h"
 #include "Net/SyncEngine.h"
+#include "Net/UpdateChecker.h"
 #include <draw_extract_panel.h>
 
 using namespace std::chrono;
@@ -130,6 +131,9 @@ private:
     std::shared_ptr<MatchIndex> m_matchIndex;
     std::unique_ptr<CloudReplayProvider> m_cloudProvider;
     std::unique_ptr<SyncEngine> m_syncEngine;
+
+    // Update checker
+    UpdateChecker m_updateChecker;
 
     std::string m_error_msg = "";
     bool m_show_error_msg = false;

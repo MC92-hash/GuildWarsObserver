@@ -19,6 +19,10 @@ public:
 	// Cloud storage settings
 	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
 	inline static std::string cloud_storage_host = GWO_CLOUD_HOST;
+	inline static std::string r2_endpoint = GWO_R2_ENDPOINT;
+	inline static std::string r2_bucket = GWO_R2_BUCKET;
+	inline static std::string r2_read_access_key = GWO_R2_READ_ACCESS_KEY;
+	inline static std::string r2_read_secret_key = GWO_R2_READ_SECRET_KEY;
 
 	// Contributor key for build naming (empty = read-only)
 	inline static std::string contributor_key;

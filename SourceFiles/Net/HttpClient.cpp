@@ -50,6 +50,11 @@ void HttpClient::SetBaseUrl(const std::wstring& host, bool useTls)
     }
 }
 
+void HttpClient::SetSigningFunction(SigningFn fn)
+{
+    m_signingFn = std::move(fn);
+}
+
 void HttpClient::CloseConnection()
 {
     if (m_connection)
@@ -139,6 +144,18 @@ HINTERNET HttpClient::SendRequest(const std::wstring& path, uint64_t& outContent
 
     if (!hRequest)
         return nullptr;
+
+    // Inject auth headers if a signing function is configured
+    if (m_signingFn)
+    {
+        std::wstring headers = m_signingFn(L"GET", m_host, encodedPath);
+        if (!headers.empty())
+        {
+            WinHttpAddRequestHeaders(hRequest, headers.c_str(),
+                                     (DWORD)headers.size(),
+                                     WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        }
+    }
 
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0))

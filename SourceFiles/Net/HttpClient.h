@@ -30,6 +30,13 @@ public:
     // host: e.g. L"matches.tolkano.com" (no scheme, no path)
     void SetBaseUrl(const std::wstring& host, bool useTls = true);
 
+    // Optional: set a signing function that produces CRLF-separated headers
+    // for every request.  The function receives (method, host, encodedPath).
+    using SigningFn = std::function<std::wstring(const std::wstring& method,
+                                                 const std::wstring& host,
+                                                 const std::wstring& path)>;
+    void SetSigningFunction(SigningFn fn);
+
     // GET request. Returns the full response body in memory.
     Response Get(const std::wstring& path);
 
@@ -71,6 +78,7 @@ private:
     HINTERNET m_connection = nullptr;
     std::wstring m_host;
     bool m_tls = true;
+    SigningFn m_signingFn;
 
     std::atomic<bool> m_cancelRequested{false};
     mutable std::mutex m_mutex;

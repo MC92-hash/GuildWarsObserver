@@ -23,9 +23,11 @@ public:
     // Start the sync process on a background thread.
     // For FullCache: fetches index, then downloads all new matches.
     // For OnlineOnly: fetches index only (new matches appear in browser immediately).
+    // bucket: S3 bucket name (prepended to paths). Empty = no prefix.
     void Start(CloudReplayProvider& provider,
                std::shared_ptr<MatchIndex> index,
-               HttpClient& http);
+               HttpClient& http,
+               const std::string& bucket = "");
 
     void Cancel();
 
@@ -61,4 +63,5 @@ private:
     CloudReplayProvider* m_provider = nullptr;
     std::shared_ptr<MatchIndex> m_index;
     HttpClient* m_http = nullptr;
+    std::string m_bucket;
 };

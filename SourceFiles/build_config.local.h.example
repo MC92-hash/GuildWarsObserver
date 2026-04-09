@@ -15,3 +15,7 @@
 #define GWO_R2_BUCKET "your-bucket-name"
 #define GWO_R2_ACCESS_KEY "your-access-key-id"
 #define GWO_R2_SECRET_KEY "your-secret-access-key"
+
+// R2 read-only credentials (used by the app for authenticated downloads)
+#define GWO_R2_READ_ACCESS_KEY "your-read-only-access-key-id"
+#define GWO_R2_READ_SECRET_KEY "your-read-only-secret-access-key"

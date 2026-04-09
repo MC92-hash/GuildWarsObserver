@@ -2,6 +2,8 @@
 #include "draw_ui.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_first_launch.h"
+#include "Net/UpdateChecker.h"
+#include "build_config.h"
 #include "draw_setup_wizard.h"
 #include "SetupConfig.h"
 #include "draw_dat_load_progress_bar.h"
@@ -655,7 +657,7 @@ static void draw_settings_window()
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine)
+	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine, UpdateChecker* updateChecker)
 {
 	s_syncEnginePtr = syncEngine;
 	s_folderWatcherPtr = &folder_watcher;
@@ -710,7 +712,25 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (replay_library.IsLoaded())
 				lp.match_count = replay_library.GetMatchCount();
 
-			if (draw_first_launch(lp))
+			// Build update info for loading screen overlay
+			UpdateInfo updateInfo;
+			if (updateChecker && updateChecker->IsComplete() && updateChecker->HasUpdate())
+			{
+				updateInfo.available = true;
+				updateInfo.currentVersion = GWO_VERSION;
+				updateInfo.latestVersion = updateChecker->GetLatestVersion();
+				updateInfo.releaseUrl = updateChecker->GetReleaseUrl();
+				updateInfo.repo = "MC92-hash/gwobserver";
+			}
+
+			// TODO: remove test override
+			updateInfo.available = true;
+			updateInfo.currentVersion = GWO_VERSION;
+			updateInfo.latestVersion = "v1.0.3";
+			updateInfo.releaseUrl = "https://github.com/MC92-hash/gwobserver/releases";
+			updateInfo.repo = "MC92-hash/gwobserver";
+
+			if (draw_first_launch(lp, updateInfo.available ? &updateInfo : nullptr))
 				s_loadingScreenDone = true;
 			else
 				return;

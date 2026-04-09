@@ -21,6 +21,16 @@ void CloudReplayProvider::Configure(Mode mode,
     std::filesystem::create_directories(m_cachePath, ec);
 }
 
+void CloudReplayProvider::SetBucket(const std::string& bucket)
+{
+    m_bucket = bucket;
+}
+
+void CloudReplayProvider::SetSigningFunction(HttpClient::SigningFn fn)
+{
+    m_http.SetSigningFunction(std::move(fn));
+}
+
 void CloudReplayProvider::SetIndex(std::shared_ptr<MatchIndex> index)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -142,7 +152,9 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
     }
 
     // Download the .tar.gz archive for this match
-    std::string archivePathStr = "/matches/" + entry.folder + ".tar.gz";
+    std::string archivePathStr = m_bucket.empty()
+        ? "/matches/" + entry.folder + ".tar.gz"
+        : "/" + m_bucket + "/matches/" + entry.folder + ".tar.gz";
     int wchars = MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, nullptr, 0);
     std::wstring archivePath(wchars - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, archivePathStr.c_str(), -1, archivePath.data(), wchars);
