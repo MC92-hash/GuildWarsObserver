@@ -108,7 +108,14 @@ static void PushBuildsToCloud()
         {
             std::string cmd = "python \"" + script.string() + "\" \"" + s_buildDefsPath.string() + "\"";
             if (!GuiGlobalConstants::contributor_key.empty())
-                cmd += " --key \"" + GuiGlobalConstants::contributor_key + "\"";
+            {
+                const auto& key = GuiGlobalConstants::contributor_key;
+                bool safe = std::all_of(key.begin(), key.end(), [](char c) {
+                    return std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_';
+                });
+                if (safe)
+                    cmd += " --key \"" + key + "\"";
+            }
             // Fire and forget (async would be better but this is rare)
             std::thread([cmd]() { std::system(cmd.c_str()); }).detach();
             return;
