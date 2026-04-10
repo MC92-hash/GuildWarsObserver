@@ -687,6 +687,7 @@ private:
     float m_pipFollowDist    = 350.f;
     float m_pipFollowYaw     = 0.f;
     float m_pipFollowPitch   = 0.6f;
+    bool  m_pipHovered       = false;
     int   m_pipWidth         = 480;
     int   m_pipHeight        = 270;
 

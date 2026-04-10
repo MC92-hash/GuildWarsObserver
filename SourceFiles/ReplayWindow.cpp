@@ -16625,7 +16625,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_INPUT:
-        if (mouseAllowed && rw->m_mapRenderer)
+        if (mouseAllowed && !rw->m_pipHovered && rw->m_mapRenderer)
         {
             bool dragging = rw->m_rightMouseDown || rw->m_leftMouseDown;
             if (dragging)
@@ -16712,7 +16712,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_RBUTTONDOWN:
-        if (mouseAllowed && rw)
+        if (mouseAllowed && !rw->m_pipHovered && rw)
         {
             rw->m_rightMouseDown = true;
             if (!rw->m_leftMouseDown)
@@ -21105,8 +21105,8 @@ void ReplayWindow::RenderPiP()
 
     // --- Set camera to PiP position, looking at target ---
     cam->SetFrustumAsPerspective(fovRad, aspect, savedNear, savedFar, true);
-    cam->LookAt(XMLoadFloat3(&pipCamPos), XMLoadFloat3(&targetWorld),
-                XMVectorSet(0.f, 1.f, 0.f, 0.f));
+    cam->SetPosition(camX, camY, camZ);
+    cam->SetOrientation(-m_pipFollowPitch, m_pipFollowYaw + XM_PI);
 
     // Update rebuilds view matrix + uploads constant buffer with PiP camera
     m_mapRenderer->Update(0);
@@ -21264,6 +21264,7 @@ void ReplayWindow::DrawPiPPanel()
             // (matches main camera which also uses right-drag)
             ImGui::InvisibleButton("##pip_interact", ImVec2(imgW, imgH),
                 ImGuiButtonFlags_MouseButtonRight);
+            m_pipHovered = ImGui::IsItemHovered();
             ImGui::GetWindowDrawList()->AddImage(
                 (ImTextureID)m_pipSRV.Get(), imgPos,
                 ImVec2(imgPos.x + imgW, imgPos.y + imgH));
@@ -21272,8 +21273,8 @@ void ReplayWindow::DrawPiPPanel()
             if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Right))
             {
                 ImVec2 md = ImGui::GetIO().MouseDelta;
-                m_pipFollowYaw   -= md.x * 0.01f;
-                m_pipFollowPitch  = std::clamp(m_pipFollowPitch - md.y * 0.01f, 0.05f, 1.55f);
+                m_pipFollowYaw   += md.x * 0.01f;
+                m_pipFollowPitch  = std::clamp(m_pipFollowPitch + md.y * 0.01f, 0.05f, 1.55f);
             }
             if (ImGui::IsItemHovered() && io.MouseWheel != 0.f)
                 m_pipFollowDist = std::clamp(m_pipFollowDist - io.MouseWheel * 40.f, 100.f, 2000.f);
