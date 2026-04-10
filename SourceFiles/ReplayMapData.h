@@ -8,6 +8,14 @@
 #include <mutex>
 
 // map_id (from match metadata infos.json) -> FFNA file ID inside gw.dat
+// Isle of Wurms (metadata map_id 532 / 534): South Health Shrine capture radius (game units).
+inline constexpr float kWurmsShrineCaptureRadius = 1010.f;
+
+inline bool IsIsleOfWurmsMap(int metadataMapId)
+{
+    return metadataMapId == 532 || metadataMapId == 534;
+}
+
 inline uint32_t GetDatMapId(int metadataMapId)
 {
     switch (metadataMapId)

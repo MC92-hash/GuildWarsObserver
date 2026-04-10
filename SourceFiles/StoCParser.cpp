@@ -462,6 +462,7 @@ static const char* JumboTypeName(int typeId)
     case 5:  return "CAPTURED_TOWER";
     case 6:  return "PARTY_DEFEATED";
     case 9:  return "MORALE_BOOST";
+    case 11: return "NEUTRALIZED_SHRINE";
     case 16: return "VICTORY";
     case 17: return "FLAWLESS_VICTORY";
     default: return "UNKNOWN";

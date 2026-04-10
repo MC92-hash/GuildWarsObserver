@@ -38,8 +38,8 @@ static void DrawEulaContent()
     ImGui::TextColored(bodyCol, "    Jonathan Bjorn Greve");
     ImGui::TextColored(linkCol, "    https://github.com/Jonathan-Greve/GuildWarsMapBrowser");
     ImGui::Dummy(ImVec2(0, 4.f));
-    ImGui::TextColored(bodyCol, "2. Credit GW Observer and its author:");
-    ImGui::TextColored(bodyCol, "    MC92-hash");
+    ImGui::TextColored(bodyCol, "2. Credit GW Observer and its authors:");
+    ImGui::TextColored(bodyCol, "    Purif / MC92-hash");
     ImGui::TextColored(linkCol, "    https://github.com/MC92-hash/GWObserver");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::TextColored(bodyCol, "3. Clearly state all modifications made to the original code.");
@@ -48,7 +48,7 @@ static void DrawEulaContent()
     ImGui::TextColored(bodyCol,
         "Redistribution of GW Observer under a different name, or use of its code, in whole "
         "or in part, to build any of the following is not permitted without explicit written "
-        "permission from MC92-hash:");
+        "permission from Purif / MC92-hash:");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::Indent(16.f);
     ImGui::TextColored(bodyCol, "- Guild Wars match replay tools");
@@ -61,8 +61,7 @@ static void DrawEulaContent()
     ImGui::TextColored(goldCol, "-- DATA --");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::TextColored(bodyCol,
-        "Match data displayed in GW Observer is provided by Tolkano.com under a data "
-        "sharing agreement. This data is for personal viewing only and may not be:");
+        "Match data displayed in GW Observer is for personal viewing only and may not be:");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::Indent(16.f);
     ImGui::TextColored(bodyCol, "- Extracted or scraped programmatically");
@@ -71,8 +70,8 @@ static void DrawEulaContent()
     ImGui::Unindent(16.f);
     ImGui::Dummy(ImVec2(0, 6.f));
     ImGui::TextColored(bodyCol,
-        "Data obtained via the Tolkano.com integration may not be extracted, stored, or "
-        "redistributed by any fork or derivative work without the explicit consent of Tolkano.com.");
+        "Match data may not be extracted, stored, or redistributed by any fork or "
+        "derivative work without explicit written permission from Purif / MC92-hash.");
     ImGui::Dummy(ImVec2(0, 12.f));
 
     ImGui::TextColored(goldCol, "-- YOUR DATA AND PRIVACY --");
@@ -81,6 +80,15 @@ static void DrawEulaContent()
         "GW Observer does not collect, store, or transmit any personal data. Your Guild Wars "
         "account credentials are never accessed. The DAT file is opened in read-only mode "
         "and its contents are never uploaded or shared.");
+    ImGui::Dummy(ImVec2(0, 12.f));
+
+    ImGui::TextColored(goldCol, "-- CREDITS --");
+    ImGui::Dummy(ImVec2(0, 4.f));
+    ImGui::TextColored(bodyCol, "Maverick");
+    ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.60f),
+        "Back-end infrastructure, tool improvements, and testing. "
+        "GW Observer's match replay pipeline would not be possible without Maverick's "
+        "continued work on the server side and relentless testing efforts.");
     ImGui::Dummy(ImVec2(0, 12.f));
 
     ImGui::TextColored(goldCol, "-- THIRD PARTY ATTRIBUTION --");
@@ -514,7 +522,7 @@ static bool DrawStep2(ImVec2 display)
                     {"GW Observer does NOT read, store, or transmit your Guild Wars login credentials."},
                     {"Your account password and account data are not contained in the DAT file and cannot be accessed through it."},
                     {"The DAT file is opened in read-only mode. GW Observer never writes to or modifies it in any way."},
-                    {"No data from your local machine is sent to any server. Match data comes from Tolkano.com -- your local files are never uploaded or shared."},
+                    {"No data from your local machine is sent to any server. Your local files are never uploaded or shared."},
                 };
                 for (auto& item : items)
                 {

@@ -20,6 +20,7 @@
 #include "FlagTimelineBuilder.h"
 #include <string>
 #include <memory>
+#include <utility>
 #include <variant>
 #include <unordered_set>
 #include <chrono>
@@ -380,7 +381,7 @@ public:
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
-    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory };
+    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory, ShrineCaptured, ShrineNeutralized };
     struct TimelineEvent {
         float time = 0.f;
         TimelineEventType type = TimelineEventType::Death;
@@ -404,6 +405,7 @@ public:
     bool m_tlFilterMorale = true;
     bool m_tlFilterLord = true;
     bool m_tlFilterVictory = true;
+    bool m_tlFilterShrine = true;
     void BuildTimelineData();
     void DrawEventTimeline();
 
@@ -426,8 +428,38 @@ public:
     int  m_ringHoveredType = -1;
     bool m_ringSoloActive  = false;
     bool m_ringSoloPrev[kRingTypeCount] = {};
+
+    // --- Isle of Wurms: South Health Shrine capture overlay ---
+    enum class ShrineState : uint8_t {
+        Neutral,
+        OwnedByBlue,
+        OwnedByRed,
+        CapturingBlue,
+        CapturingRed,
+        DecappingBlue,
+        DecappingRed,
+        Contested
+    };
+    struct ShrineSample {
+        ShrineState state       = ShrineState::Neutral;
+        uint8_t ownerTeam       = 0; // 0=neutral, 1=blue, 2=red
+        uint8_t progressTeam    = 0; // team whose color to render in the fill
+        int     bluePips        = 0;
+        int     redPips         = 0;
+        int     effectivePips   = 0;
+        float   progress        = 0.f; // 0..1, normalized to jumbo endpoints
+    };
+    int m_wurmsSouthShrineAgentId = -1;
+    std::vector<std::pair<float, int>> m_wurmsShrineCaptureEvents; // sorted by time: team 1|2 for capture, 0 for neutralize
+    std::vector<ShrineSample> m_wurmsShrineSamples;                // pre-computed timeline (sampled at m_wurmsShrineSampleDt)
+    static constexpr float m_wurmsShrineSampleDt = 0.1f;
+    ShrineSample m_wurmsShrineCurrentSample;
+    void PrecomputeShrineTimeline();
+
     void DrawRangeRings();
     void DrawSpiritRanges();
+    void DrawWurmsShrineCaptureRadius();
+    void DrawShrineBeam(uint8_t ownerTeam, float sx, float sy, float sz);
     void DrawRangeRingToolbar();
 
 private:
@@ -518,6 +550,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_overlayDSS;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_overlayRS;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_overlayBS;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_additiveBS;
 
     // --- Match loading screen ---
     using LsClock = std::chrono::steady_clock;
@@ -713,6 +746,51 @@ private:
     void BuildWeaponSets(int agentId);
     std::vector<PipSkillStat> BuildSkillStats(int agentId, float currentTime) const;
 
+    // --- Skill Analytics Panel ---
+    struct SkillAnalyticsStat {
+        int   skillId      = 0;
+        int   totalCasts   = 0;
+        int   cancelled    = 0;
+        int   interrupted  = 0;
+        int   totalDamage  = 0;
+        int   totalHealing = 0;
+        struct TargetBreakdown {
+            int         targetId    = 0;
+            std::string name;
+            uint8_t     teamId      = 0;
+            int         primaryProf = 0;
+            int         castCount   = 0;
+            float       castPct     = 0.f;
+            int         damage      = 0;
+            int         healing     = 0;
+        };
+        std::vector<TargetBreakdown> targets;
+    };
+
+    struct PlayerAnalytics {
+        int         agentId       = 0;
+        std::string playerName;
+        uint8_t     teamId        = 0;
+        int         primaryProf   = 0;
+        int         secondaryProf = 0;
+        int         playerNumber  = 0;
+        int         totalDamage   = 0;
+        int         totalHealing  = 0;
+        std::vector<SkillAnalyticsStat> skills;
+    };
+
+    bool  m_showSkillAnalytics      = false;
+    bool  m_analyticsShowTeam[2]    = { true, true };
+    bool  m_analyticsProfFilter[10] = { true, true, true, true, true, true, true, true, true, true };
+    float m_analyticsCacheTime      = -1.f;
+    std::vector<PlayerAnalytics> m_analyticsCache;
+    std::unordered_set<uint64_t> m_analyticsExpandedSkills;
+    std::unordered_set<int> m_analyticsOpenPlayers;
+
+    std::vector<PlayerAnalytics> BuildAllPlayerAnalytics(float currentTime) const;
+    void DrawSkillAnalyticsPanel();
+    void DrawSkillAnalyticsPlayerPopups();
+
     // --- Incoming effect display ---
     enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex };
     struct IncomingEffect {
@@ -735,7 +813,7 @@ private:
     // --- Spatial Audio ---
     std::unique_ptr<SpatialAudioEngine> m_audioEngine;
     bool m_audioInitialized = false;
-    bool m_audioEnabled     = true;
+    bool m_audioEnabled     = false;
     bool m_showAudioDebug   = false;
 
     // Per-agent cursors into skillUseHistory for caster (startTime) and target (endTime) sounds

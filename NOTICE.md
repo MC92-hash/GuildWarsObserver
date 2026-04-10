@@ -42,10 +42,9 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-## Data Provider
+## Back-End & Testing
 
-Match data is provided by Tolkano.com under a data
-sharing agreement. Tolkano.com retains all rights
-to the data served through their API.
+Back-end support, tool improvements, and testing
+by Maverick.
 
 ---

@@ -1,6 +1,6 @@
 # GW Observer Community Licence v1.0
 
-Copyright © 2026 MC92-hash  
+Copyright © 2026 Purif / MC92-hash  
 Portions copyright © Jonathan Bjørn Greve  
 (GuildWarsMapBrowser, MIT Licence)
 
@@ -24,14 +24,14 @@ You are NOT permitted to:
   or as a separate project
 - Use this code, in whole or in part, to build any of
   the following without explicit written permission
-  from MC92-hash:
+  from Purif / MC92-hash:
   - Guild Wars match replay tools
   - GvG analysis or statistics tools
   - Spectator or observer tools for Guild Wars
   - Any tool serving a similar purpose to GW Observer
 - Use this code in any commercial product or service
-- Remove or alter attribution to MC92-hash or to
-  Jonathan Bjørn Greve
+- Remove or alter attribution to Purif / MC92-hash
+  or to Jonathan Bjørn Greve
 
 ---
 
@@ -40,22 +40,23 @@ You are NOT permitted to:
 Any fork or derivative work must:
 
 - Retain this licence file unchanged
-- Credit MC92-hash as the original author of GW Observer
+- Credit Purif / MC92-hash as the original author of
+  GW Observer
 - Credit Jonathan Bjørn Greve for GuildWarsMapBrowser
   (see NOTICE.md)
 - Not use the name "GW Observer" or any confusingly
   similar name
-- Not use the Tolkano.com API credentials included
-  in official GW Observer releases
+- Not use any API credentials included in official
+  GW Observer releases
 
 ---
 
 ## Data
 
-Data obtained via the Tolkano.com integration may not
-be extracted, stored, or redistributed by any fork or
-derivative work without the explicit consent of
-Tolkano.com.
+Match data displayed in GW Observer is for personal
+viewing only and may not be extracted, stored, or
+redistributed by any fork or derivative work without
+explicit written permission from Purif / MC92-hash.
 
 ---
 

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GW Observer is a Guild Wars 1 GvG match replay and analysis tool. It loads recorded matches from Tolkano.com, replays them in a 3D map view using DirectX 11, and provides tactical overlays, metrics, and analytics for competitive GvG analysis.
+GW Observer is a Guild Wars 1 GvG match replay and analysis tool. It loads recorded matches, replays them in a 3D map view using DirectX 11, and provides tactical overlays, metrics, and analytics for competitive GvG analysis. Back-end support, tool improvements, and testing by Maverick.
 
-**Closed-source community tool** — see LICENCE.md. Data integration is restricted to Tolkano.com only.
+**Closed-source community tool** — see LICENCE.md.
 
 ## Build System
 
@@ -114,6 +114,6 @@ Matches are distributed via Cloudflare R2 (`gwobserver-prod` bucket), served pub
 
 ## Important Constraints
 
-- Data sources are restricted to Tolkano.com — do not integrate other sources without prior discussion
+- Do not integrate unauthorised data sources without prior discussion
 - Do not remove or alter licence/attribution notices
-- Do not expose Tolkano API credentials
+- Do not expose API credentials

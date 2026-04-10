@@ -99,7 +99,7 @@ def extract_archives(source_dir: Path) -> int:
 
         name = entry.name.lower()
 
-        # Handle .tar.gz.zip (double-compressed from Tolkano)
+        # Handle .tar.gz.zip (double-compressed archives)
         if name.endswith(".tar.gz.zip"):
             print(f"  Extracting (zip->tar.gz->folder): {entry.name}")
             try:

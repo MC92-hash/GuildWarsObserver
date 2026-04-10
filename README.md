@@ -4,7 +4,7 @@ Join the dedicated Discord : https://discord.gg/qAe2QmmKK4
 
 **GW Observer** is a Guild Wars 1 GvG match replay and analysis tool. Load recorded matches, replay them in a 3D map view, and analyse team performance with a suite of tactical overlays and metrics.
 
-Match data is provided by [Tolkano.com](https://tolkano.com) — the leading Guild Wars 1 GvG match archive.
+Match data back-end support, tool improvements, and testing by **Maverick**.
 
 > **GW Observer is a closed-source community tool.** See [LICENCE.md](LICENCE.md) for terms of use.
 
@@ -167,9 +167,7 @@ Click any agent or party panel row to open a detailed panel for that player.
 
 ## Match Data
 
-Match data is provided by [Tolkano.com](https://tolkano.com) under a data sharing agreement.
-
-Data displayed in GW Observer is for personal viewing only and may not be extracted, stored, or redistributed. See [LICENCE.md](LICENCE.md) for full terms.
+Match data displayed in GW Observer is for personal viewing only and may not be extracted, stored, or redistributed. See [LICENCE.md](LICENCE.md) for full terms.
 
 ---
 

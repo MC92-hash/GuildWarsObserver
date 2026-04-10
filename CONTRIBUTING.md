@@ -12,7 +12,7 @@ project's goals.
 By submitting a pull request you agree that:
 
 - Your contribution is your own original work
-- You grant MC92-hash a perpetual, irrevocable licence
+- You grant Purif / MC92-hash a perpetual, irrevocable licence
   to use, modify, and distribute your contribution
   as part of GW Observer under the terms of the
   GW Observer Community Licence v1.0
@@ -32,10 +32,10 @@ Welcomed:
 Not accepted:
 - Changes that remove or alter licence or attribution
   notices
-- Integration with data sources other than Tolkano.com
+- Integration with unauthorised data sources
   without prior discussion
-- Features that would require open sourcing the
-  Tolkano API credentials
+- Features that would require exposing API
+  credentials
 
 ---
 
