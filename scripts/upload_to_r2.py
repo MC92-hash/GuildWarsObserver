@@ -22,6 +22,8 @@ import os
 import sys
 import tarfile
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -317,15 +319,56 @@ def dir_size_bytes(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
-def cmd_upload(args, config: dict):
-    """Main upload command: scan local, compare remote, upload new matches."""
+def get_bucket_stats(s3, bucket: str) -> dict:
+    """Compute bucket-wide statistics: total objects and total size."""
+    total_objects = 0
+    total_size = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket):
+        for obj in page.get("Contents", []):
+            total_objects += 1
+            total_size += obj["Size"]
+    return {"total_objects": total_objects, "total_size_bytes": total_size}
+
+
+def write_json_report(report: dict, path: str):
+    """Write JSON report to file or stdout."""
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    if path == "-":
+        print(text)
+    else:
+        Path(path).write_text(text, encoding="utf-8")
+
+
+def cmd_upload(args, config: dict) -> dict:
+    """Main upload command: scan local, compare remote, upload new matches.
+
+    Returns a report dict summarising the run (used by --json-report).
+    """
+    t0 = time.monotonic()
+    report = {
+        "status": "success",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "uploaded": 0,
+        "skipped": 0,
+        "errors": [],
+        "warnings": [],
+        "matched_local": 0,
+        "already_remote": 0,
+        "dry_run": getattr(args, "dry_run", False),
+        "bucket_stats": None,
+        "duration_seconds": 0,
+    }
+
     s3 = create_s3_client(config)
     bucket = config["R2_BUCKET"]
     source_dir = Path(args.source_dir or config.get("MATCH_SOURCE_DIR", ""))
 
     if not source_dir or not source_dir.is_dir():
         print(f"Error: invalid source directory: {source_dir}")
-        sys.exit(1)
+        report["status"] = "error"
+        report["errors"].append({"match": "", "error": f"Invalid source directory: {source_dir}"})
+        return report
 
     print(f"Source directory: {source_dir}")
     print(f"R2 bucket: {bucket}")
@@ -348,15 +391,19 @@ def cmd_upload(args, config: dict):
     # Scan local matches
     local_matches = scan_local_matches(source_dir)
     print(f"  {len(local_matches)} match folders found locally.")
+    report["matched_local"] = len(local_matches)
 
     # Find new matches (check both original and sanitized names)
     new_matches = [
         m for m in local_matches
         if m.name not in remote_folders and sanitize_folder_name(m.name) not in remote_folders
     ]
+    report["already_remote"] = len(local_matches) - len(new_matches)
+
     if not new_matches:
         print("\nNo new matches to upload. Everything is up to date.")
-        return
+        report["duration_seconds"] = round(time.monotonic() - t0, 1)
+        return report
 
     print(f"\n{len(new_matches)} new match(es) to upload:")
     for m in new_matches:
@@ -365,7 +412,8 @@ def cmd_upload(args, config: dict):
 
     if args.dry_run:
         print("\n[DRY RUN] No files were uploaded.")
-        return
+        report["duration_seconds"] = round(time.monotonic() - t0, 1)
+        return report
 
     # Upload each new match
     new_entries = []
@@ -383,6 +431,8 @@ def cmd_upload(args, config: dict):
             infos = read_infos_json(match_dir)
             if infos is None:
                 print(f"  Skipping (could not read infos.json)")
+                report["skipped"] += 1
+                report["warnings"].append({"match": folder_name, "warning": "Could not parse infos.json"})
                 continue
 
             # Create archive (using safe name for tar entries)
@@ -395,11 +445,20 @@ def cmd_upload(args, config: dict):
             # Upload archive with URL-safe key
             r2_key = f"matches/{safe_name}.tar.gz"
             print(f"  Uploading to {r2_key}...")
-            upload_file(s3, bucket, r2_key, archive_path)
+            try:
+                upload_file(s3, bucket, r2_key, archive_path)
+            except Exception as e:
+                msg = f"Upload failed for {r2_key}: {e}"
+                print(f"  ERROR: {msg}")
+                report["errors"].append({"match": folder_name, "error": msg})
+                report["status"] = "error"
+                archive_path.unlink(missing_ok=True)
+                continue
 
             # Build index entry with safe folder name but real guild data from infos.json
             entry = build_index_entry(safe_name, infos, archive_size)
             new_entries.append(entry)
+            report["uploaded"] += 1
 
             # Clean up temp archive
             archive_path.unlink(missing_ok=True)
@@ -409,10 +468,27 @@ def cmd_upload(args, config: dict):
     if new_entries:
         all_entries = remote_entries + new_entries
         print(f"\nUpdating index.json ({len(all_entries)} total matches)...")
-        upload_index(s3, bucket, all_entries)
-        print("Index updated.")
+        try:
+            upload_index(s3, bucket, all_entries)
+            print("Index updated.")
+        except Exception as e:
+            msg = f"Failed to update index.json: {e}"
+            print(f"ERROR: {msg}")
+            report["errors"].append({"match": "", "error": msg})
+            report["status"] = "error"
 
-    print(f"\nUpload complete: {len(new_entries)} new match(es) uploaded.")
+    print(f"\nUpload complete: {report['uploaded']} new match(es) uploaded.")
+
+    # Collect bucket stats if a JSON report was requested
+    if getattr(args, "json_report", None):
+        try:
+            print("Collecting bucket statistics...")
+            report["bucket_stats"] = get_bucket_stats(s3, bucket)
+        except Exception as e:
+            print(f"Warning: could not collect bucket stats: {e}")
+
+    report["duration_seconds"] = round(time.monotonic() - t0, 1)
+    return report
 
 
 def cmd_list_remote(args, config: dict):
@@ -508,6 +584,13 @@ def main():
         action="store_true",
         help="List all matches currently in the R2 bucket",
     )
+    parser.add_argument(
+        "--json-report",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Write a JSON run report to PATH (use '-' for stdout)",
+    )
 
     args = parser.parse_args()
 
@@ -524,7 +607,11 @@ def main():
     if args.list_remote:
         cmd_list_remote(args, config)
     else:
-        cmd_upload(args, config)
+        report = cmd_upload(args, config)
+        if args.json_report:
+            write_json_report(report, args.json_report)
+        if report["status"] == "error":
+            sys.exit(2)
 
 
 if __name__ == "__main__":
