@@ -1099,6 +1099,11 @@ static bool DateValValid(const DateVal& d) { return d.day > 0 && d.month > 0 && 
 
 static void BuildFilterLists(const std::vector<MatchMeta>& matches)
 {
+    if (g_invalidateFilters)
+    {
+        s_state.filtersBuilt = false;
+        g_invalidateFilters = false;
+    }
     if (s_state.filtersBuilt && s_state.lastMatchCount == (int)matches.size())
         return;
 
@@ -2205,17 +2210,49 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     }
 
     ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    // Use a dummy frame padding so Text and Button share the same line height
+    float btnPadY = 2.0f;
+    float textOffsetY = btnPadY + ImGui::GetStyle().FrameBorderSize;
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textOffsetY);
     ImGui::Text("MATCHES  (%d)", (int)filtered.size());
     ImGui::PopStyleColor();
+
     ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
-    if (ImGui::SmallButton("Refresh"))
-        g_refreshMatchIndex = true;
-    ImGui::PopStyleColor(3);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Re-fetch match list from cloud");
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - textOffsetY);
+    // Refresh button — highlighted when new matches are available
+    if (g_refreshHint)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f, 0.14f, 0.14f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.10f, 0.10f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.18f, 0.72f, 0.35f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
+
+        if (ImGui::Button("REFRESH"))
+        {
+            g_refreshMatchIndex = true;
+            g_refreshHint = false;
+        }
+
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(5);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Refresh for latest matches");
+    }
+    else
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
+        if (ImGui::SmallButton("Refresh"))
+            g_refreshMatchIndex = true;
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Re-fetch match list from cloud");
+    }
     ImGui::Separator();
 
     // Card mode for mobile

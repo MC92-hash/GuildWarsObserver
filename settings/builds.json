@@ -185,6 +185,15 @@
         "Rt": 2,
         "W": 4
       }
+    },
+    {
+      "name": "Solo Split Balance",
+      "professions": {
+        "D": 2,
+        "E": 1,
+        "Me": 2,
+        "Mo": 3
+      }
     }
   ]
 }

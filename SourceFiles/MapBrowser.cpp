@@ -386,6 +386,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         m_matchIndex = std::make_shared<MatchIndex>();
         m_cloudProvider = std::make_unique<CloudReplayProvider>();
         m_cloudProvider->Configure(mode, cacheDir, s3Host, true);
+        m_cloudBucket = bucket;
         m_cloudProvider->SetBucket(bucket);
         if (signingFn)
             m_cloudProvider->SetSigningFunction(signingFn);
@@ -440,7 +441,12 @@ void MapBrowser::Tick()
     // Check if cloud sync has new data
     if (m_syncEngine && m_syncEngine->HasNewData())
     {
-        m_replay_library.RescanDiff();
+        int added = m_replay_library.RescanDiff();
+        if (added > 0)
+        {
+            g_invalidateFilters = true;
+            g_refreshHint = true;
+        }
         m_syncEngine->AcknowledgeNewData();
     }
 
@@ -452,7 +458,7 @@ void MapBrowser::Tick()
         if (syncState != SyncEngine::State::FetchingIndex &&
             syncState != SyncEngine::State::Downloading)
         {
-            m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient);
+            m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient, m_cloudBucket);
         }
     }
 

@@ -145,6 +145,12 @@ HINTERNET HttpClient::SendRequest(const std::wstring& path, uint64_t& outContent
     if (!hRequest)
         return nullptr;
 
+    // Bypass WinHTTP cache so refreshes always hit the server
+    std::wstring noCacheHeaders = L"Cache-Control: no-cache\r\nPragma: no-cache\r\n";
+    WinHttpAddRequestHeaders(hRequest, noCacheHeaders.c_str(),
+                             (DWORD)noCacheHeaders.size(),
+                             WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+
     // Inject auth headers if a signing function is configured
     if (m_signingFn)
     {

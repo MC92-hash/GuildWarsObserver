@@ -131,6 +131,7 @@ private:
     std::shared_ptr<MatchIndex> m_matchIndex;
     std::unique_ptr<CloudReplayProvider> m_cloudProvider;
     std::unique_ptr<SyncEngine> m_syncEngine;
+    std::string m_cloudBucket;
 
     // Update checker
     UpdateChecker m_updateChecker;

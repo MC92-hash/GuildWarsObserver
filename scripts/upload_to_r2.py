@@ -552,6 +552,55 @@ def cmd_list_remote(args, config: dict):
             print(f"  - {f}")
 
 
+def cmd_sync_index(args, config: dict):
+    """Remove index entries whose archive no longer exists in the bucket."""
+    s3 = create_s3_client(config)
+    bucket = config["R2_BUCKET"]
+
+    print("Fetching remote index.json...")
+    remote_entries = fetch_remote_index(s3, bucket)
+    if not remote_entries:
+        print("Index is empty, nothing to sync.")
+        return
+
+    print(f"  {len(remote_entries)} entries in index.")
+
+    # List actual archives in bucket
+    print("Listing archives in matches/ prefix...")
+    archives = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix="matches/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith(".tar.gz"):
+                folder = key.removeprefix("matches/").removesuffix(".tar.gz")
+                archives.add(folder)
+
+    print(f"  {len(archives)} archives found.")
+
+    # Find dangling entries (in index but no archive)
+    dangling = [e for e in remote_entries if e["folder"] not in archives]
+
+    if not dangling:
+        print("\nIndex is in sync — no dangling entries.")
+        return
+
+    print(f"\n{len(dangling)} index entry(ies) with no archive:")
+    for e in dangling:
+        print(f"  - {e['folder']}")
+
+    if args.dry_run:
+        print("\n[DRY RUN] No changes made.")
+        return
+
+    # Remove dangling entries and re-upload index
+    dangling_folders = {e["folder"] for e in dangling}
+    cleaned = [e for e in remote_entries if e["folder"] not in dangling_folders]
+    print(f"\nUpdating index.json ({len(cleaned)} entries, removed {len(dangling)})...")
+    upload_index(s3, bucket, cleaned)
+    print("Done.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Upload GvG match recordings to Cloudflare R2."
@@ -585,6 +634,11 @@ def main():
         help="List all matches currently in the R2 bucket",
     )
     parser.add_argument(
+        "--sync-index",
+        action="store_true",
+        help="Remove index entries whose archive was deleted from the bucket",
+    )
+    parser.add_argument(
         "--json-report",
         type=str,
         default=None,
@@ -604,7 +658,9 @@ def main():
         print(f"Set them in {args.env_file} or as environment variables.")
         sys.exit(1)
 
-    if args.list_remote:
+    if args.sync_index:
+        cmd_sync_index(args, config)
+    elif args.list_remote:
         cmd_list_remote(args, config)
     else:
         report = cmd_upload(args, config)
