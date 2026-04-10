@@ -64,7 +64,7 @@ void SetupConfig::Load()
         GuiGlobalConstants::saved_gw_dat_path = dat_file_path;
     if (!match_data_folder.empty())
         GuiGlobalConstants::saved_match_data_folder_path = match_data_folder;
-    if (!storage_mode.empty())
+    if (!storage_mode.empty() && GWO_CLOUD_ENABLED)
         GuiGlobalConstants::storage_mode = storage_mode;
 }
 

@@ -428,6 +428,7 @@ public:
     int  m_ringHoveredType = -1;
     bool m_ringSoloActive  = false;
     bool m_ringSoloPrev[kRingTypeCount] = {};
+    std::unordered_set<int> m_ringHiddenAgents;
 
     // --- Isle of Wurms: South Health Shrine capture overlay ---
     enum class ShrineState : uint8_t {
@@ -455,7 +456,6 @@ public:
     static constexpr float m_wurmsShrineSampleDt = 0.1f;
     ShrineSample m_wurmsShrineCurrentSample;
     void PrecomputeShrineTimeline();
-
     void DrawRangeRings();
     void DrawSpiritRanges();
     void DrawWurmsShrineCaptureRadius();

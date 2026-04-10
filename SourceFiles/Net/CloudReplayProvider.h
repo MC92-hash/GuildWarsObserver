@@ -19,6 +19,12 @@ public:
                    const std::wstring& s3Host,
                    bool useTls = true);
 
+    // Set the S3 bucket name — prepended to all request paths.
+    void SetBucket(const std::string& bucket);
+
+    // Set the signing function for S3 auth on this provider's HttpClient.
+    void SetSigningFunction(HttpClient::SigningFn fn);
+
     void SetIndex(std::shared_ptr<MatchIndex> index);
 
     // IReplayProvider — returns MatchMeta for all known matches.
@@ -73,6 +79,7 @@ private:
     std::filesystem::path m_cachePath;
     std::shared_ptr<MatchIndex> m_index;
     HttpClient m_http;
+    std::string m_bucket;
     mutable std::mutex m_mutex;
 
     // LRU tracking for OnlineOnly eviction

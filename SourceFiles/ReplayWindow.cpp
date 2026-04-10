@@ -3220,14 +3220,20 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::BeginMenu("Debug"))
         {
-            ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
-            ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
-            ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
-            ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
-            ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            if (GuiGlobalConstants::IsDeveloperMode())
+            {
+                ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
+                ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
+                ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
+                ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
+                ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            }
             ImGui::MenuItem("Audio Debug", nullptr, &m_showAudioDebug);
-            ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
-            ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+            if (GuiGlobalConstants::IsDeveloperMode())
+            {
+                ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
+                ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+            }
             ImGui::EndMenu();
         }
 
@@ -3515,7 +3521,10 @@ void ReplayWindow::DrawImGuiOverlay()
             {
                 m_showRangeRings = !m_showRangeRings;
                 if (!m_showRangeRings)
+                {
                     m_ringAgentFilter = -1;
+                    m_ringHiddenAgents.clear();
+                }
             }
 
             if (HotkeyPressed(hk.toggleMoralePanel))
@@ -6885,6 +6894,8 @@ void ReplayWindow::DrawRangeRings()
         if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
             continue;
 
+        if (m_ringHiddenAgents.count(agentId)) continue;
+
         bool isSelected = (m_ringAgentFilter == agentId);
 
         if (!isSelected)
@@ -6905,6 +6916,8 @@ void ReplayWindow::DrawRangeRings()
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
 
+        ImU32 teamCol = GetAgentTeamColor(ard.teamId);
+
         for (int ri = 0; ri < kRingTypeCount; ++ri)
         {
             bool showRing = m_ringType[ri];
@@ -6916,9 +6929,9 @@ void ReplayWindow::DrawRangeRings()
 
             float dimFactor = (!isSelected && hasSelection) ? 0.25f : 1.f;
             float thickMul  = (isSelected && hasSelection) ? 1.6f : 1.f;
-            ImU32 edgeCol = def.color;
+            ImU32 edgeCol = teamCol;
             if (dimFactor < 1.f) edgeCol = ScaleAlpha(edgeCol, dimFactor);
-            if (isHoverPreview) edgeCol = ScaleAlpha(def.color, 0.40f);
+            if (isHoverPreview) edgeCol = ScaleAlpha(teamCol, 0.40f);
 
             ImVec2 pts[kSamples];
             bool vis[kSamples];
@@ -6947,7 +6960,7 @@ void ReplayWindow::DrawRangeRings()
             {
                 float fa = isHoverPreview ? 0.10f : (isSelected ? def.fillAlpha * 2.0f : def.fillAlpha);
                 if (dimFactor < 1.f) fa *= dimFactor;
-                ImU32 baseRGB = def.color;
+                ImU32 baseRGB = teamCol;
                 ImU32 fillCol = (baseRGB & 0x00FFFFFF) | ((ImU32)(fa * 255.f) << 24);
                 ImVector<ImVec2> polyPts;
                 for (int i = 0; i < kSamples; ++i)
@@ -7959,6 +7972,62 @@ void ReplayWindow::DrawRangeRingToolbar()
                 m_ringAgentFilter = -1;
             ImGui::PopStyleColor();
         }
+
+        // Per-character ring visibility
+        ImGui::Separator();
+
+        if (ImGui::SmallButton("Show All##Rings"))
+            m_ringHiddenAgents.clear();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Hide All##Rings"))
+        {
+            for (int id : m_playerIds)
+                m_ringHiddenAgents.insert(id);
+        }
+
+        ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+        const float iconSz = 16.f;
+
+        auto DrawTeamRings = [&](const char* header, const std::vector<int>& ids, bool teamEnabled)
+        {
+            if (!teamEnabled) ImGui::BeginDisabled();
+            if (ImGui::TreeNodeEx(header, ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                for (int id : ids)
+                {
+                    auto it = m_replayCtx.agents.find(id);
+                    if (it == m_replayCtx.agents.end()) continue;
+                    const auto& ard = it->second;
+
+                    bool visible = !m_ringHiddenAgents.count(id);
+
+                    ImTextureID profTex = (ard.primaryProf > 0)
+                        ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
+                    if (profTex)
+                    {
+                        ImGui::Image(profTex, ImVec2(iconSz, iconSz));
+                        ImGui::SameLine(0, 4);
+                    }
+
+                    if (ImGui::Checkbox(("##ring_" + std::to_string(id)).c_str(), &visible))
+                    {
+                        if (visible)
+                            m_ringHiddenAgents.erase(id);
+                        else
+                            m_ringHiddenAgents.insert(id);
+                    }
+                    ImGui::SameLine(0, 4);
+                    std::string label = ard.playerName.empty()
+                        ? ard.categoryName : ard.playerName;
+                    ImGui::TextUnformatted(label.c_str());
+                }
+                ImGui::TreePop();
+            }
+            if (!teamEnabled) ImGui::EndDisabled();
+        };
+
+        DrawTeamRings("Blue Team", m_team1PlayerIds, m_ringShowBlue);
+        DrawTeamRings("Red Team", m_team2PlayerIds, m_ringShowRed);
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
@@ -21191,18 +21260,19 @@ void ReplayWindow::DrawPiPPanel()
         {
             ImVec2 imgPos = ImGui::GetCursorScreenPos();
 
-            // InvisibleButton captures mouse so left-drag works for camera orbit
-            // (without this, ImGui uses left-drag to move the window)
-            ImGui::InvisibleButton("##pip_interact", ImVec2(imgW, imgH));
+            // InvisibleButton captures right-drag for camera orbit
+            // (matches main camera which also uses right-drag)
+            ImGui::InvisibleButton("##pip_interact", ImVec2(imgW, imgH),
+                ImGuiButtonFlags_MouseButtonRight);
             ImGui::GetWindowDrawList()->AddImage(
                 (ImTextureID)m_pipSRV.Get(), imgPos,
                 ImVec2(imgPos.x + imgW, imgPos.y + imgH));
 
-            // Camera controls — drag image to orbit, scroll to zoom
-            if (ImGui::IsItemActive())
+            // Camera controls — right-drag to orbit, scroll to zoom
+            if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Right))
             {
                 ImVec2 md = ImGui::GetIO().MouseDelta;
-                m_pipFollowYaw   += md.x * 0.01f;
+                m_pipFollowYaw   -= md.x * 0.01f;
                 m_pipFollowPitch  = std::clamp(m_pipFollowPitch - md.y * 0.01f, 0.05f, 1.55f);
             }
             if (ImGui::IsItemHovered() && io.MouseWheel != 0.f)

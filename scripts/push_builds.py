@@ -22,15 +22,27 @@ except ImportError:
     sys.exit(1)
 
 
-# Valid contributor key hashes (SHA-256).
-# To add a new contributor: hash their key and add it here.
-VALID_KEY_HASHES = {
-    # Default admin key hash — replace with real hashes
-    hashlib.sha256(b"gwobserver-contributor-2026").hexdigest(),
-    # Test contributor keys (see scripts/contributor_keys.env)
-    "eecef75586867da0205f6465d667f8ae2f63a68b52c79ff657f59d56af8c6655",
-    "1330209e5c93f5d82bb38ea2cf5382a525bfaf8ffbfa6e81cb91fc3562761d98",
-}
+# Valid contributor key hashes (SHA-256), loaded from external file.
+# The hashes file is kept in the private repo (gwobserver-private/) or
+# locally at scripts/contributor_key_hashes.txt (gitignored).
+# Each line should contain one hex-encoded SHA-256 hash.
+def _load_key_hashes() -> set[str]:
+    script_dir = Path(__file__).parent
+    search_paths = [
+        script_dir.parent.parent / "gwobserver-private" / "contributor_key_hashes.txt",
+        script_dir / "contributor_key_hashes.txt",
+    ]
+    for p in search_paths:
+        if p.exists():
+            hashes = set()
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    hashes.add(line)
+            return hashes
+    return set()
+
+VALID_KEY_HASHES = _load_key_hashes()
 
 
 def load_config(env_path: Path) -> dict:
@@ -73,9 +85,11 @@ def main():
         print("Error: invalid contributor key")
         sys.exit(1)
 
-    # Load R2 config
+    # Load R2 config (check private repo first, then local)
     script_dir = Path(__file__).parent
-    config = load_config(script_dir / "r2_config.env")
+    private_env = script_dir.parent.parent / "gwobserver-private" / "r2_config.env"
+    local_env = script_dir / "r2_config.env"
+    config = load_config(private_env if private_env.exists() else local_env)
 
     required = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY")
     missing = [k for k in required if k not in config]

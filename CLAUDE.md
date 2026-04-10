@@ -95,22 +95,12 @@ HLSL shaders are compiled to C++ headers. Multiple pixel/vertex shaders: NewMode
 
 ## Cloud Storage & Upload Pipeline
 
-Matches are distributed via Cloudflare R2 (`gwobserver-prod` bucket), served publicly at `matches.gwobserver.com`. The app fetches `index.json` + `.tar.gz` archives from this domain.
-
-**Upload workflow:**
-1. Record matches → raw `.tar` files land in a local directory
-2. Extract `.tar` files to get folders with `infos.json`, `Agents/`, `StoC/`
-3. Run `scripts/upload_to_r2.py` pointing at the extracted folder
-4. Script packages as `.tar.gz`, uploads to R2, updates `index.json` incrementally
+Matches are distributed via Cloudflare R2 cloud storage. The app fetches an index and compressed match archives from the configured cloud host.
 
 **Key files:**
 - `scripts/upload_to_r2.py` — main upload script (`--dry-run`, `--list-remote`, `--source-dir`)
 - `scripts/r2_config.env` — R2 credentials (gitignored, see `.example`)
 - `scripts/setup_scheduled_task.bat` — Windows Task Scheduler automation
-
-**Known limitation:** R2 public URLs cannot serve files with non-ASCII characters in keys. The upload script auto-sanitizes folder names (replaces non-ASCII bracket content with a hash) while preserving real guild metadata from `infos.json` in the index.
-
-**index.json schema:** `{ "matches": [{ folder, map_id, date, occasion, flux, duration, winner, size_bytes, guilds, team_kills, team_damage, parties }] }` — parties include per-player `encoded_name`, `primary`, `secondary`, `player_number`, `used_skills`, `skill_template_code`, `kills`, `deaths`, `total_damage`.
 
 ## Important Constraints
 

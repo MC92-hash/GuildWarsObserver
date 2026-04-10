@@ -19,9 +19,19 @@ public:
 	// Cloud storage settings
 	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
 	inline static std::string cloud_storage_host = GWO_CLOUD_HOST;
+	inline static std::string r2_endpoint = GWO_R2_ENDPOINT;
+	inline static std::string r2_bucket = GWO_R2_BUCKET;
+	inline static std::string r2_read_access_key = GWO_R2_READ_ACCESS_KEY;
+	inline static std::string r2_read_secret_key = GWO_R2_READ_SECRET_KEY;
 
 	// Contributor key for build naming (empty = read-only)
 	inline static std::string contributor_key;
+
+	// Developer mode: compile-time gated via GWO_DEVELOPER from build_config.h
+	static constexpr bool IsDeveloperMode() { return GWO_DEVELOPER != 0; }
+
+	// Validate a contributor key against known hashes (returns true if valid)
+	static bool ValidateContributorKey(const std::string& key);
 
 	// Some ImGui layout vars:
 	inline static const int left_panel_width = 450;

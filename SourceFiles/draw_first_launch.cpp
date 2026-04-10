@@ -4,6 +4,7 @@
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
 #include "imgui.h"
+#include <shellapi.h>
 #include <filesystem>
 #include <chrono>
 
@@ -68,7 +69,122 @@ namespace
 
 }
 
-bool draw_first_launch(const LoadingProgress& progress)
+static bool s_updatePopupShown = false;
+
+static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
+{
+    if (!update.available) return;
+
+    if (!s_updatePopupShown)
+    {
+        s_updatePopupShown = true;
+        ImGui::OpenPopup("##UpdateAvailable");
+    }
+
+    float cardW = 440.f;
+    // Position below the logo text, slightly right of center
+    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f + 30.f, display.y * 0.62f),
+                            ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(cardW, 0), ImGuiCond_Appearing);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.078f, 0.102f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.08f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32, 28));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+
+    if (ImGui::BeginPopupModal("##UpdateAvailable", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        // Gold heading
+        ImFont* font = ImGui::GetFont();
+        float headingSz = 22.f;
+        const char* heading = "Update Available";
+        ImVec2 hsz = font->CalcTextSizeA(headingSz, FLT_MAX, 0.f, heading);
+        ImVec2 wpos = ImGui::GetWindowPos();
+        ImVec2 cpos = ImGui::GetCursorPos();
+        float hx = (cardW - hsz.x) * 0.5f;
+        ImDrawList* wdl = ImGui::GetWindowDrawList();
+        ImU32 shadow = IM_COL32(0, 0, 0, 200);
+        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx - 1.f, wpos.y + cpos.y + 1.f), shadow, heading);
+        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx + 1.f, wpos.y + cpos.y + 1.f), shadow, heading);
+        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx, wpos.y + cpos.y + 2.f), shadow, heading);
+        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx, wpos.y + cpos.y), IM_COL32(212, 160, 32, 255), heading);
+        ImGui::Dummy(ImVec2(0, hsz.y + 6.f));
+
+        // Subheading
+        const char* sub = "A new version of GW Observer is available.";
+        ImVec2 ssz = ImGui::CalcTextSize(sub);
+        ImGui::SetCursorPosX((cardW - ssz.x) * 0.5f);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.65f), "%s", sub);
+
+        ImGui::Dummy(ImVec2(0, 12.f));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 12.f));
+
+        // Version info
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Current version:");
+        ImGui::SameLine(210.f);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.90f), "%s", update.currentVersion.c_str());
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Latest version:");
+        ImGui::SameLine(210.f);
+        ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.45f, 1.f), "%s", update.latestVersion.c_str());
+
+        ImGui::Dummy(ImVec2(0, 16.f));
+
+        // Buttons
+        float btnW = 130.f;
+        float dlBtnW = 130.f;
+        float dismissW = 80.f;
+        float gap = 8.f;
+        float totalBtnW = btnW + gap + dlBtnW + gap + dismissW;
+        ImGui::SetCursorPosX((cardW - totalBtnW) * 0.5f);
+
+        // Gold accent buttons
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.14f, 0.05f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.23f, 0.19f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.91f, 0.69f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 0.84f, 0.39f, 0.85f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+
+        if (ImGui::Button("Release Page", ImVec2(btnW, 0)))
+        {
+            if (!update.releaseUrl.empty())
+            {
+                std::wstring wUrl(update.releaseUrl.begin(), update.releaseUrl.end());
+                ShellExecuteW(nullptr, L"open", wUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::SameLine(0, gap);
+        if (ImGui::Button("Direct Download", ImVec2(dlBtnW, 0)))
+        {
+            std::string tag = update.latestVersion;
+            std::string dlUrl = "https://github.com/" + update.repo
+                + "/releases/download/" + tag + "/GWObserver-" + tag + ".zip";
+            std::wstring wDlUrl(dlUrl.begin(), dlUrl.end());
+            ShellExecuteW(nullptr, L"open", wDlUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(4);
+
+        ImGui::SameLine(0, gap);
+        if (ImGui::Button("Dismiss", ImVec2(dismissW, 0)))
+            ImGui::CloseCurrentPopup();
+
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+}
+
+bool draw_first_launch(const LoadingProgress& progress, const UpdateInfo* update)
 {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 display = io.DisplaySize;
@@ -227,6 +343,10 @@ bool draw_first_launch(const LoadingProgress& progress)
     ImGui::End();
     ImGui::PopStyleColor(1);
     ImGui::PopStyleVar(3);
+
+    // Draw update card on top of loading screen
+    if (update)
+        DrawUpdateCard(display, *update);
 
     return false;
 }

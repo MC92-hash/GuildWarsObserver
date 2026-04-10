@@ -2,6 +2,8 @@
 #include "draw_ui.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_first_launch.h"
+#include "Net/UpdateChecker.h"
+#include "build_config.h"
 #include "draw_setup_wizard.h"
 #include "SetupConfig.h"
 #include "draw_dat_load_progress_bar.h"
@@ -99,10 +101,12 @@ static void draw_settings_window()
 	int prevChoice = modeChoice;
 
 	if (ImGui::RadioButton("Local", &modeChoice, 0)){}
+#if GWO_CLOUD_ENABLED
 	ImGui::SameLine(0, 16);
 	if (ImGui::RadioButton("Cloud + Local Cache", &modeChoice, 1)){}
 	ImGui::SameLine(0, 16);
 	if (ImGui::RadioButton("Cloud Only", &modeChoice, 2)){}
+#endif
 
 	// Description text for each mode
 	switch (modeChoice)
@@ -573,32 +577,41 @@ static void draw_settings_window()
 			keySaved = false;
 	}
 
-	ImGui::SeparatorText("Contributor");
-	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
-		"Enter a contributor key to enable build naming in the replay browser.");
-
-	static char contribBuf[256] = "";
-	static bool contribInit = false;
-	if (!contribInit)
+	if constexpr (GuiGlobalConstants::IsDeveloperMode())
 	{
-		contribInit = true;
-		size_t len = std::min(GuiGlobalConstants::contributor_key.size(), sizeof(contribBuf) - 1);
-		if (len > 0) memcpy(contribBuf, GuiGlobalConstants::contributor_key.c_str(), len);
-		contribBuf[len] = '\0';
-	}
+		ImGui::SeparatorText("Contributor");
+		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+			"Enter a contributor key to enable build naming.");
 
-	ImGui::SetNextItemWidth(-1);
-	if (ImGui::InputTextWithHint("##contributor_key", "Contributor Key", contribBuf, sizeof(contribBuf),
-		ImGuiInputTextFlags_Password))
-	{
-		GuiGlobalConstants::contributor_key = contribBuf;
-		GuiGlobalConstants::SaveSettings();
-	}
+		static char contribBuf[256] = "";
+		static bool contribInit = false;
+		static bool contribValid = false;
+		if (!contribInit)
+		{
+			contribInit = true;
+			size_t len = std::min(GuiGlobalConstants::contributor_key.size(), sizeof(contribBuf) - 1);
+			if (len > 0) memcpy(contribBuf, GuiGlobalConstants::contributor_key.c_str(), len);
+			contribBuf[len] = '\0';
+			if (contribBuf[0] != '\0')
+				contribValid = GuiGlobalConstants::ValidateContributorKey(contribBuf);
+		}
 
-	if (contribBuf[0] != '\0')
-		ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Key set. Build naming enabled.");
-	else
-		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No key set. Builds are read-only.");
+		ImGui::SetNextItemWidth(-1);
+		if (ImGui::InputTextWithHint("##contributor_key", "Contributor Key", contribBuf, sizeof(contribBuf),
+			ImGuiInputTextFlags_Password))
+		{
+			GuiGlobalConstants::contributor_key = contribBuf;
+			contribValid = (contribBuf[0] != '\0') && GuiGlobalConstants::ValidateContributorKey(contribBuf);
+			GuiGlobalConstants::SaveSettings();
+		}
+
+		if (contribBuf[0] == '\0')
+			ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.f), "No key set. Builds are read-only.");
+		else if (contribValid)
+			ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Valid key. Build naming enabled.");
+		else
+			ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.f), "Invalid key.");
+	}
 
 	ImGui::End();
 
@@ -644,7 +657,7 @@ static void draw_settings_window()
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine)
+	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine, UpdateChecker* updateChecker)
 {
 	s_syncEnginePtr = syncEngine;
 	s_folderWatcherPtr = &folder_watcher;
@@ -699,7 +712,18 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (replay_library.IsLoaded())
 				lp.match_count = replay_library.GetMatchCount();
 
-			if (draw_first_launch(lp))
+			// Build update info for loading screen overlay
+			UpdateInfo updateInfo;
+			if (updateChecker && updateChecker->IsComplete() && updateChecker->HasUpdate())
+			{
+				updateInfo.available = true;
+				updateInfo.currentVersion = GWO_VERSION;
+				updateInfo.latestVersion = updateChecker->GetLatestVersion();
+				updateInfo.releaseUrl = updateChecker->GetReleaseUrl();
+				updateInfo.repo = "MC92-hash/gwobserver";
+			}
+
+			if (draw_first_launch(lp, updateInfo.available ? &updateInfo : nullptr))
 				s_loadingScreenDone = true;
 			else
 				return;
@@ -720,7 +744,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			}
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Debug")) {
+		if (GuiGlobalConstants::IsDeveloperMode() && ImGui::BeginMenu("Debug")) {
 			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
 				GuiGlobalConstants::SaveSettings();
 			}

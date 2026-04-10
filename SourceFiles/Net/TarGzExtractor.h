@@ -13,6 +13,9 @@
 namespace TarGz
 {
 
+// Maximum decompressed size (512 MB) — no legitimate match archive is near this.
+static constexpr size_t kMaxDecompressedSize = 512 * 1024 * 1024;
+
 // Decompress gzip data using miniz's streaming inflate.
 // Gzip format: 10-byte header, compressed data, 8-byte trailer.
 inline bool GzipDecompress(const std::vector<uint8_t>& gzData, std::vector<uint8_t>& out)
@@ -51,6 +54,7 @@ inline bool GzipDecompress(const std::vector<uint8_t>& gzData, std::vector<uint8
 
     // Allocate with some headroom (gzip stores size mod 2^32, could be larger)
     size_t allocSize = uncompSize > 0 ? uncompSize : gzData.size() * 4;
+    if (allocSize > kMaxDecompressedSize) return false;
     out.resize(allocSize);
 
     // Use raw inflate (windowBits = -MZ_DEFAULT_WINDOW_BITS for raw deflate)
@@ -69,7 +73,9 @@ inline bool GzipDecompress(const std::vector<uint8_t>& gzData, std::vector<uint8
     if (status == MZ_BUF_ERROR)
     {
         mz_inflateEnd(&stream);
-        out.resize(out.size() * 4);
+        size_t newSize = out.size() * 4;
+        if (newSize > kMaxDecompressedSize) return false;
+        out.resize(newSize);
         stream = {};
         if (mz_inflateInit2(&stream, -MZ_DEFAULT_WINDOW_BITS) != MZ_OK)
             return false;
@@ -133,6 +139,17 @@ inline bool ExtractTarData(const uint8_t* tarData, size_t tarSize,
         char typeFlag = header[156];
 
         pos += 512; // advance past header
+
+        // Zip-slip prevention: ensure resolved path stays within destDir
+        auto resolvedDest = std::filesystem::weakly_canonical(destDir);
+        auto resolvedEntry = std::filesystem::weakly_canonical(destDir / name);
+        auto rel = resolvedEntry.lexically_relative(resolvedDest);
+        if (rel.empty() || rel.string().starts_with(".."))
+        {
+            // Entry escapes destination — skip it
+            pos += static_cast<size_t>((fileSize64 + 511) & ~511ULL);
+            continue;
+        }
 
         if (typeFlag == '5' || (!name.empty() && name.back() == '/'))
         {
