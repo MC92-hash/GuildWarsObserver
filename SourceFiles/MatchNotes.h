@@ -29,12 +29,12 @@ public:
     bool HasNote(const std::string& folderName) const
     {
         auto it = m_notes.find(folderName);
-        return it != m_notes.end() && !it->second.empty();
+        return it != m_notes.end() && !IsBlank(it->second);
     }
 
     void SetNote(const std::string& folderName, const std::string& text)
     {
-        if (text.empty())
+        if (IsBlank(text))
             m_notes.erase(folderName);
         else
             m_notes[folderName] = text;
@@ -52,7 +52,7 @@ public:
             for (auto& [key, val] : j.items())
             {
                 std::string v = val.get<std::string>();
-                if (!v.empty())
+                if (!IsBlank(v))
                     m_notes[key] = std::move(v);
             }
         } catch (...) {}
@@ -72,6 +72,14 @@ public:
 private:
     std::unordered_map<std::string, std::string> m_notes;
     inline static const std::string s_empty;
+
+    static bool IsBlank(const std::string& s)
+    {
+        for (char c : s)
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
+                return false;
+        return true;
+    }
 
     static std::filesystem::path GetFilePath()
     {

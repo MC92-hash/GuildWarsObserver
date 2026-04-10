@@ -1,7 +1,8 @@
 # GW Observer Community Licence v1.0
 
-Copyright © 2026 Purif / MC92-hash  
-Portions copyright © Jonathan Bjørn Greve  
+Copyright © 2026 Purif / MC92-hash
+Co-author: Maverick / [mevi826](https://github.com/mevi826)
+Portions copyright © Jonathan Bjørn Greve
 (GuildWarsMapBrowser, MIT Licence)
 
 ---

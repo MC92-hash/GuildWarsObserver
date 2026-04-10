@@ -39,8 +39,10 @@ static void DrawEulaContent()
     ImGui::TextColored(linkCol, "    https://github.com/Jonathan-Greve/GuildWarsMapBrowser");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::TextColored(bodyCol, "2. Credit GW Observer and its authors:");
-    ImGui::TextColored(bodyCol, "    Purif / MC92-hash");
+    ImGui::TextColored(bodyCol, "    Author: Purif / MC92-hash");
     ImGui::TextColored(linkCol, "    https://github.com/MC92-hash/GWObserver");
+    ImGui::TextColored(bodyCol, "    Co-author: Maverick / mevi826");
+    ImGui::TextColored(linkCol, "    https://github.com/mevi826");
     ImGui::Dummy(ImVec2(0, 4.f));
     ImGui::TextColored(bodyCol, "3. Clearly state all modifications made to the original code.");
     ImGui::Unindent(16.f);
@@ -80,15 +82,6 @@ static void DrawEulaContent()
         "GW Observer does not collect, store, or transmit any personal data. Your Guild Wars "
         "account credentials are never accessed. The DAT file is opened in read-only mode "
         "and its contents are never uploaded or shared.");
-    ImGui::Dummy(ImVec2(0, 12.f));
-
-    ImGui::TextColored(goldCol, "-- CREDITS --");
-    ImGui::Dummy(ImVec2(0, 4.f));
-    ImGui::TextColored(bodyCol, "Maverick");
-    ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.60f),
-        "Back-end infrastructure, tool improvements, and testing. "
-        "GW Observer's match replay pipeline would not be possible without Maverick's "
-        "continued work on the server side and relentless testing efforts.");
     ImGui::Dummy(ImVec2(0, 12.f));
 
     ImGui::TextColored(goldCol, "-- THIRD PARTY ATTRIBUTION --");
