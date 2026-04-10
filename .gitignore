@@ -375,6 +375,7 @@ FodyWeavers.xsd
 /.claude
 /nul
 /SourceFiles/build_config.local.h
+/SourceFiles/contributor_key_hashes.h
 /build.bat
 /scripts/r2_config.env
 /scripts/contributor_keys.env
