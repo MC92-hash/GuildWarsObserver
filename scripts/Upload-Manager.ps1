@@ -277,9 +277,11 @@ function New-SuccessEmbed([hashtable]$Report) {
         $bucketObjs = $Report['bucket_stats']['total_objects']
         $fields += @{ name = "$($script:E_CLOUD) R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
+    $desc = if ($uploaded -gt 0) { "Uploaded $uploaded new match$(if ($uploaded -ne 1) { 'es' })." }
+            else { "No new matches to upload. Everything is up to date." }
     return @{
         title       = "$($script:E_CHECK) Upload Complete"
-        description = "Pipeline finished successfully."
+        description = $desc
         color       = 3066993  # green
         fields      = $fields
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
@@ -414,14 +416,14 @@ function Invoke-Upload {
     Write-StatusFile $status
     Write-Log "Status file updated"
 
-    # Discord notifications
+    # Discord notifications — always notify
     if ($report['status'] -eq 'error') {
         Write-Log "Sending failure notification" 'WARN'
         Send-DiscordWebhook (New-FailureEmbed $report $status)
     } elseif ($prevFailures -gt 0) {
         Write-Log "Sending recovery notification"
         Send-DiscordWebhook (New-RecoveryEmbed $report $prevFailures)
-    } elseif ($script:Config['NOTIFY_ON_SUCCESS'] -eq 'true' -and [int]$report['uploaded'] -gt 0) {
+    } else {
         Write-Log "Sending success notification"
         Send-DiscordWebhook (New-SuccessEmbed $report)
     }
