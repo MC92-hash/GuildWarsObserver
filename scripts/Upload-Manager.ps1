@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     GWObserver Upload Manager - wrapper for upload_to_r2.py with logging,
     Discord webhook alerts, scheduled task management, and status tracking.
@@ -169,9 +169,17 @@ function Send-DiscordWebhook([hashtable]$Embed) {
         Write-Log "Discord webhook URL not configured, skipping notification" 'WARN'
         return
     }
-    $body = @{ embeds = @($Embed) } | ConvertTo-Json -Depth 10
+    $json = @{ embeds = @($Embed) } | ConvertTo-Json -Depth 10
+    # PowerShell 5.1 ConvertTo-Json escapes surrogate pairs as separate
+    # \uD83D\uDD25 sequences instead of proper \uD83D\uDD25 pairs.
+    # Fix by decoding all \uXXXX escapes into real UTF-8 characters,
+    # then sending as raw UTF-8 bytes.
+    $decoded = [regex]::Replace($json, '\\u([0-9A-Fa-f]{4})', {
+        param($m) [char]([convert]::ToInt32($m.Groups[1].Value, 16))
+    })
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($decoded)
     try {
-        Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body $body -UserAgent 'GWObserver-UploadManager' | Out-Null
+        Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body $bodyBytes -UserAgent 'GWObserver-UploadManager' | Out-Null
         Write-Log "Discord notification sent"
     } catch {
         Write-Log "Failed to send Discord notification: $_" 'ERROR'
@@ -184,52 +192,67 @@ function Format-Bytes([long]$Bytes) {
     return "{0:N0} KB" -f ($Bytes / 1KB)
 }
 
+# Emoji constants — literal UTF-8 characters for PowerShell 5.1 compatibility
+$script:E_CLIPBOARD = '📋'
+$script:E_FIRE      = '🔥'
+$script:E_CLOCK     = '🕐'
+$script:E_OUTBOX    = '📤'
+$script:E_SKIP      = '⏭'
+$script:E_PROHIBIT  = '🚫'
+$script:E_WARN      = '⚠'
+$script:E_CLOUD     = '☁'
+$script:E_CROSS     = '❌'
+$script:E_YELLOW    = '🟡'
+$script:E_CHECK     = '✅'
+$script:E_GEAR      = '⚙'
+$script:E_TUBE      = '🧪'
+
 function New-FailureEmbed([hashtable]$Report, [hashtable]$StatusData) {
     $errorText = ($Report['errors'] | ForEach-Object { $_.error }) -join "`n"
     if ($errorText.Length -gt 1000) { $errorText = $errorText.Substring(0, 997) + '...' }
     $streak = [int]$StatusData['consecutive_failures']
     $fields = @(
-        @{ name = "`u{1F4CB} Error Details"; value = "``````$(if ($errorText) { $errorText } else { 'Unknown error' })``````"; inline = $false }
-        @{ name = "`u{1F525} Streak"; value = "$streak consecutive failure$(if ($streak -ne 1) { 's' })"; inline = $true }
+        @{ name = "$($script:E_CLIPBOARD) Error Details"; value = "``````$(if ($errorText) { $errorText } else { 'Unknown error' })``````"; inline = $false }
+        @{ name = "$($script:E_FIRE) Streak"; value = "$streak consecutive failure$(if ($streak -ne 1) { 's' })"; inline = $true }
     )
     if ($StatusData['last_success']) {
-        $fields += @{ name = "`u{1F550} Last Success"; value = $StatusData['last_success']; inline = $true }
+        $fields += @{ name = "$($script:E_CLOCK) Last Success"; value = $StatusData['last_success']; inline = $true }
     }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
+        $fields += @{ name = "$($script:E_CLOUD) R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title       = "`u{274C} Upload Failed"
+        title       = "$($script:E_CROSS) Upload Failed"
         description = "The upload pipeline encountered errors and could not complete."
         color       = 15158332  # red
         fields      = $fields
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
+        footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
 }
 
 function New-RecoveryEmbed([hashtable]$Report, [int]$PrevFailures) {
     $fields = @(
-        @{ name = "`u{1F4E4} Uploaded"; value = "$($Report['uploaded']) match(es)"; inline = $true }
-        @{ name = "`u{23ED} Skipped"; value = "$($Report['skipped'])"; inline = $true }
+        @{ name = "$($script:E_OUTBOX) Uploaded"; value = "$($Report['uploaded']) match(es)"; inline = $true }
+        @{ name = "$($script:E_SKIP) Skipped"; value = "$($Report['skipped'])"; inline = $true }
     )
     if ([int]$Report['rejected_corrupt'] -gt 0) {
-        $fields += @{ name = "`u{1F6AB} Rejected"; value = "$($Report['rejected_corrupt']) corrupt"; inline = $true }
+        $fields += @{ name = "$($script:E_PROHIBIT) Rejected"; value = "$($Report['rejected_corrupt']) corrupt"; inline = $true }
     }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
+        $fields += @{ name = "$($script:E_CLOUD) R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title       = "`u{1F7E1} Upload Recovered"
+        title       = "$($script:E_YELLOW) Upload Recovered"
         description = "Back online after **$PrevFailures** consecutive failure(s)."
         color       = 16776960  # yellow
         fields      = $fields
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
+        footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
 }
 
@@ -238,29 +261,29 @@ function New-SuccessEmbed([hashtable]$Report) {
     $skipped = [int]$Report['skipped']
     $rejected = [int]$Report['rejected_corrupt']
     $fields = @(
-        @{ name = "`u{1F4E4} Uploaded"; value = "$uploaded match$(if ($uploaded -ne 1) { 'es' })"; inline = $true }
-        @{ name = "`u{23ED} Skipped"; value = "$skipped already synced"; inline = $true }
+        @{ name = "$($script:E_OUTBOX) Uploaded"; value = "$uploaded match$(if ($uploaded -ne 1) { 'es' })"; inline = $true }
+        @{ name = "$($script:E_SKIP) Skipped"; value = "$skipped already synced"; inline = $true }
     )
     if ($rejected -gt 0) {
-        $fields += @{ name = "`u{1F6AB} Rejected"; value = "$rejected corrupt"; inline = $true }
+        $fields += @{ name = "$($script:E_PROHIBIT) Rejected"; value = "$rejected corrupt"; inline = $true }
     }
     if ($Report['warnings'] -and $Report['warnings'].Count -gt 0) {
         $warnText = ($Report['warnings'] | ForEach-Object { $_.warning }) -join "`n"
         if ($warnText.Length -gt 500) { $warnText = $warnText.Substring(0, 497) + '...' }
-        $fields += @{ name = "`u{26A0} Warnings"; value = $warnText; inline = $false }
+        $fields += @{ name = "$($script:E_WARN) Warnings"; value = $warnText; inline = $false }
     }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
+        $fields += @{ name = "$($script:E_CLOUD) R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title       = "`u{2705} Upload Complete"
+        title       = "$($script:E_CHECK) Upload Complete"
         description = "Pipeline finished successfully."
         color       = 3066993  # green
         fields      = $fields
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
+        footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
 }
 
@@ -632,11 +655,11 @@ function Test-UploadWebhook {
     }
     Write-Host "Sending test webhook..."
     $embed = @{
-        title       = "`u{1F9EA} Webhook Test"
+        title       = "$($script:E_TUBE) Webhook Test"
         description = "Connection successful. Notifications are working."
         color       = 3447003  # blue
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
+        footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
     Send-DiscordWebhook $embed
     Write-Host "Done." -ForegroundColor Green
