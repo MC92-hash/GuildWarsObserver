@@ -72,7 +72,7 @@ function Read-ManagerConfig {
     if (-not $cfg['LOG_DIR'])               { $cfg['LOG_DIR'] = Join-Path $ScriptDir 'logs' }
     if (-not $cfg['LOG_RETENTION_DAYS'])     { $cfg['LOG_RETENTION_DAYS'] = '30' }
     if (-not $cfg['TASK_INTERVAL_MINUTES'])  { $cfg['TASK_INTERVAL_MINUTES'] = '60' }
-    if (-not $cfg['NOTIFY_ON_SUCCESS'])      { $cfg['NOTIFY_ON_SUCCESS'] = 'false' }
+    if (-not $cfg['NOTIFY_ON_SUCCESS'])      { $cfg['NOTIFY_ON_SUCCESS'] = 'true' }
     if (-not $cfg['STATUS_FILE_PATH'])       { $cfg['STATUS_FILE_PATH'] = Join-Path $ScriptDir 'upload_status.json' }
     return $cfg
 }
