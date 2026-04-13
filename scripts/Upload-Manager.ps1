@@ -171,7 +171,7 @@ function Send-DiscordWebhook([hashtable]$Embed) {
     }
     $body = @{ embeds = @($Embed) } | ConvertTo-Json -Depth 10
     try {
-        Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body $body | Out-Null
+        Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body $body -UserAgent 'GWObserver-UploadManager' | Out-Null
         Write-Log "Discord notification sent"
     } catch {
         Write-Log "Failed to send Discord notification: $_" 'ERROR'
@@ -187,62 +187,80 @@ function Format-Bytes([long]$Bytes) {
 function New-FailureEmbed([hashtable]$Report, [hashtable]$StatusData) {
     $errorText = ($Report['errors'] | ForEach-Object { $_.error }) -join "`n"
     if ($errorText.Length -gt 1000) { $errorText = $errorText.Substring(0, 997) + '...' }
+    $streak = [int]$StatusData['consecutive_failures']
     $fields = @(
-        @{ name = 'Errors'; value = $(if ($errorText) { $errorText } else { 'Unknown error' }); inline = $false }
-        @{ name = 'Consecutive Failures'; value = "$($StatusData['consecutive_failures'])"; inline = $true }
+        @{ name = "`u{1F4CB} Error Details"; value = "``````$(if ($errorText) { $errorText } else { 'Unknown error' })``````"; inline = $false }
+        @{ name = "`u{1F525} Streak"; value = "$streak consecutive failure$(if ($streak -ne 1) { 's' })"; inline = $true }
     )
     if ($StatusData['last_success']) {
-        $fields += @{ name = 'Last Success'; value = $StatusData['last_success']; inline = $true }
+        $fields += @{ name = "`u{1F550} Last Success"; value = $StatusData['last_success']; inline = $true }
     }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = 'Bucket Storage'; value = "${sizeStr} (${bucketObjs} objects)"; inline = $true }
+        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title     = 'R2 Upload Failed'
-        color     = 15158332  # red
-        fields    = $fields
-        timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer    = @{ text = 'GWObserver Upload Manager' }
+        title       = "`u{274C} Upload Failed"
+        description = "The upload pipeline encountered errors and could not complete."
+        color       = 15158332  # red
+        fields      = $fields
+        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
     }
 }
 
 function New-RecoveryEmbed([hashtable]$Report, [int]$PrevFailures) {
     $fields = @(
-        @{ name = 'Uploaded'; value = "$($Report['uploaded']) match(es)"; inline = $true }
+        @{ name = "`u{1F4E4} Uploaded"; value = "$($Report['uploaded']) match(es)"; inline = $true }
+        @{ name = "`u{23ED} Skipped"; value = "$($Report['skipped'])"; inline = $true }
     )
+    if ([int]$Report['rejected_corrupt'] -gt 0) {
+        $fields += @{ name = "`u{1F6AB} Rejected"; value = "$($Report['rejected_corrupt']) corrupt"; inline = $true }
+    }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = 'Bucket Storage'; value = "${sizeStr} (${bucketObjs} objects)"; inline = $true }
+        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title       = 'R2 Upload Recovered'
-        description = "First successful upload after $PrevFailures consecutive failure(s)."
+        title       = "`u{1F7E1} Upload Recovered"
+        description = "Back online after **$PrevFailures** consecutive failure(s)."
         color       = 16776960  # yellow
         fields      = $fields
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = 'GWObserver Upload Manager' }
+        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
     }
 }
 
 function New-SuccessEmbed([hashtable]$Report) {
+    $uploaded = [int]$Report['uploaded']
+    $skipped = [int]$Report['skipped']
+    $rejected = [int]$Report['rejected_corrupt']
     $fields = @(
-        @{ name = 'Uploaded'; value = "$($Report['uploaded']) match(es)"; inline = $true }
+        @{ name = "`u{1F4E4} Uploaded"; value = "$uploaded match$(if ($uploaded -ne 1) { 'es' })"; inline = $true }
+        @{ name = "`u{23ED} Skipped"; value = "$skipped already synced"; inline = $true }
     )
+    if ($rejected -gt 0) {
+        $fields += @{ name = "`u{1F6AB} Rejected"; value = "$rejected corrupt"; inline = $true }
+    }
+    if ($Report['warnings'] -and $Report['warnings'].Count -gt 0) {
+        $warnText = ($Report['warnings'] | ForEach-Object { $_.warning }) -join "`n"
+        if ($warnText.Length -gt 500) { $warnText = $warnText.Substring(0, 497) + '...' }
+        $fields += @{ name = "`u{26A0} Warnings"; value = $warnText; inline = $false }
+    }
     if ($Report['bucket_stats']) {
         $sizeStr = Format-Bytes $Report['bucket_stats']['total_size_bytes']
         $bucketObjs = $Report['bucket_stats']['total_objects']
-        $fields += @{ name = 'Bucket Storage'; value = "${sizeStr} (${bucketObjs} objects)"; inline = $true }
-        $fields += @{ name = 'Total Matches'; value = "$($Report['bucket_stats']['total_objects'])"; inline = $true }
+        $fields += @{ name = "`u{2601} R2 Storage"; value = "$bucketObjs matches | $sizeStr"; inline = $false }
     }
     return @{
-        title     = 'R2 Upload Complete'
-        color     = 3066993  # green
-        fields    = $fields
-        timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer    = @{ text = 'GWObserver Upload Manager' }
+        title       = "`u{2705} Upload Complete"
+        description = "Pipeline finished successfully."
+        color       = 3066993  # green
+        fields      = $fields
+        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
     }
 }
 
@@ -614,11 +632,11 @@ function Test-UploadWebhook {
     }
     Write-Host "Sending test webhook..."
     $embed = @{
-        title       = 'Upload Manager Test'
-        description = 'Webhook is working correctly.'
+        title       = "`u{1F9EA} Webhook Test"
+        description = "Connection successful. Notifications are working."
         color       = 3447003  # blue
         timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-        footer      = @{ text = 'GWObserver Upload Manager' }
+        footer      = @{ text = "`u{2699} GWObserver Upload Manager" }
     }
     Send-DiscordWebhook $embed
     Write-Host "Done." -ForegroundColor Green
