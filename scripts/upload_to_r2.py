@@ -359,6 +359,37 @@ def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
     return entry
 
 
+def match_fingerprint(infos: dict) -> str:
+    """Build a content-based fingerprint from match metadata for dedup.
+
+    Uses date + map_id + sorted team tags (from the two match parties only)
+    so that the same match is identified regardless of folder naming.
+    """
+    year = infos.get("year", 0)
+    month = infos.get("month", 0)
+    day = infos.get("day", 0)
+    map_id = infos.get("map_id", 0)
+    # Only use guilds that correspond to actual match parties (typically "1" and "2")
+    party_ids = set(infos.get("parties", {}).keys())
+    guilds = infos.get("guilds", {})
+    tags = sorted(
+        g.get("tag", "") for gid, g in guilds.items()
+        if isinstance(g, dict) and g.get("tag") and gid in party_ids
+    )
+    return f"{year:04d}-{month:02d}-{day:02d}_{map_id}_{'_vs_'.join(tags)}"
+
+
+def index_entry_fingerprint(entry: dict) -> str:
+    """Build a content fingerprint from an index.json entry for dedup."""
+    party_ids = set(entry.get("parties", {}).keys())
+    guilds = entry.get("guilds", {})
+    tags = sorted(
+        g.get("tag", "") for gid, g in guilds.items()
+        if isinstance(g, dict) and g.get("tag") and gid in party_ids
+    )
+    return f"{entry.get('date', '')}_{entry.get('map_id', 0)}_{'_vs_'.join(tags)}"
+
+
 def sanitize_folder_name(name: str) -> str:
     """Replace non-ASCII characters in folder name with ASCII-safe substitutes.
 
@@ -400,6 +431,17 @@ def create_tar_gz(match_dir: Path, output_path: Path, archive_folder_name: str |
                 arcname = f"{folder_name}/{item.relative_to(match_dir)}"
                 tar.add(str(item), arcname=arcname)
     return output_path.stat().st_size
+
+
+def object_exists(s3, bucket: str, key: str) -> bool:
+    """Check if an object already exists in R2."""
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return False
+        raise
 
 
 def upload_file(s3, bucket: str, key: str, file_path: Path):
@@ -505,6 +547,10 @@ def cmd_upload(args, config: dict) -> dict:
     print("Fetching remote index.json...")
     remote_entries = fetch_remote_index(s3, bucket)
     remote_folders = {e["folder"] for e in remote_entries}
+    # Build content-based fingerprints from remote entries for robust dedup
+    remote_fingerprints: set[str] = set()
+    for e in remote_entries:
+        remote_fingerprints.add(index_entry_fingerprint(e))
     print(f"  {len(remote_entries)} matches currently in index.")
 
     # Scan local matches
@@ -512,11 +558,19 @@ def cmd_upload(args, config: dict) -> dict:
     print(f"  {len(local_matches)} match folders found locally.")
     report["matched_local"] = len(local_matches)
 
-    # Find new matches (check both original and sanitized names)
-    new_matches = [
-        m for m in local_matches
-        if m.name not in remote_folders and sanitize_folder_name(m.name) not in remote_folders
-    ]
+    # Find new matches: check folder name, sanitized name, AND content fingerprint
+    new_matches = []
+    for m in local_matches:
+        if m.name in remote_folders or sanitize_folder_name(m.name) in remote_folders:
+            continue
+        # Content-based dedup: read infos.json and check fingerprint
+        infos = read_infos_json(m)
+        if infos:
+            fp = match_fingerprint(infos)
+            if fp in remote_fingerprints:
+                print(f"  Skipping duplicate (content match): {m.name}")
+                continue
+        new_matches.append(m)
     report["already_remote"] = len(local_matches) - len(new_matches)
 
     if not new_matches:
@@ -586,6 +640,15 @@ def cmd_upload(args, config: dict) -> dict:
                 print(f"  Validation passed (median p95={validation.median_p95:.1f}, "
                       f"{validation.total_players} players)")
 
+            # Check if archive already exists in R2 (handles stale index)
+            r2_key = f"matches/{safe_name}.tar.gz"
+            if object_exists(s3, bucket, r2_key):
+                print(f"  Already in R2, skipping upload.")
+                report["skipped"] += 1
+                entry = build_index_entry(safe_name, infos, 0)
+                new_entries.append(entry)
+                continue
+
             # Create archive (using safe name for tar entries)
             archive_path = Path(tmp_dir) / f"{safe_name}.tar.gz"
             print(f"  Packaging...")
@@ -594,7 +657,6 @@ def cmd_upload(args, config: dict) -> dict:
             print(f"  Archive size: {size_mb:.1f} MB")
 
             # Upload archive with URL-safe key
-            r2_key = f"matches/{safe_name}.tar.gz"
             print(f"  Uploading to {r2_key}...")
             try:
                 upload_file(s3, bucket, r2_key, archive_path)
@@ -632,9 +694,15 @@ def cmd_upload(args, config: dict) -> dict:
             else:
                 print(f"  Done.")
 
-    # Update index
+    # Update index (deduplicate by folder name, new entries take precedence)
     if new_entries:
-        all_entries = remote_entries + new_entries
+        seen: dict[str, dict] = {}
+        for entry in remote_entries + new_entries:
+            seen[entry["folder"]] = entry
+        all_entries = list(seen.values())
+        deduped = len(remote_entries) + len(new_entries) - len(all_entries)
+        if deduped:
+            print(f"\n  Removed {deduped} duplicate index entry(ies).")
         print(f"\nUpdating index.json ({len(all_entries)} total matches)...")
         try:
             upload_index(s3, bucket, all_entries)
@@ -769,6 +837,120 @@ def cmd_sync_index(args, config: dict):
     print("Done.")
 
 
+def cmd_dedup_index(args, config: dict):
+    """Remove duplicate entries from index.json, keeping the last occurrence."""
+    s3 = create_s3_client(config)
+    bucket = config["R2_BUCKET"]
+
+    print("Fetching remote index.json...")
+    remote_entries = fetch_remote_index(s3, bucket)
+    if not remote_entries:
+        print("Index is empty, nothing to deduplicate.")
+        return
+
+    seen: dict[str, dict] = {}
+    for entry in remote_entries:
+        seen[entry["folder"]] = entry
+    deduped = list(seen.values())
+    removed = len(remote_entries) - len(deduped)
+
+    print(f"  {len(remote_entries)} entries in index, {len(deduped)} unique.")
+
+    if removed == 0:
+        print("\nNo duplicates found.")
+        return
+
+    print(f"\n{removed} duplicate entry(ies) to remove.")
+
+    if args.dry_run:
+        # Show which folders had duplicates
+        from collections import Counter
+        counts = Counter(e["folder"] for e in remote_entries)
+        for folder, count in counts.most_common():
+            if count > 1:
+                print(f"  - {folder} ({count}x)")
+        print("\n[DRY RUN] No changes made.")
+        return
+
+    print(f"Updating index.json ({len(deduped)} entries)...")
+    upload_index(s3, bucket, deduped)
+    print(f"Done. Removed {removed} duplicate(s).")
+
+
+def cmd_cleanup_duplicates(args, config: dict):
+    """Find matches with the same content fingerprint, keep the best, delete the rest."""
+    from collections import defaultdict
+
+    s3 = create_s3_client(config)
+    bucket = config["R2_BUCKET"]
+
+    print("Fetching remote index.json...")
+    remote_entries = fetch_remote_index(s3, bucket)
+    if not remote_entries:
+        print("Index is empty, nothing to clean up.")
+        return
+
+    # Group entries by content fingerprint
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in remote_entries:
+        fp = index_entry_fingerprint(entry)
+        groups[fp].append(entry)
+
+    # Find groups with duplicates
+    dup_groups = {fp: entries for fp, entries in groups.items() if len(entries) > 1}
+
+    if not dup_groups:
+        print(f"  {len(remote_entries)} entries, no content duplicates found.")
+        return
+
+    total_dupes = sum(len(entries) - 1 for entries in dup_groups.values())
+    print(f"  {len(remote_entries)} entries, {len(dup_groups)} duplicate group(s), "
+          f"{total_dupes} archive(s) to remove.\n")
+
+    keep_folders: set[str] = set()
+    delete_folders: set[str] = set()
+
+    for fp, entries in sorted(dup_groups.items()):
+        # Keep the entry with the largest archive (best recording)
+        best = max(entries, key=lambda e: e.get("size_bytes", 0))
+        keep_folders.add(best["folder"])
+        rest = [e for e in entries if e["folder"] != best["folder"]]
+        for e in rest:
+            delete_folders.add(e["folder"])
+
+        print(f"  {fp}")
+        print(f"    KEEP:   {best['folder']} ({best.get('size_bytes', 0) / 1024 / 1024:.1f} MB)")
+        for e in rest:
+            print(f"    DELETE: {e['folder']} ({e.get('size_bytes', 0) / 1024 / 1024:.1f} MB)")
+
+    if args.dry_run:
+        print(f"\n[DRY RUN] Would delete {len(delete_folders)} archive(s) and update index.")
+        return
+
+    # Delete duplicate archives from R2
+    deleted = 0
+    for folder in sorted(delete_folders):
+        r2_key = f"matches/{folder}.tar.gz"
+        try:
+            s3.delete_object(Bucket=bucket, Key=r2_key)
+            print(f"  Deleted: {r2_key}")
+            deleted += 1
+        except Exception as e:
+            print(f"  Warning: failed to delete {r2_key}: {e}")
+
+    # Rebuild index without deleted entries
+    cleaned = [e for e in remote_entries if e["folder"] not in delete_folders]
+    # Also deduplicate by folder name in case of exact dupes
+    seen: dict[str, dict] = {}
+    for e in cleaned:
+        seen[e["folder"]] = e
+    cleaned = list(seen.values())
+
+    print(f"\nUpdating index.json ({len(cleaned)} entries)...")
+    upload_index(s3, bucket, cleaned)
+    print(f"Done. Deleted {deleted} archive(s), index updated.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Upload GvG match recordings to Cloudflare R2."
@@ -807,6 +989,16 @@ def main():
         help="Remove index entries whose archive was deleted from the bucket",
     )
     parser.add_argument(
+        "--dedup-index",
+        action="store_true",
+        help="Remove duplicate entries from index.json",
+    )
+    parser.add_argument(
+        "--cleanup-duplicates",
+        action="store_true",
+        help="Find and remove duplicate matches (same content, different folder names) from R2",
+    )
+    parser.add_argument(
         "--json-report",
         type=str,
         default=None,
@@ -826,7 +1018,11 @@ def main():
         print(f"Set them in {args.env_file} or as environment variables.")
         sys.exit(1)
 
-    if args.sync_index:
+    if args.cleanup_duplicates:
+        cmd_cleanup_duplicates(args, config)
+    elif args.dedup_index:
+        cmd_dedup_index(args, config)
+    elif args.sync_index:
         cmd_sync_index(args, config)
     elif args.list_remote:
         cmd_list_remote(args, config)
