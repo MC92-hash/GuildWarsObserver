@@ -19,6 +19,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import sys
 import tarfile
 import tempfile
@@ -32,6 +33,12 @@ try:
 except ImportError:
     print("Error: boto3 is required. Install it with: pip install boto3")
     sys.exit(1)
+
+try:
+    from validate_match import validate_match
+    HAS_VALIDATOR = True
+except ImportError:
+    HAS_VALIDATOR = False
 
 
 def load_config(env_path: Path | None) -> dict:
@@ -50,7 +57,9 @@ def load_config(env_path: Path | None) -> dict:
                     config[key.strip()] = value.strip()
 
     # Environment variables override .env file
-    for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY", "MATCH_SOURCE_DIR"):
+    for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY",
+                "MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR",
+                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB"):
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -89,7 +98,6 @@ def extract_archives(source_dir: Path) -> int:
     moved to a 'processed/' subdirectory so they aren't re-extracted.
     Returns the number of archives extracted.
     """
-    import shutil
     import zipfile
 
     processed_dir = source_dir / "processed"
@@ -150,6 +158,103 @@ def extract_archives(source_dir: Path) -> int:
             continue
 
     return count
+
+
+def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
+    """Move completed recordings from GWToolbox output to the upload staging directory.
+
+    Only moves match folders that:
+    - Contain infos.json (recording finished writing metadata)
+    - Have no files modified in the last 5 minutes (not still being recorded)
+    - Don't already exist in the staging directory
+    """
+    STALENESS_SECONDS = 300  # 5 minutes
+    now = time.time()
+    count = 0
+
+    for entry in sorted(recording_dir.iterdir()):
+        if not entry.is_dir() or entry.name in ("processed", "rejected"):
+            continue
+        if not (entry / "infos.json").exists():
+            continue
+
+        # Check if any file was modified recently (recording may be in progress)
+        try:
+            newest_mtime = max(
+                f.stat().st_mtime for f in entry.rglob("*") if f.is_file()
+            )
+        except ValueError:
+            continue  # empty directory
+        if now - newest_mtime < STALENESS_SECONDS:
+            continue
+
+        dest = staging_dir / entry.name
+        if dest.exists():
+            continue  # already staged
+
+        try:
+            shutil.move(str(entry), str(dest))
+            print(f"  Collected: {entry.name}")
+            count += 1
+        except Exception as e:
+            print(f"  Warning: failed to collect {entry.name}: {e}")
+
+    return count
+
+
+def request_rerecord(infos: dict, db_path: str) -> bool:
+    """Reset a corrupt recording in the orchestrator DB so it gets re-recorded.
+
+    Looks up the recording by date, map_id, and team tags, then sets its
+    status to 'failed'. The orchestrator's insert_recording() reclaims
+    rows with status 'failed', so the match will be re-recorded on the
+    next session if it's still observable.
+    """
+    import sqlite3
+
+    year = infos.get("year", 0)
+    month = infos.get("month", 0)
+    day = infos.get("day", 0)
+    if not year:
+        return False
+    date_str = f"{year:04d}-{month:02d}-{day:02d}"
+    map_id = infos.get("map_id", 0)
+
+    # Extract team tags from guilds dict
+    guilds = infos.get("guilds", {})
+    tags = []
+    for guild_obj in guilds.values():
+        if isinstance(guild_obj, dict) and guild_obj.get("tag"):
+            tags.append(guild_obj["tag"])
+    if len(tags) < 2:
+        return False
+    tag_a, tag_b = tags[0], tags[1]
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        # Look up completed recording matching this match
+        row = conn.execute(
+            """SELECT fingerprint FROM recordings
+               WHERE date = ? AND map_id = ? AND status = 'completed'
+                 AND ((team1_tag = ? AND team2_tag = ?) OR (team1_tag = ? AND team2_tag = ?))
+               ORDER BY id DESC LIMIT 1""",
+            (date_str, map_id, tag_a, tag_b, tag_b, tag_a),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return False
+        fp = row["fingerprint"]
+        conn.execute(
+            "UPDATE recordings SET status = 'failed', finished_at = NULL WHERE fingerprint = ? AND date = ?",
+            (fp, date_str),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"  Warning: failed to reset orchestrator recording: {e}")
+        return False
 
 
 def scan_local_matches(source_dir: Path) -> list[Path]:
@@ -351,6 +456,7 @@ def cmd_upload(args, config: dict) -> dict:
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "uploaded": 0,
         "skipped": 0,
+        "rejected_corrupt": 0,
         "errors": [],
         "warnings": [],
         "matched_local": 0,
@@ -362,7 +468,8 @@ def cmd_upload(args, config: dict) -> dict:
 
     s3 = create_s3_client(config)
     bucket = config["R2_BUCKET"]
-    source_dir = Path(args.source_dir or config.get("MATCH_SOURCE_DIR", ""))
+    source_dir_raw = args.source_dir or config.get("MATCH_SOURCE_DIR", "")
+    source_dir = Path(os.path.expandvars(os.path.expanduser(source_dir_raw)))
 
     if not source_dir or not source_dir.is_dir():
         print(f"Error: invalid source directory: {source_dir}")
@@ -373,6 +480,18 @@ def cmd_upload(args, config: dict) -> dict:
     print(f"Source directory: {source_dir}")
     print(f"R2 bucket: {bucket}")
     print()
+
+    # Collect completed recordings from GWToolbox output
+    recording_source = config.get("RECORDING_SOURCE_DIR", "")
+    if recording_source:
+        rec_dir = Path(os.path.expandvars(os.path.expanduser(recording_source)))
+        if rec_dir.is_dir():
+            print("Collecting new recordings...")
+            collected = collect_recordings(rec_dir, source_dir)
+            if collected:
+                print(f"  Collected {collected} recording(s).\n")
+            else:
+                print("  No new recordings to collect.\n")
 
     # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
     print("Checking for archives to extract...")
@@ -435,6 +554,38 @@ def cmd_upload(args, config: dict) -> dict:
                 report["warnings"].append({"match": folder_name, "warning": "Could not parse infos.json"})
                 continue
 
+            # Validate match data quality
+            if HAS_VALIDATOR:
+                print(f"  Validating position data...")
+                validation = validate_match(match_dir)
+                if not validation.passed:
+                    print(f"  REJECTED: {validation.reason}")
+                    report["rejected_corrupt"] += 1
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": f"Corruption detected: {validation.reason}",
+                    })
+                    rejected_dir = source_dir / "rejected"
+                    rejected_dir.mkdir(exist_ok=True)
+                    dest = rejected_dir / match_dir.name
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    try:
+                        shutil.move(str(match_dir), str(dest))
+                        print(f"  Moved to: {dest}")
+                    except Exception as e:
+                        print(f"  Warning: failed to move to rejected/: {e}")
+                    # Request re-recording via orchestrator DB
+                    db_path = config.get("ORCHESTRATOR_DB", "")
+                    if db_path and infos:
+                        db_file = Path(os.path.expandvars(os.path.expanduser(db_path)))
+                        if db_file.exists():
+                            if request_rerecord(infos, str(db_file)):
+                                print(f"  Queued for re-recording in orchestrator")
+                    continue
+                print(f"  Validation passed (median p95={validation.median_p95:.1f}, "
+                      f"{validation.total_players} players)")
+
             # Create archive (using safe name for tar entries)
             archive_path = Path(tmp_dir) / f"{safe_name}.tar.gz"
             print(f"  Packaging...")
@@ -462,7 +613,24 @@ def cmd_upload(args, config: dict) -> dict:
 
             # Clean up temp archive
             archive_path.unlink(missing_ok=True)
-            print(f"  Done.")
+
+            # Move uploaded match to archive directory to free source disk space
+            archive_dir_raw = config.get("POST_UPLOAD_ARCHIVE_DIR", "")
+            if archive_dir_raw:
+                archive_dir = Path(os.path.expandvars(os.path.expanduser(archive_dir_raw)))
+                try:
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    dest = archive_dir / match_dir.name
+                    if dest.exists():
+                        print(f"  Archive destination already exists, removing: {dest}")
+                        shutil.rmtree(dest)
+                    shutil.move(str(match_dir), str(dest))
+                    print(f"  Moved to archive: {dest}")
+                except Exception as e:
+                    print(f"  Warning: failed to move to archive dir: {e}")
+                    report["warnings"].append({"match": folder_name, "warning": f"Post-upload move failed: {e}"})
+            else:
+                print(f"  Done.")
 
     # Update index
     if new_entries:
