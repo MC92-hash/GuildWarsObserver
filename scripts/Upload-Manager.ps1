@@ -461,19 +461,10 @@ function Invoke-Upload {
     Write-StatusFile $status
     Write-Log "Status file updated"
 
-    # Discord notifications — only on errors or actual uploads
-    $uploaded = [int]$report['uploaded']
+    # Discord notifications — only on errors
     if ($report['status'] -eq 'error') {
         Write-Log "Sending failure notification" 'WARN'
         Send-DiscordWebhook (New-FailureEmbed $report $status)
-    } elseif ($prevFailures -gt 0) {
-        Write-Log "Sending recovery notification"
-        Send-DiscordWebhook (New-RecoveryEmbed $report $prevFailures)
-    } elseif ($uploaded -gt 0) {
-        Write-Log "Sending success notification ($uploaded uploaded)"
-        Send-DiscordWebhook (New-SuccessEmbed $report)
-    } else {
-        Write-Log "No uploads and no errors, skipping Discord notification"
     }
 
     Write-Log "========== Upload run complete =========="
