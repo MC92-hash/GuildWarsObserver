@@ -16298,6 +16298,7 @@ void ReplayWindow::UpdateIncomingEffects()
 
     const auto& combatVec = m_replayCtx.stocData.combat;
     std::unordered_set<size_t> consumedCombat;
+    std::unordered_map<size_t, int> consumedSkillMap;
 
     struct CombatMatch { bool found; float value; float time; size_t index; };
     auto findCombatValue = [&](int casterId, int targetId, float skillEndTime) -> CombatMatch {
@@ -16307,10 +16308,24 @@ void ReplayWindow::UpdateIncomingEffects()
             if (ce.type != "DAMAGE") continue;
             if (ce.caster_id != casterId) continue;
             if (ce.target_id != targetId) continue;
+            if (consumedCombat.count(i)) continue;
             float dt = ce.time - skillEndTime;
             if (dt < -0.1f) continue;
-            if (dt > 3.0f) break;  // wider window for ranged projectile travel
-            return { true, ce.value, ce.time, i };
+            if (dt > 1.5f) break;
+
+            CombatMatch result = { true, ce.value, ce.time, i };
+            consumedCombat.insert(i);
+            for (size_t j = i + 1; j < combatVec.size(); ++j)
+            {
+                const auto& ce2 = combatVec[j];
+                if (ce2.type != "DAMAGE") continue;
+                if (ce2.caster_id != casterId || ce2.target_id != targetId) continue;
+                if (ce2.time - ce.time > 0.15f) break;
+                if (consumedCombat.count(j)) continue;
+                result.value += ce2.value;
+                consumedCombat.insert(j);
+            }
+            return result;
         }
         return { false, 0.f, 0.f, 0 };
     };
@@ -16338,8 +16353,73 @@ void ReplayWindow::UpdateIncomingEffects()
         m_incomingEffects.push_back(std::move(eff));
     };
 
+    // Delayed damage pass (runs FIRST to prevent the primary scan's
+    // findCombatValue from stealing delayed hits). For each unconsumed damage
+    // event, finds the skill whose endTime is closest to exactly 3.0s before
+    // the damage (±0.5s). The [2.5, 3.5] window doesn't overlap with
+    // findCombatValue's [−0.1, 1.5] window, so ordering is safe.
+    constexpr float kDelayCenter = 3.0f;
+    constexpr float kDelayHalf   = 0.5f;
+    for (size_t ci = 0; ci < combatVec.size(); ++ci)
+    {
+        if (consumedCombat.count(ci)) continue;
+        const auto& dce = combatVec[ci];
+        if (dce.type != "DAMAGE") continue;
+        if (dce.target_id != focused) continue;
+        if (dce.caster_id == focused) continue;
+        if (dce.time <= scanFrom || dce.time > scanTo) continue;
+
+        auto casterIt = m_replayCtx.agents.find(dce.caster_id);
+        if (casterIt == m_replayCtx.agents.end()) continue;
+
+        int bestSkillId = 0;
+        float bestDist2 = 1e9f;
+        for (const auto& su : casterIt->second.skillUseHistory)
+        {
+            if (su.wasCancelled) continue;
+            if (su.targetId != focused) continue;
+            float ddt = dce.time - su.endTime;
+            if (ddt < kDelayCenter - kDelayHalf || ddt > kDelayCenter + kDelayHalf) continue;
+            float dist = std::abs(ddt - kDelayCenter);
+            if (dist < bestDist2)
+            {
+                bestDist2 = dist;
+                bestSkillId = su.skillId;
+            }
+        }
+        if (bestSkillId == 0) continue;
+
+        float totalValue = dce.value;
+        consumedCombat.insert(ci);
+        consumedSkillMap[ci] = bestSkillId;
+        for (size_t cj = ci + 1; cj < combatVec.size(); ++cj)
+        {
+            const auto& ce2 = combatVec[cj];
+            if (ce2.time - dce.time > 0.15f) break;
+            if (ce2.type != "DAMAGE") continue;
+            if (ce2.caster_id != dce.caster_id || ce2.target_id != focused) continue;
+            if (consumedCombat.count(cj)) continue;
+            totalValue += ce2.value;
+            consumedCombat.insert(cj);
+            consumedSkillMap[cj] = bestSkillId;
+        }
+
+        bool dHeal = (totalValue > 0.f);
+        IncomingEffect deff;
+        deff.spawnTime = dce.time;
+        deff.skillId = bestSkillId;
+        deff.type = dHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
+        uint32_t dmhp = findAgentMaxHp(focused, dce.time);
+        int dRaw = (dmhp > 0) ? (int)std::round(std::abs(totalValue) * dmhp) : 0;
+        if (dRaw > 0)
+            deff.label = std::format("{}{}", dHeal ? "+" : "-", dRaw);
+        else
+            deff.label = std::format("{}{:.0f}%", dHeal ? "+" : "-", std::abs(totalValue) * 100.f);
+        pushEffect(std::move(deff));
+    }
+
     // Primary source: scan all agents' skill use histories for skills targeting the focused agent
-    constexpr float kProjectileWindow = 3.0f;
+    constexpr float kProjectileWindow = 1.5f;
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         if (agentId == focused) continue;
@@ -16354,6 +16434,20 @@ void ReplayWindow::UpdateIncomingEffects()
             const SkillInfo* si = db.Get(su.skillId);
             int skillType = si ? si->type : 0;
 
+            if (skillType == 24)
+            {
+                if (endT > scanFrom && endT <= scanTo)
+                {
+                    IncomingEffect hexEff;
+                    hexEff.spawnTime = endT;
+                    hexEff.skillId = su.skillId;
+                    hexEff.type = IncomingEffectType::Hex;
+                    hexEff.label = si ? si->name : "Hex";
+                    pushEffect(std::move(hexEff));
+                }
+                continue;
+            }
+
             auto cm = findCombatValue(agentId, focused, endT);
 
             // Use combat event timestamp (damage impact) when available,
@@ -16363,7 +16457,11 @@ void ReplayWindow::UpdateIncomingEffects()
             // Only show if the display time falls within the current scan window
             if (showTime <= scanFrom || showTime > scanTo) continue;
 
-            if (cm.found) consumedCombat.insert(cm.index);
+            if (cm.found)
+            {
+                consumedCombat.insert(cm.index);
+                consumedSkillMap[cm.index] = su.skillId;
+            }
 
             IncomingEffect eff;
             eff.spawnTime = showTime;
@@ -16379,11 +16477,6 @@ void ReplayWindow::UpdateIncomingEffects()
                     eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
                 else
                     eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(cm.value) * 100.f);
-            }
-            else if (skillType == 24)
-            {
-                eff.type = IncomingEffectType::Hex;
-                eff.label = si ? si->name : "Hex";
             }
             else if (skillType == 23 || skillType == 33 || skillType == 34)
             {
@@ -16420,6 +16513,7 @@ void ReplayWindow::UpdateIncomingEffects()
                 if (showTime > scanTo) continue;
 
                 consumedCombat.insert(cm.index);
+                consumedSkillMap[cm.index] = su.skillId;
 
                 IncomingEffect eff;
                 eff.spawnTime = showTime;
@@ -16538,9 +16632,12 @@ void ReplayWindow::UpdateIncomingEffects()
         pushEffect(std::move(eff));
     }
 
-    // Final pass: unattributed damage (delayed hex triggers like Mind Wrack, Backfire)
-    constexpr int   kSkillType_Hex   = 24;
-    constexpr float kHexDurationMax  = 60.f;
+    // Final pass: unattributed damage and heals.
+    // Short-delay triggers (~3s) are already handled in the delayed damage pass above.
+    // This pass catches truly long-delayed triggers (Mind Wrack at +6-40s) by
+    // searching the caster's skillUseHistory for a hex (type 24) or unknown skill.
+    constexpr int   kSkillType_Hex    = 24;
+    constexpr float kDelayedHexWindow = 60.f;
 
     for (size_t i = 0; i < combatVec.size(); ++i)
     {
@@ -16548,45 +16645,49 @@ void ReplayWindow::UpdateIncomingEffects()
         if (ce.type != "DAMAGE") continue;
         if (ce.target_id != focused) continue;
         if (ce.time <= scanFrom || ce.time > scanTo) continue;
-        if (ce.value > 0.f) continue;
         if (ce.caster_id == focused) continue;
         if (consumedCombat.count(i)) continue;
 
+        int attrSkillId = 0;
+
         auto casterIt = m_replayCtx.agents.find(ce.caster_id);
-        if (casterIt == m_replayCtx.agents.end()) continue;
-
-        int bestSkillId = 0;
-        float bestEndTime = -1.f;
-        for (const auto& su : casterIt->second.skillUseHistory)
+        if (casterIt != m_replayCtx.agents.end())
         {
-            if (su.wasCancelled) continue;
-            if (su.targetId != focused) continue;
-            if (su.endTime > ce.time) continue;
-            if (ce.time - su.endTime > kHexDurationMax) continue;
-
-            const SkillInfo* si = db.Get(su.skillId);
-            if (!si || si->type != kSkillType_Hex) continue;
-
-            if (su.endTime > bestEndTime)
+            float bestDt = 1e9f;
+            for (const auto& su : casterIt->second.skillUseHistory)
             {
-                bestEndTime = su.endTime;
-                bestSkillId = su.skillId;
+                if (su.wasCancelled) continue;
+                if (su.targetId != focused) continue;
+                if (su.endTime > ce.time) continue;
+                if (ce.time - su.endTime > kDelayedHexWindow) continue;
+
+                const SkillInfo* si_db = db.Get(su.skillId);
+                if (si_db && si_db->type != kSkillType_Hex) continue;
+
+                float dt = ce.time - su.endTime;
+                if (dt < bestDt)
+                {
+                    bestDt = dt;
+                    attrSkillId = su.skillId;
+                }
             }
         }
 
+        bool isHeal = (ce.value > 0.f);
         IncomingEffect eff;
         eff.spawnTime = ce.time;
-        eff.skillId = bestSkillId;
-        eff.type = IncomingEffectType::Damage;
+        eff.skillId = attrSkillId;
+        eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
 
         uint32_t mhp = findAgentMaxHp(focused, ce.time);
         int rawVal = (mhp > 0) ? (int)std::round(std::abs(ce.value) * mhp) : 0;
         if (rawVal > 0)
-            eff.label = std::format("-{}", rawVal);
+            eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
         else
-            eff.label = std::format("-{:.0f}%", std::abs(ce.value) * 100.f);
+            eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(ce.value) * 100.f);
 
         consumedCombat.insert(i);
+        consumedSkillMap[i] = attrSkillId;
         pushEffect(std::move(eff));
     }
 }
