@@ -39,6 +39,44 @@ class ValidationResult:
     reason: str
 
 
+def check_henchmen(
+    match_dir: Path,
+    max_henchmen_per_team: int = 2,
+) -> tuple[bool, str]:
+    """Check if any team uses too many henchmen.
+
+    In GvG each team has 8 party slots.  Henchmen count is inferred as
+    ``8 - len(PLAYER)`` because henchmen and map NPCs both land in the
+    OTHER bucket of infos.json.
+
+    Returns (passed, reason).
+    """
+    infos_path = match_dir / "infos.json"
+    if not infos_path.exists():
+        return True, ""
+
+    try:
+        with open(infos_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return True, ""
+
+    parties = data.get("parties", {})
+    if not parties:
+        return True, ""
+
+    for team_id, team in parties.items():
+        player_count = len(team.get("PLAYER", []))
+        henchmen = max(0, 8 - player_count)
+        if henchmen > max_henchmen_per_team:
+            return False, (
+                f"Too many henchmen: team {team_id} has {player_count} players "
+                f"({henchmen} henchmen, max allowed: {max_henchmen_per_team})"
+            )
+
+    return True, ""
+
+
 def parse_timestamp(ts_str: str) -> float:
     """Parse '[MM:SS.mmm]' or '[MM:SS]' -> seconds as float.
 
@@ -148,6 +186,22 @@ def validate_match(
     Returns:
         ValidationResult with pass/fail verdict and details.
     """
+    # Check henchmen before expensive position analysis
+    hench_ok, hench_reason = check_henchmen(match_dir)
+    if not hench_ok:
+        return ValidationResult(
+            passed=False,
+            match_folder=match_dir.name,
+            total_players=0,
+            players_with_jumps=0,
+            total_jumps_200=0,
+            total_snapshots=0,
+            corruption_ratio=0.0,
+            median_p95=0.0,
+            duration_minutes=0.0,
+            reason=hench_reason,
+        )
+
     agents_dir = match_dir / "Agents"
     if not agents_dir.exists() or not agents_dir.is_dir():
         return ValidationResult(
