@@ -31,6 +31,9 @@ param(
     [Parameter(ParameterSetName = 'Run')]
     [switch]$Run,
 
+    [Parameter(ParameterSetName = 'Run')]
+    [switch]$Force,
+
     [Parameter(ParameterSetName = 'Status')]
     [switch]$Status,
 
@@ -74,6 +77,7 @@ function Read-ManagerConfig {
     if (-not $cfg['TASK_INTERVAL_MINUTES'])  { $cfg['TASK_INTERVAL_MINUTES'] = '60' }
     if (-not $cfg['NOTIFY_ON_SUCCESS'])      { $cfg['NOTIFY_ON_SUCCESS'] = 'true' }
     if (-not $cfg['STATUS_FILE_PATH'])       { $cfg['STATUS_FILE_PATH'] = Join-Path $ScriptDir 'upload_status.json' }
+    if (-not $cfg['ORCHESTRATOR_URL'])       { $cfg['ORCHESTRATOR_URL'] = 'http://127.0.0.1:8080' }
     return $cfg
 }
 
@@ -228,7 +232,7 @@ function New-FailureEmbed([hashtable]$Report, [hashtable]$StatusData) {
         description = "The upload pipeline encountered errors and could not complete."
         color       = 15158332  # red
         fields      = $fields
-        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        timestamp   = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
         footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
 }
@@ -251,7 +255,7 @@ function New-RecoveryEmbed([hashtable]$Report, [int]$PrevFailures) {
         description = "Back online after **$PrevFailures** consecutive failure(s)."
         color       = 16776960  # yellow
         fields      = $fields
-        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        timestamp   = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
         footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
 }
@@ -284,9 +288,43 @@ function New-SuccessEmbed([hashtable]$Report) {
         description = $desc
         color       = 3066993  # green
         fields      = $fields
-        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        timestamp   = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
         footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
+}
+
+# ── Session Gate ──────────────────────────────────────────────────────────────
+
+function Test-ShouldUpload {
+    <#
+    .SYNOPSIS
+        Returns $true if there is work to do: an active orchestrator session
+        or pending recordings in the staging directory.
+    #>
+    # Check orchestrator health API
+    $url = "$($script:Config['ORCHESTRATOR_URL'])/api/health"
+    try {
+        $resp = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 3 -ErrorAction Stop
+        if ($resp.session_active -eq $true) {
+            Write-Log "Orchestrator session is active, proceeding with upload"
+            return $true
+        }
+    } catch {
+        Write-Log "Orchestrator not reachable ($($_.Exception.Message)), checking staging directory" 'WARN'
+    }
+
+    # Fallback: check if staging directory has pending match folders
+    $stagingDir = Join-Path $env:USERPROFILE 'Documents\MatchDirectory'
+    if (Test-Path $stagingDir) {
+        $pending = Get-ChildItem -Path $stagingDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'rejected' -and $_.Name -ne 'processed' }
+        if ($pending -and $pending.Count -gt 0) {
+            Write-Log "Found $($pending.Count) pending folder(s) in staging, proceeding with upload"
+            return $true
+        }
+    }
+
+    return $false
 }
 
 # ── Mode: Run (default) ──────────────────────────────────────────────────────
@@ -294,6 +332,13 @@ function New-SuccessEmbed([hashtable]$Report) {
 function Invoke-Upload {
     Write-Log "========== Upload run starting =========="
     Invoke-LogRotation
+
+    # Skip if no active session and no pending uploads (unless -Force)
+    if (-not $script:ForceRun -and -not (Test-ShouldUpload)) {
+        Write-Log "No active session and no pending uploads, skipping"
+        Write-Log "========== Upload run skipped =========="
+        return
+    }
 
     $pythonExe = $script:Config['PYTHON_EXE']
     $uploadScript = Join-Path $ScriptDir 'upload_to_r2.py'
@@ -382,7 +427,7 @@ function Invoke-Upload {
     # Update status file
     $status = Read-StatusFile
     $prevFailures = [int]$status['consecutive_failures']
-    $now = Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
     $status['last_run'] = $now
     $status['last_run_status'] = $report['status']
@@ -416,16 +461,19 @@ function Invoke-Upload {
     Write-StatusFile $status
     Write-Log "Status file updated"
 
-    # Discord notifications — always notify
+    # Discord notifications — only on errors or actual uploads
+    $uploaded = [int]$report['uploaded']
     if ($report['status'] -eq 'error') {
         Write-Log "Sending failure notification" 'WARN'
         Send-DiscordWebhook (New-FailureEmbed $report $status)
     } elseif ($prevFailures -gt 0) {
         Write-Log "Sending recovery notification"
         Send-DiscordWebhook (New-RecoveryEmbed $report $prevFailures)
-    } else {
-        Write-Log "Sending success notification"
+    } elseif ($uploaded -gt 0) {
+        Write-Log "Sending success notification ($uploaded uploaded)"
         Send-DiscordWebhook (New-SuccessEmbed $report)
+    } else {
+        Write-Log "No uploads and no errors, skipping Discord notification"
     }
 
     Write-Log "========== Upload run complete =========="
@@ -660,7 +708,7 @@ function Test-UploadWebhook {
         title       = "$($script:E_TUBE) Webhook Test"
         description = "Connection successful. Notifications are working."
         color       = 3447003  # blue
-        timestamp   = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        timestamp   = ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
         footer      = @{ text = "$($script:E_GEAR) GWObserver Upload Manager" }
     }
     Send-DiscordWebhook $embed
@@ -670,6 +718,7 @@ function Test-UploadWebhook {
 # ── Main Dispatch ─────────────────────────────────────────────────────────────
 
 $script:Config = Read-ManagerConfig
+$script:ForceRun = $Force.IsPresent
 
 if ($Install) {
     Install-UploadTask
