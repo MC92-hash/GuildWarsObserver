@@ -3439,6 +3439,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSkillLasers();
     UpdateIncomingEffects();
     RenderIncomingEffects();
+    DrawFollowedAgentHUD();
     DrawRangeRings();
     DrawSpiritRanges();
     DrawWurmsShrineCaptureRadius();
@@ -5123,8 +5124,9 @@ void ReplayWindow::DrawAgentOverlay()
                 ID3D11Device* dev = m_deviceResources->GetD3DDevice();
                 ImTextureID skillTex = LoadSkillIcon(this, dev, sv.skillId,
                                                      m_skillIconIndex, m_skillIconCache);
-                constexpr float SKILL_WORLD_OFFSET = 250.f;
-                XMFLOAT3 skillPos = { pos.x, pos.y + SKILL_WORLD_OFFSET, pos.z };
+                constexpr float SKILL_SIDE_OFFSET = 55.f;
+                constexpr float SKILL_UP_OFFSET   = 40.f;
+                XMFLOAT3 skillPos = { pos.x + SKILL_SIDE_OFFSET, pos.y + SKILL_UP_OFFSET, pos.z };
                 float skX, skY;
                 if (ProjectToScreen(viewProj, vpW, vpH, skillPos, skX, skY))
                 {
@@ -16294,39 +16296,50 @@ void ReplayWindow::UpdateIncomingEffects()
         return 0;
     };
 
-    struct CombatMatch { bool found; float value; float time; };
+    const auto& combatVec = m_replayCtx.stocData.combat;
+    std::unordered_set<size_t> consumedCombat;
+
+    struct CombatMatch { bool found; float value; float time; size_t index; };
     auto findCombatValue = [&](int casterId, int targetId, float skillEndTime) -> CombatMatch {
-        for (const auto& ce : m_replayCtx.stocData.combat)
+        for (size_t i = 0; i < combatVec.size(); ++i)
         {
+            const auto& ce = combatVec[i];
             if (ce.type != "DAMAGE") continue;
             if (ce.caster_id != casterId) continue;
             if (ce.target_id != targetId) continue;
             float dt = ce.time - skillEndTime;
             if (dt < -0.1f) continue;
-            if (dt > 1.5f) break;  // wider window for ranged projectile travel
-            return { true, ce.value, ce.time };
+            if (dt > 3.0f) break;  // wider window for ranged projectile travel
+            return { true, ce.value, ce.time, i };
         }
-        return { false, 0.f, 0.f };
+        return { false, 0.f, 0.f, 0 };
     };
 
     auto& db = GetSkillDatabase();
 
     auto pushEffect = [&](IncomingEffect eff) {
-        if ((int)m_incomingEffects.size() >= kEffectMaxSlots)
+        constexpr float kMinSep = 35.f;
+        constexpr float kTimeWindow = 0.4f;
+        float bestOff = 0.f;
+        float bestDist = 0.f;
+        for (int attempt = 0; attempt < 8; ++attempt)
         {
-            auto oldest = std::min_element(m_incomingEffects.begin(), m_incomingEffects.end(),
-                [](const IncomingEffect& a, const IncomingEffect& b) { return a.spawnTime < b.spawnTime; });
-            if (oldest != m_incomingEffects.end())
-                m_incomingEffects.erase(oldest);
+            float candidate = (float)(rand() % 181) - 90.f;
+            float minDist = 999.f;
+            for (const auto& ex : m_incomingEffects)
+            {
+                if (std::abs(ex.spawnTime - eff.spawnTime) > kTimeWindow) continue;
+                minDist = std::min(minDist, std::abs(candidate - ex.xOffset));
+            }
+            if (minDist > bestDist) { bestDist = minDist; bestOff = candidate; }
+            if (bestDist >= kMinSep) break;
         }
-        for (auto& e : m_incomingEffects)
-            if (e.slot < kEffectMaxSlots - 1) e.slot++;
-        eff.slot = 0;
+        eff.xOffset = bestOff;
         m_incomingEffects.push_back(std::move(eff));
     };
 
     // Primary source: scan all agents' skill use histories for skills targeting the focused agent
-    constexpr float kProjectileWindow = 1.5f;
+    constexpr float kProjectileWindow = 3.0f;
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         if (agentId == focused) continue;
@@ -16349,6 +16362,8 @@ void ReplayWindow::UpdateIncomingEffects()
 
             // Only show if the display time falls within the current scan window
             if (showTime <= scanFrom || showTime > scanTo) continue;
+
+            if (cm.found) consumedCombat.insert(cm.index);
 
             IncomingEffect eff;
             eff.spawnTime = showTime;
@@ -16404,6 +16419,8 @@ void ReplayWindow::UpdateIncomingEffects()
                 float showTime = cm.time;
                 if (showTime > scanTo) continue;
 
+                consumedCombat.insert(cm.index);
+
                 IncomingEffect eff;
                 eff.spawnTime = showTime;
                 eff.skillId = su.skillId;
@@ -16435,6 +16452,143 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.label = "INTERRUPT";
         pushEffect(std::move(eff));
     }
+
+    // GenericValueID constants from the GW StoC protocol
+    constexpr int kDmgType_Normal        = 16;
+    constexpr int kDmgType_Critical      = 17;
+    constexpr int kDmgType_ArmorIgnoring = 55;
+
+    // Basic attack (auto-attack) damage on the focused agent.
+    // Collects both weapon damage and vampiric (ARMORIGNORING) in a tight
+    // sub-window, then displays them together (e.g. "-35 -5").
+    struct AutoAttackMatch {
+        bool               found       = false;
+        float              weaponValue = 0.f;
+        float              vampValue   = 0.f;
+        float              time        = 0.f;
+        std::vector<size_t> indices;
+    };
+
+    auto findAutoAttackDamage = [&](int casterId, int targetId, float attackTime) -> AutoAttackMatch {
+        AutoAttackMatch m;
+        for (size_t i = 0; i < combatVec.size(); ++i)
+        {
+            const auto& ce = combatVec[i];
+            if (ce.type != "DAMAGE") continue;
+            if (ce.caster_id != casterId) continue;
+            if (ce.target_id != targetId) continue;
+            float dt = ce.time - attackTime;
+            if (dt < -0.1f) continue;
+            if (dt > 3.0f) break;
+            if (consumedCombat.count(i)) continue;
+
+            if (!m.found) m.time = ce.time;
+            if (m.found && (ce.time - m.time) > 0.15f) break;
+
+            m.found = true;
+            m.indices.push_back(i);
+            if (ce.damage_type == kDmgType_ArmorIgnoring)
+                m.vampValue += ce.value;
+            else
+                m.weaponValue += ce.value;
+        }
+        return m;
+    };
+
+    constexpr float kProjectileTravelMax = 3.0f;
+    for (const auto& ev : m_replayCtx.stocData.basicAttack)
+    {
+        if (ev.type != "ATTACK_FINISHED") continue;
+        if (ev.target_id != focused) continue;
+        if (ev.time < scanTo - kProjectileTravelMax || ev.time > scanTo) continue;
+
+        auto am = findAutoAttackDamage(ev.caster_id, focused, ev.time);
+        if (!am.found) continue;
+        if (am.weaponValue > 0.f && am.vampValue > 0.f) continue;
+        if (am.time <= scanFrom || am.time > scanTo) continue;
+
+        for (size_t idx : am.indices)
+            consumedCombat.insert(idx);
+
+        IncomingEffect eff;
+        eff.spawnTime = am.time;
+        eff.skillId = 0;
+        eff.type = IncomingEffectType::BasicAttack;
+
+        uint32_t mhp = findAgentMaxHp(focused, am.time);
+        float primary = (am.weaponValue != 0.f) ? am.weaponValue : am.vampValue;
+        int rawPrimary = (mhp > 0) ? (int)std::round(std::abs(primary) * mhp) : 0;
+
+        std::string label;
+        if (rawPrimary > 0)
+            label = std::format("-{}", rawPrimary);
+        else
+            label = std::format("-{:.0f}%", std::abs(primary) * 100.f);
+
+        if (am.weaponValue != 0.f && am.vampValue != 0.f)
+        {
+            int rawVamp = (mhp > 0) ? (int)std::round(std::abs(am.vampValue) * mhp) : 0;
+            if (rawVamp > 0)
+                label += std::format(" -{}", rawVamp);
+            else
+                label += std::format(" -{:.0f}%", std::abs(am.vampValue) * 100.f);
+        }
+
+        eff.label = std::move(label);
+        pushEffect(std::move(eff));
+    }
+
+    // Final pass: unattributed damage (delayed hex triggers like Mind Wrack, Backfire)
+    constexpr int   kSkillType_Hex   = 24;
+    constexpr float kHexDurationMax  = 60.f;
+
+    for (size_t i = 0; i < combatVec.size(); ++i)
+    {
+        const auto& ce = combatVec[i];
+        if (ce.type != "DAMAGE") continue;
+        if (ce.target_id != focused) continue;
+        if (ce.time <= scanFrom || ce.time > scanTo) continue;
+        if (ce.value > 0.f) continue;
+        if (ce.caster_id == focused) continue;
+        if (consumedCombat.count(i)) continue;
+
+        auto casterIt = m_replayCtx.agents.find(ce.caster_id);
+        if (casterIt == m_replayCtx.agents.end()) continue;
+
+        int bestSkillId = 0;
+        float bestEndTime = -1.f;
+        for (const auto& su : casterIt->second.skillUseHistory)
+        {
+            if (su.wasCancelled) continue;
+            if (su.targetId != focused) continue;
+            if (su.endTime > ce.time) continue;
+            if (ce.time - su.endTime > kHexDurationMax) continue;
+
+            const SkillInfo* si = db.Get(su.skillId);
+            if (!si || si->type != kSkillType_Hex) continue;
+
+            if (su.endTime > bestEndTime)
+            {
+                bestEndTime = su.endTime;
+                bestSkillId = su.skillId;
+            }
+        }
+
+        IncomingEffect eff;
+        eff.spawnTime = ce.time;
+        eff.skillId = bestSkillId;
+        eff.type = IncomingEffectType::Damage;
+
+        uint32_t mhp = findAgentMaxHp(focused, ce.time);
+        int rawVal = (mhp > 0) ? (int)std::round(std::abs(ce.value) * mhp) : 0;
+        if (rawVal > 0)
+            eff.label = std::format("-{}", rawVal);
+        else
+            eff.label = std::format("-{:.0f}%", std::abs(ce.value) * 100.f);
+
+        consumedCombat.insert(i);
+        pushEffect(std::move(eff));
+    }
 }
 
 void ReplayWindow::RenderIncomingEffects()
@@ -16456,46 +16610,23 @@ void ReplayWindow::RenderIncomingEffects()
     auto* vp = ImGui::GetMainViewport();
     float vpW = vp->Size.x, vpH = vp->Size.y;
 
-    // Project agent position to screen
     float sx, sy, sz;
     InterpolateAgentPosition(ard, now, m_replayCtx.interpSettings, sx, sy, sz);
     XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
 
-    float agentScrX, agentScrY;
-    if (!ProjectToScreen(viewProj, vpW, vpH, worldPos, agentScrX, agentScrY)) return;
-
-    // Estimate cylinder screen radius by projecting a point offset by the world-space radius
-    constexpr float CYL_WORLD_R = 30.f;
-    XMFLOAT3 sidePos = { worldPos.x + CYL_WORLD_R, worldPos.y, worldPos.z };
-    float sideScrX, sideScrY;
-    float cylScreenR = 15.f;
-    if (ProjectToScreen(viewProj, vpW, vpH, sidePos, sideScrX, sideScrY))
-        cylScreenR = std::abs(sideScrX - agentScrX);
-    cylScreenR = std::max(cylScreenR, 8.f);
-
-    constexpr float ICON_SZ   = 22.f;
-    constexpr float SLOT_H    = 26.f;
+    constexpr float FLOAT_WORLD_BASE = 150.f;
+    constexpr float FLOAT_DISTANCE   = 90.f;
+    constexpr float ICON_SZ   = 26.f;
     constexpr float GAP       = 4.f;
-    constexpr float PILL_PAD  = 3.f;
+    constexpr float PILL_PAD  = 4.f;
 
-    float baseX = agentScrX + cylScreenR + 6.f;
-    float baseY = agentScrY - (ICON_SZ * 0.5f);
+    XMFLOAT3 floatBase = { worldPos.x, worldPos.y + FLOAT_WORLD_BASE, worldPos.z };
+    float anchorX, anchorY;
+    if (!ProjectToScreen(viewProj, vpW, vpH, floatBase, anchorX, anchorY)) return;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
-    const float labelFs = 11.f;
-
-    float maxLabelW = 0.f;
-    for (const auto& e : m_incomingEffects)
-    {
-        if (e.label.empty()) continue;
-        ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
-        maxLabelW = std::max(maxLabelW, tsz.x);
-    }
-    float stackW = ICON_SZ + GAP + PILL_PAD * 2.f + maxLabelW;
-
-    if (baseX + stackW > vpW - 20.f)
-        baseX = agentScrX - cylScreenR - 6.f - stackW;
+    const float labelFs = 13.f;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     EnsureSkillIconIndex();
@@ -16505,49 +16636,59 @@ void ReplayWindow::RenderIncomingEffects()
         float age = now - e.spawnTime;
         if (age < 0.f || age >= kEffectLifetime) continue;
 
-        float opacity = (age < 0.6f) ? 1.f : 1.f - ((age - 0.6f) / 0.6f);
+        float t = age / kEffectLifetime;
+        float opacity = (t < 0.65f) ? 1.f : 1.f - ((t - 0.65f) / 0.35f);
         opacity = std::clamp(opacity, 0.f, 1.f);
         uint8_t alpha = (uint8_t)(opacity * 255.f);
 
-        float slotY = baseY + e.slot * SLOT_H;
+        float fy = anchorY - t * FLOAT_DISTANCE;
+        float fx = anchorX + e.xOffset;
 
-        ImTextureID skillTex = nullptr;
-        if (e.skillId > 0)
-            skillTex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+        bool isBasicAttack = (e.type == IncomingEffectType::BasicAttack);
+        bool hasIcon = (e.skillId > 0) || isBasicAttack;
+        constexpr float ATK_ICON_SZ = 18.f;
+        float iconW = isBasicAttack ? ATK_ICON_SZ : ICON_SZ;
 
-        ImVec2 iconTL(baseX, slotY);
-        ImVec2 iconBR(iconTL.x + ICON_SZ, iconTL.y + ICON_SZ);
+        float totalW = 0.f;
+        ImVec2 tsz(0, 0);
+        if (!e.label.empty())
+            tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
+        if (hasIcon) totalW += iconW;
+        if (hasIcon && tsz.x > 0) totalW += GAP;
+        if (tsz.x > 0) totalW += PILL_PAD * 2.f + tsz.x;
 
-        if (skillTex)
+        float startX = fx - totalW * 0.5f;
+        float curX = startX;
+
+        if (hasIcon)
         {
-            dl->AddImage(skillTex, iconTL, iconBR,
-                ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
-        }
-        else
-        {
-            ImU32 fCol = IM_COL32(200, 180, 140, alpha);
-            float cx = (iconTL.x + iconBR.x) * 0.5f;
-            float cy = (iconTL.y + iconBR.y) * 0.5f;
-            dl->AddLine(ImVec2(cx - 6.f, cy - 6.f), ImVec2(cx + 6.f, cy + 6.f), fCol, 2.f);
-            dl->AddLine(ImVec2(cx + 6.f, cy - 6.f), ImVec2(cx - 6.f, cy + 6.f), fCol, 2.f);
+            ImTextureID tex = nullptr;
+            if (isBasicAttack)
+                tex = LoadFlagIcon(dev, "kill.png");
+            else
+                tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+            ImVec2 iconTL(curX, fy - iconW * 0.5f);
+            ImVec2 iconBR(curX + iconW, fy + iconW * 0.5f);
+            if (tex)
+                dl->AddImage(tex, iconTL, iconBR,
+                    ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
+            curX += iconW + GAP;
         }
 
-        // Skip label + pill if the effect has no label (icon-only effect)
         if (e.label.empty()) continue;
 
         ImU32 labelCol;
         switch (e.type) {
-        case IncomingEffectType::Damage:    labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
-        case IncomingEffectType::Heal:      labelCol = IM_COL32(0x60, 0xFF, 0x80, alpha); break;
-        case IncomingEffectType::Interrupt:  labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-        case IncomingEffectType::Condition:  labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-        case IncomingEffectType::Hex:       labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+        case IncomingEffectType::Damage:      labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
+        case IncomingEffectType::Heal:        labelCol = IM_COL32(0x60, 0xFF, 0x80, alpha); break;
+        case IncomingEffectType::Interrupt:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+        case IncomingEffectType::Condition:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+        case IncomingEffectType::Hex:         labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+        case IncomingEffectType::BasicAttack: labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
         }
 
-        ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
-        float pillX = iconBR.x + GAP;
-        float labelY = slotY + (ICON_SZ - tsz.y) * 0.5f;
-        float pillY = labelY - PILL_PAD;
+        float pillX = curX;
+        float pillY = fy - (tsz.y + PILL_PAD * 2.f) * 0.5f;
         float pillW = tsz.x + PILL_PAD * 2.f;
         float pillH = tsz.y + PILL_PAD * 2.f;
 
@@ -16555,7 +16696,249 @@ void ReplayWindow::RenderIncomingEffects()
             IM_COL32(0, 0, 0, (uint8_t)(0.55f * 255.f * opacity)), 3.f);
 
         dl->AddText(font, labelFs,
-            ImVec2(pillX + PILL_PAD, labelY), labelCol, e.label.c_str());
+            ImVec2(pillX + PILL_PAD, fy - tsz.y * 0.5f), labelCol, e.label.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Top-of-screen HUD for the followed agent: health bar (with name inside)
+// and current skill cast bar.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawFollowedAgentHUD()
+{
+    int focused = GetFocusedAgentId();
+    if (focused < 0) return;
+
+    auto it = m_replayCtx.agents.find(focused);
+    if (it == m_replayCtx.agents.end()) return;
+    const auto& ard = it->second;
+    if (ard.snapshots.empty()) return;
+
+    const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
+    if (!snap) return;
+
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+
+    // --- Panel background (only around health bar) ---
+    constexpr float BAR_W   = 320.f;
+    constexpr float BAR_H   = 26.f;
+    constexpr float PAD     = 6.f;
+    constexpr float TOP_Y   = 36.f;   // below the menu bar
+    constexpr float PANEL_R = 5.f;
+
+    float panelW = BAR_W + PAD * 2.f;
+    float panelH = PAD + BAR_H + PAD;
+    float panelX = (vpW - panelW) * 0.5f;
+    float panelY = TOP_Y;
+
+    bool isDead = snap->is_dead;
+    float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
+    uint8_t teamId = (uint8_t)ard.teamId;
+
+    ImVec2 panelTL(panelX, panelY);
+    ImVec2 panelBR(panelX + panelW, panelY + panelH);
+
+    ImU32 panelBg = (teamId == 1)
+        ? IM_COL32(0x0A, 0x12, 0x28, 0xA0)   // dark blue, more transparent
+        : IM_COL32(0x28, 0x0A, 0x0A, 0xA0);   // dark red, more transparent
+    dl->AddRectFilled(panelTL, panelBR, panelBg, PANEL_R);
+    dl->AddRect(panelTL, panelBR, IM_COL32(0xA0, 0xA0, 0xA0, 0x90), PANEL_R, 0, 1.0f);
+
+    // Health bar inside the panel
+    float barX = panelX + PAD;
+    float barY = panelY + PAD;
+    ImVec2 barTL(barX, barY);
+    ImVec2 barBR(barX + BAR_W, barY + BAR_H);
+
+    auto sv = ard.skillVisualAtTime(m_debugTimeline);
+    bool showCast = (sv.skillId > 0 && sv.alpha > 0.f);
+    constexpr float CAST_ICON  = 34.f;
+    constexpr float CAST_GAP   = 5.f;
+    constexpr float CAST_BAR_H = 18.f;
+
+    const Gradient5* deadGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+    const Gradient5* fillGrad = nullptr;
+    if (isDead)
+        fillGrad = deadGrad;
+    else if (snap->has_degen_hex)
+        fillGrad = &kDegenHex;
+    else if (snap->has_poison)
+        fillGrad = &kPoison;
+    else if (snap->has_bleeding)
+        fillGrad = &kBleeding;
+    else
+        fillGrad = (teamId == 1) ? &kAliveBlue : &kAliveRed;
+
+    ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
+    ImVec2 innerBR(barBR.x - 1, barBR.y - 1);
+    float innerW = innerBR.x - innerTL.x;
+
+    dl->AddRectFilled(barTL, barBR, IM_COL32(0, 0, 0, 0xFF), 2.f);
+
+    if (isDead)
+    {
+        DrawGradientRect(dl, innerTL, innerBR, *fillGrad);
+    }
+    else
+    {
+        DrawGradientRect(dl, innerTL, innerBR, *deadGrad);
+        if (healthPct > 0.f)
+        {
+            bool dw = snap->has_deep_wound && !isDead;
+            float fp = dw ? std::min(healthPct, 0.80f) : healthPct;
+            DrawGradientRect(dl, innerTL, ImVec2(innerTL.x + innerW * fp, innerBR.y), *fillGrad);
+            if (dw)
+            {
+                float dwX = innerTL.x + innerW * 0.80f;
+                DrawGradientRect(dl, ImVec2(dwX, innerTL.y), innerBR, kDeepWound);
+            }
+        }
+    }
+
+    dl->AddRect(barTL, barBR, IM_COL32(0x50, 0x50, 0x50, 0xFF), 2.f);
+
+    // Agent name inside the health bar
+    const std::string& nameLabel = ard.partyBarLabel.empty() ? GetAgentLabel(ard) : ard.partyBarLabel;
+
+    ImVec2 nameSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, nameLabel.c_str());
+    float nameX = barTL.x + 5.f;
+    float nameY = barTL.y + (BAR_H - nameSz.y) * 0.5f;
+    dl->AddText(ImVec2(nameX + 1.f, nameY + 1.f), IM_COL32(0, 0, 0, 0xCC), nameLabel.c_str());
+    ImU32 nameCol = isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+    dl->AddText(ImVec2(nameX, nameY), nameCol, nameLabel.c_str());
+
+    // --- Current skill cast bar (icon left-aligned under health bar) ---
+    if (showCast)
+    {
+        auto& db = GetSkillDatabase();
+        const SkillInfo* si = db.Get(sv.skillId);
+        uint8_t castAlpha = (uint8_t)(sv.alpha * 255.f);
+
+        float castY = panelBR.y + CAST_GAP;
+        float castBarW = BAR_W - CAST_ICON - CAST_GAP;
+
+        ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+        EnsureSkillIconIndex();
+        ImTextureID skillTex = LoadSkillIcon(this, dev, sv.skillId,
+                                             m_skillIconIndex, m_skillIconCache);
+        if (skillTex)
+        {
+            ImVec2 icoTL(barX, castY);
+            ImVec2 icoBR(barX + CAST_ICON, castY + CAST_ICON);
+            dl->AddImage(skillTex, icoTL, icoBR,
+                ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, castAlpha));
+        }
+
+        float cbX = barX + CAST_ICON + CAST_GAP;
+        float cbY = castY + (CAST_ICON - CAST_BAR_H) * 0.5f;
+        constexpr float CB_R = 6.f;
+        ImVec2 cbTL(cbX, cbY);
+        ImVec2 cbBR(cbX + castBarW, cbY + CAST_BAR_H);
+        float midY = cbTL.y + CAST_BAR_H * 0.5f;
+
+        dl->AddRectFilled(cbTL, cbBR, IM_COL32(0x0C, 0x0C, 0x0C, castAlpha), CB_R);
+
+        float pct = sv.progress;
+        float fillW = castBarW * pct;
+        if (pct > 0.005f)
+        {
+            static const GradStop sGreenH[] = {
+                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
+                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
+                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
+            };
+            static const GradStop sOrangeH[] = {
+                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
+                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
+                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
+                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
+            };
+            static const GradStop sPurpleH[] = {
+                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
+                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
+            };
+            const GradStop* hS;
+            int nH;
+            float topV, botV;
+            if (sv.interrupted) {
+                hS = sPurpleH; nH = 4; topV = 0.58f; botV = 0.52f;
+            } else if (sv.cancelled) {
+                hS = sOrangeH; nH = 8; topV = 0.58f; botV = 0.52f;
+            } else {
+                hS = sGreenH; nH = 6; topV = 0.55f; botV = 0.50f;
+            }
+
+            // Clip gradient to inset rect so it doesn't overflow rounded corners
+            ImVec2 inTL(cbTL.x + CB_R, cbTL.y + 1.f);
+            ImVec2 inBR(cbBR.x - CB_R, cbBR.y - 1.f);
+            float clipRight = std::min(cbTL.x + fillW, inBR.x);
+
+            dl->PushClipRect(inTL, ImVec2(clipRight, inBR.y), true);
+            int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
+            for (int seg = 0; seg < nSegs; ++seg)
+            {
+                float u0 = (float)seg / nSegs;
+                float u1 = (float)(seg + 1) / nSegs;
+                float r0, g0, b0, r1, g1, b1;
+                SampleGradient(hS, nH, u0 * pct, r0, g0, b0);
+                SampleGradient(hS, nH, u1 * pct, r1, g1, b1);
+                float x0 = cbTL.x + fillW * u0;
+                float x1 = cbTL.x + fillW * u1;
+
+                auto vig = [&](float rv, float gv, float bv, float d) -> ImU32 {
+                    float m = 1.f - d;
+                    return IM_COL32((ImU8)(rv * m), (ImU8)(gv * m), (ImU8)(bv * m), castAlpha);
+                };
+                ImU32 tl = vig(r0,g0,b0, topV);
+                ImU32 tr = vig(r1,g1,b1, topV);
+                ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, castAlpha);
+                ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, castAlpha);
+                ImU32 bl = vig(r0,g0,b0, botV);
+                ImU32 br = vig(r1,g1,b1, botV);
+
+                dl->AddRectFilledMultiColor(ImVec2(x0, cbTL.y), ImVec2(x1, midY), tl, tr, mr, ml);
+                dl->AddRectFilledMultiColor(ImVec2(x0, midY), ImVec2(x1, cbBR.y), ml, mr, br, bl);
+            }
+            dl->PopClipRect();
+
+            // Leading edge glow (also clipped)
+            float fillX = cbTL.x + fillW;
+            if (pct > 0.01f && fillX > inTL.x && fillX < inBR.x)
+            {
+                ImU8 glA1 = (ImU8)(140 * sv.alpha);
+                ImU8 glA2 = (ImU8)( 60 * sv.alpha);
+                ImU32 gc1, gc2;
+                if (sv.interrupted) {
+                    gc1 = IM_COL32(128, 48,192, glA1); gc2 = IM_COL32(128, 48,192, glA2);
+                } else if (sv.cancelled) {
+                    gc1 = IM_COL32(192,120,  0, glA1); gc2 = IM_COL32(192,120,  0, glA2);
+                } else {
+                    gc1 = IM_COL32( 96,208, 32, glA1); gc2 = IM_COL32( 96,208, 32, glA2);
+                }
+                dl->PushClipRect(inTL, inBR, true);
+                dl->AddRectFilled(ImVec2(fillX - 3.f, cbTL.y), ImVec2(fillX + 3.f, cbBR.y), gc1);
+                dl->AddRectFilled(ImVec2(fillX - 5.f, cbTL.y - 1.f), ImVec2(fillX + 5.f, cbBR.y + 1.f), gc2);
+                dl->PopClipRect();
+            }
+        }
+
+        dl->AddRect(cbTL, cbBR, IM_COL32(0x60, 0x60, 0x60, castAlpha), CB_R);
+
+        if (si && !si->name.empty())
+        {
+            float fs = 11.f;
+            ImVec2 snSz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, si->name.c_str());
+            float snX = cbTL.x + (castBarW - snSz.x) * 0.5f;
+            float snY = cbTL.y + (CAST_BAR_H - snSz.y) * 0.5f;
+            dl->AddText(font, fs, ImVec2(snX + 1.f, snY + 1.f),
+                IM_COL32(0, 0, 0, castAlpha), si->name.c_str());
+            dl->AddText(font, fs, ImVec2(snX, snY),
+                IM_COL32(0xFF, 0xFF, 0xFF, castAlpha), si->name.c_str());
+        }
     }
 }
 

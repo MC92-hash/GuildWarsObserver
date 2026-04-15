@@ -793,22 +793,22 @@ private:
     void DrawSkillAnalyticsPlayerPopups();
 
     // --- Incoming effect display ---
-    enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex };
+    enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex, BasicAttack };
     struct IncomingEffect {
         int             skillId     = 0;
         std::string     label;
         IncomingEffectType type     = IncomingEffectType::Damage;
         float           spawnTime   = 0.f;
-        int             slot        = 0;
+        float           xOffset     = 0.f;
     };
-    static constexpr float kEffectLifetime = 1.2f;
-    static constexpr int   kEffectMaxSlots = 4;
+    static constexpr float kEffectLifetime  = 1.5f;
     std::vector<IncomingEffect> m_incomingEffects;
     float m_lastEffectScanTime = -1.f;
     int   m_focusedAgentId     = -1;
 
     void UpdateIncomingEffects();
     void RenderIncomingEffects();
+    void DrawFollowedAgentHUD();
     int  GetFocusedAgentId() const;
 
     // --- Spatial Audio ---
