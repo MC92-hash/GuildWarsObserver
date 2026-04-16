@@ -77,6 +77,28 @@ def check_henchmen(
     return True, ""
 
 
+def check_match_completion(match_dir: Path) -> tuple[bool, str]:
+    """Check if the match ended with a winner (not interrupted by crash).
+
+    Returns (passed, reason).
+    """
+    infos_path = match_dir / "infos.json"
+    if not infos_path.exists():
+        return True, ""
+
+    try:
+        with open(infos_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return True, ""
+
+    winner = data.get("winner_party_id", 0)
+    if winner == 0:
+        return False, "Incomplete match: no winner (recording interrupted or GW crashed)"
+
+    return True, ""
+
+
 def parse_timestamp(ts_str: str) -> float:
     """Parse '[MM:SS.mmm]' or '[MM:SS]' -> seconds as float.
 
@@ -186,7 +208,22 @@ def validate_match(
     Returns:
         ValidationResult with pass/fail verdict and details.
     """
-    # Check henchmen before expensive position analysis
+    # Quick checks before expensive position analysis
+    complete_ok, complete_reason = check_match_completion(match_dir)
+    if not complete_ok:
+        return ValidationResult(
+            passed=False,
+            match_folder=match_dir.name,
+            total_players=0,
+            players_with_jumps=0,
+            total_jumps_200=0,
+            total_snapshots=0,
+            corruption_ratio=0.0,
+            median_p95=0.0,
+            duration_minutes=0.0,
+            reason=complete_reason,
+        )
+
     hench_ok, hench_reason = check_henchmen(match_dir)
     if not hench_ok:
         return ValidationResult(
