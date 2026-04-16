@@ -2540,6 +2540,8 @@ void ReplayWindow::Render()
 
     DrawFogOfWar();
 
+    DrawAgentModels();
+
     DrawAgentCylinders();
 
     DrawImGuiOverlay();
@@ -3233,6 +3235,7 @@ void ReplayWindow::DrawImGuiOverlay()
             {
                 ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
                 ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+                ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
             }
             ImGui::EndMenu();
         }
@@ -3283,6 +3286,110 @@ void ReplayWindow::DrawImGuiOverlay()
 
     if (m_showAssetInspector)
         DrawAssetInspectorWindow();
+
+    if (m_showAgentModelWindow)
+    {
+        ImGui::SetNextWindowSize(ImVec2(300, 160), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Agent 3D Models", &m_showAgentModelWindow))
+        {
+            bool prevToggle = m_useAgentModels;
+            ImGui::Checkbox("Enable 3D Agent Models", &m_useAgentModels);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Replace NPC/spirit cylinders with actual GW models");
+
+            if (m_useAgentModels && !m_agentModelsLoaded)
+                LoadAgentModels();
+
+            if (m_useAgentModels && !prevToggle && m_agentModelsLoaded)
+            {
+                // Turning on: meshes will be shown by DrawAgentModels()
+            }
+            if (!m_useAgentModels && prevToggle && m_agentModelsLoaded)
+            {
+                // Turning off: hide all agent model meshes
+                auto* meshMgr = m_mapRenderer->GetMeshManager();
+                for (auto& [agentId, meshIds] : m_agentMeshIds)
+                    for (int mid : meshIds)
+                        meshMgr->SetMeshShouldRender(mid, false);
+            }
+
+            ImGui::SliderFloat("Model Scale", &m_agentModelScale, 0.1f, 5.0f, "%.2f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Scale factor for agent 3D models");
+
+            ImGui::Separator();
+            if (m_agentModelsLoaded) {
+                ImGui::Text("Loaded: %d unique models, %d agents",
+                    (int)m_agentModelTemplates.size(), (int)m_agentMeshIds.size());
+
+                if (ImGui::TreeNode("NPC/Spirit Agent Diagnostics"))
+                {
+                    if (ImGui::BeginTable("AgentModelDiag", 7,
+                        ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+                        ImVec2(0, 300)))
+                    {
+                        ImGui::TableSetupColumn("ID",      ImGuiTableColumnFlags_WidthFixed, 35);
+                        ImGui::TableSetupColumn("Type",    ImGuiTableColumnFlags_WidthFixed, 55);
+                        ImGui::TableSetupColumn("Mdl",     ImGuiTableColumnFlags_WidthFixed, 35);
+                        ImGui::TableSetupColumn("Tm",      ImGuiTableColumnFlags_WidthFixed, 25);
+                        ImGui::TableSetupColumn("Hash",    ImGuiTableColumnFlags_WidthFixed, 65);
+                        ImGui::TableSetupColumn("Mesh#",   ImGuiTableColumnFlags_WidthFixed, 40);
+                        ImGui::TableSetupColumn("Render Status", ImGuiTableColumnFlags_WidthStretch);
+                        ImGui::TableHeadersRow();
+
+                        for (auto& [agentId, ard] : m_replayCtx.agents)
+                        {
+                            if (ard.type != AgentType::NPC && ard.type != AgentType::Spirit
+                                && ard.type != AgentType::Unknown)
+                                continue;
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0); ImGui::Text("%d", agentId);
+                            ImGui::TableSetColumnIndex(1); ImGui::Text("%s", AgentTypeName(ard.type));
+                            ImGui::TableSetColumnIndex(2); ImGui::Text("%u", ard.modelId);
+                            ImGui::TableSetColumnIndex(3); ImGui::Text("%u", ard.teamId);
+                            auto cacheIt = m_agentFileHashCache.find(agentId);
+                            ImGui::TableSetColumnIndex(4);
+                            if (cacheIt != m_agentFileHashCache.end())
+                                ImGui::Text("0x%X", cacheIt->second);
+                            else
+                                ImGui::TextDisabled("none");
+                            auto meshIt = m_agentMeshIds.find(agentId);
+                            ImGui::TableSetColumnIndex(5);
+                            if (meshIt != m_agentMeshIds.end())
+                                ImGui::Text("%d", (int)meshIt->second.size());
+                            else
+                                ImGui::TextDisabled("-");
+                            ImGui::TableSetColumnIndex(6);
+                            auto statusIt = m_agentModelRenderStatus.find(agentId);
+                            if (statusIt != m_agentModelRenderStatus.end())
+                                ImGui::TextWrapped("%s", statusIt->second.c_str());
+                            else
+                                ImGui::TextDisabled("n/a");
+                        }
+                        ImGui::EndTable();
+                    }
+
+                    if (ImGui::TreeNode("Model 174 agents (all types)"))
+                    {
+                        for (auto& [agentId, ard] : m_replayCtx.agents)
+                        {
+                            if (ard.modelId != 174) continue;
+                            ImGui::Text("Agent %d: type=%s team=%u amt=0x%X",
+                                        agentId, AgentTypeName(ard.type), ard.teamId, ard.agentModelType);
+                        }
+                        ImGui::TreePop();
+                    }
+
+                    ImGui::TreePop();
+                }
+            } else if (m_useAgentModels) {
+                ImGui::TextDisabled("Loading models...");
+            } else {
+                ImGui::TextDisabled("Enable to load models from DAT");
+            }
+        }
+        ImGui::End();
+    }
 
     if (m_showShortcutPreferences)
     {
@@ -4626,6 +4733,337 @@ void ReplayWindow::InitCylinderRenderer()
     }
 }
 
+// ---------------------------------------------------------------------------
+// Load 3D models from the .dat for known NPC / spirit agent types.
+// Creates per-agent mesh instances so each agent can have its own transform.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::LoadAgentModels()
+{
+    if (m_agentModelsLoaded) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    if (!m_datManager || !m_hashIndex) return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    if (!map_renderer) return;
+
+    // 1. Collect unique file hashes needed and cache per-agent hash
+    std::unordered_set<uint32_t> uniqueHashes;
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        uint32_t fileHash = LookupAgentFileHash(ard.type, ard.modelId);
+        if (fileHash == 0) continue;
+        m_agentFileHashCache[agentId] = fileHash;
+        uniqueHashes.insert(fileHash);
+    }
+
+    if (uniqueHashes.empty()) { m_agentModelsLoaded = true; return; }
+
+    // 2. For each unique file hash, parse the model and build template meshes
+    for (uint32_t fileHash : uniqueHashes)
+    {
+        auto hashIt = m_hashIndex->find(static_cast<int>(fileHash));
+        if (hashIt == m_hashIndex->end() || hashIt->second.empty()) continue;
+
+        int mftIndex = hashIt->second.at(0);
+        const auto& mft = m_datManager->get_MFT();
+        if (mftIndex < 0 || mftIndex >= (int)mft.size()) continue;
+        if (mft[mftIndex].type != FFNA_Type2) continue;
+
+        bool isOtherFormat = m_datManager->is_other_model_format(mftIndex);
+
+        FFNA_ModelFile modelFile;
+        FFNA_ModelFile_Other modelFileOther;
+
+        try {
+            if (isOtherFormat)
+                modelFileOther = m_datManager->parse_ffna_model_file_other(mftIndex);
+            else
+                modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+        } catch (...) { continue; }
+
+        if (isOtherFormat && !modelFileOther.parsed_correctly) continue;
+        if (!isOtherFormat && !modelFile.parsed_correctly) continue;
+
+        const size_t numModels = isOtherFormat
+            ? modelFileOther.geometry_chunk.models.size()
+            : modelFile.geometry_chunk.models.size();
+
+        // Build meshes for each submodel
+        std::vector<Mesh> propMeshes;
+        for (size_t j = 0; j < numModels; j++)
+        {
+            AMAT_file amat;
+            if (!isOtherFormat && !modelFile.AMAT_filenames_chunk.texture_filenames.empty()) {
+                const auto& geom = modelFile.geometry_chunk;
+                int subIdx = geom.models[j].unknown;
+                if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                    subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % (int)modelFile.AMAT_filenames_chunk.texture_filenames.size();
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+
+            Mesh mesh = isOtherFormat
+                ? modelFileOther.GetMesh((int)j, amat)
+                : modelFile.GetMesh((int)j, amat);
+
+            if (mesh.indices.size() % 3 == 0 && !mesh.indices.empty())
+                propMeshes.push_back(mesh);
+        }
+        if (propMeshes.empty()) continue;
+
+        // Load textures — collect decoded file hashes first since the two
+        // format variants use different struct types for texture filenames.
+        const bool texOk = isOtherFormat
+            ? modelFileOther.textures_parsed_correctly
+            : modelFile.textures_parsed_correctly;
+
+        std::vector<int> texFileHashes;
+        if (texOk) {
+            if (isOtherFormat) {
+                for (const auto& tf : modelFileOther.texture_filenames_chunk.texture_filenames)
+                    texFileHashes.push_back(decode_filename(tf.id0, tf.id1));
+            } else {
+                for (const auto& tf : modelFile.texture_filenames_chunk.texture_filenames)
+                    texFileHashes.push_back(decode_filename(tf.id0, tf.id1));
+            }
+        }
+
+        std::vector<int> textureIds;
+        for (int decoded : texFileHashes) {
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto mit = m_hashIndex->find(decoded);
+            if (mit != m_hashIndex->end()) {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(mit->second.at(0));
+                if (dt.width > 0 && dt.height > 0) {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            } else {
+                textureIds.push_back(-1);
+            }
+        }
+
+        // Remap per-mesh texture indices
+        std::vector<std::vector<int>> perMeshTexIds(propMeshes.size());
+        for (size_t k = 0; k < propMeshes.size(); k++) {
+            std::vector<uint8_t> remappedIndices;
+            for (size_t ti = 0; ti < propMeshes[k].tex_indices.size(); ti++) {
+                int idx = std::min((int)propMeshes[k].tex_indices[ti], (int)textureIds.size() - 1);
+                if (idx >= 0 && idx < (int)textureIds.size()) {
+                    perMeshTexIds[k].push_back(textureIds[idx]);
+                    remappedIndices.push_back((uint8_t)ti);
+                }
+            }
+            propMeshes[k].tex_indices = remappedIndices;
+        }
+
+        // Build template PerObjectCBs (identity world, correct UV/texture mapping)
+        std::vector<PerObjectCB> templateCBs(propMeshes.size());
+        for (size_t j = 0; j < propMeshes.size(); j++) {
+            XMStoreFloat4x4(&templateCBs[j].world, XMMatrixIdentity());
+            auto& mesh = propMeshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES && texOk) {
+                templateCBs[j].num_uv_texture_pairs = (uint32_t)mesh.uv_coord_indices.size();
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++) {
+                    templateCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
+                    templateCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
+                    templateCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
+                    templateCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                }
+            }
+        }
+
+        const bool hasNewTexStuff = isOtherFormat
+            ? !modelFileOther.geometry_chunk.unknown_tex_stuff1.empty()
+            : !modelFile.geometry_chunk.unknown_tex_stuff1.empty();
+        auto pst = hasNewTexStuff ? PixelShaderType::NewModel : PixelShaderType::OldModel;
+
+        // Compute native bounding box from all submesh vertices
+        float bbMinX = FLT_MAX, bbMinY = FLT_MAX, bbMinZ = FLT_MAX;
+        float bbMaxX = -FLT_MAX, bbMaxY = -FLT_MAX, bbMaxZ = -FLT_MAX;
+        for (const auto& mesh : propMeshes) {
+            for (const auto& v : mesh.vertices) {
+                bbMinX = std::min(bbMinX, v.position.x);
+                bbMinY = std::min(bbMinY, v.position.y);
+                bbMinZ = std::min(bbMinZ, v.position.z);
+                bbMaxX = std::max(bbMaxX, v.position.x);
+                bbMaxY = std::max(bbMaxY, v.position.y);
+                bbMaxZ = std::max(bbMaxZ, v.position.z);
+            }
+        }
+
+        // Store template with bounding box info
+        AgentModelInstance tmpl;
+        tmpl.templateCBs = templateCBs;
+        tmpl.nativeHeight = bbMaxY - bbMinY;
+        tmpl.nativeMinY = bbMinY;
+        tmpl.nativeCenter = { (bbMinX + bbMaxX) * 0.5f, (bbMinY + bbMaxY) * 0.5f, (bbMinZ + bbMaxZ) * 0.5f };
+        tmpl.meshIds.reserve(propMeshes.size());
+        m_agentModelTemplates[fileHash] = std::move(tmpl);
+
+        // 3. For each agent using this model, create a separate prop instance
+        for (auto& [agentId, cachedHash] : m_agentFileHashCache)
+        {
+            if (cachedHash != fileHash) continue;
+
+            std::vector<PerObjectCB> agentCBs = templateCBs;
+            auto meshIds = map_renderer->AddProp(propMeshes, agentCBs, 0x80000000u | (uint32_t)agentId, pst);
+
+            if (texOk) {
+                for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++) {
+                    map_renderer->GetMeshManager()->SetTexturesForMesh(
+                        meshIds[l], map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]), 3);
+                }
+            }
+
+            // Start hidden; DrawAgentModels will show/position them each frame
+            for (int mid : meshIds)
+                map_renderer->GetMeshManager()->SetMeshShouldRender(mid, false);
+
+            m_agentMeshIds[agentId] = meshIds;
+        }
+    }
+
+    m_agentModelsLoaded = true;
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame: update agent model world transforms and visibility
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawAgentModels()
+{
+    if (!m_useAgentModels || !m_agentModelsLoaded) return;
+    if (!m_showAgentOverlay) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    auto* meshMgr = m_mapRenderer->GetMeshManager();
+    if (!meshMgr) return;
+
+    const MapTransform& mt = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+
+    bool hasBounds = (terrain != nullptr);
+    float bMinX = 0, bMaxX = 0, bMinZ = 0, bMaxZ = 0;
+    if (hasBounds) {
+        bMinX = terrain->m_bounds.map_min_x;
+        bMaxX = terrain->m_bounds.map_max_x;
+        bMinZ = terrain->m_bounds.map_min_z;
+        bMaxZ = terrain->m_bounds.map_max_z;
+    }
+
+    for (auto& [agentId, meshIds] : m_agentMeshIds)
+    {
+        auto agentIt = m_replayCtx.agents.find(agentId);
+        if (agentIt == m_replayCtx.agents.end()) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            m_agentModelRenderStatus[agentId] = std::format("hidden: not in agents (meshes={})", meshIds.size());
+            continue;
+        }
+
+        auto& ard = agentIt->second;
+        if (ard.snapshots.empty()) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            m_agentModelRenderStatus[agentId] = "hidden: no snapshots";
+            continue;
+        }
+
+        // Spirits: only visible within their snapshot time range
+        if (ard.type == AgentType::Spirit) {
+            if (m_debugTimeline < ard.snapshots.front().time ||
+                m_debugTimeline > ard.snapshots.back().time ||
+                ard.overlapHidden ||
+                ard.isDeadAtTime(m_debugTimeline) ||
+                !ard.isAliveAtTime(m_debugTimeline)) {
+                for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+                m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
+                continue;
+            }
+        }
+
+        // NPCs/Players: check alive
+        if (ard.type == AgentType::NPC) {
+            bool dead = ard.isDeadAtTime(m_debugTimeline);
+            if (dead) {
+                for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+                m_agentModelRenderStatus[agentId] = "hidden: dead";
+                continue;
+            }
+        }
+
+        // Fog check
+        bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
+        if (inFog && !m_fogGhostMode) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            m_agentModelRenderStatus[agentId] = "hidden: fog";
+            continue;
+        }
+
+        // Get interpolated position — use agent's own height (includes plane elevation)
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+        XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
+
+        if (hasBounds) {
+            pos.x = std::clamp(pos.x, bMinX, bMaxX);
+            pos.z = std::clamp(pos.z, bMinZ, bMaxZ);
+        }
+
+        // Get rotation from nearest snapshot
+        int snapIdx = FindSnapshotIndex(ard.snapshots, m_debugTimeline);
+        float rotRad = ard.snapshots[snapIdx].rotation;
+
+        // Scale: FFNA models are already in game units; only apply the GW NPC adjustment
+        auto hashIt = m_agentFileHashCache.find(agentId);
+        uint32_t cachedHash = (hashIt != m_agentFileHashCache.end()) ? hashIt->second : 0;
+        auto tmplIt = m_agentModelTemplates.find(cachedHash);
+
+        AgentModelInfo info = LookupAgentModelInfo(ard.type, ard.modelId);
+        float scale = info.npcAdjustment * m_agentModelScale;
+        XMMATRIX centering = XMMatrixIdentity();
+
+        if (tmplIt != m_agentModelTemplates.end()) {
+            const auto& tmpl = tmplIt->second;
+            centering = XMMatrixTranslation(
+                -tmpl.nativeCenter.x, -tmpl.nativeMinY, -tmpl.nativeCenter.z);
+        }
+
+        XMMATRIX worldMat = centering
+            * XMMatrixScaling(scale, scale, scale)
+            * XMMatrixRotationY(rotRad)
+            * XMMatrixTranslation(pos.x, pos.y, pos.z);
+
+        // Update each submesh
+        int renderedCount = 0;
+        for (int mid : meshIds) {
+            meshMgr->SetMeshShouldRender(mid, true);
+            auto cbOpt = meshMgr->GetMeshPerObjectData(mid);
+            if (cbOpt.has_value()) {
+                auto cb = cbOpt.value();
+                XMStoreFloat4x4(&cb.world, worldMat);
+                if (inFog) cb.mesh_alpha = 0.3f;
+                else cb.mesh_alpha = 1.0f;
+                meshMgr->UpdateMeshPerObjectData(mid, cb);
+                renderedCount++;
+            }
+        }
+        m_agentModelRenderStatus[agentId] = std::format(
+            "shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) raw=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
+            renderedCount, meshIds.size(), pos.x, pos.y, pos.z, sx, sy, sz, scale);
+    }
+}
+
 void ReplayWindow::DrawAgentCylinders()
 {
     if (!m_showAgentOverlay) return;
@@ -4718,6 +5156,13 @@ void ReplayWindow::DrawAgentCylinders()
     {
         if (ard.snapshots.empty()) continue;
         if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+
+        // Skip cylinder for agents that have a 3D model when models are enabled.
+        // Set currentLOD=2 so DrawAgentOverlay knows they have a 3D representation.
+        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId)) {
+            ard.currentLOD = 2;
+            continue;
+        }
 
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
@@ -5089,6 +5534,10 @@ void ReplayWindow::DrawAgentOverlay()
         // Determine if this agent has a 3D representation or needs a 2D dot
         bool is3DAgent = (ard.type == AgentType::Player || ard.type == AgentType::NPC);
         bool showDot = !is3DAgent;
+
+        // Agents with 3D models don't need dots
+        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId))
+            showDot = false;
 
         // For players/NPCs, check LOD: if Dot mode, use stylized profession icon for players
         if (is3DAgent && ard.currentLOD == 0)

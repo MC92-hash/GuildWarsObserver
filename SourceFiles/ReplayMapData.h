@@ -179,6 +179,86 @@ inline bool IsNatureRitual(uint32_t modelId)
 }
 
 // ---------------------------------------------------------------------------
+// Offensive binding ritual classification (attack/disrupt spirits)
+// ---------------------------------------------------------------------------
+
+inline bool IsOffensiveBindingRitual(uint32_t modelId)
+{
+    switch (modelId) {
+    case 5905: // Agony
+    case 5771: // Anguish
+    case 4278: // Bloodsong
+    case 4265: // Pain
+    case 4279: // Wanderlust
+    case 4264: // Shadowsong
+    case 4266: // Destruction
+    case 4272: // Dissonance
+    case 4276: // Disenchantment
+    case 5773: // Gaze of Fury
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent model_id + type -> .dat file hash for 3D model lookup
+// Returns 0 if no model is available for this agent.
+// ---------------------------------------------------------------------------
+
+inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId)
+{
+    if (type == AgentType::Spirit) {
+        if (IsNatureRitual(modelId)) return 0x22A34;
+        if (IsOffensiveBindingRitual(modelId)) return 0x2D408;
+        return 0x2D44E; // Defensive binding rituals (all remaining)
+    }
+    if (type == AgentType::NPC) {
+        switch (modelId) {
+        case 170: return 0x2D161; // Guild Lord
+        case 172: return 0x2D236; // Bodyguard
+        case 173: return 0x26C4A; // Footman (same model as Knight)
+        case 174: return 0x26C4A; // Knight
+        case 175: case 176: return 0x2D18A; // Archer
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Combined model info: file hash + GWCA height + NPC adjustment scale
+// Used to compute accurate per-model-type scaling in the replay window.
+// ---------------------------------------------------------------------------
+
+struct AgentModelInfo {
+    uint32_t fileHash;
+    float    targetHeight;   // game-unit height from GWCA (0 = unknown)
+    float    npcAdjustment;  // scale multiplier (1.0 = 100%, 1.3 = 130%)
+};
+
+inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId)
+{
+    if (type == AgentType::Spirit) {
+        if (IsNatureRitual(modelId))
+            return { 0x22A34, 73.917145f, 0.8f };   // Nature rituals (0x50 = 80%)
+        if (IsOffensiveBindingRitual(modelId))
+            return { 0x2D408, 95.705956f, 1.0f };   // Offensive binding rituals
+        return { 0x2D44E, 84.404671f, 1.0f };       // Defensive binding rituals
+    }
+    if (type == AgentType::NPC) {
+        switch (modelId) {
+        case 170: return { 0x2D161, 98.454437f, 1.3f };  // Guild Lord (0x82 = 130%)
+        case 172: return { 0x2D236, 75.844055f, 1.0f };  // Bodyguard
+        case 173: return { 0x26C4A, 75.734184f, 1.0f };  // Footman
+        case 174: return { 0x26C4A, 75.734184f, 1.0f };  // Knight
+        case 175:
+        case 176: return { 0x2D18A, 72.0f,      1.0f };  // Archer
+        }
+    }
+    return { 0, 0.f, 1.0f };
+}
+
+// ---------------------------------------------------------------------------
 // Spirit effect range (game units) for drawing range circles
 // ---------------------------------------------------------------------------
 

@@ -82,6 +82,8 @@ private:
     void DrawAgentOverlay();
     void DrawAgentCylinders();
     void InitCylinderRenderer();
+    void LoadAgentModels();
+    void DrawAgentModels();
     void DrawMapCalibrationWindow();
     void DrawInterpolationWindow();
     void DrawTimelineController();
@@ -539,6 +541,32 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_pillarVB;
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_pillarIB;
     UINT m_pillarIndexCount = 0;
+
+    // --- 3D Agent model rendering (replaces cylinders when enabled) ---
+    bool m_showAgentModelWindow = false;
+    bool m_useAgentModels = false;
+    bool m_agentModelsLoaded = false;
+    float m_agentModelScale = 1.0f;
+
+    struct AgentModelInstance {
+        std::vector<int> meshIds;
+        std::vector<PerObjectCB> templateCBs;
+        float nativeHeight = 0.f;
+        float nativeMinY = 0.f;
+        DirectX::XMFLOAT3 nativeCenter = { 0.f, 0.f, 0.f };
+    };
+
+    // file hash -> parsed model template (shared geometry, one AddProp per unique model)
+    std::unordered_map<uint32_t, AgentModelInstance> m_agentModelTemplates;
+
+    // agent_id -> per-agent mesh IDs (each agent gets its own AddProp so transforms are independent)
+    std::unordered_map<int, std::vector<int>> m_agentMeshIds;
+
+    // agent_id -> file hash (cached so we don't re-lookup every frame)
+    std::unordered_map<int, uint32_t> m_agentFileHashCache;
+
+    // Per-frame diagnostic: why each agent's model was shown/hidden
+    std::unordered_map<int, std::string> m_agentModelRenderStatus;
 
     // --- Loading overlay GPU resources ---
     struct OverlayVertex { float x, y, r, g, b, a; };
