@@ -228,7 +228,7 @@ inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool is
     // Male variants
     static constexpr uint32_t kWarM[]  = { 0x1FC11, 0x2D2A4 };          // Stefan, Lukas
     static constexpr uint32_t kRanM[]  = { 0x1FBBA, 0x26C56 };          // Aidan, Zaishen Archer
-    static constexpr uint32_t kMonM[]  = { 0x1FBC7, 0x26C4D };          // Mhenlo, Zaishen Healer
+    static constexpr uint32_t kMonM[]  = { 0x26C4D };                    // Zaishen Healer
     static constexpr uint32_t kNecM[]  = { 0x3BBC6 };                   // Olias
     static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236 };          // Orion, Headmaster Vhang
     static constexpr uint32_t kMesM[]  = { 0x2D21E, 0x1C7CD };          // Lo Sha, Dunham
@@ -237,10 +237,11 @@ inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool is
     static constexpr uint32_t kParM[]  = { 0x3BD8E };                   // Sogolon
     static constexpr uint32_t kDerM[]  = { 0x4C454 };                   // Kahmu
 
+    // GW internal profession IDs: 1=W 2=R 3=Mo 4=N 5=Me 6=E 7=A 8=Rt 9=P 10=D
     if (isFemale) {
         switch (primaryProf) {
         case 1:  return kWarF;  case 2:  return kRanF;  case 3:  return kMonF;
-        case 4:  return kNecF;  case 5:  return kEleF;  case 6:  return kMesF;
+        case 4:  return kNecF;  case 5:  return kMesF;  case 6:  return kEleF;
         case 7:  return kAssF;  case 8:  return kRitF;  case 9:  return kParF;
         case 10: return kDerF;
         default: return {};
@@ -248,7 +249,7 @@ inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool is
     } else {
         switch (primaryProf) {
         case 1:  return kWarM;  case 2:  return kRanM;  case 3:  return kMonM;
-        case 4:  return kNecM;  case 5:  return kEleM;  case 6:  return kMesM;
+        case 4:  return kNecM;  case 5:  return kMesM;  case 6:  return kEleM;
         case 7:  return kAssM;  case 8:  return kRitM;  case 9:  return kParM;
         case 10: return kDerM;
         default: return {};
@@ -301,7 +302,7 @@ inline AgentModelInfo LookupPlayerModelInfo(int primaryProf, bool isFemale)
     uint32_t hash = LookupPlayerFileHash(primaryProf, isFemale);
     if (hash == 0) return { 0, 0.f, 1.0f };
     float height = isFemale ? 73.640617f : 75.844055f;
-    if (!isFemale && (primaryProf == 1 || primaryProf == 3 || primaryProf == 6))
+    if (!isFemale && (primaryProf == 1 || primaryProf == 3 || primaryProf == 5))
         height = 75.734184f;
     return { hash, height, 1.0f };
 }

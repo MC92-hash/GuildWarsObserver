@@ -13,6 +13,8 @@
 #include "CursorSystem.h"
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
+#include "Parsers/BB9AnimationParser.h"
+#include "Parsers/FileReferenceParser.h"
 
 #define NANOSVG_IMPLEMENTATION
 #include "../ThirdParty/nanosvg/nanosvg.h"
@@ -552,6 +554,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
     }
 
     rw->m_alive = true;
+    rw->m_useAgentModels = GuiGlobalConstants::use_3d_agent_models;
     rw->m_loadingPhase = LoadingPhase::Validate;
 
     ShowWindow(rw->m_hwnd, SW_SHOWMAXIMIZED);
@@ -563,6 +566,8 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    if (m_agentModelLoadThread.joinable())
+        m_agentModelLoadThread.join();
     if (m_audioEngine) m_audioEngine->Shutdown();
     ShutdownImGui();
     if (m_hwnd)
@@ -1436,11 +1441,34 @@ void ReplayWindow::StepPlaceProps()
 
     m_propPlaceIndex = end;
 
-    if (total > 0)
-        m_loadProgress = 0.30f + 0.70f * (static_cast<float>(m_propPlaceIndex) / total);
+    if (total > 0) {
+        float propRange = m_useAgentModels ? 0.60f : 0.70f;
+        m_loadProgress = 0.30f + propRange * (static_cast<float>(m_propPlaceIndex) / total);
+    }
 
     if (m_propPlaceIndex >= total)
     {
+        if (m_useAgentModels && !m_agentModelsLoaded && !m_agentModelsLoading)
+            LoadAgentModelsAsync();
+
+        if (m_agentModelsLoading && !m_agentModelsLoaded) {
+            if (m_bgLoadDone)
+                StepCreateAgentModelResources();
+
+            // Update progress: 0.90..0.95 for IO, 0.95..1.0 for D3D creation
+            if (m_bgLoadTotal > 0) {
+                float ioFrac = static_cast<float>(m_bgLoadProgress.load()) / m_bgLoadTotal;
+                if (!m_bgLoadDone) {
+                    m_loadProgress = 0.90f + 0.05f * ioFrac;
+                } else {
+                    float createFrac = static_cast<float>(m_agentModelCreateIndex)
+                                       / static_cast<float>(m_agentModelCreateOrder.size());
+                    m_loadProgress = 0.95f + 0.05f * createFrac;
+                }
+            }
+            return;
+        }
+
         m_replayCtx.mapLoaded = true;
         m_loadProgress = 1.0f;
         m_loadingPhase = LoadingPhase::FadingOut;
@@ -1606,6 +1634,7 @@ void ReplayWindow::Tick()
                 ard.primaryProf   = pm->primary;
                 ard.secondaryProf = pm->secondary;
                 ard.playerLevel   = pm->level;
+                ard.isFemale      = (pm->gender == "Female");
 
                 char buf[256];
                 snprintf(buf, sizeof(buf), "%s/%s%d %s",
@@ -2541,6 +2570,7 @@ void ReplayWindow::Render()
     DrawFogOfWar();
 
     DrawAgentModels();
+    DrawSkinnedAgentModels();
 
     DrawAgentCylinders();
 
@@ -3028,6 +3058,38 @@ void ReplayWindow::RenderLoadingScreen()
                 " / " + LsFormatWithCommas(m_totalPropFilenames) + "]");
             showedAny = true;
         }
+        else if (m_loadingPhase == LoadingPhase::PlaceProps && m_agentModelsLoading && !m_agentModelsLoaded)
+        {
+            if (!m_bgLoadDone) {
+                int prog = m_bgLoadProgress.load();
+                auto subPhase = static_cast<AgentLoadSubPhase>(m_bgLoadSubPhase.load());
+                const char* subLabel = "";
+                switch (subPhase) {
+                    case AgentLoadSubPhase::ParsingModel:         subLabel = "Parsing model geometry..."; break;
+                    case AgentLoadSubPhase::LoadingTextures:       subLabel = "Loading textures..."; break;
+                    case AgentLoadSubPhase::DiscoveringAnimations: subLabel = "Discovering animations..."; break;
+                    case AgentLoadSubPhase::ScanningReferences:    subLabel = "Scanning animation references..."; break;
+                    case AgentLoadSubPhase::ScanningMFT:           subLabel = "Scanning DAT file for animations..."; break;
+                    case AgentLoadSubPhase::BuildingAnimData:      subLabel = "Building animation data..."; break;
+                    default: break;
+                }
+                ImU32 subCol = IM_COL32(180, 180, 180, static_cast<int>(170 * alpha));
+                if (subLabel[0]) {
+                    ImVec2 subSz = ImGui::CalcTextSize(subLabel);
+                    float subX = barRight - subSz.x;
+                    textY -= lineH;
+                    LsDrawTextWithShadow(dl, ImVec2(subX, textY), subCol, subLabel);
+                }
+                int display = std::min(prog + 1, m_bgLoadTotal);
+                drawStatusLine("Loading 3D models  ",
+                    "[" + std::to_string(display) + " / " + std::to_string(m_bgLoadTotal) + "]");
+            } else {
+                int total3d = static_cast<int>(m_agentModelCreateOrder.size());
+                drawStatusLine("Creating 3D model resources  ",
+                    "[" + std::to_string(m_agentModelCreateIndex) + " / " + std::to_string(total3d) + "]");
+            }
+            showedAny = true;
+        }
         else if (m_loadingPhase == LoadingPhase::PlaceProps && m_totalPropInstances > 0)
         {
             drawStatusLine("Placing props  ",
@@ -3296,6 +3358,8 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::Checkbox("Enable 3D Agent Models", &m_useAgentModels);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Replace NPC/spirit cylinders with actual GW models");
+            if (m_useAgentModels != prevToggle)
+                GuiGlobalConstants::use_3d_agent_models = m_useAgentModels;
 
             if (m_useAgentModels && !m_agentModelsLoaded)
                 LoadAgentModels();
@@ -3322,7 +3386,7 @@ void ReplayWindow::DrawImGuiOverlay()
                 ImGui::Text("Loaded: %d unique models, %d agents",
                     (int)m_agentModelTemplates.size(), (int)m_agentMeshIds.size());
 
-                if (ImGui::TreeNode("NPC/Spirit Agent Diagnostics"))
+                if (ImGui::TreeNode("Agent Model Diagnostics"))
                 {
                     if (ImGui::BeginTable("AgentModelDiag", 7,
                         ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
@@ -3339,8 +3403,8 @@ void ReplayWindow::DrawImGuiOverlay()
 
                         for (auto& [agentId, ard] : m_replayCtx.agents)
                         {
-                            if (ard.type != AgentType::NPC && ard.type != AgentType::Spirit
-                                && ard.type != AgentType::Unknown)
+                            if (ard.type != AgentType::Player && ard.type != AgentType::NPC
+                                && ard.type != AgentType::Spirit && ard.type != AgentType::Unknown)
                                 continue;
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0); ImGui::Text("%d", agentId);
@@ -4738,20 +4802,29 @@ void ReplayWindow::InitCylinderRenderer()
 // Creates per-agent mesh instances so each agent can have its own transform.
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::LoadAgentModels()
+// ---------------------------------------------------------------------------
+// Async entry point: collects hashes, launches background IO thread
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::LoadAgentModelsAsync()
 {
-    if (m_agentModelsLoaded) return;
+    if (m_agentModelsLoaded || m_agentModelsLoading) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
     if (!m_datManager || !m_hashIndex) return;
 
-    auto* map_renderer = m_mapRenderer.get();
-    if (!map_renderer) return;
-
-    // 1. Collect unique file hashes needed and cache per-agent hash
+    // 1. Collect unique file hashes and cache per-agent hash (main thread)
     std::unordered_set<uint32_t> uniqueHashes;
+    std::unordered_map<uint64_t, int> profGenderVariantCounter;
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
-        uint32_t fileHash = LookupAgentFileHash(ard.type, ard.modelId);
+        uint32_t fileHash = 0;
+        if (ard.type == AgentType::Player) {
+            uint64_t key = ((uint64_t)ard.primaryProf << 1) | (ard.isFemale ? 1 : 0);
+            int variantIdx = profGenderVariantCounter[key]++;
+            fileHash = LookupPlayerFileHash(ard.primaryProf, ard.isFemale, variantIdx);
+        } else {
+            fileHash = LookupAgentFileHash(ard.type, ard.modelId);
+        }
         if (fileHash == 0) continue;
         m_agentFileHashCache[agentId] = fileHash;
         uniqueHashes.insert(fileHash);
@@ -4759,16 +4832,46 @@ void ReplayWindow::LoadAgentModels()
 
     if (uniqueHashes.empty()) { m_agentModelsLoaded = true; return; }
 
-    // 2. For each unique file hash, parse the model and build template meshes
-    for (uint32_t fileHash : uniqueHashes)
+    m_agentModelCreateOrder.assign(uniqueHashes.begin(), uniqueHashes.end());
+    m_bgLoadTotal = static_cast<int>(m_agentModelCreateOrder.size());
+    m_bgLoadProgress.store(0);
+    m_bgLoadDone.store(false);
+    m_agentModelCreateIndex = 0;
+    m_agentModelsLoading = true;
+
+    m_agentModelLoadThread = std::thread([this]() { LoadAgentModelsIO(); });
+}
+
+// ---------------------------------------------------------------------------
+// Background thread: DAT reads + CPU parsing, NO D3D calls
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::LoadAgentModelsIO()
+{
+    const auto& mft = m_datManager->get_MFT();
+
+    // Load persistent animation discovery cache
     {
+        auto cachePath = GW::Cache::AnimationDiscoveryCache::GetDefaultCachePath();
+        auto datPath = m_datManager->get_filepath();
+        uintmax_t datSize = 0;
+        try { datSize = std::filesystem::file_size(datPath); } catch (...) {}
+        m_animDiscoveryCache.SetDatIdentity(datPath, datSize);
+        m_animDiscoveryCache.LoadFromFile(cachePath, datPath, datSize);
+    }
+
+    for (uint32_t fileHash : m_agentModelCreateOrder)
+    {
+        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ParsingModel));
+
         auto hashIt = m_hashIndex->find(static_cast<int>(fileHash));
-        if (hashIt == m_hashIndex->end() || hashIt->second.empty()) continue;
+        if (hashIt == m_hashIndex->end() || hashIt->second.empty()) {
+            m_bgLoadProgress.fetch_add(1); continue;
+        }
 
         int mftIndex = hashIt->second.at(0);
-        const auto& mft = m_datManager->get_MFT();
-        if (mftIndex < 0 || mftIndex >= (int)mft.size()) continue;
-        if (mft[mftIndex].type != FFNA_Type2) continue;
+        if (mftIndex < 0 || mftIndex >= (int)mft.size()) { m_bgLoadProgress.fetch_add(1); continue; }
+        if (mft[mftIndex].type != FFNA_Type2) { m_bgLoadProgress.fetch_add(1); continue; }
 
         bool isOtherFormat = m_datManager->is_other_model_format(mftIndex);
 
@@ -4780,16 +4883,15 @@ void ReplayWindow::LoadAgentModels()
                 modelFileOther = m_datManager->parse_ffna_model_file_other(mftIndex);
             else
                 modelFile = m_datManager->parse_ffna_model_file(mftIndex);
-        } catch (...) { continue; }
+        } catch (...) { m_bgLoadProgress.fetch_add(1); continue; }
 
-        if (isOtherFormat && !modelFileOther.parsed_correctly) continue;
-        if (!isOtherFormat && !modelFile.parsed_correctly) continue;
+        if (isOtherFormat && !modelFileOther.parsed_correctly) { m_bgLoadProgress.fetch_add(1); continue; }
+        if (!isOtherFormat && !modelFile.parsed_correctly) { m_bgLoadProgress.fetch_add(1); continue; }
 
         const size_t numModels = isOtherFormat
             ? modelFileOther.geometry_chunk.models.size()
             : modelFile.geometry_chunk.models.size();
 
-        // Build meshes for each submodel
         std::vector<Mesh> propMeshes;
         for (size_t j = 0; j < numModels; j++)
         {
@@ -4816,10 +4918,10 @@ void ReplayWindow::LoadAgentModels()
             if (mesh.indices.size() % 3 == 0 && !mesh.indices.empty())
                 propMeshes.push_back(mesh);
         }
-        if (propMeshes.empty()) continue;
+        if (propMeshes.empty()) { m_bgLoadProgress.fetch_add(1); continue; }
 
-        // Load textures — collect decoded file hashes first since the two
-        // format variants use different struct types for texture filenames.
+        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::LoadingTextures));
+
         const bool texOk = isOtherFormat
             ? modelFileOther.textures_parsed_correctly
             : modelFile.textures_parsed_correctly;
@@ -4835,52 +4937,18 @@ void ReplayWindow::LoadAgentModels()
             }
         }
 
-        std::vector<int> textureIds;
+        std::vector<ParsedTextureEntry> parsedTextures;
         for (int decoded : texFileHashes) {
-            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
-            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            ParsedTextureEntry pt;
+            pt.decodedHash = decoded;
             auto mit = m_hashIndex->find(decoded);
             if (mit != m_hashIndex->end()) {
-                DatTexture dt = m_datManager->parse_ffna_texture_file(mit->second.at(0));
-                if (dt.width > 0 && dt.height > 0) {
-                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
-                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
-                }
-                textureIds.push_back(texId);
-            } else {
-                textureIds.push_back(-1);
+                try {
+                    pt.datTex = m_datManager->parse_ffna_texture_file(mit->second.at(0));
+                    pt.hasDatTex = (pt.datTex.width > 0 && pt.datTex.height > 0);
+                } catch (...) {}
             }
-        }
-
-        // Remap per-mesh texture indices
-        std::vector<std::vector<int>> perMeshTexIds(propMeshes.size());
-        for (size_t k = 0; k < propMeshes.size(); k++) {
-            std::vector<uint8_t> remappedIndices;
-            for (size_t ti = 0; ti < propMeshes[k].tex_indices.size(); ti++) {
-                int idx = std::min((int)propMeshes[k].tex_indices[ti], (int)textureIds.size() - 1);
-                if (idx >= 0 && idx < (int)textureIds.size()) {
-                    perMeshTexIds[k].push_back(textureIds[idx]);
-                    remappedIndices.push_back((uint8_t)ti);
-                }
-            }
-            propMeshes[k].tex_indices = remappedIndices;
-        }
-
-        // Build template PerObjectCBs (identity world, correct UV/texture mapping)
-        std::vector<PerObjectCB> templateCBs(propMeshes.size());
-        for (size_t j = 0; j < propMeshes.size(); j++) {
-            XMStoreFloat4x4(&templateCBs[j].world, XMMatrixIdentity());
-            auto& mesh = propMeshes[j];
-            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
-                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES && texOk) {
-                templateCBs[j].num_uv_texture_pairs = (uint32_t)mesh.uv_coord_indices.size();
-                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++) {
-                    templateCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
-                    templateCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
-                    templateCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
-                    templateCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
-                }
-            }
+            parsedTextures.push_back(std::move(pt));
         }
 
         const bool hasNewTexStuff = isOtherFormat
@@ -4888,7 +4956,7 @@ void ReplayWindow::LoadAgentModels()
             : !modelFile.geometry_chunk.unknown_tex_stuff1.empty();
         auto pst = hasNewTexStuff ? PixelShaderType::NewModel : PixelShaderType::OldModel;
 
-        // Compute native bounding box from all submesh vertices
+        // Bounding box
         float bbMinX = FLT_MAX, bbMinY = FLT_MAX, bbMinZ = FLT_MAX;
         float bbMaxX = -FLT_MAX, bbMaxY = -FLT_MAX, bbMaxZ = -FLT_MAX;
         for (const auto& mesh : propMeshes) {
@@ -4902,39 +4970,427 @@ void ReplayWindow::LoadAgentModels()
             }
         }
 
-        // Store template with bounding box info
         AgentModelInstance tmpl;
-        tmpl.templateCBs = templateCBs;
         tmpl.nativeHeight = bbMaxY - bbMinY;
         tmpl.nativeMinY = bbMinY;
         tmpl.nativeCenter = { (bbMinX + bbMaxX) * 0.5f, (bbMinY + bbMaxY) * 0.5f, (bbMinZ + bbMaxZ) * 0.5f };
-        tmpl.meshIds.reserve(propMeshes.size());
-        m_agentModelTemplates[fileHash] = std::move(tmpl);
+        tmpl.originalMeshes = propMeshes;
+        tmpl.parsedTextures_ = std::move(parsedTextures);
+        tmpl.pixelShaderType = pst;
+        tmpl.texturesOk = texOk;
 
-        // 3. For each agent using this model, create a separate prop instance
+        // Extract model identity hashes for animation matching
+        if (isOtherFormat) {
+            tmpl.modelHash0 = modelFileOther.geometry_chunk.header.model_hash0;
+            tmpl.modelHash1 = modelFileOther.geometry_chunk.header.model_hash1;
+        } else {
+            tmpl.modelHash0 = modelFile.geometry_chunk.sub_1.f0xC;
+            tmpl.modelHash1 = modelFile.geometry_chunk.sub_1.f0x10;
+        }
+
+        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::DiscoveringAnimations));
+        struct FoundClipInfo {
+            GW::Animation::AnimationClip clip;
+            uint32_t sourceFileHash;
+        };
+        std::vector<FoundClipInfo> foundClips;
+
+        const auto* cachedAnimInfo = m_animDiscoveryCache.GetModel(fileHash);
+        bool usedCache = false;
+
+        if (cachedAnimInfo && !cachedAnimInfo->animSources.empty() &&
+            cachedAnimInfo->modelHash0 == tmpl.modelHash0 &&
+            cachedAnimInfo->modelHash1 == tmpl.modelHash1)
+        {
+            for (const auto& src : cachedAnimInfo->animSources) {
+                if (src.mftIndex < 0 || src.mftIndex >= (int)mft.size()) continue;
+                try {
+                    uint8_t* data = m_datManager->read_file(src.mftIndex);
+                    if (!data) continue;
+                    size_t dataSize = mft[src.mftIndex].uncompressedSize;
+                    auto clip = GW::Parsers::ParseAnimationFromFile(data, dataSize);
+                    delete[] data;
+                    if (clip && clip->IsValid())
+                        foundClips.push_back({ std::move(*clip), src.fileHash });
+                } catch (...) {}
+            }
+            usedCache = !foundClips.empty();
+        }
+
+        if (!usedCache)
+        {
+            try {
+                uint8_t* rawData = m_datManager->read_file(mftIndex);
+                if (rawData) {
+                    size_t rawSize = mft[mftIndex].uncompressedSize;
+
+                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(rawData, rawSize);
+                    if (clipOpt && clipOpt->IsValid())
+                        foundClips.push_back({ std::move(*clipOpt), fileHash });
+
+                    m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningReferences));
+                    std::vector<uint32_t> animFileIds;
+                    size_t scanOffset = 5;
+                    while (scanOffset + 8 <= rawSize) {
+                        uint32_t chunkId, chunkSize;
+                        std::memcpy(&chunkId, &rawData[scanOffset], sizeof(uint32_t));
+                        std::memcpy(&chunkSize, &rawData[scanOffset + 4], sizeof(uint32_t));
+                        if (chunkId == 0 || chunkSize == 0 || scanOffset + 8 + chunkSize > rawSize) break;
+                        const uint8_t* chunkData = &rawData[scanOffset + 8];
+                        bool isAnimRef = (chunkId == GW::Parsers::CHUNK_ID_BBD ||
+                                          chunkId == GW::Parsers::CHUNK_ID_FA8);
+                        if (isAnimRef && chunkSize >= 4) {
+                            uint32_t count;
+                            size_t entryOffset;
+                            if (chunkId == GW::Parsers::CHUNK_ID_FA8) {
+                                std::memcpy(&count, &chunkData[0], sizeof(uint32_t));
+                                entryOffset = 4;
+                            } else {
+                                if (chunkSize < 8) { scanOffset += 8 + chunkSize; continue; }
+                                std::memcpy(&count, &chunkData[4], sizeof(uint32_t));
+                                entryOffset = 8;
+                            }
+                            size_t maxEntries = (chunkSize - entryOffset) / 6;
+                            if (count > maxEntries) count = static_cast<uint32_t>(maxEntries);
+                            for (uint32_t i = 0; i < count; i++) {
+                                if (entryOffset + 6 > chunkSize) break;
+                                uint16_t id0, id1;
+                                std::memcpy(&id0, &chunkData[entryOffset], sizeof(uint16_t));
+                                std::memcpy(&id1, &chunkData[entryOffset + 2], sizeof(uint16_t));
+                                entryOffset += 6;
+                                int32_t fid = static_cast<int32_t>(id0) - 0xFF00FF;
+                                fid += static_cast<int32_t>(id1) * 0xFF00;
+                                animFileIds.push_back(static_cast<uint32_t>(fid));
+                            }
+                        }
+                        scanOffset += 8 + chunkSize;
+                    }
+
+                    for (uint32_t animFileId : animFileIds) {
+                        auto refIt = m_hashIndex->find(static_cast<int>(animFileId));
+                        if (refIt == m_hashIndex->end() || refIt->second.empty()) continue;
+                        int refMftIdx = refIt->second.at(0);
+                        if (refMftIdx < 0 || refMftIdx >= (int)mft.size()) continue;
+                        uint8_t* refData = m_datManager->read_file(refMftIdx);
+                        if (!refData) continue;
+                        size_t refSize = mft[refMftIdx].uncompressedSize;
+                        auto refClip = GW::Parsers::ParseAnimationFromFile(refData, refSize);
+                        delete[] refData;
+                        if (refClip && refClip->IsValid())
+                            foundClips.push_back({ std::move(*refClip), animFileId });
+                    }
+
+                    if (foundClips.empty() && tmpl.modelHash0 != 0) {
+                        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningMFT));
+                        for (size_t mi = 0; mi < mft.size(); mi++) {
+                            if ((int)mi == mftIndex) continue;
+                            if (mft[mi].type != FFNA_Type2) continue;
+                            if (mft[mi].uncompressedSize < 5 + 8 + 44) continue;
+                            uint8_t* scanData = m_datManager->read_file(static_cast<int>(mi));
+                            if (!scanData) continue;
+                            size_t scanSize = mft[mi].uncompressedSize;
+                            bool matched = false;
+                            if (scanSize >= 5 && scanData[0] == 'f' && scanData[1] == 'f' &&
+                                scanData[2] == 'n' && scanData[3] == 'a') {
+                                size_t off = 5;
+                                while (off + 8 <= scanSize) {
+                                    uint32_t cid, csz;
+                                    std::memcpy(&cid, &scanData[off], sizeof(uint32_t));
+                                    std::memcpy(&csz, &scanData[off + 4], sizeof(uint32_t));
+                                    if (cid == 0 || csz == 0 || off + 8 + csz > scanSize) break;
+                                    size_t cDataOff = off + 8;
+                                    if (cid == GW::Parsers::CHUNK_ID_BB9 &&
+                                        cDataOff + sizeof(GW::Parsers::BB9Header) <= scanSize) {
+                                        GW::Parsers::BB9Header hdr;
+                                        std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                                        if (hdr.modelHash0 == tmpl.modelHash0 && hdr.modelHash1 == tmpl.modelHash1)
+                                            matched = true;
+                                    } else if (cid == GW::Parsers::CHUNK_ID_FA1 &&
+                                               cDataOff + sizeof(GW::Parsers::FA1Header) <= scanSize) {
+                                        GW::Parsers::FA1Header hdr;
+                                        std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                                        if (hdr.boundingBoxId == tmpl.modelHash0 && hdr.collisionMeshId == tmpl.modelHash1)
+                                            matched = true;
+                                    }
+                                    if (matched) break;
+                                    off += 8 + csz;
+                                }
+                            }
+                            if (matched) {
+                                auto scanClip = GW::Parsers::ParseAnimationFromFile(scanData, scanSize);
+                                if (scanClip && scanClip->IsValid())
+                                    foundClips.push_back({ std::move(*scanClip), static_cast<uint32_t>(mft[mi].Hash) });
+                            }
+                            delete[] scanData;
+                        }
+                    }
+
+                    delete[] rawData;
+                }
+            } catch (...) {}
+
+            if (!foundClips.empty()) {
+                GW::Cache::CachedModelAnimInfo cacheEntry;
+                cacheEntry.modelHash0 = tmpl.modelHash0;
+                cacheEntry.modelHash1 = tmpl.modelHash1;
+                for (const auto& fc : foundClips) {
+                    GW::Cache::AnimSourceEntry src;
+                    src.fileHash = fc.sourceFileHash;
+                    auto srcIt = m_hashIndex->find(static_cast<int>(fc.sourceFileHash));
+                    if (srcIt != m_hashIndex->end() && !srcIt->second.empty())
+                        src.mftIndex = srcIt->second.at(0);
+                    else
+                        src.mftIndex = mftIndex;
+                    cacheEntry.animSources.push_back(src);
+                }
+                m_animDiscoveryCache.SetModel(fileHash, std::move(cacheEntry));
+            }
+        }
+
+        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::BuildingAnimData));
+        if (!foundClips.empty()) {
+            for (size_t ci = 0; ci < foundClips.size(); ci++) {
+                AnimClipEntry entry;
+                entry.clip = std::make_shared<GW::Animation::AnimationClip>(std::move(foundClips[ci].clip));
+                entry.clip->BuildAnimationGroups();
+                entry.skeleton = std::make_shared<GW::Animation::Skeleton>(
+                    GW::Parsers::BB9AnimationParser::CreateSkeleton(*entry.clip));
+                entry.sourceFileHash = foundClips[ci].sourceFileHash;
+                tmpl.allClips.push_back(std::move(entry));
+            }
+            tmpl.clip = tmpl.allClips[0].clip;
+            tmpl.skeleton = tmpl.allClips[0].skeleton;
+
+            const auto& models = isOtherFormat
+                ? modelFileOther.geometry_chunk.models
+                : modelFile.geometry_chunk.models;
+
+            for (size_t si = 0; si < models.size() && si < propMeshes.size(); si++) {
+                const auto& geoModel = models[si];
+                auto boneData = AnimationPanelState::ExtractBoneData(
+                    geoModel.extra_data, geoModel.u0, geoModel.u1);
+                tmpl.submeshBoneData.push_back(std::move(boneData));
+                std::vector<uint32_t> vbg;
+                vbg.reserve(geoModel.vertices.size());
+                for (const auto& mv : geoModel.vertices)
+                    vbg.push_back(mv.has_group ? mv.group : 0);
+                tmpl.perVertexBoneGroups.push_back(std::move(vbg));
+            }
+
+            std::unordered_map<uint32_t, SegmentRef> segHashToRef;
+            for (int ci = 0; ci < static_cast<int>(tmpl.allClips.size()); ci++) {
+                const auto& clipEntry = tmpl.allClips[ci];
+                for (size_t si = 0; si < clipEntry.clip->animationSegments.size(); si++) {
+                    uint32_t segHash = clipEntry.clip->animationSegments[si].hash;
+                    SegmentRef ref{ ci, static_cast<int>(si) };
+                    if (!segHashToRef.count(segHash)) segHashToRef[segHash] = ref;
+                    if (!tmpl.animCodeToSegment.count(segHash)) tmpl.animCodeToSegment[segHash] = ref;
+                    auto& lookup = GW::Animation::AnimationHashLookup::Instance();
+                    int stateIdx = lookup.GetStateIndex(segHash);
+                    if (stateIdx >= 0 && stateIdx < (int)GW::Animation::g_animationStateCount) {
+                        uint32_t primary = GW::Animation::g_animationStateTable[stateIdx].primaryHash;
+                        if (!tmpl.animCodeToSegment.count(primary))
+                            tmpl.animCodeToSegment[primary] = ref;
+                    }
+                    for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount; bs++) {
+                        uint32_t fallback = GW::Animation::ReverseSegmentHash(
+                            segHash, GW::Animation::g_boneSlotChars[bs]);
+                        if (fallback != 0 && !tmpl.animCodeToSegment.count(fallback))
+                            tmpl.animCodeToSegment[fallback] = ref;
+                    }
+                }
+            }
+            for (size_t i = 0; i < GW::Animation::g_animationStateCount; i++) {
+                uint32_t primary = GW::Animation::g_animationStateTable[i].primaryHash;
+                if (tmpl.animCodeToSegment.count(primary)) continue;
+                for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount; bs++) {
+                    uint32_t candidate = GW::Animation::ComputeSegmentHash(
+                        primary, GW::Animation::g_boneSlotChars[bs]);
+                    auto it = segHashToRef.find(candidate);
+                    if (it != segHashToRef.end()) {
+                        tmpl.animCodeToSegment[primary] = it->second;
+                        break;
+                    }
+                }
+            }
+            tmpl.hasAnimation = true;
+        }
+
+        m_agentModelTemplates[fileHash] = std::move(tmpl);
+        m_bgLoadProgress.fetch_add(1);
+    }
+
+    if (m_animDiscoveryCache.IsDirty()) {
+        auto cachePath = GW::Cache::AnimationDiscoveryCache::GetDefaultCachePath();
+        m_animDiscoveryCache.SaveToFile(cachePath);
+    }
+
+    m_bgLoadDone.store(true);
+}
+
+// ---------------------------------------------------------------------------
+// Main thread: create GPU resources in batches (called per frame)
+// Uses the EXACT same texture creation → remap → AddProp flow as the
+// working synchronous LoadAgentModels to avoid the color regression.
+// ---------------------------------------------------------------------------
+
+static constexpr int kAgentModelBatchSize = 2;
+
+void ReplayWindow::StepCreateAgentModelResources()
+{
+    if (!m_bgLoadDone || m_agentModelsLoaded) return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    if (!map_renderer) return;
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device) return;
+
+    int processed = 0;
+    while (m_agentModelCreateIndex < static_cast<int>(m_agentModelCreateOrder.size()) &&
+           processed < kAgentModelBatchSize)
+    {
+        uint32_t fileHash = m_agentModelCreateOrder[m_agentModelCreateIndex];
+        m_agentModelCreateIndex++;
+        processed++;
+
+        auto tmplIt = m_agentModelTemplates.find(fileHash);
+        if (tmplIt == m_agentModelTemplates.end()) continue;
+
+        auto& tmpl = tmplIt->second;
+        auto& propMeshes = tmpl.originalMeshes;
+        if (propMeshes.empty()) continue;
+
+        // ---- GPU texture creation (same flow as working LoadAgentModels) ----
+        std::vector<int> textureIds;
+        for (const auto& pt : tmpl.parsedTextures_) {
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(pt.decodedHash);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            if (pt.hasDatTex) {
+                map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                    pt.datTex.width, pt.datTex.height, pt.datTex.rgba_data.data(), &texId, pt.decodedHash);
+            }
+            textureIds.push_back(texId);
+        }
+
+        // ---- Remap per-mesh texture indices (same flow as working code) ----
+        std::vector<std::vector<int>> perMeshTexIds(propMeshes.size());
+        for (size_t k = 0; k < propMeshes.size(); k++) {
+            std::vector<uint8_t> remappedIndices;
+            for (size_t ti = 0; ti < propMeshes[k].tex_indices.size(); ti++) {
+                int idx = std::min((int)propMeshes[k].tex_indices[ti], (int)textureIds.size() - 1);
+                if (idx >= 0 && idx < (int)textureIds.size()) {
+                    perMeshTexIds[k].push_back(textureIds[idx]);
+                    remappedIndices.push_back((uint8_t)ti);
+                }
+            }
+            propMeshes[k].tex_indices = remappedIndices;
+        }
+
+        // ---- Build template PerObjectCBs (after tex_indices remapping) ----
+        std::vector<PerObjectCB> templateCBs(propMeshes.size());
+        for (size_t j = 0; j < propMeshes.size(); j++) {
+            XMStoreFloat4x4(&templateCBs[j].world, XMMatrixIdentity());
+            auto& mesh = propMeshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES && tmpl.texturesOk) {
+                templateCBs[j].num_uv_texture_pairs = (uint32_t)mesh.uv_coord_indices.size();
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++) {
+                    templateCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
+                    templateCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
+                    templateCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
+                    templateCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                }
+            }
+        }
+        tmpl.templateCBs = templateCBs;
+
+        // ---- Create props and skinned meshes per agent ----
         for (auto& [agentId, cachedHash] : m_agentFileHashCache)
         {
             if (cachedHash != fileHash) continue;
 
             std::vector<PerObjectCB> agentCBs = templateCBs;
-            auto meshIds = map_renderer->AddProp(propMeshes, agentCBs, 0x80000000u | (uint32_t)agentId, pst);
+            auto meshIds = map_renderer->AddProp(propMeshes, agentCBs, 0x80000000u | (uint32_t)agentId, tmpl.pixelShaderType);
 
-            if (texOk) {
+            if (tmpl.texturesOk) {
                 for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++) {
                     map_renderer->GetMeshManager()->SetTexturesForMesh(
                         meshIds[l], map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]), 3);
                 }
             }
 
-            // Start hidden; DrawAgentModels will show/position them each frame
             for (int mid : meshIds)
                 map_renderer->GetMeshManager()->SetMeshShouldRender(mid, false);
 
             m_agentMeshIds[agentId] = meshIds;
+
+            if (tmpl.hasAnimation && tmpl.clip && device) {
+                AgentAnimState animState;
+                auto hierarchyMode = tmpl.clip->hierarchyMode;
+                size_t boneCount = tmpl.clip->boneTracks.size();
+
+                for (size_t si = 0; si < tmpl.originalMeshes.size(); si++) {
+                    const auto& mesh = tmpl.originalMeshes[si];
+                    const auto& boneData = (si < tmpl.submeshBoneData.size())
+                        ? tmpl.submeshBoneData[si]
+                        : AnimationPanelState::SubmeshBoneData();
+                    const auto& vbg = (si < tmpl.perVertexBoneGroups.size())
+                        ? tmpl.perVertexBoneGroups[si]
+                        : std::vector<uint32_t>();
+
+                    auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                        mesh, boneData, vbg, boneCount, hierarchyMode, si);
+
+                    auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                        device, skinnedVerts, mesh.indices, static_cast<int>(si));
+                    animState.animMeshes.push_back(std::move(animMesh));
+                }
+
+                animState.perMeshCBs = templateCBs;
+                animState.perMeshTextureIds = perMeshTexIds;
+                animState.pixelShaderType = tmpl.pixelShaderType;
+
+                animState.controller = std::make_unique<GW::Animation::AnimationController>();
+                animState.controller->Initialize(tmpl.clip);
+                animState.controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                animState.controller->SetLooping(true);
+                if (!tmpl.clip->animationSegments.empty())
+                    animState.controller->SetSegment(0);
+                animState.controller->Play();
+
+                animState.hasSkinning = !animState.animMeshes.empty();
+                m_agentAnimStates[agentId] = std::move(animState);
+            }
         }
+
+        tmpl.parsedTextures_.clear();
+        tmpl.parsedTextures_.shrink_to_fit();
     }
 
-    m_agentModelsLoaded = true;
+    if (m_agentModelCreateIndex >= static_cast<int>(m_agentModelCreateOrder.size())) {
+        m_agentModelsLoaded = true;
+        m_agentModelsLoading = false;
+    }
+}
+
+// Keep synchronous LoadAgentModels as fallback (calls async + blocks)
+void ReplayWindow::LoadAgentModels()
+{
+    if (m_agentModelsLoaded) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    if (!m_datManager || !m_hashIndex) return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    if (!map_renderer) return;
+
+    LoadAgentModelsAsync();
+
+    // Block until IO is done, then create all resources at once
+    if (m_agentModelLoadThread.joinable())
+        m_agentModelLoadThread.join();
+
+    while (!m_agentModelsLoaded)
+        StepCreateAgentModelResources();
 }
 
 // ---------------------------------------------------------------------------
@@ -4949,6 +5405,9 @@ void ReplayWindow::DrawAgentModels()
 
     auto* meshMgr = m_mapRenderer->GetMeshManager();
     if (!meshMgr) return;
+
+    auto* context = m_deviceResources->GetD3DDeviceContext();
+    float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 
     const MapTransform& mt = m_replayCtx.mapTransform;
     const InterpolationSettings& is = m_replayCtx.interpSettings;
@@ -4992,14 +5451,16 @@ void ReplayWindow::DrawAgentModels()
             }
         }
 
-        // NPCs/Players: check alive
-        if (ard.type == AgentType::NPC) {
-            bool dead = ard.isDeadAtTime(m_debugTimeline);
-            if (dead) {
-                for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-                m_agentModelRenderStatus[agentId] = "hidden: dead";
-                continue;
-            }
+        // Dead state: keep rendering with fade (don't hide)
+        bool dead = (ard.type == AgentType::NPC || ard.type == AgentType::Player)
+                     && ard.isDeadAtTime(m_debugTimeline);
+
+        float deadAlpha = 1.0f;
+        if (dead) {
+            float deathTime = ard.deathTransitionTime(m_debugTimeline);
+            float fadeIn = std::clamp((m_debugTimeline - deathTime) / 0.5f, 0.f, 1.f);
+            fadeIn = fadeIn * fadeIn * (3.f - 2.f * fadeIn);
+            deadAlpha = 1.0f - 0.3f * fadeIn;
         }
 
         // Fog check
@@ -5029,7 +5490,8 @@ void ReplayWindow::DrawAgentModels()
         uint32_t cachedHash = (hashIt != m_agentFileHashCache.end()) ? hashIt->second : 0;
         auto tmplIt = m_agentModelTemplates.find(cachedHash);
 
-        AgentModelInfo info = LookupAgentModelInfo(ard.type, ard.modelId);
+        AgentModelInfo info = LookupAgentModelInfo(ard.type, ard.modelId,
+                                                     ard.primaryProf, ard.isFemale);
         float scale = info.npcAdjustment * m_agentModelScale;
         XMMATRIX centering = XMMatrixIdentity();
 
@@ -5040,28 +5502,297 @@ void ReplayWindow::DrawAgentModels()
         }
 
         XMMATRIX worldMat = centering
+            * XMMatrixRotationY(XM_PIDIV2)
             * XMMatrixScaling(scale, scale, scale)
-            * XMMatrixRotationY(rotRad)
+            * XMMatrixRotationY(-rotRad)
             * XMMatrixTranslation(pos.x, pos.y, pos.z);
 
-        // Update each submesh
-        int renderedCount = 0;
-        for (int mid : meshIds) {
-            meshMgr->SetMeshShouldRender(mid, true);
-            auto cbOpt = meshMgr->GetMeshPerObjectData(mid);
-            if (cbOpt.has_value()) {
-                auto cb = cbOpt.value();
-                XMStoreFloat4x4(&cb.world, worldMat);
-                if (inFog) cb.mesh_alpha = 0.3f;
-                else cb.mesh_alpha = 1.0f;
-                meshMgr->UpdateMeshPerObjectData(mid, cb);
-                renderedCount++;
+        // Decide skinned vs. rigid rendering
+        auto animIt = m_agentAnimStates.find(agentId);
+        bool useSkinned = (animIt != m_agentAnimStates.end() && animIt->second.hasSkinning);
+
+        if (useSkinned) {
+            // Hide the rigid props — skinned draw will handle this agent
+            for (int mid : meshIds)
+                meshMgr->SetMeshShouldRender(mid, false);
+
+            auto& animState = animIt->second;
+
+            // Drive animation from gameplay state
+            auto& ctrl = animState.controller;
+            const auto& snap = ard.snapshots[snapIdx];
+
+            if (tmplIt != m_agentModelTemplates.end() && ctrl) {
+                uint32_t animCode = snap.animation_code;
+                if (animCode != animState.lastAnimCode && animCode != 0) {
+                    auto& codeMap = tmplIt->second.animCodeToSegment;
+                    bool resolved = false;
+                    SegmentRef resolvedRef{};
+
+                    // Strategy 1: direct lookup in pre-built map
+                    auto segIt = codeMap.find(animCode);
+                    if (segIt != codeMap.end()) {
+                        resolvedRef = segIt->second;
+                        resolved = true;
+                    }
+
+                    // Strategy 2: treat animCode as primaryHash, compute segment hash per bone slot
+                    if (!resolved) {
+                        for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount; bs++) {
+                            uint32_t candidate = GW::Animation::ComputeSegmentHash(
+                                animCode, GW::Animation::g_boneSlotChars[bs]);
+                            auto segIt2 = codeMap.find(candidate);
+                            if (segIt2 != codeMap.end()) {
+                                resolvedRef = segIt2->second;
+                                codeMap[animCode] = resolvedRef;
+                                resolved = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Strategy 3: reverse animCode, compute hash, match against all clip segments
+                    if (!resolved) {
+                        for (int ci = 0; ci < static_cast<int>(tmplIt->second.allClips.size()) && !resolved; ci++) {
+                            const auto& segments = tmplIt->second.allClips[ci].clip->animationSegments;
+                            for (size_t bsA = 0; bsA < GW::Animation::g_boneSlotCount && !resolved; bsA++) {
+                                uint32_t animPrimary = GW::Animation::ReverseSegmentHash(
+                                    animCode, GW::Animation::g_boneSlotChars[bsA]);
+                                if (animPrimary == 0) continue;
+                                for (size_t bsB = 0; bsB < GW::Animation::g_boneSlotCount && !resolved; bsB++) {
+                                    uint32_t candidate = GW::Animation::ComputeSegmentHash(
+                                        animPrimary, GW::Animation::g_boneSlotChars[bsB]);
+                                    for (size_t si = 0; si < segments.size(); si++) {
+                                        if (segments[si].hash == candidate) {
+                                            resolvedRef = { ci, static_cast<int>(si) };
+                                            codeMap[animCode] = resolvedRef;
+                                            resolved = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Strategy 4: reverse both animCode and segment hash, compare primaries
+                    if (!resolved) {
+                        for (int ci = 0; ci < static_cast<int>(tmplIt->second.allClips.size()) && !resolved; ci++) {
+                            const auto& segments = tmplIt->second.allClips[ci].clip->animationSegments;
+                            for (size_t si = 0; si < segments.size() && !resolved; si++) {
+                                uint32_t segHash = segments[si].hash;
+                                for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount && !resolved; bs++) {
+                                    uint32_t animPrimary = GW::Animation::ReverseSegmentHash(
+                                        animCode, GW::Animation::g_boneSlotChars[bs]);
+                                    uint32_t segPrimary = GW::Animation::ReverseSegmentHash(
+                                        segHash, GW::Animation::g_boneSlotChars[bs]);
+                                    if (animPrimary != 0 && animPrimary == segPrimary) {
+                                        resolvedRef = { ci, static_cast<int>(si) };
+                                        codeMap[animCode] = resolvedRef;
+                                        resolved = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (resolved) {
+                        if (resolvedRef.clipIndex != animState.currentClipIndex &&
+                            resolvedRef.clipIndex >= 0 &&
+                            resolvedRef.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
+                            const auto& newClip = tmplIt->second.allClips[resolvedRef.clipIndex].clip;
+                            ctrl->Initialize(newClip);
+                            ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                            animState.currentClipIndex = resolvedRef.clipIndex;
+                        }
+                        animState.wasCasting = false;
+                        animState.postKdGetUp = animState.wasKnockedDown;
+                        animState.wasKnockedDown = false;
+                        ctrl->SetSegment(resolvedRef.segmentIndex);
+                        bool isKD_r = ard.isKnockedDownAtTime(m_debugTimeline);
+                        bool playOnce = dead || (snap.is_casting && !isKD_r) || animState.postKdGetUp;
+                        ctrl->SetLooping(!playOnce);
+                        ctrl->Play();
+                    }
+
+                    animState.lastLookupFailed = !resolved;
+                    animState.lastAnimCode = animCode;
+                }
+
+                // Detect resurrection
+                if (!dead && animState.wasDead)
+                    ctrl->Play();
+                animState.wasDead = dead;
+
+                // Track casting/KD state
+                bool isKD = ard.isKnockedDownAtTime(m_debugTimeline);
+                if (snap.is_casting)
+                    animState.wasCasting = true;
+                if (isKD) {
+                    animState.wasKnockedDown = true;
+                    animState.wasCasting = false;
+                }
+
+                // Update looping dynamically
+                bool playOnce = dead || (snap.is_casting && !isKD) || (animState.wasCasting && !isKD) || animState.postKdGetUp;
+                ctrl->SetLooping(!playOnce);
+
+                // Playback speed
+                float speedMult = 1.0f;
+                if (dead) {
+                    speedMult = 0.8f;
+                } else if (snap.is_casting && ctrl) {
+                    const CastInterval* ci = ard.castIntervalAtTime(m_debugTimeline);
+                    if (ci) {
+                        float castDur = ci->end - ci->start;
+                        float segStart = ctrl->GetSequenceStartTime();
+                        float segEnd   = ctrl->GetSequenceEndTime();
+                        float segDurSec = (segEnd - segStart) / 100000.f;
+                        if (castDur > 0.001f && segDurSec > 0.001f) {
+                            float durationSpeed = segDurSec / castDur;
+                            if (durationSpeed <= 1.0f)
+                                speedMult = durationSpeed;
+                            else
+                                speedMult = (snap.animation_speed > 0.f) ? snap.animation_speed : 1.0f;
+                        }
+                    }
+                } else if (animState.postKdGetUp && ctrl) {
+                    float segStart = ctrl->GetSequenceStartTime();
+                    float segEnd   = ctrl->GetSequenceEndTime();
+                    float segDurSec = (segEnd - segStart) / 100000.f;
+                    float codeStart = snap.time;
+                    for (int si2 = snapIdx - 1; si2 >= 0; si2--) {
+                        if (ard.snapshots[si2].animation_code != snap.animation_code) break;
+                        codeStart = ard.snapshots[si2].time;
+                    }
+                    float codeEnd = snap.time;
+                    for (int si2 = snapIdx + 1; si2 < static_cast<int>(ard.snapshots.size()); si2++) {
+                        if (ard.snapshots[si2].animation_code != snap.animation_code) {
+                            codeEnd = ard.snapshots[si2].time;
+                            break;
+                        }
+                        codeEnd = ard.snapshots[si2].time;
+                    }
+                    float getUpDur = codeEnd - codeStart;
+                    if (getUpDur > 0.001f && segDurSec > 0.001f)
+                        speedMult = segDurSec / getUpDur;
+                } else {
+                    if (snap.animation_speed > 0.f)
+                        speedMult = snap.animation_speed;
+                }
+
+                animState.effectiveSpeedMult = speedMult;
+                ctrl->SetPlaybackSpeed(speedMult * 100000.f);
+
+                // Advance animation
+                bool deathFrozen = dead && ctrl->GetState() == GW::Animation::AnimationController::PlaybackState::Stopped;
+                if (m_replayCtx.isPlaying && !deathFrozen)
+                    ctrl->Update(frameDt);
+
+                if (context) {
+                    for (auto& am : animState.animMeshes)
+                        if (am) am->UpdateBoneMatrices(context, *ctrl);
+                }
             }
+
+            // Update world transforms and alpha on per-mesh CBs
+            float baseAlpha = inFog ? 0.3f : 1.0f;
+            if (dead) baseAlpha = deadAlpha;
+            for (size_t si2 = 0; si2 < animState.perMeshCBs.size(); si2++) {
+                XMStoreFloat4x4(&animState.perMeshCBs[si2].world, worldMat);
+                animState.perMeshCBs[si2].mesh_alpha = baseAlpha;
+            }
+
+            m_agentModelRenderStatus[agentId] = std::format(
+                "skinned{}: submeshes={} pos=({:.0f},{:.0f},{:.0f}) anim=0x{:X}",
+                dead ? " (dead)" : "", animState.animMeshes.size(),
+                pos.x, pos.y, pos.z, snap.animation_code);
+        } else {
+            // Rigid prop rendering
+            float rigidAlpha = inFog ? 0.3f : 1.0f;
+            if (dead) rigidAlpha = deadAlpha;
+            int renderedCount = 0;
+            for (int mid : meshIds) {
+                meshMgr->SetMeshShouldRender(mid, true);
+                auto cbOpt = meshMgr->GetMeshPerObjectData(mid);
+                if (cbOpt.has_value()) {
+                    auto cb = cbOpt.value();
+                    XMStoreFloat4x4(&cb.world, worldMat);
+                    cb.mesh_alpha = rigidAlpha;
+                    meshMgr->UpdateMeshPerObjectData(mid, cb);
+                    renderedCount++;
+                }
+            }
+            m_agentModelRenderStatus[agentId] = std::format(
+                "shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
+                renderedCount, meshIds.size(), pos.x, pos.y, pos.z, scale);
         }
-        m_agentModelRenderStatus[agentId] = std::format(
-            "shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) raw=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
-            renderedCount, meshIds.size(), pos.x, pos.y, pos.z, sx, sy, sz, scale);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Skinned render pass for animated agent models.
+// Called after DrawAgentModels() which updates bone matrices and world CBs.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawSkinnedAgentModels()
+{
+    if (!m_useAgentModels || !m_agentModelsLoaded) return;
+    if (m_agentAnimStates.empty()) return;
+
+    auto* context = m_deviceResources->GetD3DDeviceContext();
+    auto* meshManager = m_mapRenderer->GetMeshManager();
+    auto* textureManager = m_mapRenderer->GetTextureManager();
+    if (!context || !meshManager || !textureManager) return;
+
+    bool anyVisible = false;
+    for (auto& [agentId, animState] : m_agentAnimStates) {
+        if (!animState.hasSkinning) continue;
+        auto statusIt = m_agentModelRenderStatus.find(agentId);
+        if (statusIt == m_agentModelRenderStatus.end()) continue;
+        if (statusIt->second.starts_with("skinned")) { anyVisible = true; break; }
+    }
+    if (!anyVisible) return;
+
+    m_mapRenderer->BindSkinnedVertexShader();
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_mapRenderer->BindModelPixelShader(false);
+
+    for (auto& [agentId, animState] : m_agentAnimStates)
+    {
+        if (!animState.hasSkinning) continue;
+
+        auto statusIt = m_agentModelRenderStatus.find(agentId);
+        if (statusIt == m_agentModelRenderStatus.end() || !statusIt->second.starts_with("skinned"))
+            continue;
+
+        for (size_t si = 0; si < animState.animMeshes.size(); si++)
+        {
+            auto& animMesh = animState.animMeshes[si];
+            if (!animMesh) continue;
+
+            if (si < animState.perMeshCBs.size()) {
+                PerObjectCB transposedData = animState.perMeshCBs[si];
+                XMMATRIX worldMatrix = XMLoadFloat4x4(&transposedData.world);
+                worldMatrix = XMMatrixTranspose(worldMatrix);
+                XMStoreFloat4x4(&transposedData.world, worldMatrix);
+                meshManager->SetPerObjectCB(transposedData);
+            }
+
+            if (si < animState.perMeshTextureIds.size()) {
+                const auto& texIds = animState.perMeshTextureIds[si];
+                if (!texIds.empty()) {
+                    auto textures = textureManager->GetTextures(texIds);
+                    if (!textures.empty())
+                        animMesh->SetTextures(textures, 3);
+                }
+            }
+
+            animMesh->Draw(context, m_mapRenderer->GetLODQuality());
+        }
+    }
+
+    m_mapRenderer->BindRegularVertexShader();
 }
 
 void ReplayWindow::DrawAgentCylinders()

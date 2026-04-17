@@ -215,13 +215,17 @@ public:
             context->VSSetConstantBuffers(3, 1, m_boneMatrixBuffer.GetAddressOf());
         }
 
-        // Bind textures
+        // Bind textures — convert ComPtr vector to raw pointer array
         for (int slot = 0; slot < 4; ++slot)
         {
-            if (!m_textures[slot].empty())
+            UINT srv_count = static_cast<UINT>(m_textures[slot].size());
+            if (srv_count > 0)
             {
-                context->PSSetShaderResources(slot, static_cast<UINT>(m_textures[slot].size()),
-                                              m_textures[slot].data()->GetAddressOf());
+                std::vector<ID3D11ShaderResourceView*> raw_srvs;
+                raw_srvs.reserve(srv_count);
+                for (const auto& srv : m_textures[slot])
+                    raw_srvs.push_back(srv.Get());
+                context->PSSetShaderResources(slot, srv_count, raw_srvs.data());
             }
             else
             {

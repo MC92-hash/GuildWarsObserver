@@ -18,6 +18,12 @@
 #include "HeatmapMenu.h"
 #include "AnnotationManager.h"
 #include "FlagTimelineBuilder.h"
+#include "Animation/AnimationController.h"
+#include "Animation/AnimationClip.h"
+#include "Animation/Skeleton.h"
+#include "AnimatedMeshInstance.h"
+#include "animation_state.h"
+#include "Cache/AnimationDiscoveryCache.h"
 #include <string>
 #include <memory>
 #include <utility>
@@ -548,12 +554,67 @@ private:
     bool m_agentModelsLoaded = false;
     float m_agentModelScale = 1.0f;
 
+    // Async loading infrastructure
+    std::thread m_agentModelLoadThread;
+    std::atomic<bool> m_agentModelsLoading{false};
+    std::atomic<bool> m_bgLoadDone{false};
+    std::atomic<int> m_bgLoadProgress{0};
+    int m_bgLoadTotal = 0;
+    int m_agentModelCreateIndex = 0;
+    std::vector<uint32_t> m_agentModelCreateOrder;
+
+    enum class AgentLoadSubPhase : int {
+        Idle = 0, ParsingModel, LoadingTextures, DiscoveringAnimations,
+        ScanningReferences, ScanningMFT, BuildingAnimData
+    };
+    std::atomic<int> m_bgLoadSubPhase{0};
+
+    void LoadAgentModelsAsync();
+    void LoadAgentModelsIO();
+    void StepCreateAgentModelResources();
+
+    GW::Cache::AnimationDiscoveryCache m_animDiscoveryCache;
+
+    struct SegmentRef {
+        int clipIndex = 0;
+        int segmentIndex = 0;
+    };
+
+    struct AnimClipEntry {
+        std::shared_ptr<GW::Animation::AnimationClip> clip;
+        std::shared_ptr<GW::Animation::Skeleton> skeleton;
+        uint32_t sourceFileHash = 0;
+    };
+
+    struct ParsedTextureEntry {
+        int decodedHash = 0;
+        DatTexture datTex;
+        bool hasDatTex = false;
+    };
+
     struct AgentModelInstance {
         std::vector<int> meshIds;
         std::vector<PerObjectCB> templateCBs;
         float nativeHeight = 0.f;
         float nativeMinY = 0.f;
         DirectX::XMFLOAT3 nativeCenter = { 0.f, 0.f, 0.f };
+
+        // Data preserved from IO phase for D3D resource creation
+        std::vector<Mesh> originalMeshes;
+        std::vector<ParsedTextureEntry> parsedTextures_;
+        PixelShaderType pixelShaderType = PixelShaderType::OldModel;
+        bool texturesOk = false;
+
+        // Animation data (shared across all agents using this model type)
+        uint32_t modelHash0 = 0;
+        uint32_t modelHash1 = 0;
+        std::vector<AnimClipEntry> allClips;
+        std::shared_ptr<GW::Animation::AnimationClip> clip;
+        std::shared_ptr<GW::Animation::Skeleton> skeleton;
+        std::vector<AnimationPanelState::SubmeshBoneData> submeshBoneData;
+        std::vector<std::vector<uint32_t>> perVertexBoneGroups;
+        std::unordered_map<uint32_t, SegmentRef> animCodeToSegment;
+        bool hasAnimation = false;
     };
 
     // file hash -> parsed model template (shared geometry, one AddProp per unique model)
@@ -567,6 +628,26 @@ private:
 
     // Per-frame diagnostic: why each agent's model was shown/hidden
     std::unordered_map<int, std::string> m_agentModelRenderStatus;
+
+    // --- Per-agent animation state ---
+    struct AgentAnimState {
+        std::unique_ptr<GW::Animation::AnimationController> controller;
+        std::vector<std::shared_ptr<AnimatedMeshInstance>> animMeshes;
+        std::vector<PerObjectCB> perMeshCBs;
+        std::vector<std::vector<int>> perMeshTextureIds;
+        PixelShaderType pixelShaderType = PixelShaderType::OldModel;
+        uint32_t lastAnimCode = UINT32_MAX;
+        int currentClipIndex = 0;
+        bool hasSkinning = false;
+        bool lastLookupFailed = false;
+        bool wasDead = false;
+        bool wasCasting = false;
+        bool wasKnockedDown = false;
+        bool postKdGetUp = false;
+        float effectiveSpeedMult = 1.0f;
+    };
+    std::unordered_map<int, AgentAnimState> m_agentAnimStates;
+    void DrawSkinnedAgentModels();
 
     // --- Loading overlay GPU resources ---
     struct OverlayVertex { float x, y, r, g, b, a; };
