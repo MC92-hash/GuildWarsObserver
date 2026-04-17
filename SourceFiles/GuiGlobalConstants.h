@@ -61,6 +61,9 @@ public:
 	inline static bool is_debug_match_metadata_open = false;
 	inline static bool is_replay_browser_open = true;
 
+	// 3D Agent model rendering (persisted)
+	inline static bool use_3d_agent_models = true;
+
 	// Auto Camera settings (persisted)
 	inline static float  autocam_lookahead   = 3.f;
 	inline static int    autocam_hp_thresh   = 70;   // percent 10-80
@@ -303,6 +306,9 @@ public:
 		file << "replay_filter_width=" << replay_filter_width << "\n";
 		file << "replay_list_height=" << replay_list_height << "\n";
 
+		file << "\n[Rendering]\n";
+		file << "use_3d_agent_models=" << (use_3d_agent_models ? 1 : 0) << "\n";
+
 		file << "\n[AutoCamera]\n";
 		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
 		file << "autocam_hp_thresh=" << autocam_hp_thresh << "\n";
@@ -383,6 +389,7 @@ public:
 			else if (key == "compass") is_compass_open = (value != 0);
 			else if (key == "debug_match_metadata") is_debug_match_metadata_open = (value != 0);
 			else if (key == "replay_browser") is_replay_browser_open = (value != 0);
+			else if (key == "use_3d_agent_models") use_3d_agent_models = (value != 0);
 			else if (key == "autocam_lookahead") autocam_lookahead = static_cast<float>(value);
 			else if (key == "autocam_hp_thresh") autocam_hp_thresh = value;
 			else if (key == "autocam_dwell") autocam_dwell = static_cast<float>(value);

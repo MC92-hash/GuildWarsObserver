@@ -42,6 +42,7 @@ struct PlayerMeta
     int model_id = 0;
     int gadget_id = 0;
     std::string encoded_name;
+    std::string gender;       // "Male" or "Female" from infos.json
     int total_damage = 0;
     int attacks_started = 0;
     int attacks_finished = 0;

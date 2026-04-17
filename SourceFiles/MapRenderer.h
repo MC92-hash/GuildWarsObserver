@@ -1287,6 +1287,31 @@ public:
 
     SkinnedVertexShader* GetSkinnedVertexShader() { return m_skinned_vertex_shader.get(); }
 
+    void RefreshPerFrameCB(float time_elapsed = 0.f)
+    {
+        PerFrameCB frameCB;
+        frameCB.directionalLight = m_directionalLight;
+        frameCB.time_elapsed = time_elapsed;
+        frameCB.fog_color_rgb[0] = m_clear_color.x;
+        frameCB.fog_color_rgb[1] = m_clear_color.y;
+        frameCB.fog_color_rgb[2] = m_clear_color.z;
+        frameCB.fog_start = m_fog_start;
+        frameCB.fog_end = m_fog_end;
+        frameCB.fog_start_y = m_fog_start_y;
+        frameCB.fog_end_y = m_fog_end_y;
+        frameCB.should_render_flags = 0;
+        frameCB.should_render_flags |= m_should_render_shadows;
+        frameCB.should_render_flags |= (GetShouldRenderWaterReflectionEffective() << 1);
+        frameCB.should_render_flags |= (m_should_render_fog << 2);
+        frameCB.should_render_flags |= (m_should_render_shadows_for_models << 3);
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        ZeroMemory(&mapped, sizeof(mapped));
+        m_deviceContext->Map(m_per_frame_cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        memcpy(mapped.pData, &frameCB, sizeof(PerFrameCB));
+        m_deviceContext->Unmap(m_per_frame_cb.Get(), 0);
+    }
+
     // Bone visualization helper - adds debug lines and spheres for bone hierarchy
     std::vector<int> AddBoneVisualization(const std::vector<XMFLOAT3>& bonePositions,
                                           const std::vector<int32_t>& boneParents,

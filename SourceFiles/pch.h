@@ -57,6 +57,9 @@
 #include <variant>
 #include <optional>
 #include <filesystem>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 // Dear ImGui
 #define IMGUI_DEFINE_MATH_OPERATORS

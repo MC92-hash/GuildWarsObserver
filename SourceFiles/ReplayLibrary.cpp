@@ -105,6 +105,7 @@ void LocalReplayProvider::ParsePlayerArray(const void* jsonArrayPtr, std::vector
         pm.model_id = p.value("model_id", 0);
         pm.gadget_id = p.value("gadget_id", 0);
         pm.encoded_name = p.value("encoded_name", std::string());
+        pm.gender = p.value("gender", std::string());
         pm.total_damage = p.value("total_damage", 0);
         pm.attacks_started = p.value("attacks_started", 0);
         pm.attacks_finished = p.value("attacks_finished", 0);
