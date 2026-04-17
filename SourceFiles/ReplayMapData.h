@@ -3,6 +3,7 @@
 #include <string>
 #include <filesystem>
 #include <vector>
+#include <span>
 #include <unordered_map>
 #include <atomic>
 #include <mutex>
@@ -206,8 +207,67 @@ inline bool IsOffensiveBindingRitual(uint32_t modelId)
 // Returns 0 if no model is available for this agent.
 // ---------------------------------------------------------------------------
 
-inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId)
+// ---------------------------------------------------------------------------
+// Player model variant tables — multiple models per profession+gender
+// ---------------------------------------------------------------------------
+
+inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool isFemale)
 {
+    // Female variants
+    static constexpr uint32_t kWarF[]  = { 0x3BD9E, 0x26C53, 0x1FBC4 }; // Timera, Zaishen Fighter, Devona
+    static constexpr uint32_t kRanF[]  = { 0x1FC35 };                    // Reyna
+    static constexpr uint32_t kMonF[]  = { 0x1C7EE, 0x1FC32, 0x2D22C }; // Lina, Alesia, Sister Tai
+    static constexpr uint32_t kNecF[]  = { 0x2D225, 0x1FB82 };          // Su, Eve
+    static constexpr uint32_t kEleF[]  = { 0x26C50, 0x1FBBF };          // Zaishen Mage, Cynn
+    static constexpr uint32_t kMesF[]  = { 0x4C460, 0x3BD99 };          // Gwen, (unnamed)
+    static constexpr uint32_t kAssF[]  = { 0x3BC80, 0x2D15C };          // Zenmai, Nika
+    static constexpr uint32_t kRitF[]  = { 0x4C476 };                   // Xandra
+    static constexpr uint32_t kParF[]  = { 0x4C449 };                   // Hayda
+    static constexpr uint32_t kDerF[]  = { 0x3BD6A };                   // Melonni
+
+    // Male variants
+    static constexpr uint32_t kWarM[]  = { 0x1FC11, 0x2D2A4 };          // Stefan, Lukas
+    static constexpr uint32_t kRanM[]  = { 0x1FBBA, 0x26C56 };          // Aidan, Zaishen Archer
+    static constexpr uint32_t kMonM[]  = { 0x1FBC7, 0x26C4D };          // Mhenlo, Zaishen Healer
+    static constexpr uint32_t kNecM[]  = { 0x3BBC6 };                   // Olias
+    static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236 };          // Orion, Headmaster Vhang
+    static constexpr uint32_t kMesM[]  = { 0x2D21E, 0x1C7CD };          // Lo Sha, Dunham
+    static constexpr uint32_t kAssM[]  = { 0x2D217 };                   // Panaku
+    static constexpr uint32_t kRitM[]  = { 0x2D2F3, 0x2D2A9 };          // Professor Gai, Aeson
+    static constexpr uint32_t kParM[]  = { 0x3BD8E };                   // Sogolon
+    static constexpr uint32_t kDerM[]  = { 0x4C454 };                   // Kahmu
+
+    if (isFemale) {
+        switch (primaryProf) {
+        case 1:  return kWarF;  case 2:  return kRanF;  case 3:  return kMonF;
+        case 4:  return kNecF;  case 5:  return kEleF;  case 6:  return kMesF;
+        case 7:  return kAssF;  case 8:  return kRitF;  case 9:  return kParF;
+        case 10: return kDerF;
+        default: return {};
+        }
+    } else {
+        switch (primaryProf) {
+        case 1:  return kWarM;  case 2:  return kRanM;  case 3:  return kMonM;
+        case 4:  return kNecM;  case 5:  return kEleM;  case 6:  return kMesM;
+        case 7:  return kAssM;  case 8:  return kRitM;  case 9:  return kParM;
+        case 10: return kDerM;
+        default: return {};
+        }
+    }
+}
+
+inline uint32_t LookupPlayerFileHash(int primaryProf, bool isFemale, int variantIndex = 0)
+{
+    auto variants = GetPlayerModelVariants(primaryProf, isFemale);
+    if (variants.empty()) return 0;
+    return variants[variantIndex % variants.size()];
+}
+
+inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
+                                     int primaryProf = 0, bool isFemale = false)
+{
+    if (type == AgentType::Player)
+        return LookupPlayerFileHash(primaryProf, isFemale);
     if (type == AgentType::Spirit) {
         if (IsNatureRitual(modelId)) return 0x22A34;
         if (IsOffensiveBindingRitual(modelId)) return 0x2D408;
@@ -236,8 +296,21 @@ struct AgentModelInfo {
     float    npcAdjustment;  // scale multiplier (1.0 = 100%, 1.3 = 130%)
 };
 
-inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId)
+inline AgentModelInfo LookupPlayerModelInfo(int primaryProf, bool isFemale)
 {
+    uint32_t hash = LookupPlayerFileHash(primaryProf, isFemale);
+    if (hash == 0) return { 0, 0.f, 1.0f };
+    float height = isFemale ? 73.640617f : 75.844055f;
+    if (!isFemale && (primaryProf == 1 || primaryProf == 3 || primaryProf == 6))
+        height = 75.734184f;
+    return { hash, height, 1.0f };
+}
+
+inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
+                                            int primaryProf = 0, bool isFemale = false)
+{
+    if (type == AgentType::Player)
+        return LookupPlayerModelInfo(primaryProf, isFemale);
     if (type == AgentType::Spirit) {
         if (IsNatureRitual(modelId))
             return { 0x22A34, 73.917145f, 0.8f };   // Nature rituals (0x50 = 80%)
@@ -532,6 +605,7 @@ struct AgentReplayData
     int      primaryProf  = 0;
     int      secondaryProf = 0;
     int      playerLevel  = 0;
+    bool     isFemale     = false;
     std::string partyBarLabel;
 
     // Spirit-specific metadata
@@ -607,6 +681,27 @@ struct AgentReplayData
         for (auto& ci : castHistory)
             if (t >= ci.start && t <= ci.end) return ci.skillId;
         return 0;
+    }
+
+    bool isKnockedDownAtTime(float t) const
+    {
+        for (auto& kd : knockdownIntervals)
+            if (t >= kd.start && t <= kd.end) return true;
+        return false;
+    }
+
+    const KnockdownInterval* knockdownIntervalAtTime(float t) const
+    {
+        for (auto& kd : knockdownIntervals)
+            if (t >= kd.start && t <= kd.end) return &kd;
+        return nullptr;
+    }
+
+    const CastInterval* castIntervalAtTime(float t) const
+    {
+        for (auto& ci : castHistory)
+            if (t >= ci.start && t <= ci.end) return &ci;
+        return nullptr;
     }
 
     // Combined visual state for skill icon + cast bar (always in sync).
