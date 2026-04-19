@@ -47,4 +47,5 @@ struct ReplayHotkeys
 
 // Shared ImGui widget: button that captures a key press for rebinding.
 // Returns true the frame a new key is captured.
-bool HotkeyInput(const char* label, int* key);
+// When modernChrome is true, uses the GW Observer setup/licence panel styling (replay Preferences modals).
+bool HotkeyInput(const char* label, int* key, bool modernChrome = false);

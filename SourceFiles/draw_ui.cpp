@@ -15,6 +15,7 @@
 #include "FolderWatcher.h"
 #include "FontConfig.h"
 #include "ReplayHotkeys.h"
+#include "CustomFileBrowser.h"
 #include "Net/SyncEngine.h"
 #include <windows.h>
 #include <filesystem>
@@ -30,6 +31,25 @@ std::unordered_set<uint32_t> dat_compare_filter_result;
 
 static bool s_settingsOpen = false;
 static bool s_licenceModalOpen = false;
+
+static void SettingsReplaySensitivityRow(const char* sliderId, const char* label, float* pStored)
+{
+	float v = *pStored;
+	ImGui::TextUnformatted(label);
+	float rowW = ImGui::GetContentRegionAvail().x;
+	ImGui::SetNextItemWidth(std::max(180.f, rowW - 64.f));
+	std::string sid = "##settings";
+	sid += sliderId;
+	if (ImGui::SliderFloat(sid.c_str(), &v,
+			GuiGlobalConstants::kMinReplayCameraSensitivityMultiplier,
+			GuiGlobalConstants::kMaxReplayCameraSensitivityMultiplier, ""))
+	{
+		*pStored = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(v);
+		GuiGlobalConstants::SaveSettings();
+	}
+	ImGui::SameLine(0.f, 8.f);
+	ImGui::Text("%.2fx", *pStored);
+}
 
 // Cloud storage settings state
 static SyncEngine* s_syncEnginePtr = nullptr;
@@ -245,8 +265,8 @@ static void draw_settings_window()
 				if (std::filesystem::exists(parent))
 					initial = parent.string();
 			}
-			ImGuiFileDialog::Instance()->OpenDialog("SettingsChooseGwDat", "Select Gw.dat",
-				".dat", initial + "\\.");
+			CustomFileBrowser::Instance().Open("SettingsChooseGwDat", "Select Gw.dat",
+				CustomFileBrowser::Mode::SelectFile, ".dat", initial);
 			datDialogOpen = true;
 		}
 		ImGui::PopStyleVar();
@@ -363,8 +383,8 @@ static void draw_settings_window()
 				if (std::filesystem::exists(p) && std::filesystem::is_directory(p))
 					initial = p.string();
 			}
-			ImGuiFileDialog::Instance()->OpenDialog("SettingsChooseMatchFolder",
-				"Select Match Data Folder", nullptr, initial + "\\.");
+			CustomFileBrowser::Instance().Open("SettingsChooseMatchFolder",
+				"Select Match Data Folder", CustomFileBrowser::Mode::SelectFolder, nullptr, initial);
 			folderDialogOpen = true;
 		}
 		ImGui::PopStyleVar();
@@ -431,6 +451,46 @@ static void draw_settings_window()
 				folderSaved = false;
 		}
 	}
+
+	// ──── Replay Camera ─────────────────────────────────────────
+	ImGui::Spacing();
+	ImGui::SeparatorText("Replay Camera");
+	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+		"Vertical field of view for match replay windows (applies immediately).");
+	ImGui::Dummy(ImVec2(0, 4.f));
+	{
+		float fovDeg = GuiGlobalConstants::replay_camera_fov_degrees;
+		ImGui::TextUnformatted("Camera Field of View");
+		float rowW = ImGui::GetContentRegionAvail().x;
+		ImGui::SetNextItemWidth(std::max(180.f, rowW - 52.f));
+		if (ImGui::SliderFloat("##settingsReplayFov", &fovDeg,
+				GuiGlobalConstants::kMinReplayCameraFovDegrees,
+				GuiGlobalConstants::kMaxReplayCameraFovDegrees, ""))
+		{
+			GuiGlobalConstants::replay_camera_fov_degrees =
+				GuiGlobalConstants::ClampReplayCameraFovDegrees(fovDeg);
+			GuiGlobalConstants::SaveSettings();
+			MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
+		}
+		ImGui::SameLine(0.f, 8.f);
+		ImGui::Text("%.0f°", GuiGlobalConstants::replay_camera_fov_degrees);
+	}
+
+	ImGui::Dummy(ImVec2(0, 8.f));
+	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
+		"Mouse and keyboard camera speeds (applies immediately). Keyboard bindings are under Keybindings.");
+	ImGui::Dummy(ImVec2(0, 4.f));
+	SettingsReplaySensitivityRow("ReplayPan", "Pan Speed (left drag)",
+		&GuiGlobalConstants::replay_camera_pan_speed_multiplier);
+	ImGui::Dummy(ImVec2(0, 6.f));
+	SettingsReplaySensitivityRow("ReplayRot", "Rotation Speed (right drag)",
+		&GuiGlobalConstants::replay_camera_rotation_speed_multiplier);
+	ImGui::Dummy(ImVec2(0, 6.f));
+	SettingsReplaySensitivityRow("ReplayZoom", "Zoom Speed (mouse wheel)",
+		&GuiGlobalConstants::replay_camera_zoom_speed_multiplier);
+	ImGui::Dummy(ImVec2(0, 6.f));
+	SettingsReplaySensitivityRow("ReplayKbd", "Keyboard Move Speed (W/Q/S/D default)",
+		&GuiGlobalConstants::replay_camera_keyboard_speed_multiplier);
 
 	// ──── Font Section ──────────────────────────────────────────
 	ImGui::Spacing();
@@ -616,34 +676,32 @@ static void draw_settings_window()
 	ImGui::End();
 
 	// ──── File dialogs (must be drawn outside the Settings window) ──
-	if (datDialogOpen && ImGuiFileDialog::Instance()->Display("SettingsChooseGwDat",
-		ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+	if (datDialogOpen && CustomFileBrowser::Instance().Display("SettingsChooseGwDat"))
 	{
-		if (ImGuiFileDialog::Instance()->IsOk())
+		if (CustomFileBrowser::Instance().IsOk())
 		{
-			std::string fp = ImGuiFileDialog::Instance()->GetFilePathName();
+			std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
 			size_t len = std::min(fp.size(), sizeof(datBuf) - 1);
 			memcpy(datBuf, fp.c_str(), len);
 			datBuf[len] = '\0';
 			datVal = ValidateDatPath(datBuf);
 			autoDetectMsg.clear();
 		}
-		ImGuiFileDialog::Instance()->Close();
+		CustomFileBrowser::Instance().Close();
 		datDialogOpen = false;
 	}
 
-	if (folderDialogOpen && ImGuiFileDialog::Instance()->Display("SettingsChooseMatchFolder",
-		ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+	if (folderDialogOpen && CustomFileBrowser::Instance().Display("SettingsChooseMatchFolder"))
 	{
-		if (ImGuiFileDialog::Instance()->IsOk())
+		if (CustomFileBrowser::Instance().IsOk())
 		{
-			std::string fp = ImGuiFileDialog::Instance()->GetCurrentPath();
+			std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
 			size_t len = std::min(fp.size(), sizeof(folderBuf) - 1);
 			memcpy(folderBuf, fp.c_str(), len);
 			folderBuf[len] = '\0';
 			folderVal = ValidateMatchFolder(folderBuf);
 		}
-		ImGuiFileDialog::Instance()->Close();
+		CustomFileBrowser::Instance().Close();
 		folderDialogOpen = false;
 	}
 

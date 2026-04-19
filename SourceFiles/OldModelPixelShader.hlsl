@@ -227,6 +227,10 @@ PSOutput main(PixelInputType input)
     {
         finalColor.rgb = lerp(finalColor.rgb, LIGHTGREEN, 0.4);
     }
+    else if (highlight_state == 5)
+    {
+        finalColor.rgb = saturate(finalColor.rgb * 1.15);
+    }
     
     bool should_render_model_shadows = should_render_flags & 8;
     if (should_render_model_shadows)

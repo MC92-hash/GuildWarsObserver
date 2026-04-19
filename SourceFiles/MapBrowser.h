@@ -45,6 +45,9 @@ public:
     // Basic MapBrowser loop
     void Tick();
 
+    // Applies persisted replay camera FOV to every open ReplayWindow (Settings / Preferences).
+    static void NotifyReplayWindowsReplayCameraFovChanged();
+
     // IDeviceNotify
     void OnDeviceLost() override;
     void OnDeviceRestored() override;
@@ -157,4 +160,6 @@ private:
     std::vector<std::unique_ptr<ReplayWindow>> m_replay_windows;
     void ProcessPendingReplayRequest();
     void TickReplayWindows();
+
+    static MapBrowser* s_activeInstance;
 };

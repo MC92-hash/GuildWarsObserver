@@ -90,8 +90,6 @@ When multiple variants exist, they are **randomly shuffled** per match to visual
 | 0 | `0x1C7EE` | 15.350650 | 73.640617 | Lina | Protector Henchman |
 | 1 | `0x1FC32` | 15.350650 | 73.640617 | Alesia | Healer Henchman |
 | 2 | `0x2D22C` | 15.350650 | 73.640617 | Sister Tai | Healer Henchman |
-| 3 | `0x2D126` | 36.000000 | 72.000000 | Danika | |
-| 4 | `0x29997` | 36.000000 | 72.000000 | Blahks | |
 
 ---
 
@@ -119,9 +117,7 @@ When multiple variants exist, they are **randomly shuffled** per match to visual
 
 | # | File ID | Width | Height | Name | Notes |
 |---|---------|-------|--------|------|-------|
-| 0 | `0x1C7CD` | 11.879872 | 75.734184 | Dunham | Enchanter Henchman |
-| 1 | `0x2D21E` | 14.406947 | 75.844055 | Lo Sha | Illusion Henchman |
-| 2 | `0x1C7CC` | 11.879872 | 75.734184 | Tannaros | Punishing Henchman |
+| 0 | `0x2D21E` | 14.406947 | 75.844055 | Lo Sha | Illusion Henchman |
 
 #### Female
 
@@ -150,6 +146,8 @@ When multiple variants exist, they are **randomly shuffled** per match to visual
 | 1 | `0x26C50` | 15.350650 | 73.640617 | Zaishen Mage | |
 | 2 | `0x1C835` | 36.000000 | 72.000000 | Luzy Fiera | Fire Henchman |
 | 3 | `0x560D8` | 36.000000 | 72.000000 | Suzu | |
+| 4 | `0x2D126` | 36.000000 | 72.000000 | Danika | |
+| 5 | `0x29997` | 36.000000 | 72.000000 | Blahks | |
 
 ---
 
@@ -160,7 +158,6 @@ When multiple variants exist, they are **randomly shuffled** per match to visual
 | # | File ID | Width | Height | Name | Notes |
 |---|---------|-------|--------|------|-------|
 | 0 | `0x2D217` | 14.406947 | 75.844055 | Panaku | Cutthroat Henchman |
-| 1 | `0x528FC` | 36.000000 | 72.000000 | Kah Xan | Assassin Henchman |
 
 #### Female
 
@@ -280,14 +277,14 @@ Each match produces a different assignment. The randomization is seeded per matc
 |------------|------|--------|-------|
 | Warrior | 6 | 4 | 10 |
 | Ranger | 2 | 3 | 5 |
-| Monk | 1 | 5 | 6 |
+| Monk | 1 | 3 | 4 |
 | Necromancer | 2 | 2 | 4 |
-| Mesmer | 3 | 2 | 5 |
-| Elementalist | 3 | 4 | 7 |
-| Assassin | 2 | 3 | 5 |
+| Mesmer | 1 | 2 | 3 |
+| Elementalist | 3 | 6 | 9 |
+| Assassin | 1 | 3 | 4 |
 | Ritualist | 2 | 3 | 5 |
 | Paragon | 2 | 2 | 4 |
 | Dervish | 2 | 1 | 3 |
-| **Total** | **25** | **29** | **54** |
+| **Total** | **22** | **29** | **51** |
 
 NPCs: 6 entries (4 unique models) · Spirits: 3 categories (3 unique models)

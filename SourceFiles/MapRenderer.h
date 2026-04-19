@@ -1,6 +1,7 @@
 #pragma once
 #include "InputManager.h"
 #include "ReplayHotkeys.h"
+#include "GuiGlobalConstants.h"
 #include "Camera.h"
 #include "MeshManager.h"
 #include "TextureManager.h"
@@ -18,9 +19,24 @@
 #include "DepthStencilStateManager.h"
 #include "DeviceResources.h"
 #include "FFNA_MapFile.h"
+#include "AnimatedMeshInstance.h"
+#include "Animation/AnimationController.h"
+#include "Animation/AnimationClip.h"
+#include "Animation/Skeleton.h"
 #include <array>
 #include <algorithm>
 #include <cmath>
+
+struct MapAnimatedProp
+{
+    std::shared_ptr<GW::Animation::AnimationController> controller;
+    std::shared_ptr<GW::Animation::AnimationClip> clip;
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> meshes;
+    std::vector<PerObjectCB> perObjectCBs;
+    std::vector<int> staticMeshIds;
+    PixelShaderType pixelShaderType = PixelShaderType::OldModel;
+    bool active = false;
+};
 
 using namespace DirectX;
 
@@ -28,6 +44,7 @@ class MapRenderer
 {
 public:
     bool m_disableMovementInput = false;
+    float m_replayPlaybackSpeed = 1.0f;
 
     // Reconstructed from Gw.exe gameplay camera path (GmView_UpdateCameraFrustum + Frame_SetCameraFovAndZFar).
     static constexpr float kGwDefaultCameraFovDegrees = 50.0f;
@@ -47,10 +64,10 @@ public:
         m_user_camera = std::make_unique<Camera>();
     }
 
-    void Initialize(const float viewport_width, const float viewport_height)
+    void Initialize(const float viewport_width, const float viewport_height,
+                    float fov_degrees = kGwDefaultCameraFovDegrees)
     {
         // Initialize cameras
-        float fov_degrees = kGwDefaultCameraFovDegrees;
         float aspect_ratio = viewport_width / viewport_height;
         m_user_camera->SetFrustumAsPerspective(
             static_cast<float>(fov_degrees * XM_PI / 180.0f),
@@ -261,6 +278,18 @@ public:
     {
         m_user_camera->SetFrustumAsPerspective(
             static_cast<float>(kGwDefaultCameraFovDegrees * XM_PI / 180.0f),
+            m_user_camera->GetAspectRatio(),
+            kGwDefaultCameraNearZ,
+            kGwDefaultCameraFarZ,
+            true);
+    }
+
+    // Vertical FOV in degrees (replay / observer camera); preserves aspect and clip planes.
+    void SetPerspectiveFovDegrees(float fov_degrees)
+    {
+        fov_degrees = std::clamp(fov_degrees, 30.0f, 90.0f);
+        m_user_camera->SetFrustumAsPerspective(
+            fov_degrees * XM_PI / 180.0f,
             m_user_camera->GetAspectRatio(),
             kGwDefaultCameraNearZ,
             kGwDefaultCameraFarZ,
@@ -515,6 +544,7 @@ public:
 
         m_prop_mesh_ids.clear();
         extra_mesh_ids.clear();
+        m_animated_props.clear();
         m_terrain_checkered_texture_id = -1;
         m_terrain_texture_indices_id = -1;
         m_terrain_shadow_map_id = -1;
@@ -915,6 +945,8 @@ public:
 
         if (!m_disableMovementInput)
         {
+            const float kbdMul = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(
+                GuiGlobalConstants::replay_camera_keyboard_speed_multiplier);
             const auto& hk = ReplayHotkeys::Get();
             UINT vkFwd   = ReplayHotkeys::ImGuiKeyToVK(hk.camForward);
             UINT vkBack  = ReplayHotkeys::ImGuiKeyToVK(hk.camBackward);
@@ -923,15 +955,15 @@ public:
 
             // Walk
             if (vkFwd   && m_input_manager->IsKeyDown(vkFwd))
-                m_user_camera->Walk(WalkDirection::Forward, dt_seconds);
+                m_user_camera->Walk(WalkDirection::Forward, dt_seconds, kbdMul);
             if (vkBack  && m_input_manager->IsKeyDown(vkBack))
-                m_user_camera->Walk(WalkDirection::Backward, dt_seconds);
+                m_user_camera->Walk(WalkDirection::Backward, dt_seconds, kbdMul);
 
             // Strafe
             if (vkLeft  && m_input_manager->IsKeyDown(vkLeft))
-                m_user_camera->Strafe(StrafeDirection::Left, dt_seconds);
+                m_user_camera->Strafe(StrafeDirection::Left, dt_seconds, kbdMul);
             if (vkRight && m_input_manager->IsKeyDown(vkRight))
-                m_user_camera->Strafe(StrafeDirection::Right, dt_seconds);
+                m_user_camera->Strafe(StrafeDirection::Right, dt_seconds, kbdMul);
         }
 
         m_user_camera->Update(dt_seconds);
@@ -1019,6 +1051,19 @@ public:
         m_deviceContext->Unmap(m_per_camera_cb.Get(), 0);
 
         m_mesh_manager->Update(time_elapsed);
+
+        for (auto& ap : m_animated_props)
+        {
+            if (!ap.active || !ap.controller)
+                continue;
+            ap.controller->Update(static_cast<float>(dt_seconds) * m_replayPlaybackSpeed);
+            const auto& boneMatrices = ap.controller->GetBoneMatrices();
+            for (auto& mesh : ap.meshes)
+            {
+                if (mesh)
+                    mesh->UpdateBoneMatrices(m_deviceContext, boneMatrices);
+            }
+        }
     }
 
     void Render(ID3D11RenderTargetView* render_target_view, ID3D11RenderTargetView* picking_render_target, ID3D11DepthStencilView* depth_stencil_view)
@@ -1071,6 +1116,8 @@ public:
                 m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, RenderSelectionState::OpaqueOnly, true,
                 false, PixelShaderType::OldModel, false, PixelShaderType::NewModel, m_wireframe_mode);
         }
+
+        RenderAnimatedProps(render_target_view, depth_stencil_view);
 
         if (m_water_mesh_id) {
             m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
@@ -1287,6 +1334,14 @@ public:
 
     SkinnedVertexShader* GetSkinnedVertexShader() { return m_skinned_vertex_shader.get(); }
 
+    void AddAnimatedProp(MapAnimatedProp prop)
+    {
+        for (int mid : prop.staticMeshIds)
+            m_mesh_manager->SetMeshShouldRender(mid, false);
+        prop.active = true;
+        m_animated_props.push_back(std::move(prop));
+    }
+
     void RefreshPerFrameCB(float time_elapsed = 0.f)
     {
         PerFrameCB frameCB;
@@ -1468,6 +1523,55 @@ private:
         return kTechniqueHasReflection[technique];
     }
 
+    void RenderAnimatedProps(ID3D11RenderTargetView* render_target_view,
+                             ID3D11DepthStencilView* depth_stencil_view)
+    {
+        bool anyActive = false;
+        for (const auto& ap : m_animated_props)
+        {
+            if (ap.active && !ap.meshes.empty()) { anyActive = true; break; }
+        }
+        if (!anyActive)
+            return;
+
+        m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+        BindSkinnedVertexShader();
+
+        for (const auto& ap : m_animated_props)
+        {
+            if (!ap.active)
+                continue;
+
+            auto psIt = m_pixel_shaders.find(ap.pixelShaderType);
+            if (psIt != m_pixel_shaders.end() && psIt->second)
+            {
+                m_deviceContext->PSSetShader(psIt->second->GetShader(), nullptr, 0);
+                m_deviceContext->PSSetSamplers(0, 1, psIt->second->GetSamplerState());
+                m_deviceContext->PSSetSamplers(1, 1, psIt->second->GetSamplerStateShadow());
+            }
+
+            for (size_t i = 0; i < ap.meshes.size(); i++)
+            {
+                auto& mesh = ap.meshes[i];
+                if (!mesh)
+                    continue;
+
+                if (i < ap.perObjectCBs.size())
+                {
+                    PerObjectCB transposedData = ap.perObjectCBs[i];
+                    XMMATRIX worldMatrix = XMLoadFloat4x4(&transposedData.world);
+                    worldMatrix = XMMatrixTranspose(worldMatrix);
+                    XMStoreFloat4x4(&transposedData.world, worldMatrix);
+                    m_mesh_manager->SetPerObjectCB(transposedData);
+                }
+
+                mesh->Draw(m_deviceContext, m_lod_quality);
+            }
+        }
+
+        BindRegularVertexShader();
+    }
+
     void PushPerTerrainCBUpdate()
     {
         if (!m_terrain || !m_per_terrain_cb) {
@@ -1515,6 +1619,7 @@ private:
 
     std::map<uint32_t, std::vector<int>> m_prop_mesh_ids;
     std::vector<int> extra_mesh_ids; // For stuff like spheres and boxes.
+    std::vector<MapAnimatedProp> m_animated_props;
 
     bool m_is_terrain_mesh_set = false;
     int m_terrain_mesh_id = -1;

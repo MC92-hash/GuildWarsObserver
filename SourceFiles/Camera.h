@@ -47,8 +47,8 @@ public:
     void LookAt(FXMVECTOR pos, FXMVECTOR target, FXMVECTOR worldUp);
     void LookAt(FXMVECTOR target, FXMVECTOR worldUp);
     void SetOrientation(float pitch, float yaw);
-    void Strafe(StrafeDirection strafe_direction, double dt);
-    void Walk(WalkDirection walk_direction, double dt);
+    void Strafe(StrafeDirection strafe_direction, double dt, float speed_scale = 1.0f);
+    void Walk(WalkDirection walk_direction, double dt, float speed_scale = 1.0f);
     void Pitch(float angle);
     void Yaw(float angle);
 

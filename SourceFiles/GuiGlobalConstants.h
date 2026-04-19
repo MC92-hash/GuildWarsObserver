@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <filesystem>
+#include <algorithm>
 
 class GuiGlobalConstants
 {
@@ -63,6 +64,31 @@ public:
 
 	// 3D Agent model rendering (persisted)
 	inline static bool use_3d_agent_models = true;
+
+	// Replay window camera vertical FOV in degrees (persisted; GW default gameplay FOV is 50)
+	static constexpr float kDefaultReplayCameraFovDegrees = 50.0f;
+	static constexpr float kMinReplayCameraFovDegrees     = 30.0f;
+	static constexpr float kMaxReplayCameraFovDegrees     = 90.0f;
+	inline static float replay_camera_fov_degrees = kDefaultReplayCameraFovDegrees;
+
+	static float ClampReplayCameraFovDegrees(float degrees)
+	{
+		return std::clamp(degrees, kMinReplayCameraFovDegrees, kMaxReplayCameraFovDegrees);
+	}
+
+	// Replay camera sensitivity multipliers (0.1x–2.0x; 1.0 = prior default behavior). Persisted.
+	static constexpr float kDefaultReplayCameraSensitivityMultiplier = 1.0f;
+	static constexpr float kMinReplayCameraSensitivityMultiplier     = 0.1f;
+	static constexpr float kMaxReplayCameraSensitivityMultiplier     = 2.0f;
+	inline static float replay_camera_pan_speed_multiplier       = kDefaultReplayCameraSensitivityMultiplier;
+	inline static float replay_camera_rotation_speed_multiplier  = kDefaultReplayCameraSensitivityMultiplier;
+	inline static float replay_camera_zoom_speed_multiplier      = kDefaultReplayCameraSensitivityMultiplier;
+	inline static float replay_camera_keyboard_speed_multiplier = kDefaultReplayCameraSensitivityMultiplier;
+
+	static float ClampReplayCameraSensitivityMultiplier(float mult)
+	{
+		return std::clamp(mult, kMinReplayCameraSensitivityMultiplier, kMaxReplayCameraSensitivityMultiplier);
+	}
 
 	// Auto Camera settings (persisted)
 	inline static float  autocam_lookahead   = 3.f;
@@ -308,6 +334,11 @@ public:
 
 		file << "\n[Rendering]\n";
 		file << "use_3d_agent_models=" << (use_3d_agent_models ? 1 : 0) << "\n";
+		file << "replay_camera_fov_degrees=" << replay_camera_fov_degrees << "\n";
+		file << "replay_camera_pan_speed_multiplier=" << replay_camera_pan_speed_multiplier << "\n";
+		file << "replay_camera_rotation_speed_multiplier=" << replay_camera_rotation_speed_multiplier << "\n";
+		file << "replay_camera_zoom_speed_multiplier=" << replay_camera_zoom_speed_multiplier << "\n";
+		file << "replay_camera_keyboard_speed_multiplier=" << replay_camera_keyboard_speed_multiplier << "\n";
 
 		file << "\n[AutoCamera]\n";
 		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
@@ -343,6 +374,9 @@ public:
 		std::ifstream file(GetSettingsFilePath());
 		if (!file.is_open()) return; // Use defaults if no settings file
 
+		bool loadedPan = false, loadedRot = false, loadedZoom = false, loadedKbd = false;
+		float legacyUnifiedMovement = -1.f;
+
 		std::string line;
 		while (std::getline(file, line)) {
 			if (line.empty() || line[0] == '[') continue;
@@ -352,6 +386,52 @@ public:
 
 			std::string key = line.substr(0, pos);
 			std::string val_str = line.substr(pos + 1);
+
+			if (key == "replay_camera_fov_degrees") {
+				try {
+					replay_camera_fov_degrees = ClampReplayCameraFovDegrees(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
+			if (key == "replay_camera_pan_speed_multiplier") {
+				try {
+					replay_camera_pan_speed_multiplier =
+						ClampReplayCameraSensitivityMultiplier(std::stof(val_str));
+					loadedPan = true;
+				} catch (...) {}
+				continue;
+			}
+			if (key == "replay_camera_rotation_speed_multiplier") {
+				try {
+					replay_camera_rotation_speed_multiplier =
+						ClampReplayCameraSensitivityMultiplier(std::stof(val_str));
+					loadedRot = true;
+				} catch (...) {}
+				continue;
+			}
+			if (key == "replay_camera_zoom_speed_multiplier") {
+				try {
+					replay_camera_zoom_speed_multiplier =
+						ClampReplayCameraSensitivityMultiplier(std::stof(val_str));
+					loadedZoom = true;
+				} catch (...) {}
+				continue;
+			}
+			if (key == "replay_camera_keyboard_speed_multiplier") {
+				try {
+					replay_camera_keyboard_speed_multiplier =
+						ClampReplayCameraSensitivityMultiplier(std::stof(val_str));
+					loadedKbd = true;
+				} catch (...) {}
+				continue;
+			}
+			// Legacy single slider (before pan/rotation/zoom/keyboard split)
+			if (key == "replay_camera_movement_speed_multiplier") {
+				try {
+					legacyUnifiedMovement = ClampReplayCameraSensitivityMultiplier(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
 
 			if (key == "gw_dat_path") {
 				saved_gw_dat_path = val_str;
@@ -409,6 +489,17 @@ public:
 			else if (key == "window_maximized") window_maximized = (value != 0);
 			else if (key == "replay_filter_width") replay_filter_width = value;
 			else if (key == "replay_list_height") replay_list_height = value;
+		}
+
+		if (legacyUnifiedMovement >= 0.f) {
+			if (!loadedPan)
+				replay_camera_pan_speed_multiplier = legacyUnifiedMovement;
+			if (!loadedRot)
+				replay_camera_rotation_speed_multiplier = legacyUnifiedMovement;
+			if (!loadedZoom)
+				replay_camera_zoom_speed_multiplier = legacyUnifiedMovement;
+			if (!loadedKbd)
+				replay_camera_keyboard_speed_multiplier = legacyUnifiedMovement;
 		}
 
 		file.close();

@@ -184,6 +184,8 @@ extern std::unordered_map<uint32_t, uint32_t> object_id_to_prop_index;
 extern std::unordered_map<uint32_t, uint32_t> object_id_to_submodel_index;
 extern int selected_map_file_index;
 
+MapBrowser* MapBrowser::s_activeInstance = nullptr;
+
 MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
     : m_input_manager(input_manager),
     m_dat_manager_to_show_in_dat_browser(0),
@@ -197,10 +199,13 @@ MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
     m_dat_managers.emplace(0, std::make_unique<DATManager>()); // Dat manager to store first dat file (more can be loaded later in comparison panel)
     m_deviceResources->RegisterDeviceNotify(this);
     last_frame_time = high_resolution_clock::now();
+    s_activeInstance = this;
 }
 
 MapBrowser::~MapBrowser()
 {
+    if (s_activeInstance == this)
+        s_activeInstance = nullptr;
     // Cancel and join any in-flight cloud download thread
     if (m_playDl.state.load() == PlayDownloadState::Downloading && m_cloudProvider)
         m_cloudProvider->CancelDownload();
@@ -2169,4 +2174,15 @@ void MapBrowser::TickReplayWindows()
         }
     }
 
+}
+
+void MapBrowser::NotifyReplayWindowsReplayCameraFovChanged()
+{
+    if (!s_activeInstance)
+        return;
+    for (auto& rw : s_activeInstance->m_replay_windows)
+    {
+        if (rw)
+            rw->ApplyReplayCameraFovFromSettings();
+    }
 }

@@ -214,28 +214,28 @@ inline bool IsOffensiveBindingRitual(uint32_t modelId)
 inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool isFemale)
 {
     // Female variants
-    static constexpr uint32_t kWarF[]  = { 0x3BD9E, 0x26C53, 0x1FBC4 }; // Timera, Zaishen Fighter, Devona
-    static constexpr uint32_t kRanF[]  = { 0x1FC35 };                    // Reyna
-    static constexpr uint32_t kMonF[]  = { 0x1C7EE, 0x1FC32, 0x2D22C }; // Lina, Alesia, Sister Tai
-    static constexpr uint32_t kNecF[]  = { 0x2D225, 0x1FB82 };          // Su, Eve
-    static constexpr uint32_t kEleF[]  = { 0x26C50, 0x1FBBF };          // Zaishen Mage, Cynn
-    static constexpr uint32_t kMesF[]  = { 0x4C460, 0x3BD99 };          // Gwen, (unnamed)
-    static constexpr uint32_t kAssF[]  = { 0x3BC80, 0x2D15C };          // Zenmai, Nika
-    static constexpr uint32_t kRitF[]  = { 0x4C476 };                   // Xandra
-    static constexpr uint32_t kParF[]  = { 0x4C449 };                   // Hayda
-    static constexpr uint32_t kDerF[]  = { 0x3BD6A };                   // Melonni
+    static constexpr uint32_t kWarF[]  = { 0x1FBC4, 0x3BD9E, 0x26C53, 0x22B54 };       // Devona, Timera, Zaishen Fighter, Adepte
+    static constexpr uint32_t kRanF[]  = { 0x1FC35, 0x1C801, 0x2D2E2 };                 // Reyna, Lulu Xan, Aurora
+    static constexpr uint32_t kMonF[]  = { 0x1C7EE, 0x1FC32, 0x2D22C };                    // Lina, Alesia, Sister Tai
+    static constexpr uint32_t kNecF[]  = { 0x1FB82, 0x2D225 };                          // Eve, Su
+    static constexpr uint32_t kEleF[]  = { 0x1FBBF, 0x26C50, 0x1C835, 0x560D8, 0x2D126, 0x29997 }; // Cynn, Zaishen Mage, Luzy Fiera, Suzu, Danika, Blahks
+    static constexpr uint32_t kMesF[]  = { 0x4C460, 0x3BD99 };                          // Gwen, (unnamed)
+    static constexpr uint32_t kAssF[]  = { 0x3BC80, 0x2D15C, 0x2D37F };                 // Zenmai, Nika, Fuu Rin
+    static constexpr uint32_t kRitF[]  = { 0x4C476, 0x2D1A3, 0x2D136 };                 // Xandra, Narcissia, Nuno
+    static constexpr uint32_t kParF[]  = { 0x4C449, 0x3BCD0 };                          // Hayda, Kormir
+    static constexpr uint32_t kDerF[]  = { 0x3BD6A };                                   // Melonni
 
     // Male variants
-    static constexpr uint32_t kWarM[]  = { 0x1FC11, 0x2D2A4 };          // Stefan, Lukas
-    static constexpr uint32_t kRanM[]  = { 0x1FBBA, 0x26C56 };          // Aidan, Zaishen Archer
-    static constexpr uint32_t kMonM[]  = { 0x26C4D };                    // Zaishen Healer
-    static constexpr uint32_t kNecM[]  = { 0x3BBC6 };                   // Olias
-    static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236 };          // Orion, Headmaster Vhang
-    static constexpr uint32_t kMesM[]  = { 0x2D21E, 0x1C7CD };          // Lo Sha, Dunham
-    static constexpr uint32_t kAssM[]  = { 0x2D217 };                   // Panaku
-    static constexpr uint32_t kRitM[]  = { 0x2D2F3, 0x2D2A9 };          // Professor Gai, Aeson
-    static constexpr uint32_t kParM[]  = { 0x3BD8E };                   // Sogolon
-    static constexpr uint32_t kDerM[]  = { 0x4C454 };                   // Kahmu
+    static constexpr uint32_t kWarM[]  = { 0x1FC11, 0x2D2A4, 0x1C828, 0x2D341, 0x1FBCD, 0x22B45 }; // Stefan, Lukas, Duke Barradin, Seaguard Eli, Prince Rurik, Captain Miken
+    static constexpr uint32_t kRanM[]  = { 0x1FBBA, 0x26C56 };                          // Aidan, Zaishen Archer
+    static constexpr uint32_t kMonM[]  = { 0x26C4D };                                   // Zaishen Healer
+    static constexpr uint32_t kNecM[]  = { 0x3BBC6, 0x2D3D1 };                          // Olias, Ghavin
+    static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236, 0x2D155 };                 // Orion, Headmaster Vhang, Argo
+    static constexpr uint32_t kMesM[]  = { 0x2D21E };                                   // Lo Sha
+    static constexpr uint32_t kAssM[]  = { 0x2D217 };                                   // Panaku
+    static constexpr uint32_t kRitM[]  = { 0x2D2F3, 0x2D2A9 };                          // Professor Gai, Aeson
+    static constexpr uint32_t kParM[]  = { 0x3BD8E, 0x3BCF7 };                          // Sogolon, General Morgahn
+    static constexpr uint32_t kDerM[]  = { 0x4C454, 0x560E2 };                          // Kahmu, Alsacien
 
     // GW internal profession IDs: 1=W 2=R 3=Mo 4=N 5=Me 6=E 7=A 8=Rt 9=P 10=D
     if (isFemale) {
@@ -1238,5 +1238,5 @@ struct ReplayContext
     bool  isPlaying      = false;
     bool  loopPlayback   = false;
     float playbackSpeed  = 1.0f;
-    int   speedIndex     = 2;        // index into {0.25, 0.5, 1, 2, 4, 8}
+    int   speedIndex     = 3;        // index into {0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8}
 };

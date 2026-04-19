@@ -654,6 +654,50 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         }
     }
 
+    // Phase 4b: Synthesize drops for carriers still active after all events.
+    // The GW server sometimes omits FLAG_DROP packets. If no subsequent pickup
+    // or return cleared the carrier, scan snapshots for the weapon_type
+    // transition (0 -> non-zero) or death to find the actual drop moment.
+    for (int ti = 0; ti < 2; ti++) {
+        if (carrier[ti] < 0 || !input.agents) continue;
+
+        auto cit = input.agents->find(carrier[ti]);
+        if (cit == input.agents->end() || cit->second.snapshots.empty()) continue;
+
+        const auto& snaps = cit->second.snapshots;
+        float scanLower = carrierSince[ti];
+        float dropTime = -1.f;
+        float dx = 0, dy = 0, dz = 0;
+
+        for (int k = 1; k < static_cast<int>(snaps.size()); ++k) {
+            if (snaps[k].time < scanLower) continue;
+            if (snaps[k].weapon_type != 0 && snaps[k - 1].weapon_type == 0) {
+                dropTime = snaps[k].time;
+                dx = snaps[k].x; dy = snaps[k].y; dz = snaps[k].z;
+                break;
+            }
+            if (snaps[k].is_dead && !snaps[k - 1].is_dead) {
+                dropTime = snaps[k].time;
+                dx = snaps[k].x; dy = snaps[k].y; dz = snaps[k].z;
+                break;
+            }
+        }
+
+        if (dropTime >= 0.f) {
+            FlagTimelineEvent dropEv;
+            dropEv.time           = dropTime;
+            dropEv.flagTeam       = static_cast<FlagTeam>(ti);
+            dropEv.eventType      = FlagTimelineEventType::Drop;
+            dropEv.newLocation    = FlagLocation::Ground;
+            dropEv.actorAgentId   = carrier[ti];
+            dropEv.carrierAgentId = -1;
+            dropEv.x = dx; dropEv.y = dy; dropEv.z = dz;
+            result.teams[ti].events.push_back(dropEv);
+            lastGroundPos[ti][0] = dx; lastGroundPos[ti][1] = dy; lastGroundPos[ti][2] = dz;
+            carrier[ti] = -1;
+        }
+    }
+
     // Phase 5: Build stand control from MAP_OBJECT overcap events
     if (input.mapObject && result.stand.standAgentId >= 0) {
         uint32_t standObjId = static_cast<uint32_t>(result.stand.standAgentId);

@@ -9,6 +9,7 @@
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
+#include "MapBrowser.h"
 #include "TextureCache.h"
 #include "CursorSystem.h"
 #include "SpatialAudioEngine.h"
@@ -23,6 +24,9 @@
 #include <d3dcompiler.h>
 #include <filesystem>
 #include <fstream>
+#include <random>
+#include <algorithm>
+#include <numeric>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -170,6 +174,69 @@ void ReplayHotkeys::Load()
 }
 
 // ---------------------------------------------------------------------------
+// Panel layout registration — maps stable keys to m_show* pointers
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::RegisterPanelLayout()
+{
+    if (m_panelLayoutRegistered) return;
+    m_panelLayoutRegistered = true;
+
+    // trackPosition=true for movable panels, false for fixed-position panels
+    m_panelLayout.RegisterPanel("team1_party",     "Team 1 Party",         &m_showTeam1Party,       true,  true);
+    m_panelLayout.RegisterPanel("team2_party",     "Team 2 Party",         &m_showTeam2Party,       true,  true);
+    m_panelLayout.RegisterPanel("morale",          "Morale",               &m_showMoralePanel,      false, true);
+    m_panelLayout.RegisterPanel("lord_damage",     "Lord Damage",          &m_showLordDamagePanel,  false, true);
+    m_panelLayout.RegisterPanel("event_timeline",  "Event Timeline",       &m_showEventTimeline,    false, false);
+    m_panelLayout.RegisterPanel("range_rings",     "Range Rings",          &m_showRangeRings,       false, true);
+    m_panelLayout.RegisterPanel("auto_camera",     "Auto Camera",          &m_showAutoCameraPanel,  false, true);
+    m_panelLayout.RegisterPanel("combat_log",      "Combat Log",           &m_showCombatLog,        false, true);
+    m_panelLayout.RegisterPanel("skill_analytics", "Skill Analytics",      &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("piano_roll",      "Piano Roll",           &m_showPianoRoll,        false, true);
+    m_panelLayout.RegisterPanel("heatmap",         "Heatmap",              &m_heatmapSettings.show, false, true);
+    m_panelLayout.RegisterPanel("agent_names",     "Agent Names",          &m_showNameFilterPanel,  false, true);
+    m_panelLayout.RegisterPanel("split_camera",    "Split Camera",         &m_pipEnabled,           false, true);
+    m_panelLayout.RegisterPanel("notepad",         "Match Notepad",        &m_showNotepad,          false, true);
+}
+
+uint64_t ReplayWindow::ComputePanelStateHash() const
+{
+    uint64_t h = 0;
+    auto hashBool = [&](bool v) { h = h * 131 + (v ? 1u : 0u); };
+    auto hashInt  = [&](int v)  { h = h * 131 + static_cast<uint64_t>(static_cast<uint32_t>(v)); };
+
+    hashBool(m_alliesOpenTeam1);
+    hashBool(m_alliesOpenTeam2);
+    for (int i = 0; i < kRingTypeCount; i++) hashBool(m_ringType[i]);
+    hashBool(m_ringShowBlue);
+    hashBool(m_ringShowRed);
+    hashBool(m_clFilterDamage);
+    hashBool(m_clFilterHeals);
+    hashBool(m_clFilterSkills);
+    hashBool(m_clFilterInterrupt);
+    hashBool(m_clFilterCancel);
+    hashBool(m_clFilterDeaths);
+    hashBool(m_clFilterAttacks);
+    hashBool(m_clFilterJumbo);
+    hashBool(m_clAutoScroll);
+    hashBool(m_tlFilterDeath);
+    hashBool(m_tlFilterFlag);
+    hashBool(m_tlFilterFlagReturn);
+    hashBool(m_tlFilterMorale);
+    hashBool(m_tlFilterLord);
+    hashBool(m_tlFilterShrine);
+    hashInt(m_pianoRollZoomIdx);
+    hashBool(m_pianoRollTeam1Open);
+    hashBool(m_pianoRollTeam2Open);
+    hashInt(m_fogPerspective);
+    hashBool(m_fogGhostMode);
+    hashInt(m_fogLastActive);
+    hashBool(m_showDamageMeter);
+    hashBool(m_showHealMeter);
+    return h;
+}
+
+// ---------------------------------------------------------------------------
 // UI Layout persistence (JSON)
 // ---------------------------------------------------------------------------
 
@@ -186,27 +253,90 @@ static std::filesystem::path GetUILayoutFilePath()
 
 void ReplayWindow::SaveUILayout()
 {
+    m_panelLayout.SyncVisibilityFromPointers();
+
     auto path = GetUILayoutFilePath();
     std::ofstream f(path);
     if (!f.is_open()) return;
-    f << "{\n"
-      << "  \"useCustom\": "  << (m_uiLayout.useCustom ? "true" : "false") << ",\n"
-      << "  \"jumboX\": "     << m_uiLayout.jumboX   << ",\n"
-      << "  \"jumboY\": "     << m_uiLayout.jumboY   << ",\n"
-      << "  \"moBlueX\": "    << m_uiLayout.moBlueX  << ",\n"
-      << "  \"moBlueY\": "    << m_uiLayout.moBlueY  << ",\n"
-      << "  \"moRedX\": "     << m_uiLayout.moRedX   << ",\n"
-      << "  \"moRedY\": "     << m_uiLayout.moRedY   << ",\n"
-      << "  \"timerX\": "     << m_uiLayout.timerX   << ",\n"
-      << "  \"timerY\": "     << m_uiLayout.timerY   << ",\n"
-      << "  \"lodEnabled\": " << (m_uiLayout.lodEnabled ? "true" : "false") << ",\n"
-      << "  \"lodDotDist\": " << m_uiLayout.lodDotDist << ",\n"
-      << "  \"lodPillarDist\": " << m_uiLayout.lodPillarDist << "\n"
-      << "}\n";
+
+    nlohmann::json j;
+    j["useCustom"]    = m_uiLayout.useCustom;
+    j["jumboX"]       = m_uiLayout.jumboX;
+    j["jumboY"]       = m_uiLayout.jumboY;
+    j["moBlueX"]      = m_uiLayout.moBlueX;
+    j["moBlueY"]      = m_uiLayout.moBlueY;
+    j["moRedX"]       = m_uiLayout.moRedX;
+    j["moRedY"]       = m_uiLayout.moRedY;
+    j["timerX"]       = m_uiLayout.timerX;
+    j["timerY"]       = m_uiLayout.timerY;
+    j["lodEnabled"]   = m_uiLayout.lodEnabled;
+    j["lodDotDist"]   = m_uiLayout.lodDotDist;
+    j["lodPillarDist"] = m_uiLayout.lodPillarDist;
+
+    nlohmann::json panels;
+    m_panelLayout.SaveToJson(panels);
+    j["panels"] = panels;
+
+    // Per-panel filter/state persistence
+    nlohmann::json ps;
+
+    // Party window allies expanded state
+    ps["alliesOpenTeam1"] = m_alliesOpenTeam1;
+    ps["alliesOpenTeam2"] = m_alliesOpenTeam2;
+
+    // Range Rings selections
+    {
+        nlohmann::json rt = nlohmann::json::array();
+        for (int i = 0; i < kRingTypeCount; i++) rt.push_back(m_ringType[i]);
+        ps["ringTypes"]    = rt;
+    }
+    ps["ringShowBlue"]     = m_ringShowBlue;
+    ps["ringShowRed"]      = m_ringShowRed;
+
+    // Combat Log filters
+    ps["clFilterDamage"]    = m_clFilterDamage;
+    ps["clFilterHeals"]     = m_clFilterHeals;
+    ps["clFilterSkills"]    = m_clFilterSkills;
+    ps["clFilterInterrupt"] = m_clFilterInterrupt;
+    ps["clFilterCancel"]    = m_clFilterCancel;
+    ps["clFilterDeaths"]    = m_clFilterDeaths;
+    ps["clFilterAttacks"]   = m_clFilterAttacks;
+    ps["clFilterJumbo"]     = m_clFilterJumbo;
+    ps["clAutoScroll"]      = m_clAutoScroll;
+
+    // Event Timeline filters
+    ps["tlFilterDeath"]       = m_tlFilterDeath;
+    ps["tlFilterFlag"]        = m_tlFilterFlag;
+    ps["tlFilterFlagReturn"]  = m_tlFilterFlagReturn;
+    ps["tlFilterMorale"]      = m_tlFilterMorale;
+    ps["tlFilterLord"]        = m_tlFilterLord;
+    ps["tlFilterShrine"]      = m_tlFilterShrine;
+
+    // Piano Roll state
+    ps["pianoRollZoomIdx"]    = m_pianoRollZoomIdx;
+    ps["pianoRollTeam1Open"]  = m_pianoRollTeam1Open;
+    ps["pianoRollTeam2Open"]  = m_pianoRollTeam2Open;
+
+    // Fog of War state
+    ps["fogPerspective"]      = m_fogPerspective;
+    ps["fogGhostMode"]        = m_fogGhostMode;
+    ps["fogLastActive"]       = m_fogLastActive;
+
+    // Damage / Heal meter toggles
+    ps["showDamageMeter"]     = m_showDamageMeter;
+    ps["showHealMeter"]       = m_showHealMeter;
+
+    j["panelState"] = ps;
+
+    f << j.dump(2) << "\n";
+
+    m_panelLayout.ClearDirty();
 }
 
 void ReplayWindow::LoadUILayout()
 {
+    RegisterPanelLayout();
+
     auto path = GetUILayoutFilePath();
     std::ifstream f(path);
     if (!f.is_open()) return;
@@ -225,7 +355,70 @@ void ReplayWindow::LoadUILayout()
         if (j.contains("lodEnabled"))    m_uiLayout.lodEnabled    = j["lodEnabled"].get<bool>();
         if (j.contains("lodDotDist"))    m_uiLayout.lodDotDist    = j["lodDotDist"].get<float>();
         if (j.contains("lodPillarDist")) m_uiLayout.lodPillarDist = j["lodPillarDist"].get<float>();
+
+        if (j.contains("panels"))
+        {
+            m_panelLayout.LoadFromJson(j["panels"]);
+            m_panelLayout.SyncVisibilityToPointers();
+        }
+
+        if (j.contains("panelState"))
+        {
+            auto& ps = j["panelState"];
+            auto bv = [&](const char* k, bool& dst) { if (ps.contains(k)) dst = ps[k].get<bool>(); };
+            auto iv = [&](const char* k, int& dst)   { if (ps.contains(k)) dst = ps[k].get<int>(); };
+
+            // Party window allies expanded state
+            bv("alliesOpenTeam1", m_alliesOpenTeam1);
+            bv("alliesOpenTeam2", m_alliesOpenTeam2);
+
+            // Range Rings selections
+            if (ps.contains("ringTypes") && ps["ringTypes"].is_array())
+            {
+                auto& rt = ps["ringTypes"];
+                for (int i = 0; i < kRingTypeCount && i < (int)rt.size(); i++)
+                    m_ringType[i] = rt[i].get<bool>();
+            }
+            bv("ringShowBlue", m_ringShowBlue);
+            bv("ringShowRed",  m_ringShowRed);
+
+            // Combat Log filters
+            bv("clFilterDamage",    m_clFilterDamage);
+            bv("clFilterHeals",     m_clFilterHeals);
+            bv("clFilterSkills",    m_clFilterSkills);
+            bv("clFilterInterrupt", m_clFilterInterrupt);
+            bv("clFilterCancel",    m_clFilterCancel);
+            bv("clFilterDeaths",    m_clFilterDeaths);
+            bv("clFilterAttacks",   m_clFilterAttacks);
+            bv("clFilterJumbo",     m_clFilterJumbo);
+            bv("clAutoScroll",      m_clAutoScroll);
+
+            // Event Timeline filters
+            bv("tlFilterDeath",      m_tlFilterDeath);
+            bv("tlFilterFlag",       m_tlFilterFlag);
+            bv("tlFilterFlagReturn", m_tlFilterFlagReturn);
+            bv("tlFilterMorale",     m_tlFilterMorale);
+            bv("tlFilterLord",       m_tlFilterLord);
+            bv("tlFilterShrine",     m_tlFilterShrine);
+
+            // Piano Roll state
+            iv("pianoRollZoomIdx",   m_pianoRollZoomIdx);
+            bv("pianoRollTeam1Open", m_pianoRollTeam1Open);
+            bv("pianoRollTeam2Open", m_pianoRollTeam2Open);
+
+            // Fog of War state
+            iv("fogPerspective",  m_fogPerspective);
+            bv("fogGhostMode",   m_fogGhostMode);
+            iv("fogLastActive",  m_fogLastActive);
+
+            // Damage / Heal meter toggles
+            bv("showDamageMeter", m_showDamageMeter);
+            bv("showHealMeter",   m_showHealMeter);
+        }
     } catch (...) {}
+
+    m_panelLayout.ClearDirty();
+    m_lastPanelStateHash = ComputePanelStateHash();
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +812,8 @@ bool ReplayWindow::InitGraphics()
         m_deviceResources->GetD3DDevice(),
         m_deviceResources->GetD3DDeviceContext(),
         m_inputManager.get());
-    m_mapRenderer->Initialize(static_cast<float>(width), static_cast<float>(height));
+    m_mapRenderer->Initialize(static_cast<float>(width), static_cast<float>(height),
+        GuiGlobalConstants::ClampReplayCameraFovDegrees(GuiGlobalConstants::replay_camera_fov_degrees));
 
     m_deviceResources->RegisterDeviceNotify(this);
     return true;
@@ -842,6 +1036,9 @@ void ReplayWindow::ShutdownImGui()
     bool needRestore = (prevCtx != m_imguiContext);
 
     ImGui::SetCurrentContext(m_imguiContext);
+
+    SaveUILayout();
+
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext(m_imguiContext);
@@ -1240,6 +1437,8 @@ void ReplayWindow::StepLoadInit()
     m_propPlaceIndex = 0;
     m_propModelFiles.clear();
     m_propModelFiles.reserve(m_totalPropFilenames);
+    m_propModelFileHashes.clear();
+    m_propModelFileHashes.reserve(m_totalPropFilenames);
     m_meshIdToPropIndex.clear();
 
     AssetBlacklist::Get().LoadForMap(m_replayCtx.mapId);
@@ -1269,8 +1468,10 @@ void ReplayWindow::StepLoadPropModels()
         auto mit = m_hashIndex->find(decoded);
         if (mit != m_hashIndex->end()) {
             auto type = m_datManager->get_MFT()[mit->second.at(0)].type;
-            if (type == FFNA_Type2)
+            if (type == FFNA_Type2) {
                 m_propModelFiles.emplace_back(m_datManager->parse_ffna_model_file(mit->second.at(0)));
+                m_propModelFileHashes.push_back(static_cast<uint32_t>(decoded));
+            }
         }
     }
 
@@ -1412,6 +1613,31 @@ void ReplayWindow::StepPlaceProps()
             }
         }
 
+        if (prop_info.filename_index < m_propModelFileHashes.size())
+        {
+            uint32_t fileHash = m_propModelFileHashes[prop_info.filename_index];
+            uint32_t segHash = 0;
+            size_t   segFallback = SIZE_MAX;
+
+            if (m_replayCtx.datMapId == 0x334A2 && fileHash == 0x2E13A)
+            {
+                segHash = 0x0000000;
+                segFallback = 1;
+            }
+            else if (m_replayCtx.datMapId == 0x26625 && fileHash == 0x285EA)
+            {
+                segHash = 0x35E6AE29;
+                segFallback = 1;
+            }
+
+            if (segFallback != SIZE_MAX)
+            {
+                SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                  propMeshes, perObjectCBs, meshIds,
+                                  perMeshTexIds, pst, segHash, segFallback);
+            }
+        }
+
         for (int mid : meshIds)
             m_meshIdToPropIndex[mid] = static_cast<uint32_t>(i);
 
@@ -1475,6 +1701,121 @@ void ReplayWindow::StepPlaceProps()
 
         SetWindowTextW(m_hwnd, BuildWindowTitle(m_matchMeta).c_str());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Animated map prop setup (Isle of Solitude portal)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupAnimatedProp(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint32_t segmentHash,
+    size_t segmentFallbackIndex)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* fileData = m_datManager->read_file(mftIndex);
+    if (!fileData)
+        return;
+
+    size_t fileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
+    delete[] fileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t targetSegment = SIZE_MAX;
+    for (size_t i = 0; i < segments.size(); i++)
+    {
+        if (segments[i].hash == segmentHash)
+        {
+            targetSegment = i;
+            break;
+        }
+    }
+    if (targetSegment == SIZE_MAX)
+        targetSegment = segmentFallbackIndex;
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(targetSegment);
+    controller->SetLooping(true);
+    controller->SetPlaybackSpeed(100000.0f);
+    controller->Play();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+
+        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount,
+            clip->hierarchyMode, j);
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    MapAnimatedProp prop;
+    prop.controller = controller;
+    prop.clip = clip;
+    prop.meshes = std::move(animatedMeshes);
+    prop.perObjectCBs = perObjectCBs;
+    prop.staticMeshIds = meshIds;
+    prop.pixelShaderType = pst;
+
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
 }
 
 // ---------------------------------------------------------------------------
@@ -2517,6 +2858,7 @@ void ReplayWindow::Update(double elapsedMs)
         UpdateAutoCamera(dt);
     if (!m_topViewActive && !m_topViewTransitioning)
         UpdateFollowCamera(dt);
+    m_mapRenderer->m_replayPlaybackSpeed = m_replayCtx.playbackSpeed;
     m_mapRenderer->Update(dt);
 
     if (m_pipEnabled)
@@ -3462,11 +3804,6 @@ void ReplayWindow::DrawImGuiOverlay()
     }
     DrawShortcutPreferences();
 
-    if (m_showInterfacePrefs)
-    {
-        ImGui::OpenPopup("Interface Preferences");
-        m_showInterfacePrefs = false;
-    }
     DrawInterfacePreferences();
 
     DrawPartyWindows();
@@ -3504,7 +3841,9 @@ void ReplayWindow::DrawImGuiOverlay()
                 }
             }
             size_t prevLayerCount = m_heatmapSettings.layers.size();
+            m_panelLayout.ApplyPosition("heatmap");
             bool hmChanged = DrawHeatmapPanel(m_heatmapSettings, hmAgents, lutGetter);
+            m_panelLayout.TrackWindowByName("heatmap", "Heatmap");
             if (hmChanged)
             {
                 size_t newCount = m_heatmapSettings.layers.size();
@@ -3746,6 +4085,15 @@ void ReplayWindow::DrawImGuiOverlay()
             }
         }
     }
+
+    // Sync panel visibility and auto-save layout if anything changed
+    m_panelLayout.SyncVisibilityFromPointers();
+    uint64_t stateHash = ComputePanelStateHash();
+    bool stateChanged = (stateHash != m_lastPanelStateHash);
+    if (stateChanged)
+        m_lastPanelStateHash = stateHash;
+    if (m_panelLayout.IsDirty() || stateChanged)
+        SaveUILayout();
 
     // Determine cursor mode, then apply drag overrides before committing
     UpdateCursorMode();
@@ -4813,15 +5161,50 @@ void ReplayWindow::LoadAgentModelsAsync()
     if (!m_datManager || !m_hashIndex) return;
 
     // 1. Collect unique file hashes and cache per-agent hash (main thread)
+    //    Player variants are shuffled randomly per (profession, gender) group
+    //    so that duplicate models are avoided until all variants are exhausted.
     std::unordered_set<uint32_t> uniqueHashes;
-    std::unordered_map<uint64_t, int> profGenderVariantCounter;
+
+    // Count players per (profession, gender) pair
+    std::unordered_map<uint64_t, int> profGenderCount;
+    for (auto& [agentId, ard] : m_replayCtx.agents) {
+        if (ard.type != AgentType::Player) continue;
+        uint64_t key = ((uint64_t)ard.primaryProf << 1) | (ard.isFemale ? 1 : 0);
+        profGenderCount[key]++;
+    }
+
+    // Build shuffled variant-index sequences per group
+    std::mt19937 rng(std::random_device{}());
+    std::unordered_map<uint64_t, std::vector<int>> profGenderShuffled;
+    for (auto& [key, count] : profGenderCount) {
+        int prof = static_cast<int>(key >> 1);
+        bool isFemale = (key & 1) != 0;
+        auto variants = GetPlayerModelVariants(prof, isFemale);
+        int numVariants = static_cast<int>(variants.size());
+        if (numVariants == 0) continue;
+
+        auto& indices = profGenderShuffled[key];
+        while (static_cast<int>(indices.size()) < count) {
+            std::vector<int> round(numVariants);
+            std::iota(round.begin(), round.end(), 0);
+            std::shuffle(round.begin(), round.end(), rng);
+            indices.insert(indices.end(), round.begin(), round.end());
+        }
+    }
+
+    // Assign variants from the shuffled sequences
+    std::unordered_map<uint64_t, int> profGenderAssignIdx;
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         uint32_t fileHash = 0;
         if (ard.type == AgentType::Player) {
             uint64_t key = ((uint64_t)ard.primaryProf << 1) | (ard.isFemale ? 1 : 0);
-            int variantIdx = profGenderVariantCounter[key]++;
-            fileHash = LookupPlayerFileHash(ard.primaryProf, ard.isFemale, variantIdx);
+            auto it = profGenderShuffled.find(key);
+            if (it != profGenderShuffled.end() && !it->second.empty()) {
+                int idx = profGenderAssignIdx[key]++;
+                fileHash = LookupPlayerFileHash(ard.primaryProf, ard.isFemale,
+                                                it->second[idx]);
+            }
         } else {
             fileHash = LookupAgentFileHash(ard.type, ard.modelId);
         }
@@ -5413,6 +5796,11 @@ void ReplayWindow::DrawAgentModels()
     const InterpolationSettings& is = m_replayCtx.interpSettings;
     Terrain* terrain = m_mapRenderer->GetTerrain();
 
+    Camera* cam = m_mapRenderer->GetCamera();
+    XMFLOAT3 camP = cam->GetPosition3f();
+    const bool lodOn = m_uiLayout.lodEnabled;
+    const float lodDot = m_uiLayout.lodDotDist;
+
     bool hasBounds = (terrain != nullptr);
     float bMinX = 0, bMaxX = 0, bMinZ = 0, bMaxZ = 0;
     if (hasBounds) {
@@ -5481,6 +5869,19 @@ void ReplayWindow::DrawAgentModels()
             pos.z = std::clamp(pos.z, bMinZ, bMaxZ);
         }
 
+        // LOD: beyond lodDotDist → hide 3D model, show stylized icon instead
+        if (lodOn) {
+            float dx = pos.x - camP.x, dy = pos.y - camP.y, dz = pos.z - camP.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist > lodDot) {
+                for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+                ard.currentLOD = 0;
+                m_agentModelRenderStatus[agentId] = std::format("hidden: LOD icon (dist={:.0f})", dist);
+                continue;
+            }
+        }
+        ard.currentLOD = 2;
+
         // Get rotation from nearest snapshot
         int snapIdx = FindSnapshotIndex(ard.snapshots, m_debugTimeline);
         float rotRad = ard.snapshots[snapIdx].rotation;
@@ -5517,6 +5918,24 @@ void ReplayWindow::DrawAgentModels()
                 meshMgr->SetMeshShouldRender(mid, false);
 
             auto& animState = animIt->second;
+
+            // Compute velocity from interpolated position deltas (game coordinates)
+            float moveDx = 0.f, moveDy = 0.f;
+            float frameVelocity = 0.f;
+            {
+                float dt = m_debugTimeline - animState.prevTime;
+                if (animState.prevTime >= 0.f && dt > 0.001f && dt < 1.0f) {
+                    moveDx = sx - animState.prevPosX;
+                    moveDy = sy - animState.prevPosY;
+                    frameVelocity = std::sqrtf(moveDx * moveDx + moveDy * moveDy) / dt;
+                }
+                constexpr float kSmoothAlpha = 0.3f;
+                animState.smoothVelocity = kSmoothAlpha * frameVelocity
+                                         + (1.f - kSmoothAlpha) * animState.smoothVelocity;
+                animState.prevPosX = sx;
+                animState.prevPosY = sy;
+                animState.prevTime = m_debugTimeline;
+            }
 
             // Drive animation from gameplay state
             auto& ctrl = animState.controller;
@@ -5606,17 +6025,86 @@ void ReplayWindow::DrawAgentModels()
                             animState.currentClipIndex = resolvedRef.clipIndex;
                         }
                         animState.wasCasting = false;
-                        animState.postKdGetUp = animState.wasKnockedDown;
+                        bool stillKD = snap.is_knocked;
+                        animState.postKdGetUp = animState.wasKnockedDown && !stillKD;
                         animState.wasKnockedDown = false;
                         ctrl->SetSegment(resolvedRef.segmentIndex);
-                        bool isKD_r = ard.isKnockedDownAtTime(m_debugTimeline);
-                        bool playOnce = dead || (snap.is_casting && !isKD_r) || animState.postKdGetUp;
+                        bool playOnce = dead || (snap.is_casting && !stillKD) || animState.postKdGetUp;
                         ctrl->SetLooping(!playOnce);
                         ctrl->Play();
                     }
 
                     animState.lastLookupFailed = !resolved;
                     animState.lastAnimCode = animCode;
+                    animState.isPlayingMovementAnim = false;
+                    animState.isPlayingIdleAnim = false;
+                }
+
+                // Movement / idle animation when server sends no animation code
+                constexpr float kMovingThreshold = 15.f;
+                if (animCode == 0 && !dead && !snap.is_casting && !animState.wasCasting
+                    && !animState.postKdGetUp && !ard.isKnockedDownAtTime(m_debugTimeline))
+                {
+                    bool isMoving = animState.smoothVelocity > kMovingThreshold;
+                    auto& codeMap = tmplIt->second.animCodeToSegment;
+
+                    if (isMoving) {
+                        // Compute movement heading from position delta
+                        float moveHeading = std::atan2(moveDx, moveDy);
+                        float relAngle = moveHeading - rotRad;
+                        // Normalize to [-PI, PI]
+                        while (relAngle > XM_PI)  relAngle -= XM_2PI;
+                        while (relAngle < -XM_PI) relAngle += XM_2PI;
+
+                        // Quantize to 8 compass sectors (each 45 deg)
+                        int dirIndex = (static_cast<int>(std::round(relAngle / (XM_PI / 4.f))) + 8) % 8;
+
+                        if (dirIndex != animState.currentMovementDirIndex || !animState.isPlayingMovementAnim) {
+                            // Use "Running" movement table (index 2)
+                            constexpr int kRunningTableIdx = 2;
+                            uint8_t stateIdx = GW::Animation::g_movementTables[kRunningTableIdx].indices[dirIndex];
+                            if (stateIdx < GW::Animation::g_animationStateCount) {
+                                uint32_t primaryHash = GW::Animation::g_animationStateTable[stateIdx].primaryHash;
+                                auto segIt = codeMap.find(primaryHash);
+                                if (segIt != codeMap.end()) {
+                                    SegmentRef ref = segIt->second;
+                                    if (ref.clipIndex != animState.currentClipIndex &&
+                                        ref.clipIndex >= 0 &&
+                                        ref.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
+                                        ctrl->Initialize(tmplIt->second.allClips[ref.clipIndex].clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        animState.currentClipIndex = ref.clipIndex;
+                                    }
+                                    ctrl->SetSegment(ref.segmentIndex);
+                                    ctrl->SetLooping(true);
+                                    ctrl->Play();
+                                }
+                            }
+                            animState.currentMovementDirIndex = dirIndex;
+                            animState.isPlayingMovementAnim = true;
+                            animState.isPlayingIdleAnim = false;
+                        }
+                    } else if (!animState.isPlayingIdleAnim) {
+                        // Switch to idle when stopped
+                        constexpr uint32_t kIdlePrimaryHash = 0x365C0E24u;
+                        auto segIt = codeMap.find(kIdlePrimaryHash);
+                        if (segIt != codeMap.end()) {
+                            SegmentRef ref = segIt->second;
+                            if (ref.clipIndex != animState.currentClipIndex &&
+                                ref.clipIndex >= 0 &&
+                                ref.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
+                                ctrl->Initialize(tmplIt->second.allClips[ref.clipIndex].clip);
+                                ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                animState.currentClipIndex = ref.clipIndex;
+                            }
+                            ctrl->SetSegment(ref.segmentIndex);
+                            ctrl->SetLooping(true);
+                            ctrl->Play();
+                        }
+                        animState.isPlayingIdleAnim = true;
+                        animState.isPlayingMovementAnim = false;
+                        animState.currentMovementDirIndex = -1;
+                    }
                 }
 
                 // Detect resurrection
@@ -5628,16 +6116,19 @@ void ReplayWindow::DrawAgentModels()
                 bool isKD = ard.isKnockedDownAtTime(m_debugTimeline);
                 if (snap.is_casting)
                     animState.wasCasting = true;
-                if (isKD) {
+                if (snap.is_knocked) {
                     animState.wasKnockedDown = true;
                     animState.wasCasting = false;
                 }
 
                 // Update looping dynamically
-                bool playOnce = dead || (snap.is_casting && !isKD) || (animState.wasCasting && !isKD) || animState.postKdGetUp;
+                bool playOnce = dead || isKD || (snap.is_casting && !isKD) || (animState.wasCasting && !isKD) || animState.postKdGetUp;
                 ctrl->SetLooping(!playOnce);
 
-                // Playback speed
+                // Playback speed — use the game's animation_speed when available.
+                // NPC/hero agents always have animation_speed > 0 in snapshot data.
+                // Player agents have animation_speed = 0 (sparse observer data),
+                // so we fall back to duration-based or velocity-based formulas.
                 float speedMult = 1.0f;
                 if (dead) {
                     speedMult = 0.8f;
@@ -5648,13 +6139,43 @@ void ReplayWindow::DrawAgentModels()
                         float segStart = ctrl->GetSequenceStartTime();
                         float segEnd   = ctrl->GetSequenceEndTime();
                         float segDurSec = (segEnd - segStart) / 100000.f;
-                        if (castDur > 0.001f && segDurSec > 0.001f) {
-                            float durationSpeed = segDurSec / castDur;
-                            if (durationSpeed <= 1.0f)
-                                speedMult = durationSpeed;
-                            else
-                                speedMult = (snap.animation_speed > 0.f) ? snap.animation_speed : 1.0f;
-                        }
+                        if (castDur > 0.001f && segDurSec > 0.001f)
+                            speedMult = segDurSec / castDur;
+                    }
+                } else if (snap.animation_speed > 0.f) {
+                    speedMult = snap.animation_speed;
+                    // Use timing-based formula for attack animations when weapon data
+                    // is available.  This fits the segment to the real attack window,
+                    // just like the casting formula above.
+                    if (!animState.isPlayingMovementAnim && !animState.isPlayingIdleAnim
+                        && snap.weapon_attack_speed > 0.f && snap.attack_speed_modifier > 0.f && ctrl) {
+                        float effectiveAttackTime = snap.weapon_attack_speed * snap.attack_speed_modifier;
+                        float segStart = ctrl->GetSequenceStartTime();
+                        float segEnd   = ctrl->GetSequenceEndTime();
+                        float segDurSec = (segEnd - segStart) / 100000.f;
+                        if (effectiveAttackTime > 0.001f && segDurSec > 0.001f)
+                            speedMult = segDurSec / effectiveAttackTime;
+                    }
+                    // The server sends a fixed animation_speed for running (typically
+                    // 0.667) regardless of actual velocity.  When the character has a
+                    // speed buff the legs need to move faster to match, just like the
+                    // real game client does locally.  Use the higher of the two speeds
+                    // so attack/cast anims (which have speed > 1) are never reduced.
+                    if (animState.smoothVelocity > 15.f) {
+                        constexpr float kBaseRunAnimSpeedNPC = 432.f;
+                        float velSpeed = animState.smoothVelocity / kBaseRunAnimSpeedNPC;
+                        if (velSpeed > speedMult)
+                            speedMult = velSpeed;
+                    }
+                } else if (isKD && ctrl) {
+                    const auto* kd = ard.knockdownIntervalAtTime(m_debugTimeline);
+                    if (kd) {
+                        float kdDur = kd->end - kd->start;
+                        float segStart = ctrl->GetSequenceStartTime();
+                        float segEnd   = ctrl->GetSequenceEndTime();
+                        float segDurSec = (segEnd - segStart) / 100000.f;
+                        if (kdDur > 0.001f && segDurSec > 0.001f)
+                            speedMult = segDurSec / kdDur;
                     }
                 } else if (animState.postKdGetUp && ctrl) {
                     float segStart = ctrl->GetSequenceStartTime();
@@ -5677,8 +6198,19 @@ void ReplayWindow::DrawAgentModels()
                     if (getUpDur > 0.001f && segDurSec > 0.001f)
                         speedMult = segDurSec / getUpDur;
                 } else {
-                    if (snap.animation_speed > 0.f)
-                        speedMult = snap.animation_speed;
+                    if (animState.isPlayingMovementAnim) {
+                        constexpr float kBaseRunAnimSpeed = 432.f;
+                        speedMult = animState.smoothVelocity / kBaseRunAnimSpeed;
+                        speedMult = std::clamp(speedMult, 0.1f, 4.0f);
+                    } else if (!animState.isPlayingIdleAnim
+                               && snap.weapon_attack_speed > 0.f && snap.attack_speed_modifier > 0.f && ctrl) {
+                        float effectiveAttackTime = snap.weapon_attack_speed * snap.attack_speed_modifier;
+                        float segStart = ctrl->GetSequenceStartTime();
+                        float segEnd   = ctrl->GetSequenceEndTime();
+                        float segDurSec = (segEnd - segStart) / 100000.f;
+                        if (effectiveAttackTime > 0.001f && segDurSec > 0.001f)
+                            speedMult = segDurSec / effectiveAttackTime;
+                    }
                 }
 
                 animState.effectiveSpeedMult = speedMult;
@@ -5687,7 +6219,7 @@ void ReplayWindow::DrawAgentModels()
                 // Advance animation
                 bool deathFrozen = dead && ctrl->GetState() == GW::Animation::AnimationController::PlaybackState::Stopped;
                 if (m_replayCtx.isPlaying && !deathFrozen)
-                    ctrl->Update(frameDt);
+                    ctrl->Update(frameDt * m_replayCtx.playbackSpeed);
 
                 if (context) {
                     for (auto& am : animState.animMeshes)
@@ -5698,9 +6230,11 @@ void ReplayWindow::DrawAgentModels()
             // Update world transforms and alpha on per-mesh CBs
             float baseAlpha = inFog ? 0.3f : 1.0f;
             if (dead) baseAlpha = deadAlpha;
+            bool hovered = (agentId == m_hoveredAgentId);
             for (size_t si2 = 0; si2 < animState.perMeshCBs.size(); si2++) {
                 XMStoreFloat4x4(&animState.perMeshCBs[si2].world, worldMat);
                 animState.perMeshCBs[si2].mesh_alpha = baseAlpha;
+                animState.perMeshCBs[si2].highlight_state = hovered ? 5 : 0;
             }
 
             m_agentModelRenderStatus[agentId] = std::format(
@@ -5711,6 +6245,7 @@ void ReplayWindow::DrawAgentModels()
             // Rigid prop rendering
             float rigidAlpha = inFog ? 0.3f : 1.0f;
             if (dead) rigidAlpha = deadAlpha;
+            bool rigidHovered = (agentId == m_hoveredAgentId);
             int renderedCount = 0;
             for (int mid : meshIds) {
                 meshMgr->SetMeshShouldRender(mid, true);
@@ -5719,6 +6254,7 @@ void ReplayWindow::DrawAgentModels()
                     auto cb = cbOpt.value();
                     XMStoreFloat4x4(&cb.world, worldMat);
                     cb.mesh_alpha = rigidAlpha;
+                    cb.highlight_state = rigidHovered ? 5 : 0;
                     meshMgr->UpdateMeshPerObjectData(mid, cb);
                     renderedCount++;
                 }
@@ -5889,11 +6425,9 @@ void ReplayWindow::DrawAgentCylinders()
         if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
 
         // Skip cylinder for agents that have a 3D model when models are enabled.
-        // Set currentLOD=2 so DrawAgentOverlay knows they have a 3D representation.
-        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId)) {
-            ard.currentLOD = 2;
+        // DrawAgentModels() already set currentLOD (0=icon at distance, 2=3D model).
+        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId))
             continue;
-        }
 
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
@@ -5951,6 +6485,13 @@ void ReplayWindow::DrawAgentCylinders()
             float desatG = lum + (color.y - lum) * 0.35f;
             float desatB = lum + (color.z - lum) * 0.35f;
             color = { desatR * 0.45f, desatG * 0.45f, desatB * 0.45f, 0.6f * fadeIn };
+        }
+
+        if (agentId == m_hoveredAgentId)
+        {
+            color.x = std::min(color.x * 1.25f, 1.0f);
+            color.y = std::min(color.y * 1.25f, 1.0f);
+            color.z = std::min(color.z * 1.25f, 1.0f);
         }
 
         {
@@ -6274,21 +6815,38 @@ void ReplayWindow::DrawAgentOverlay()
         if (is3DAgent && ard.currentLOD == 0)
             showDot = true;
 
-        // For players with cylinders (not dot LOD), draw floating profession icon above cylinder
+        // For players with 3D representation (not dot LOD), draw profession icon just above model head
         if (ard.type == AgentType::Player && !showDot && ard.primaryProf >= 1)
         {
-            constexpr float CYL_H = 120.f;
-            XMFLOAT3 abovePos = { pos.x, pos.y + CYL_H + 60.f, pos.z };
-            float abvX, abvY;
-            if (ProjectToScreen(viewProj, vpW, vpH, abovePos, abvX, abvY))
+            float modelTopY = pos.y;
+            if (m_useAgentModels && m_agentModelsLoaded) {
+                auto hashIt = m_agentFileHashCache.find(agentId);
+                if (hashIt != m_agentFileHashCache.end()) {
+                    auto tmplIt = m_agentModelTemplates.find(hashIt->second);
+                    if (tmplIt != m_agentModelTemplates.end()) {
+                        AgentModelInfo minfo = LookupAgentModelInfo(
+                            ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+                        float scale = minfo.npcAdjustment * m_agentModelScale;
+                        modelTopY += tmplIt->second.nativeHeight * scale;
+                    }
+                }
+            }
+            if (modelTopY <= pos.y)
+                modelTopY = pos.y + 120.f;
+
+            XMFLOAT3 topPos = { pos.x, modelTopY, pos.z };
+            float topScrX, topScrY;
+            if (ProjectToScreen(viewProj, vpW, vpH, topPos, topScrX, topScrY))
             {
                 ID3D11Device* dev = m_deviceResources->GetD3DDevice();
                 ImTextureID profTex = LoadProfIcon(dev, ard.primaryProf);
                 if (profTex)
                 {
                     float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
-                    ImVec2 iconTL(abvX - iconSz * 0.5f, abvY - iconSz * 0.5f);
-                    ImVec2 iconBR(abvX + iconSz * 0.5f, abvY + iconSz * 0.5f);
+                    constexpr float kScreenPad = 4.f;
+                    float iconBottom = topScrY - kScreenPad;
+                    ImVec2 iconTL(topScrX - iconSz * 0.5f, iconBottom - iconSz);
+                    ImVec2 iconBR(topScrX + iconSz * 0.5f, iconBottom);
                     dl->AddImage(profTex, iconTL, iconBR);
                 }
             }
@@ -6580,13 +7138,33 @@ void ReplayWindow::DrawAgentOverlay()
         // Hover detection + click-to-follow
         if (canClickAgents)
         {
-            float dx = mousePos.x - scrX;
-            float dy = mousePos.y - scrY;
-            if (dx * dx + dy * dy <= clickRadius * clickRadius)
+            bool hit = false;
+
+            if (!showDot && is3DAgent)
+            {
+                constexpr float HOVER_H = 120.f;
+                XMFLOAT3 topPos = { pos.x, pos.y + HOVER_H, pos.z };
+                float topScrX, topScrY;
+                if (ProjectToScreen(viewProj, vpW, vpH, topPos, topScrX, topScrY))
+                {
+                    float minY = std::min(topScrY, scrY);
+                    float maxY = std::max(topScrY, scrY);
+                    float height = maxY - minY;
+                    float halfW = std::max(height * 0.35f, clickRadius);
+                    hit = (mousePos.x >= scrX - halfW && mousePos.x <= scrX + halfW &&
+                           mousePos.y >= minY - 4.f   && mousePos.y <= maxY + 4.f);
+                }
+            }
+            else
+            {
+                float dx = mousePos.x - scrX;
+                float dy = mousePos.y - scrY;
+                hit = (dx * dx + dy * dy <= clickRadius * clickRadius);
+            }
+
+            if (hit)
             {
                 m_hoveredAgentId = agentId;
-                dl->AddCircle(ImVec2(scrX, scrY), dotRadius + 4.f,
-                              IM_COL32(255, 255, 255, 100), 0, 1.5f);
 
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
@@ -6615,17 +7193,30 @@ void ReplayWindow::DrawAgentOverlay()
                                    ard.categoryName == "Southern Health Shrine" ||
                                    ard.categoryName == "Lever");
             float pad = 2.f;
-            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                              ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
-                              IM_COL32(0, 0, 0, 13), 3.f);
             if (isSpecialLabel)
             {
+                dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                  ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
+                                  IM_COL32(0, 0, 0, 13), 3.f);
                 dl->AddText(ImVec2(lx, ly), IM_COL32(245, 228, 180, 255), label.c_str());
             }
             else
             {
+                dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                  ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
+                                  IM_COL32(0, 0, 0, 25), 3.f);
+                ImU32 labelCol;
+                if (ard.teamId == 1)      labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                else if (ard.teamId == 2) labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                else                      labelCol = IM_COL32(255, 255, 255, 230);
                 dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
-                dl->AddText(ImVec2(lx, ly), IM_COL32(255, 255, 255, 230), label.c_str());
+                dl->AddText(ImVec2(lx, ly), labelCol, label.c_str());
+
+                if (agentId == m_hoveredAgentId)
+                {
+                    float ulY = ly + textSize.y - 2.f;
+                    dl->AddLine(ImVec2(lx, ulY), ImVec2(lx + textSize.x, ulY), labelCol, 1.f);
+                }
             }
         }
 
@@ -8998,9 +9589,11 @@ void ReplayWindow::DrawRangeRingToolbar()
     auto* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowSizeConstraints(ImVec2(300.f, 0.f), ImVec2(vp->Size.x, vp->Size.y));
     ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Always);
+    m_panelLayout.ApplyPosition("range_rings");
     if (ImGui::Begin("Range Rings", &m_showRangeRings,
         ImGuiWindowFlags_AlwaysAutoResize))
     {
+        m_panelLayout.TrackWindow("range_rings");
         ImVec2 pos = ImGui::GetWindowPos();
         ImVec2 sz  = ImGui::GetWindowSize();
         float cx = std::clamp(pos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - sz.x);
@@ -9431,26 +10024,138 @@ void ReplayWindow::DrawMoralePanel()
 
     std::vector<PlayerMorale> blueTeam, redTeam;
 
-    int blueBoosts = 0, redBoosts = 0;
-    for (auto& ev : m_replayCtx.stocData.jumbo) {
-        if (ev.time > curTime) break;
-        if (ev.message == "MORALE_BOOST") {
-            if (ev.party_value == 1635021873) ++blueBoosts;
-            else if (ev.party_value == 1635021874) ++redBoosts;
+    // --- Death Pact Signet link tracking ---
+    // DPS (5413/8059) links caster to target for 120s; if the target dies
+    // during that window the caster also dies — that death is NOT penalised.
+    constexpr int kDPS_Normal = 5413;
+    constexpr int kDPS_PvP    = 8059;
+
+    struct DPSLink { int casterId; int targetId; float linkStart; float linkEnd; };
+    std::vector<DPSLink> dpsLinks;
+    for (auto& [aid, ard] : m_replayCtx.agents) {
+        if (ard.type != AgentType::Player) continue;
+        for (auto& ev : ard.skillUseHistory) {
+            if (ev.skillId != kDPS_Normal && ev.skillId != kDPS_PvP) continue;
+            if (ev.wasCancelled || ev.wasInterrupted) continue;
+            if (ev.endTime > curTime || ev.targetId <= 0) continue;
+            dpsLinks.push_back({ aid, ev.targetId, ev.endTime, ev.endTime + 120.f });
         }
     }
 
-    auto countDeaths = [&](const AgentReplayData& ard) -> int {
-        int count = 0;
-        for (size_t i = 1; i < ard.snapshots.size(); ++i) {
-            if (ard.snapshots[i].time > curTime) break;
-            if (ard.snapshots[i].is_dead && !ard.snapshots[i - 1].is_dead)
-                ++count;
+    auto isDPSLinkedDeath = [&](int agentId, float deathTime) -> bool {
+        for (auto& link : dpsLinks) {
+            if (link.casterId != agentId) continue;
+            if (deathTime < link.linkStart || deathTime > link.linkEnd) continue;
+            auto tit = m_replayCtx.agents.find(link.targetId);
+            if (tit == m_replayCtx.agents.end()) continue;
+            const auto& trd = tit->second;
+            for (size_t i = 1; i < trd.snapshots.size(); ++i) {
+                if (trd.snapshots[i].time > deathTime + 1.5f) break;
+                if (trd.snapshots[i].is_dead && !trd.snapshots[i - 1].is_dead) {
+                    if (std::abs(trd.snapshots[i].time - deathTime) < 1.5f) return true;
+                }
+            }
         }
-        return count;
+        return false;
     };
 
-    auto buildTeam = [&](const std::vector<int>& ids, int boosts) {
+    // Collect per-player death times (with grace period + DPS exclusion).
+    auto collectDeathTimes = [&](const AgentReplayData& ard) {
+        std::vector<float> deaths;
+        float lastResTime = -999.f;
+        for (size_t i = 1; i < ard.snapshots.size(); ++i) {
+            if (ard.snapshots[i].time > curTime) break;
+            if (!ard.snapshots[i].is_dead && ard.snapshots[i - 1].is_dead)
+                lastResTime = ard.snapshots[i].time;
+            if (ard.snapshots[i].is_dead && !ard.snapshots[i - 1].is_dead) {
+                float dt = ard.snapshots[i].time;
+                if (dt - lastResTime < 5.f) continue;
+                if (isDPSLinkedDeath(ard.agent_id, dt)) continue;
+                deaths.push_back(dt);
+            }
+        }
+        return deaths;
+    };
+
+    // Collect timestamps when enemy players died.
+    auto collectEnemyKillTimes = [&](const std::vector<int>& enemyIds) {
+        std::vector<float> times;
+        for (int id : enemyIds) {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end()) continue;
+            if (it->second.type != AgentType::Player) continue;
+            const auto& snaps = it->second.snapshots;
+            for (size_t i = 1; i < snaps.size(); ++i) {
+                if (snaps[i].time > curTime) break;
+                if (snaps[i].is_dead && !snaps[i - 1].is_dead)
+                    times.push_back(snaps[i].time);
+            }
+        }
+        std::sort(times.begin(), times.end());
+        return times;
+    };
+
+    // Collect timestamps when morale boosts fired for this team.
+    auto collectBoostTimes = [&](int partyValue) {
+        std::vector<float> times;
+        for (auto& ev : m_replayCtx.stocData.jumbo) {
+            if (ev.time > curTime) break;
+            if (ev.message == "MORALE_BOOST" && ev.party_value == partyValue)
+                times.push_back(ev.time);
+        }
+        return times;
+    };
+
+    auto blueBoostTimes = collectBoostTimes(1635021873);
+    auto redBoostTimes  = collectBoostTimes(1635021874);
+    auto blueEnemyKills = collectEnemyKillTimes(m_team2PlayerIds);
+    auto redEnemyKills  = collectEnemyKillTimes(m_team1PlayerIds);
+
+    // Compute morale chronologically so kill-based DP reduction is applied
+    // only when the player actually has DP at the moment the enemy dies.
+    // Events: own death (-15), team morale boost (+10), enemy kill (+2 if DP<0 and alive).
+    // Kill reduction can never push morale above 0%.
+    enum class MoraleEventType : uint8_t { Death, Boost, EnemyKill };
+    struct MoraleEvent { float time; MoraleEventType type; };
+
+    auto computeMorale = [&](const AgentReplayData& ard,
+                             const std::vector<float>& boostTimes,
+                             const std::vector<float>& enemyKillTimes,
+                             int& outDeathCount) -> int {
+        auto deathTimes = collectDeathTimes(ard);
+
+        std::vector<MoraleEvent> events;
+        events.reserve(deathTimes.size() + boostTimes.size() + enemyKillTimes.size());
+        for (float t : deathTimes)      events.push_back({ t, MoraleEventType::Death });
+        for (float t : boostTimes)      events.push_back({ t, MoraleEventType::Boost });
+        for (float t : enemyKillTimes)  events.push_back({ t, MoraleEventType::EnemyKill });
+        std::sort(events.begin(), events.end(),
+                  [](const MoraleEvent& a, const MoraleEvent& b) { return a.time < b.time; });
+
+        int morale = 0;
+        int deaths = 0;
+        for (auto& ev : events) {
+            switch (ev.type) {
+            case MoraleEventType::Death:
+                morale = std::max(morale - 15, -60);
+                ++deaths;
+                break;
+            case MoraleEventType::Boost:
+                morale = std::min(morale + 10, 10);
+                break;
+            case MoraleEventType::EnemyKill:
+                if (morale < 0 && ard.isAliveAtTime(ev.time))
+                    morale = std::min(morale + 2, 0);
+                break;
+            }
+        }
+        outDeathCount = deaths;
+        return std::clamp(morale, -60, 10);
+    };
+
+    auto buildTeam = [&](const std::vector<int>& ids,
+                         const std::vector<float>& boostTimes,
+                         const std::vector<float>& enemyKillTimes) {
         std::vector<PlayerMorale> result;
         for (int id : ids) {
             auto it = m_replayCtx.agents.find(id);
@@ -9463,16 +10168,15 @@ void ReplayWindow::DrawMoralePanel()
             pm.name = ard.playerName;
             pm.primaryProf = ard.primaryProf;
             pm.secondaryProf = ard.secondaryProf;
-            pm.deathCount = countDeaths(ard);
-            pm.morale = std::clamp(boosts * 10 - pm.deathCount * 15, -60, 10);
+            pm.morale = computeMorale(ard, boostTimes, enemyKillTimes, pm.deathCount);
             pm.dead = ard.isDeadAtTime(curTime);
             result.push_back(std::move(pm));
         }
         return result;
     };
 
-    blueTeam = buildTeam(m_team1PlayerIds, blueBoosts);
-    redTeam  = buildTeam(m_team2PlayerIds, redBoosts);
+    blueTeam = buildTeam(m_team1PlayerIds, blueBoostTimes, blueEnemyKills);
+    redTeam  = buildTeam(m_team2PlayerIds, redBoostTimes, redEnemyKills);
 
     auto getGuildLabel = [&](const std::string& partyId) -> std::string {
         auto pit = m_matchMeta.parties.find(partyId);
@@ -9506,20 +10210,26 @@ void ReplayWindow::DrawMoralePanel()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
 
-    ImGui::SetNextWindowPos(
-        ImVec2(vp->Pos.x + (vp->Size.x - kPanelW) * 0.5f,
-               vp->Pos.y + vp->Size.y - 300.f),
-        ImGuiCond_Once);
+    if (m_panelLayout.HasSavedPosition("morale"))
+        m_panelLayout.ApplyPosition("morale");
+    else
+        ImGui::SetNextWindowPos(
+            ImVec2(vp->Pos.x + (vp->Size.x - kPanelW) * 0.5f,
+                   vp->Pos.y + vp->Size.y - 300.f),
+            ImGuiCond_Once);
     ImGui::SetNextWindowSizeConstraints(ImVec2(kPanelW, 0.f), ImVec2(kPanelW, vp->Size.y));
 
     if (!ImGui::Begin("Morale##morale_panel", &m_showMoralePanel,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize))
     {
+        m_panelLayout.TrackWindow("morale");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(5);
         return;
     }
+
+    m_panelLayout.TrackWindow("morale");
 
     {
         ImVec2 wPos = ImGui::GetWindowPos();
@@ -9862,16 +10572,20 @@ void ReplayWindow::DrawLordDamagePanel()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(500, 100), ImVec2(900, FLT_MAX));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(600, 100), ImVec2(900, FLT_MAX));
+    m_panelLayout.ApplyPosition("lord_damage");
 
     if (!ImGui::Begin("Lord Damage##lord_dmg", &m_showLordDamagePanel,
             ImGuiWindowFlags_AlwaysAutoResize))
     {
+        m_panelLayout.TrackWindow("lord_damage");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(5);
         return;
     }
+
+    m_panelLayout.TrackWindow("lord_damage");
 
     // Viewport clamping
     {
@@ -10153,6 +10867,19 @@ void ReplayWindow::DrawLordDamagePanel()
                 ImVec2(barX + barW, rowP.y + rowH - 3), barBg, 2.f);
             dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
                 ImVec2(barX + barW * atk.pct, rowP.y + rowH - 3), barFg, 2.f);
+
+            std::string absLabel = formatDmg(atk.totalDmg);
+            ImVec2 absSz = font->CalcTextSizeA(atkFontSz, FLT_MAX, 0.f, absLabel.c_str());
+            const float barPad = 4.f;
+            float absTextY = rowP.y + (rowH - absSz.y) * 0.5f;
+            float absTextX;
+            if (barW >= absSz.x + barPad * 2.f)
+                absTextX = barX + barW - barPad - absSz.x;
+            else
+                absTextX = barX + barW + barPad;
+            dl->AddText(font, atkFontSz, ImVec2(absTextX + 1.f, absTextY + 1.f),
+                IM_COL32(0, 0, 0, 0xCC), absLabel.c_str());
+            dl->AddText(font, atkFontSz, ImVec2(absTextX, absTextY), cWhite, absLabel.c_str());
 
             ImGui::Dummy(ImVec2(colW, rowH));
         }
@@ -11742,21 +12469,39 @@ void ReplayWindow::EnterFollowMode(int agentId)
     const auto& ard = it->second;
     if (ard.snapshots.empty()) return;
 
-    Camera* cam = m_mapRenderer->GetCamera();
-    XMFLOAT3 camPos = cam->GetPosition3f();
+    bool wasFollowing = (m_cameraMode == CameraMode::FollowAgent && m_followedAgentId >= 0);
 
-    float sx, sy, sz;
-    InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
-    XMFLOAT3 agentWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+    if (wasFollowing && m_followedAgentId != agentId)
+    {
+        // Switching targets: pan the orbit center from old agent to new.
+        // Orbit distance, yaw, and pitch stay exactly as the user set them.
+        m_followTransFromAgentId = m_followedAgentId;
+        m_followTransActive      = true;
+        m_followTransElapsed     = 0.f;
+    }
+    else if (!wasFollowing)
+    {
+        // Entering follow mode from Free camera: adopt current distance.
+        Camera* cam = m_mapRenderer->GetCamera();
+        XMFLOAT3 camPos = cam->GetPosition3f();
 
-    float dx = camPos.x - agentWorld.x;
-    float dy = camPos.y - agentWorld.y;
-    float dz = camPos.z - agentWorld.z;
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
+        XMFLOAT3 agentWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
 
-    m_followDist = sqrtf(dx * dx + dy * dy + dz * dz);
-    m_followYaw  = atan2f(dx, dz);
-    m_followPitch = (m_followDist > 0.001f) ? asinf(std::clamp(dy / m_followDist, -1.f, 1.f)) : 0.3f;
-    m_followDistTarget = std::clamp(m_followDist * kFollowZoomFactor, kFollowMinDist, kFollowMaxDist);
+        float dx = camPos.x - agentWorld.x;
+        float dy = camPos.y - agentWorld.y;
+        float dz = camPos.z - agentWorld.z;
+        float distToAgent = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        m_followDist       = distToAgent;
+        m_followDistTarget = distToAgent;
+        m_followYaw        = atan2f(dx, dz);
+        m_followPitch      = (distToAgent > 0.001f)
+            ? asinf(std::clamp(dy / distToAgent, -1.f, 1.f)) : 0.3f;
+
+        m_followTransActive = false;
+    }
 
     m_followedAgentId = agentId;
     m_cameraMode = CameraMode::FollowAgent;
@@ -11768,6 +12513,7 @@ void ReplayWindow::ExitFollowMode()
 {
     m_cameraMode = CameraMode::Free;
     m_followedAgentId = -1;
+    m_followTransActive = false;
     m_mapRenderer->m_disableMovementInput = false;
 }
 
@@ -11977,22 +12723,51 @@ void ReplayWindow::UpdateFollowCamera(float dt)
     m_followDist += (m_followDistTarget - m_followDist) * t;
     m_followDist = std::clamp(m_followDist, kFollowMinDist, kFollowMaxDist);
 
+    // New agent (target) world position
     float sx, sy, sz;
     InterpolateAgentPosition(ard, m_debugTimeline, m_replayCtx.interpSettings, sx, sy, sz);
-    XMFLOAT3 agentWorld = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+    XMFLOAT3 newCenter = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
 
-    // Spherical offset from agent
+    // Orbit center: blend from old agent to new agent during transition
+    XMFLOAT3 center = newCenter;
+
+    if (m_followTransActive)
+    {
+        m_followTransElapsed += dt;
+        float u = std::clamp(m_followTransElapsed / kFollowTransDuration, 0.f, 1.f);
+
+        // Smooth-step (cubic Hermite) for a gentle, broadcast-camera pan
+        float ease = u * u * (3.f - 2.f * u);
+
+        if (u >= 1.f)
+        {
+            m_followTransActive = false;
+        }
+        else
+        {
+            auto itOld = m_replayCtx.agents.find(m_followTransFromAgentId);
+            if (itOld != m_replayCtx.agents.end() && !itOld->second.snapshots.empty())
+            {
+                float ox, oy, oz;
+                InterpolateAgentPosition(itOld->second, m_debugTimeline,
+                    m_replayCtx.interpSettings, ox, oy, oz);
+                XMFLOAT3 oldCenter = ApplyMapTransformToPos(ox, oy, oz, m_replayCtx.mapTransform);
+
+                center.x = oldCenter.x + (newCenter.x - oldCenter.x) * ease;
+                center.y = oldCenter.y + (newCenter.y - oldCenter.y) * ease;
+                center.z = oldCenter.z + (newCenter.z - oldCenter.z) * ease;
+            }
+        }
+    }
+
+    // Spherical offset from orbit center
     float cosP = cosf(m_followPitch);
     float offX = m_followDist * sinf(m_followYaw) * cosP;
     float offY = m_followDist * sinf(m_followPitch);
     float offZ = m_followDist * cosf(m_followYaw) * cosP;
 
-    // Set camera position and orientation BEFORE MapRenderer::Update()
-    // so the constant buffer gets the correct view/projection matrices.
     Camera* cam = m_mapRenderer->GetCamera();
-    cam->SetPosition(agentWorld.x + offX, agentWorld.y + offY, agentWorld.z + offZ);
-
-    // Camera looks from offset toward agent: orientation is the inverse of the orbit angles
+    cam->SetPosition(center.x + offX, center.y + offY, center.z + offZ);
     cam->SetOrientation(-m_followPitch, m_followYaw + XM_PI);
 }
 
@@ -12319,14 +13094,7 @@ void ReplayWindow::UpdateAutoCamera(float dt)
 
         if (m_cameraMode != CameraMode::FollowAgent || m_followedAgentId != bestAgent)
         {
-            bool wasFollowing = (m_cameraMode == CameraMode::FollowAgent);
-            float savedDist = m_followDist;
             EnterFollowMode(bestAgent);
-            if (wasFollowing && savedDist > kFollowMinDist)
-            {
-                m_followDist = savedDist;
-                m_followDistTarget = savedDist;
-            }
         }
     }
 
@@ -12430,15 +13198,19 @@ void ReplayWindow::DrawAutoCameraPanel()
     auto* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowSizeConstraints(ImVec2(300.f, 0.f), ImVec2(vp->Size.x, vp->Size.y));
     ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Always);
+    m_panelLayout.ApplyPosition("auto_camera");
 
     if (!ImGui::Begin("Auto Camera", &m_showAutoCameraPanel,
         ImGuiWindowFlags_AlwaysAutoResize))
     {
+        m_panelLayout.TrackWindow("auto_camera");
         ImGui::End();
         ImGui::PopStyleVar(4);
         ImGui::PopStyleColor(11);
         return;
     }
+
+    m_panelLayout.TrackWindow("auto_camera");
 
     {
         ImVec2 pos = ImGui::GetWindowPos();
@@ -12824,17 +13596,117 @@ bool ReplayWindow::HotkeyPressed(int imguiKey)
 }
 
 // ---------------------------------------------------------------------------
-// Shortcut Preferences modal
+// Shortcut / Interface Preferences modals — match Licence, File Paths, and
+// setup wizard card styling (draw_setup_wizard.cpp / draw_licence_modal).
 // ---------------------------------------------------------------------------
 
-bool HotkeyInput(const char* label, int* key)
+namespace
+{
+    static void PushPrefsModalChrome()
+    {
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.078f, 0.102f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.08f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 24));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    }
+
+    static void PopPrefsModalChrome()
+    {
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(2);
+    }
+
+    static void DrawPrefsModalTitle(const char* dimSuffix)
+    {
+        ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "GW Observer");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.5f), "%s", dimSuffix);
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 8.f));
+    }
+
+    static void DrawPrefsSectionHeader(const char* title)
+    {
+        ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "%s", title);
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 6.f));
+    }
+
+    static void PushPrefsFrameStyle()
+    {
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+    }
+
+    static void PopPrefsFrameStyle()
+    {
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
+    }
+
+    static void PushPrefsPrimaryButtonStyle()
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.18f, 0.22f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.25f, 0.25f, 0.30f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.83f, 0.63f, 0.13f, 0.8f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+    }
+
+    static void PopPrefsPrimaryButtonStyle()
+    {
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
+    }
+
+    static void PushPrefsGhostButtonStyle()
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.10f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.83f, 0.63f, 0.13f, 1.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+    }
+
+    static void PopPrefsGhostButtonStyle()
+    {
+        ImGui::PopStyleVar(1);
+        ImGui::PopStyleColor(4);
+    }
+
+    static void PushPrefsSecondaryButtonStyle()
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.10f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.85f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+    }
+
+    static void PopPrefsSecondaryButtonStyle()
+    {
+        ImGui::PopStyleVar(1);
+        ImGui::PopStyleColor(4);
+    }
+} // namespace
+
+bool HotkeyInput(const char* label, int* key, bool modernChrome)
 {
     // Track which widget is currently capturing a key press.
     // Only one can be active at a time across all HotkeyInput calls.
     static ImGuiID s_capturingID = 0;
 
-    ImGui::Text("%s", label);
-    ImGui::SameLine(200);
+    constexpr float kLabelCol = 200.f;
+    if (modernChrome)
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "%s", label);
+    else
+        ImGui::Text("%s", label);
+    ImGui::SameLine(kLabelCol);
 
     ImGui::PushID(label);
     ImGuiID thisID = ImGui::GetID("##hotkey");
@@ -12852,8 +13724,27 @@ bool HotkeyInput(const char* label, int* key)
     // Snapshot for balanced Push/Pop — 'capturing' may change inside the click handler
     bool wasCapturing = capturing;
 
-    if (wasCapturing)
+    if (modernChrome)
+    {
+        if (wasCapturing)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.18f, 0.10f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.23f, 0.13f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.32f, 0.27f, 0.15f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.91f, 0.69f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 0.84f, 0.39f, 0.95f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+        }
+        else
+        {
+            PushPrefsPrimaryButtonStyle();
+        }
+    }
+    else if (wasCapturing)
+    {
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
 
     if (ImGui::Button(buf, ImVec2(150, 0)))
     {
@@ -12862,8 +13753,15 @@ bool HotkeyInput(const char* label, int* key)
         capturing = (s_capturingID == thisID);
     }
 
-    if (wasCapturing)
+    if (modernChrome)
+    {
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
+    }
+    else if (wasCapturing)
+    {
         ImGui::PopStyleColor();
+    }
 
     bool changed = false;
     if (capturing)
@@ -12897,86 +13795,115 @@ bool HotkeyInput(const char* label, int* key)
 
 void ReplayWindow::DrawShortcutPreferences()
 {
-    ImGui::SetNextWindowSize(ImVec2(420, 720), ImGuiCond_FirstUseEver);
-    if (!ImGui::BeginPopupModal("Shortcut Preferences", nullptr, ImGuiWindowFlags_NoResize))
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    float cardW = std::max(380.f, std::min(520.f, display.x - 80.f));
+    float cardH = std::max(420.f, std::min(760.f, display.y - 80.f));
+    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f, (display.y - cardH) * 0.5f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(cardW, cardH), ImGuiCond_Always);
+
+    PushPrefsModalChrome();
+    if (!ImGui::BeginPopupModal("Shortcut Preferences", nullptr,
+                                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse))
+    {
+        PopPrefsModalChrome();
         return;
+    }
 
     static ReplayHotkeys editing;
     static bool needsInit = true;
     if (needsInit) { editing = ReplayHotkeys::Get(); needsInit = false; }
 
-    ImGui::Text("Replay Transport");
-    ImGui::Separator();
-    ImGui::Spacing();
+    DrawPrefsModalTitle(" -  Shortcut Preferences");
 
-    HotkeyInput("Rewind 5 seconds",  &editing.rewind5s);
-    HotkeyInput("Forward 5 seconds", &editing.forward5s);
-    HotkeyInput("Play / Pause",      &editing.playPause);
+    const float kFooterH = 56.f;
+    float scrollH = ImGui::GetContentRegionAvail().y - kFooterH;
+    if (scrollH < 120.f)
+        scrollH = 120.f;
 
-    ImGui::Spacing();
-    ImGui::Text("Overlay Toggles");
-    ImGui::Separator();
-    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.f, 0.f, 0.f, 0.25f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.f);
+    if (ImGui::BeginChild("##ShortcutPrefsScroll", ImVec2(-1, scrollH), true))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.06f));
 
-    HotkeyInput("Range Rings",         &editing.toggleRangeRings);
-    HotkeyInput("Morale Panel",        &editing.toggleMoralePanel);
-    HotkeyInput("Event Timeline",      &editing.toggleEventTimeline);
-    HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage);
-    HotkeyInput("Heatmap",             &editing.toggleHeatmap);
-    HotkeyInput("Piano Roll",          &editing.togglePianoRoll);
+        DrawPrefsSectionHeader("REPLAY TRANSPORT");
+        HotkeyInput("Rewind 5 seconds",  &editing.rewind5s, true);
+        HotkeyInput("Forward 5 seconds", &editing.forward5s, true);
+        HotkeyInput("Play / Pause",      &editing.playPause, true);
 
-    ImGui::Spacing();
-    ImGui::Text("Camera & View");
-    ImGui::Separator();
-    ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0, 8.f));
+        DrawPrefsSectionHeader("OVERLAY TOGGLES");
+        HotkeyInput("Range Rings",         &editing.toggleRangeRings, true);
+        HotkeyInput("Morale Panel",        &editing.toggleMoralePanel, true);
+        HotkeyInput("Event Timeline",      &editing.toggleEventTimeline, true);
+        HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage, true);
+        HotkeyInput("Heatmap",             &editing.toggleHeatmap, true);
+        HotkeyInput("Piano Roll",          &editing.togglePianoRoll, true);
 
-    HotkeyInput("Auto Camera",         &editing.toggleAutoCamera);
-    HotkeyInput("Fog of War",          &editing.toggleFogOfWar);
-    HotkeyInput("Top View",            &editing.toggleTopView);
-    HotkeyInput("Exit Follow Mode",    &editing.exitFollowMode);
+        ImGui::Dummy(ImVec2(0, 8.f));
+        DrawPrefsSectionHeader("CAMERA & VIEW");
+        HotkeyInput("Auto Camera",         &editing.toggleAutoCamera, true);
+        HotkeyInput("Fog of War",          &editing.toggleFogOfWar, true);
+        HotkeyInput("Top View",            &editing.toggleTopView, true);
+        HotkeyInput("Exit Follow Mode",    &editing.exitFollowMode, true);
 
-    ImGui::Spacing();
-    ImGui::Text("Camera Movement");
-    ImGui::Separator();
-    ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0, 8.f));
+        DrawPrefsSectionHeader("CAMERA MOVEMENT");
+        HotkeyInput("Move Forward",        &editing.camForward, true);
+        HotkeyInput("Move Backward",       &editing.camBackward, true);
+        HotkeyInput("Strafe Left",         &editing.camStrafeLeft, true);
+        HotkeyInput("Strafe Right",        &editing.camStrafeRight, true);
 
-    HotkeyInput("Move Forward",        &editing.camForward);
-    HotkeyInput("Move Backward",       &editing.camBackward);
-    HotkeyInput("Strafe Left",         &editing.camStrafeLeft);
-    HotkeyInput("Strafe Right",        &editing.camStrafeRight);
+        ImGui::Dummy(ImVec2(0, 8.f));
+        DrawPrefsSectionHeader("CAMERA OPTIONS");
+        PushPrefsFrameStyle();
+        ImGui::Checkbox("Invert Mouse X (horizontal)", &editing.invertMouseX);
+        ImGui::Checkbox("Invert Mouse Y (vertical)",   &editing.invertMouseY);
+        PopPrefsFrameStyle();
 
-    ImGui::Spacing();
-    ImGui::Text("Camera Options");
-    ImGui::Separator();
-    ImGui::Spacing();
+        ImGui::PopStyleColor(); // Child border
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(1);
+    ImGui::PopStyleColor(1);
 
-    ImGui::Checkbox("Invert Mouse X (horizontal)", &editing.invertMouseX);
-    ImGui::Checkbox("Invert Mouse Y (vertical)",   &editing.invertMouseY);
+    ImGui::Dummy(ImVec2(0, 8.f));
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    float btnGap = 8.f;
+    float saveW = 120.f;
+    float resetW = 150.f;
+    float cancelW = 100.f;
+    float totalW = saveW + btnGap + resetW + btnGap + cancelW;
+    ImGui::SetCursorPosX(std::max(0.f, (ImGui::GetWindowSize().x - totalW) * 0.5f));
 
-    if (ImGui::Button("Save", ImVec2(120, 0)))
+    PushPrefsPrimaryButtonStyle();
+    if (ImGui::Button("Save", ImVec2(saveW, 34.f)))
     {
         ReplayHotkeys::Get() = editing;
         ReplayHotkeys::Get().Save();
         needsInit = true;
         ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset to Defaults", ImVec2(120, 0)))
-    {
+    PopPrefsPrimaryButtonStyle();
+
+    ImGui::SameLine(0.f, btnGap);
+    PushPrefsPrimaryButtonStyle();
+    if (ImGui::Button("Reset to Defaults", ImVec2(resetW, 34.f)))
         editing.ResetToDefaults();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0)))
+    PopPrefsPrimaryButtonStyle();
+
+    ImGui::SameLine(0.f, btnGap);
+    PushPrefsSecondaryButtonStyle();
+    if (ImGui::Button("Cancel", ImVec2(cancelW, 34.f)))
     {
         needsInit = true;
         ImGui::CloseCurrentPopup();
     }
+    PopPrefsSecondaryButtonStyle();
 
     ImGui::EndPopup();
+    PopPrefsModalChrome();
 }
 
 // ---------------------------------------------------------------------------
@@ -12985,98 +13912,254 @@ void ReplayWindow::DrawShortcutPreferences()
 
 void ReplayWindow::DrawInterfacePreferences()
 {
-    ImGui::SetNextWindowSize(ImVec2(480, 380), ImGuiCond_FirstUseEver);
-    if (!ImGui::BeginPopupModal("Interface Preferences", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-        return;
+    if (!m_showInterfacePrefs) return;
 
-    ImGui::Text("Scene Overlay Positions");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(stored as viewport %%)");
-    ImGui::Separator();
-    ImGui::Spacing();
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    float cardW = std::max(420.f, std::min(580.f, display.x - 80.f));
+    float cardH = std::max(480.f, std::min(720.f, display.y - 80.f));
+    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f, (display.y - cardH) * 0.5f), ImGuiCond_Once);
+    ImGui::SetNextWindowSize(ImVec2(cardW, cardH), ImGuiCond_Once);
+
+    PushPrefsModalChrome();
+    if (!ImGui::Begin("Interface Preferences", &m_showInterfacePrefs,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar))
+    {
+        ImGui::End();
+        PopPrefsModalChrome();
+        return;
+    }
+
+    DrawPrefsModalTitle(" -  Interface Preferences");
 
     bool changed = false;
 
-    if (ImGui::Checkbox("Enable custom positions", &m_uiLayout.useCustom))
-        changed = true;
+    const float kFooterH = 52.f;
+    float scrollH = ImGui::GetContentRegionAvail().y - kFooterH;
+    if (scrollH < 160.f)
+        scrollH = 160.f;
 
-    ImGui::Spacing();
-
-    if (!m_uiLayout.useCustom)
-        ImGui::BeginDisabled();
-
-    auto PositionRow = [&](const char* label, float* px, float* py, int dragIdx)
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.f, 0.f, 0.f, 0.25f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.f);
+    if (ImGui::BeginChild("##InterfacePrefsScroll", ImVec2(-1, scrollH), true))
     {
-        ImGui::PushID(label);
-        float vals[2] = { *px * 100.f, *py * 100.f };
-        ImGui::SetNextItemWidth(200);
-        if (ImGui::DragFloat2("##pos", vals, 0.1f, 0.f, 100.f, "%.1f%%"))
+        DrawPrefsSectionHeader("REPLAY CAMERA");
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(applies to all open replay windows)");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
         {
-            *px = vals[0] / 100.f;
-            *py = vals[1] / 100.f;
+            float fovDeg = GuiGlobalConstants::replay_camera_fov_degrees;
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "Camera Field of View");
+            float avail = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(std::max(120.f, avail - 56.f));
+            if (ImGui::SliderFloat("##ifaceReplayFov", &fovDeg,
+                    GuiGlobalConstants::kMinReplayCameraFovDegrees,
+                    GuiGlobalConstants::kMaxReplayCameraFovDegrees, ""))
+            {
+                GuiGlobalConstants::replay_camera_fov_degrees =
+                    GuiGlobalConstants::ClampReplayCameraFovDegrees(fovDeg);
+                GuiGlobalConstants::SaveSettings();
+                MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
+                changed = true;
+            }
+            ImGui::SameLine(0.f, 10.f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.75f), "%.0f°",
+                GuiGlobalConstants::replay_camera_fov_degrees);
+        }
+        PopPrefsFrameStyle();
+
+        ImGui::Dummy(ImVec2(0, 10.f));
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f),
+            "Pan, rotation, zoom, and keyboard move speeds (applies immediately).");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
+        {
+            auto SensitivityRow = [&](const char* id, const char* label, float* pStored)
+            {
+                float v = *pStored;
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "%s", label);
+                float availM = ImGui::GetContentRegionAvail().x;
+                ImGui::SetNextItemWidth(std::max(120.f, availM - 68.f));
+                std::string sid = "##iface";
+                sid += id;
+                if (ImGui::SliderFloat(sid.c_str(), &v,
+                        GuiGlobalConstants::kMinReplayCameraSensitivityMultiplier,
+                        GuiGlobalConstants::kMaxReplayCameraSensitivityMultiplier, ""))
+                {
+                    *pStored = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(v);
+                    GuiGlobalConstants::SaveSettings();
+                    changed = true;
+                }
+                ImGui::SameLine(0.f, 10.f);
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.75f), "%.2fx", *pStored);
+            };
+
+            SensitivityRow("ReplayPan", "Pan Speed (left drag)",
+                &GuiGlobalConstants::replay_camera_pan_speed_multiplier);
+            ImGui::Dummy(ImVec2(0, 8.f));
+            SensitivityRow("ReplayRot", "Rotation Speed (right drag)",
+                &GuiGlobalConstants::replay_camera_rotation_speed_multiplier);
+            ImGui::Dummy(ImVec2(0, 8.f));
+            SensitivityRow("ReplayZoom", "Zoom Speed (mouse wheel)",
+                &GuiGlobalConstants::replay_camera_zoom_speed_multiplier);
+            ImGui::Dummy(ImVec2(0, 8.f));
+            SensitivityRow("ReplayKbd", "Keyboard Move Speed",
+                &GuiGlobalConstants::replay_camera_keyboard_speed_multiplier);
+        }
+        PopPrefsFrameStyle();
+
+        ImGui::Dummy(ImVec2(0, 16.f));
+        DrawPrefsSectionHeader("SCENE OVERLAY POSITIONS");
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(stored as viewport %%)");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
+        if (ImGui::Checkbox("Enable custom positions", &m_uiLayout.useCustom))
             changed = true;
-        }
-        ImGui::SameLine();
-        ImGui::TextUnformatted(label);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Move"))
+        PopPrefsFrameStyle();
+
+        ImGui::Dummy(ImVec2(0, 8.f));
+
+        if (!m_uiLayout.useCustom)
+            ImGui::BeginDisabled();
+
+        constexpr float kLabelCol = 200.f;
+        auto PositionRow = [&](const char* label, float* px, float* py, int dragIdx)
         {
-            m_draggingUIElement = dragIdx;
-            ImGui::CloseCurrentPopup();
+            ImGui::PushID(label);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "%s", label);
+            ImGui::SameLine(kLabelCol);
+            float vals[2] = { *px * 100.f, *py * 100.f };
+            PushPrefsFrameStyle();
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::DragFloat2("##pos", vals, 0.1f, 0.f, 100.f, "%.1f%%"))
+            {
+                *px = vals[0] / 100.f;
+                *py = vals[1] / 100.f;
+                changed = true;
+            }
+            PopPrefsFrameStyle();
+            ImGui::SameLine(0.f, 10.f);
+            PushPrefsGhostButtonStyle();
+            if (ImGui::SmallButton("Move"))
+            {
+                m_draggingUIElement = dragIdx;
+                m_showInterfacePrefs = false;
+            }
+            PopPrefsGhostButtonStyle();
+            ImGui::PopID();
+        };
+
+        PositionRow("Match Timer",      &m_uiLayout.timerX,  &m_uiLayout.timerY,  3);
+        PositionRow("Jumbo Message",    &m_uiLayout.jumboX,  &m_uiLayout.jumboY,  0);
+        PositionRow("Morale (Blue)",    &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 1);
+        PositionRow("Morale (Red)",     &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  2);
+
+        if (!m_uiLayout.useCustom)
+            ImGui::EndDisabled();
+
+        ImGui::Dummy(ImVec2(0, 16.f));
+        DrawPrefsSectionHeader("STYLIZED AGENT ICONS");
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(profession icons at distance)");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
+        if (ImGui::Checkbox("Enable Stylized Agent Icons", &m_uiLayout.lodEnabled))
+            changed = true;
+
+        if (!m_uiLayout.lodEnabled)
+            ImGui::BeginDisabled();
+
+        ImGui::SetNextItemWidth(std::min(280.f, ImGui::GetContentRegionAvail().x - 8.f));
+        if (ImGui::SliderFloat("Icon distance", &m_uiLayout.lodDotDist, 1000.f, 10000.f, "%.0f"))
+            changed = true;
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f), "(beyond -> stylized icons)");
+
+        if (!m_uiLayout.lodEnabled)
+            ImGui::EndDisabled();
+        PopPrefsFrameStyle();
+
+        ImGui::Dummy(ImVec2(0, 16.f));
+        DrawPrefsSectionHeader("PANEL VISIBILITY");
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(toggle replay overlay panels)");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
+        for (auto& reg : m_panelLayout.GetRegistrations())
+        {
+            if (!reg.visiblePtr) continue;
+            bool vis = *reg.visiblePtr;
+            if (ImGui::Checkbox(reg.displayName.c_str(), &vis))
+            {
+                *reg.visiblePtr = vis;
+                changed = true;
+            }
         }
-        ImGui::PopID();
-    };
+        PopPrefsFrameStyle();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(1);
+    ImGui::PopStyleColor(1);
 
-    PositionRow("Match Timer",      &m_uiLayout.timerX,  &m_uiLayout.timerY,  3);
-    PositionRow("Jumbo Message",    &m_uiLayout.jumboX,  &m_uiLayout.jumboY,  0);
-    PositionRow("Morale (Blue)",    &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 1);
-    PositionRow("Morale (Red)",     &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  2);
+    ImGui::Dummy(ImVec2(0, 8.f));
 
-    if (!m_uiLayout.useCustom)
-        ImGui::EndDisabled();
+    float btnGap = 8.f;
+    float resetOverlayW = 170.f;
+    float resetPanelsW  = 170.f;
+    float closeW = 120.f;
+    float totalW = resetOverlayW + btnGap + resetPanelsW + btnGap + closeW;
+    ImGui::SetCursorPosX(std::max(0.f, (ImGui::GetWindowSize().x - totalW) * 0.5f));
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::Text("Stylized Agent Icons");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(profession icons at distance)");
-    ImGui::Spacing();
-
-    if (ImGui::Checkbox("Enable Stylized Agent Icons", &m_uiLayout.lodEnabled))
-        changed = true;
-
-    if (!m_uiLayout.lodEnabled)
-        ImGui::BeginDisabled();
-
-    ImGui::SetNextItemWidth(200);
-    if (ImGui::SliderFloat("Icon distance", &m_uiLayout.lodDotDist, 1000.f, 10000.f, "%.0f"))
-        changed = true;
-    ImGui::SameLine();
-    ImGui::TextDisabled("(beyond -> stylized icons)");
-
-    if (!m_uiLayout.lodEnabled)
-        ImGui::EndDisabled();
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    if (ImGui::Button("Reset to Defaults", ImVec2(160, 0)))
+    PushPrefsPrimaryButtonStyle();
+    if (ImGui::Button("Reset Overlay", ImVec2(resetOverlayW, 34.f)))
     {
         m_uiLayout = UILayoutConfig{};
+        GuiGlobalConstants::replay_camera_fov_degrees = GuiGlobalConstants::kDefaultReplayCameraFovDegrees;
+        GuiGlobalConstants::replay_camera_pan_speed_multiplier =
+            GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
+        GuiGlobalConstants::replay_camera_rotation_speed_multiplier =
+            GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
+        GuiGlobalConstants::replay_camera_zoom_speed_multiplier =
+            GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
+        GuiGlobalConstants::replay_camera_keyboard_speed_multiplier =
+            GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
+        GuiGlobalConstants::SaveSettings();
+        MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;
     }
+    PopPrefsPrimaryButtonStyle();
 
-    ImGui::SameLine();
-    if (ImGui::Button("Close", ImVec2(120, 0)))
-        ImGui::CloseCurrentPopup();
+    ImGui::SameLine(0.f, btnGap);
+    PushPrefsPrimaryButtonStyle();
+    if (ImGui::Button("Reset Panel Layout", ImVec2(resetPanelsW, 34.f)))
+    {
+        m_panelLayout.ResetToDefaults();
+        m_partyWindowsPositioned = false;
+        changed = true;
+    }
+    PopPrefsPrimaryButtonStyle();
+
+    ImGui::SameLine(0.f, btnGap);
+    PushPrefsSecondaryButtonStyle();
+    if (ImGui::Button("Close", ImVec2(closeW, 34.f)))
+        m_showInterfacePrefs = false;
+    PopPrefsSecondaryButtonStyle();
 
     if (changed)
         SaveUILayout();
 
-    ImGui::EndPopup();
+    ImGui::End();
+    PopPrefsModalChrome();
+}
+
+void ReplayWindow::ApplyReplayCameraFovFromSettings()
+{
+    if (!m_mapRenderer)
+        return;
+    m_mapRenderer->SetPerspectiveFovDegrees(
+        GuiGlobalConstants::ClampReplayCameraFovDegrees(GuiGlobalConstants::replay_camera_fov_degrees));
 }
 
 // ---------------------------------------------------------------------------
@@ -13295,9 +14378,9 @@ void ReplayWindow::DrawTimelineController()
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     auto& ctx  = m_replayCtx;
 
-    static const float  speeds[]      = { 0.25f, 0.5f, 1.0f, 1.5f, 2.0f, 4.0f, 8.0f };
-    static const char*  speedLabels[] = { "0.25x","0.5x","1x","1.5x","2x","4x","8x" };
-    constexpr int       speedCount    = 7;
+    static const float  speeds[]      = { 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f, 8.0f };
+    static const char*  speedLabels[] = { "0.25x","0.5x","0.75x","1x","1.5x","2x","4x","8x" };
+    constexpr int       speedCount    = 8;
 
     const float x0 = px + PAD;
     const float y0 = py + PADY;
@@ -15010,6 +16093,109 @@ static void DrawPartyHealthBar(
 }
 
 // ---------------------------------------------------------------------------
+// Meter bar (damage / heal) drawn beside health bars
+// ---------------------------------------------------------------------------
+
+static void DrawMeterBar(
+    ImDrawList* dl, ImVec2 healthTL, float healthW, float slotY, float barH,
+    int value, int maxValue, int totalValue,
+    bool leftSide, float maxBarW,
+    ImU32 barColor)
+{
+    if (value <= 0 || maxValue <= 0) return;
+
+    float frac = (float)value / (float)maxValue;
+    float barW = frac * maxBarW;
+    if (barW < 2.f) barW = 2.f;
+
+    ImVec2 tl, br;
+    if (leftSide)
+    {
+        tl = ImVec2(healthTL.x + healthW + 2.f, slotY);
+        br = ImVec2(tl.x + barW, slotY + barH);
+    }
+    else
+    {
+        br = ImVec2(healthTL.x - 2.f, slotY + barH);
+        tl = ImVec2(br.x - barW, slotY);
+    }
+
+    dl->AddRectFilled(tl, br, barColor, 2.f);
+    dl->AddRect(tl, br, (barColor & 0x00FFFFFF) | 0x90000000, 2.f, 0, 1.f);
+
+    int pct = (totalValue > 0) ? (int)((float)value / (float)totalValue * 100.f + 0.5f) : 0;
+    char label[48];
+    if (leftSide)
+        snprintf(label, sizeof(label), "%d (%d%%)", value, pct);
+    else
+        snprintf(label, sizeof(label), "(%d%%) %d", pct, value);
+
+    float fontScale = 0.88f;
+    float origScale = ImGui::GetFont()->Scale;
+    ImGui::GetFont()->Scale *= fontScale;
+    ImGui::PushFont(ImGui::GetFont());
+
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    float textY = slotY + (barH - ts.y) * 0.5f;
+    float textX;
+    if (leftSide)
+        textX = tl.x + 3.f;
+    else
+        textX = br.x - ts.x - 3.f;
+
+    constexpr ImU32 kTextCol   = IM_COL32(0xE0, 0xE0, 0xE0, 0xFF);
+    constexpr ImU32 kShadowCol = IM_COL32(0, 0, 0, 0xCC);
+    dl->AddText(ImVec2(textX + 1, textY + 1), kShadowCol, label);
+    dl->AddText(ImVec2(textX, textY), kTextCol, label);
+
+    ImGui::GetFont()->Scale = origScale;
+    ImGui::PopFont();
+}
+
+static void DrawMeterSumText(
+    ImDrawList* dl,
+    float anchorX, float anchorY, float rowH,
+    int dmgSum, int healSum,
+    bool showDmg, bool showHeal, bool leftSide)
+{
+    if (!showDmg && !showHeal) return;
+
+    float fontScale = 0.80f;
+    float origScale = ImGui::GetFont()->Scale;
+    ImGui::GetFont()->Scale *= fontScale;
+    ImGui::PushFont(ImGui::GetFont());
+
+    char label[96];
+    if (showDmg && showHeal)
+        snprintf(label, sizeof(label), "Dmg: %d | Heal: %d", dmgSum, healSum);
+    else if (showDmg)
+        snprintf(label, sizeof(label), "Dmg: %d", dmgSum);
+    else
+        snprintf(label, sizeof(label), "Heal: %d", healSum);
+
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    float textY = anchorY + (rowH - ts.y) * 0.5f;
+    float textX;
+    if (leftSide)
+        textX = anchorX + 4.f;
+    else
+        textX = anchorX - ts.x - 4.f;
+
+    constexpr float kPadX = 5.f, kPadY = 2.f;
+    ImVec2 bgTL(textX - kPadX, textY - kPadY);
+    ImVec2 bgBR(textX + ts.x + kPadX, textY + ts.y + kPadY);
+    dl->AddRectFilled(bgTL, bgBR, IM_COL32(0x10, 0x10, 0x14, 0xD0), 4.f);
+    dl->AddRect(bgTL, bgBR, IM_COL32(0x50, 0x4A, 0x38, 0xA0), 4.f, 0, 1.f);
+
+    constexpr ImU32 kSumTextCol = IM_COL32(0xD8, 0xCE, 0xA6, 0xFF);
+    dl->AddText(ImVec2(textX + 1, textY + 1), IM_COL32(0, 0, 0, 0xCC), label);
+    dl->AddText(ImVec2(textX, textY), kSumTextCol, label);
+
+    ImGui::GetFont()->Scale = origScale;
+    ImGui::PopFont();
+}
+
+// ---------------------------------------------------------------------------
 // Combat Log panel
 // ---------------------------------------------------------------------------
 
@@ -15023,7 +16209,11 @@ void ReplayWindow::DrawCombatLog()
 
     float minW = 360.f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(minW, 200.f), ImVec2(vpW, vpH));
-    ImGui::SetNextWindowSize(ImVec2(720.f, 440.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("combat_log"))
+        m_panelLayout.ApplySize("combat_log");
+    else
+        ImGui::SetNextWindowSize(ImVec2(720.f, 440.f), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("combat_log");
 
     // Gold-accented dark panel styling
     ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
@@ -15041,11 +16231,14 @@ void ReplayWindow::DrawCombatLog()
 
     if (!ImGui::Begin("Combat Log", &m_showCombatLog))
     {
+        m_panelLayout.TrackWindow("combat_log");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(9);
         return;
     }
+
+    m_panelLayout.TrackWindow("combat_log");
 
     {
         ImVec2 pos = ImGui::GetWindowPos();
@@ -15917,10 +17110,100 @@ void ReplayWindow::DrawCombatLog()
 }
 
 // ---------------------------------------------------------------------------
+// Damage / Heal meter data accumulation
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::BuildMeterAbsCache()
+{
+    if (m_meterAbsCacheBuilt) return;
+    m_meterAbsCache.clear();
+    m_meterAbsCache.reserve(m_replayCtx.stocData.combat.size());
+
+    auto findMaxHp = [&](int agentId, float t) -> uint32_t {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return 0;
+        auto& snaps = it->second.snapshots;
+        int idx = 0;
+        if (t >= snaps.back().time)
+            idx = (int)snaps.size() - 1;
+        else if (t > snaps.front().time) {
+            int lo = 0, hi = (int)snaps.size() - 1;
+            while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
+            idx = lo;
+        }
+        if (snaps[idx].max_hp > 0) return snaps[idx].max_hp;
+        for (int i = idx + 1; i < (int)snaps.size(); ++i)
+            if (snaps[i].max_hp > 0) return snaps[i].max_hp;
+        for (int i = idx - 1; i >= 0; --i)
+            if (snaps[i].max_hp > 0) return snaps[i].max_hp;
+        return 0;
+    };
+
+    for (auto& ce : m_replayCtx.stocData.combat)
+    {
+        if (ce.type != "DAMAGE") continue;
+        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
+        int absVal = (mhp > 0) ? (int)(std::abs(ce.value) * mhp) : 0;
+        if (absVal <= 0) continue;
+        bool isDmg = (ce.value < 0.f);
+        m_meterAbsCache.push_back({ ce.time, ce.caster_id, absVal, isDmg });
+    }
+    m_meterAbsCacheBuilt = true;
+}
+
+void ReplayWindow::AccumulateMeterData()
+{
+    if (!m_replayCtx.stocLoaded || !m_replayCtx.agentsLoaded) return;
+
+    BuildMeterAbsCache();
+
+    float curTime = m_debugTimeline;
+
+    if (curTime < m_meterLastTime || m_meterLastTime < 0.f)
+    {
+        m_meterDmg.clear();
+        m_meterHeal.clear();
+        m_meterTotalDmg = 0;
+        m_meterTotalHeal = 0;
+        m_meterMaxDmg = 0;
+        m_meterMaxHeal = 0;
+        m_meterLastIdx = 0;
+    }
+
+    int n = (int)m_meterAbsCache.size();
+    for (int i = m_meterLastIdx; i < n; ++i)
+    {
+        auto& e = m_meterAbsCache[i];
+        if (e.time > curTime) break;
+
+        if (e.isDamage)
+        {
+            m_meterDmg[e.casterId].value += e.absValue;
+            m_meterTotalDmg += e.absValue;
+            if (m_meterDmg[e.casterId].value > m_meterMaxDmg)
+                m_meterMaxDmg = m_meterDmg[e.casterId].value;
+        }
+        else
+        {
+            m_meterHeal[e.casterId].value += e.absValue;
+            m_meterTotalHeal += e.absValue;
+            if (m_meterHeal[e.casterId].value > m_meterMaxHeal)
+                m_meterMaxHeal = m_meterHeal[e.casterId].value;
+        }
+        m_meterLastIdx = i + 1;
+    }
+
+    m_meterLastTime = curTime;
+}
+
+// ---------------------------------------------------------------------------
 
 void ReplayWindow::DrawPartyWindows()
 {
     if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
+
+    if (m_showDamageMeter || m_showHealMeter)
+        AccumulateMeterData();
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     PartyIcons icons = LoadAllPartyIcons(dev);
@@ -15970,9 +17253,13 @@ void ReplayWindow::DrawPartyWindows()
         return false;
     };
 
+    bool bothMeters = m_showDamageMeter && m_showHealMeter;
+    constexpr ImU32 kDmgBarCol  = IM_COL32(0xD0, 0x8C, 0x20, 0x80);
+    constexpr ImU32 kHealBarCol = IM_COL32(0x40, 0xA8, 0x40, 0x80);
+
     auto DrawBars = [&](ImDrawList* dl, float availW,
                         const std::vector<int>& ids, float barH,
-                        bool filterSpirits)
+                        bool filterSpirits, bool leftSide, float maxBarW)
     {
         int n = static_cast<int>(ids.size());
         for (int i = 0; i < n; ++i)
@@ -16022,6 +17309,35 @@ void ReplayWindow::DrawPartyWindows()
                                ard.partyBarLabel.c_str(), icons,
                                m_followedAgentId, agentId, isFogHidden,
                                carriedFlagTex);
+
+            if (m_showDamageMeter || m_showHealMeter)
+            {
+                ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+                float meterH = bothMeters ? barH * 0.5f : barH * 0.75f;
+
+                float singleOffset = bothMeters ? 0.f : (barH - meterH) * 0.5f;
+
+                if (m_showDamageMeter)
+                {
+                    auto dit = m_meterDmg.find(agentId);
+                    int dmgVal = (dit != m_meterDmg.end()) ? dit->second.value : 0;
+                    float slotY = cursor.y + singleOffset;
+                    DrawMeterBar(fgDl, cursor, availW, slotY, meterH,
+                                 dmgVal, m_meterMaxDmg, m_meterTotalDmg,
+                                 leftSide, maxBarW, kDmgBarCol);
+                }
+
+                if (m_showHealMeter)
+                {
+                    auto hit = m_meterHeal.find(agentId);
+                    int healVal = (hit != m_meterHeal.end()) ? hit->second.value : 0;
+                    float slotY = bothMeters ? cursor.y + barH * 0.5f
+                                             : cursor.y + singleOffset;
+                    DrawMeterBar(fgDl, cursor, availW, slotY, meterH,
+                                 healVal, m_meterMaxHeal, m_meterTotalHeal,
+                                 leftSide, maxBarW, kHealBarCol);
+                }
+            }
         }
     };
 
@@ -16038,14 +17354,15 @@ void ReplayWindow::DrawPartyWindows()
         return count;
     };
 
-    static bool s_alliesOpenTeam1 = false;
-    static bool s_alliesOpenTeam2 = false;
+    bool& s_alliesOpenTeam1 = m_alliesOpenTeam1;
+    bool& s_alliesOpenTeam2 = m_alliesOpenTeam2;
 
     auto DrawTeamPanel = [&](const char* title, bool* show,
                              const std::vector<int>& playerIds,
                              const std::vector<int>& npcIds,
                              ImVec4 bgCol, bool leftSide,
-                             bool* prevAlliesOpen)
+                             bool* prevAlliesOpen,
+                             const char* layoutKey)
     {
         if (!*show || playerIds.empty()) return;
 
@@ -16059,15 +17376,26 @@ void ReplayWindow::DrawPartyWindows()
 
         if (!m_partyWindowsPositioned)
         {
-            float midY = vp->Pos.y + vpH * 0.5f;
-            float marginX = vpW * 0.02f;
-            ImVec2 pos;
-            if (leftSide)
-                pos = ImVec2(vp->Pos.x + marginX, midY - collapsedH * 0.5f);
+            if (m_panelLayout.HasSavedPosition(layoutKey))
+            {
+                m_panelLayout.ApplyPosition(layoutKey);
+                if (m_panelLayout.HasSavedSize(layoutKey))
+                    m_panelLayout.ApplySize(layoutKey);
+                else
+                    ImGui::SetNextWindowSize(ImVec2(panelW, collapsedH));
+            }
             else
-                pos = ImVec2(vp->Pos.x + vpW - panelW - marginX, midY - collapsedH * 0.5f);
-            ImGui::SetNextWindowPos(pos);
-            ImGui::SetNextWindowSize(ImVec2(panelW, collapsedH));
+            {
+                float midY = vp->Pos.y + vpH * 0.5f;
+                float marginX = vpW * 0.02f;
+                ImVec2 pos;
+                if (leftSide)
+                    pos = ImVec2(vp->Pos.x + marginX, midY - collapsedH * 0.5f);
+                else
+                    pos = ImVec2(vp->Pos.x + vpW - panelW - marginX, midY - collapsedH * 0.5f);
+                ImGui::SetNextWindowPos(pos);
+                ImGui::SetNextWindowSize(ImVec2(panelW, collapsedH));
+            }
         }
 
         ImGui::PushStyleColor(ImGuiCol_WindowBg, bgCol);
@@ -16080,6 +17408,8 @@ void ReplayWindow::DrawPartyWindows()
         if (ImGui::Begin(title, show))
         {
             ImGui::PopStyleColor();
+
+            m_panelLayout.TrackWindow(layoutKey);
 
             // Clamp window within viewport
             ImVec2 wPos = ImGui::GetWindowPos();
@@ -16094,7 +17424,92 @@ void ReplayWindow::DrawPartyWindows()
             float availW = ImGui::GetContentRegionAvail().x;
             ImDrawList* dl = ImGui::GetWindowDrawList();
 
-            DrawBars(dl, availW, playerIds, kBarHeight, false);
+            // --- Sword / Heart toggle icons in title bar ---
+            {
+                ImTextureID swordTex = LoadFlagIcon(dev, "damagedone.png");
+                ImTextureID heartTex = LoadFlagIcon(dev, "healingreceived.png");
+                const float iconSz = titleBarH - 6.f;
+                const float iconPad = 3.f;
+                float iconY = wPos.y + (titleBarH - iconSz) * 0.5f;
+
+                float closeBtnW = titleBarH;
+                float heartX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
+                float swordX = heartX - iconPad - iconSz;
+
+                dl->PushClipRect(wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y), false);
+
+                ImGuiIO& io = ImGui::GetIO();
+                ImGuiContext* ctx = ImGui::GetCurrentContext();
+                bool windowHovered = (ctx && ctx->HoveredWindow == ImGui::GetCurrentWindow());
+
+                auto DrawToggleIcon = [&](ImTextureID tex, float ix, bool& toggleRef, const char* tooltip)
+                {
+                    if (!tex) return;
+                    ImVec2 tl(ix, iconY);
+                    ImVec2 br(ix + iconSz, iconY + iconSz);
+
+                    bool hovered = windowHovered
+                        && io.MousePos.x >= tl.x && io.MousePos.x < br.x
+                        && io.MousePos.y >= tl.y && io.MousePos.y < br.y;
+
+                    if (toggleRef)
+                    {
+                        dl->AddImage(tex, tl, br, ImVec2(0,0), ImVec2(1,1),
+                                     IM_COL32(0xFF, 0xD7, 0x00, 0xFF));
+                        float uy = br.y + 1.f;
+                        dl->AddLine(ImVec2(tl.x, uy), ImVec2(br.x, uy),
+                                    IM_COL32(0xCB, 0xAA, 0x09, 0xFF), 2.f);
+                    }
+                    else
+                    {
+                        dl->AddImage(tex, tl, br);
+                    }
+
+                    if (hovered)
+                    {
+                        float expand = iconSz * 0.10f;
+                        ImVec2 htl(tl.x - expand, tl.y - expand);
+                        ImVec2 hbr(br.x + expand, br.y + expand);
+                        dl->AddImage(tex, htl, hbr, ImVec2(0,0), ImVec2(1,1),
+                                     IM_COL32(0xFF, 0xE0, 0x80, 0xB0));
+
+                        g_CurrentCursor = CursorMode::Clickable;
+                        ImGui::SetTooltip("%s", tooltip);
+
+                        if (io.MouseClicked[0])
+                        {
+                            toggleRef = !toggleRef;
+                            if (ctx->MovingWindow == ImGui::GetCurrentWindow())
+                                ctx->MovingWindow = nullptr;
+                        }
+                    }
+                };
+
+                DrawToggleIcon(swordTex, swordX, m_showDamageMeter, "Toggle Damage Meter");
+                DrawToggleIcon(heartTex, heartX, m_showHealMeter, "Toggle Heal Meter");
+
+                dl->PopClipRect();
+            }
+
+            float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
+            DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW);
+
+            if (m_showDamageMeter || m_showHealMeter)
+            {
+                int pDmg = 0, pHeal = 0;
+                for (int id : playerIds)
+                {
+                    auto d = m_meterDmg.find(id);
+                    if (d != m_meterDmg.end()) pDmg += d->second.value;
+                    auto h = m_meterHeal.find(id);
+                    if (h != m_meterHeal.end()) pHeal += h->second.value;
+                }
+                ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+                float sumAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                DrawMeterSumText(fgDl, sumAnchorX, wPos.y, titleBarH,
+                                 pDmg, pHeal,
+                                 m_showDamageMeter, m_showHealMeter, leftSide);
+            }
 
             // Allies collapsible section
             if (hasNpcs)
@@ -16104,9 +17519,31 @@ void ReplayWindow::DrawPartyWindows()
                 ImGui::PopStyleVar();
 
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.72f, 0.60f, 1.0f));
+                ImGui::SetNextItemOpen(*prevAlliesOpen, ImGuiCond_Once);
+                ImVec2 alliesHeaderPos = ImGui::GetCursorScreenPos();
                 bool alliesOpen = ImGui::TreeNodeEx("Allies",
                     ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_NoAutoOpenOnLog);
                 ImGui::PopStyleColor();
+
+                if (m_showDamageMeter || m_showHealMeter)
+                {
+                    int aDmg = 0, aHeal = 0;
+                    for (int id : npcIds)
+                    {
+                        auto it2 = m_replayCtx.agents.find(id);
+                        if (it2 == m_replayCtx.agents.end()) continue;
+                        if (IsSpiritHidden(it2->second)) continue;
+                        auto d = m_meterDmg.find(id);
+                        if (d != m_meterDmg.end()) aDmg += d->second.value;
+                        auto h = m_meterHeal.find(id);
+                        if (h != m_meterHeal.end()) aHeal += h->second.value;
+                    }
+                    float allyAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                    DrawMeterSumText(ImGui::GetForegroundDrawList(),
+                                     allyAnchorX, alliesHeaderPos.y, ImGui::GetFrameHeight(),
+                                     aDmg, aHeal,
+                                     m_showDamageMeter, m_showHealMeter, leftSide);
+                }
 
                 // Auto-resize on open/close transition
                 if (alliesOpen != *prevAlliesOpen)
@@ -16127,13 +17564,14 @@ void ReplayWindow::DrawPartyWindows()
 
                 if (alliesOpen)
                 {
-                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true);
+                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true, leftSide, maxBarW);
                 }
             }
         }
         else
         {
             ImGui::PopStyleColor();
+            m_panelLayout.TrackWindow(layoutKey);
         }
         ImGui::End();
         ImGui::PopStyleVar();
@@ -16143,12 +17581,12 @@ void ReplayWindow::DrawPartyWindows()
     DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PlayerIds,
                   m_team1NpcIds,
                   ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), true,
-                  &s_alliesOpenTeam1);
+                  &s_alliesOpenTeam1, "team1_party");
 
     DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PlayerIds,
                   m_team2NpcIds,
                   ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), false,
-                  &s_alliesOpenTeam2);
+                  &s_alliesOpenTeam2, "team2_party");
 
     if (!m_partyWindowsPositioned)
         m_partyWindowsPositioned = true;
@@ -18020,6 +19458,20 @@ void ReplayWindow::DrawFollowedAgentHUD()
     float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
     uint8_t teamId = (uint8_t)ard.teamId;
 
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    PartyIcons hudIcons = LoadAllPartyIcons(dev);
+
+    ImTextureID carriedFlagTex = nullptr;
+    if (m_flagTimelineBuilt && m_flagTimeline.valid) {
+        for (int fti = 0; fti < 2; fti++) {
+            if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == focused) {
+                carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
+                    ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png");
+                break;
+            }
+        }
+    }
+
     ImVec2 panelTL(panelX, panelY);
     ImVec2 panelBR(panelX + panelW, panelY + panelH);
 
@@ -18092,6 +19544,49 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ImU32 nameCol = isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
     dl->AddText(ImVec2(nameX, nameY), nameCol, nameLabel.c_str());
 
+    // Status effect icons (right-aligned, hidden when dead) — matches party window
+    if (!isDead)
+    {
+        float innerH = innerBR.y - innerTL.y;
+        const float iconSz = std::min(innerH - 2.f, 18.f);
+        float iconX = innerBR.x - 2.f;
+        float iconY = innerTL.y + (innerH - iconSz) * 0.5f;
+
+        if (snap->has_weapon_spell && hudIcons.weaponSpell)
+        {
+            iconX -= iconSz;
+            dl->AddImage(hudIcons.weaponSpell, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if (snap->has_enchantment && hudIcons.enchanted)
+        {
+            iconX -= iconSz;
+            dl->AddImage(hudIcons.enchanted, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if ((snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) && hudIcons.condition)
+        {
+            iconX -= iconSz;
+            dl->AddImage(hudIcons.condition, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if (snap->has_hex && hudIcons.hexed)
+        {
+            iconX -= iconSz;
+            dl->AddImage(hudIcons.hexed, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+            iconX -= 1.f;
+        }
+
+        if (carriedFlagTex)
+        {
+            iconX -= iconSz;
+            dl->AddImage(carriedFlagTex, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+        }
+    }
+
     // --- Current skill cast bar (icon left-aligned under health bar) ---
     if (showCast)
     {
@@ -18102,7 +19597,6 @@ void ReplayWindow::DrawFollowedAgentHUD()
         float castY = panelBR.y + CAST_GAP;
         float castBarW = BAR_W - CAST_ICON - CAST_GAP;
 
-        ID3D11Device* dev = m_deviceResources->GetD3DDevice();
         EnsureSkillIconIndex();
         ImTextureID skillTex = LoadSkillIcon(this, dev, sv.skillId,
                                              m_skillIconIndex, m_skillIconCache);
@@ -18303,13 +19797,17 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                     float dx = static_cast<float>(raw->data.mouse.lLastX);
                     float dy = static_cast<float>(raw->data.mouse.lLastY);
                     Camera* cam = rw->m_mapRenderer->GetCamera();
+                    const float panMul = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(
+                        GuiGlobalConstants::replay_camera_pan_speed_multiplier);
+                    const float rotMul = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(
+                        GuiGlobalConstants::replay_camera_rotation_speed_multiplier);
 
                     if (rw->m_leftMouseDown)
                     {
                         XMFLOAT3 right = cam->GetRight3f();
                         XMFLOAT3 up    = cam->GetUp3f();
                         XMFLOAT3 pos   = cam->GetPosition3f();
-                        float s = rw->m_panSpeed;
+                        float s = rw->m_panSpeed * panMul;
                         pos.x += (-dx * right.x + dy * up.x) * s;
                         pos.y += (-dx * right.y + dy * up.y) * s;
                         pos.z += (-dx * right.z + dy * up.z) * s;
@@ -18319,8 +19817,8 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                     if (rw->m_rightMouseDown && !rw->m_topViewActive)
                     {
                         const auto& hk = ReplayHotkeys::Get();
-                        float radX = DirectX::XMConvertToRadians(0.25f * dx) * (hk.invertMouseX ? -1.f : 1.f);
-                        float radY = DirectX::XMConvertToRadians(0.25f * dy) * (hk.invertMouseY ? -1.f : 1.f);
+                        float radX = DirectX::XMConvertToRadians(0.25f * dx * rotMul) * (hk.invertMouseX ? -1.f : 1.f);
+                        float radY = DirectX::XMConvertToRadians(0.25f * dy * rotMul) * (hk.invertMouseY ? -1.f : 1.f);
 
                         if (rw->m_cameraMode == CameraMode::FollowAgent)
                         {
@@ -18414,18 +19912,24 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         if (mouseAllowed && rw->m_mapRenderer)
         {
             float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) / WHEEL_DELTA;
+            const float zoomMul = GuiGlobalConstants::ClampReplayCameraSensitivityMultiplier(
+                GuiGlobalConstants::replay_camera_zoom_speed_multiplier);
 
             if (rw->m_topViewActive)
             {
                 Camera* cam = rw->m_mapRenderer->GetCamera();
                 XMFLOAT3 pos = cam->GetPosition3f();
-                float zoomFactor = (delta > 0) ? 0.90f : 1.12f;
+                float zoomFactor = (delta > 0)
+                    ? (1.f + (0.90f - 1.f) * zoomMul)
+                    : (1.f + (1.12f - 1.f) * zoomMul);
                 pos.y = std::max(200.f, pos.y * zoomFactor);
                 cam->SetPosition(pos.x, pos.y, pos.z);
             }
             else if (rw->m_cameraMode == CameraMode::FollowAgent)
             {
-                float factor = (delta > 0) ? 0.85f : 1.18f;
+                float factor = (delta > 0)
+                    ? (1.f + (0.85f - 1.f) * zoomMul)
+                    : (1.f + (1.18f - 1.f) * zoomMul);
                 rw->m_followDistTarget = std::clamp(
                     rw->m_followDistTarget * factor,
                     rw->kFollowMinDist, rw->kFollowMaxDist);
@@ -18435,7 +19939,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                 Camera* cam = rw->m_mapRenderer->GetCamera();
                 XMFLOAT3 look = cam->GetLook3f();
                 XMFLOAT3 pos  = cam->GetPosition3f();
-                float z = delta * rw->m_zoomSpeed;
+                float z = delta * rw->m_zoomSpeed * zoomMul;
                 pos.x += look.x * z;
                 pos.y += look.y * z;
                 pos.z += look.z * z;
@@ -18585,17 +20089,26 @@ void ReplayWindow::DrawPianoRollPanel()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(500.f, 0.f), ImVec2(screenW, io.DisplaySize.y));
-    ImGui::SetNextWindowPos(ImVec2(screenW - 720.f, 80.f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(700.f, totalH + 30.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedPosition("piano_roll"))
+        m_panelLayout.ApplyPosition("piano_roll");
+    else
+        ImGui::SetNextWindowPos(ImVec2(screenW - 720.f, 80.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("piano_roll"))
+        m_panelLayout.ApplySize("piano_roll");
+    else
+        ImGui::SetNextWindowSize(ImVec2(700.f, totalH + 30.f), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Piano Roll", &m_showPianoRoll,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
     {
+        m_panelLayout.TrackWindow("piano_roll");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(5);
         return;
     }
+
+    m_panelLayout.TrackWindow("piano_roll");
 
     // Clamp to viewport
     {
@@ -19511,7 +21024,11 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
     constexpr int   kMaxColInit = 12;
     constexpr float kInitW = 2 * (kMaxColInit * (28.f + 3.f) + 16.f + 8.f) + 12.f + 24.f;
     ImGui::SetNextWindowSizeConstraints(ImVec2(300.f, 250.f), ImVec2(vpW, vpH));
-    ImGui::SetNextWindowSize(ImVec2(std::min(kInitW, vpW), std::min(vpH * 0.85f, vpH)), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("skill_analytics"))
+        m_panelLayout.ApplySize("skill_analytics");
+    else
+        ImGui::SetNextWindowSize(ImVec2(std::min(kInitW, vpW), std::min(vpH * 0.85f, vpH)), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("skill_analytics");
 
     // Gold-accented dark panel styling (matches Combat Log / Morale)
     ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
@@ -19530,11 +21047,14 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
 
     if (!ImGui::Begin("Skill Analytics (BETA)", &m_showSkillAnalytics))
     {
+        m_panelLayout.TrackWindow("skill_analytics");
         ImGui::End();
         ImGui::PopStyleVar(4);
         ImGui::PopStyleColor(9);
         return;
     }
+
+    m_panelLayout.TrackWindow("skill_analytics");
 
     // Clamp window to viewport
     {
@@ -22450,7 +23970,11 @@ void ReplayWindow::DrawNotepad()
     float vpH = io.DisplaySize.y;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(250.f, 150.f), ImVec2(vpW, vpH));
-    ImGui::SetNextWindowSize(ImVec2(380.f, 300.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("notepad"))
+        m_panelLayout.ApplySize("notepad");
+    else
+        ImGui::SetNextWindowSize(ImVec2(380.f, 300.f), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("notepad");
 
     // Gold-accented dark panel styling (matches CombatLog / other panels)
     ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
@@ -22468,11 +23992,14 @@ void ReplayWindow::DrawNotepad()
 
     if (!ImGui::Begin("Match Notepad", &m_showNotepad))
     {
+        m_panelLayout.TrackWindow("notepad");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(9);
         return;
     }
+
+    m_panelLayout.TrackWindow("notepad");
 
     // Clamp window to viewport
     {
@@ -22513,7 +24040,11 @@ void ReplayWindow::DrawNameFilterPanel()
     float vpH = io.DisplaySize.y;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(220.f, 140.f), ImVec2(vpW, vpH));
-    ImGui::SetNextWindowSize(ImVec2(260.f, 380.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("agent_names"))
+        m_panelLayout.ApplySize("agent_names");
+    else
+        ImGui::SetNextWindowSize(ImVec2(260.f, 380.f), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("agent_names");
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
     ImGui::PushStyleColor(ImGuiCol_TitleBg,              ImVec4(0.07f, 0.08f, 0.10f, 1.f));
@@ -22525,11 +24056,14 @@ void ReplayWindow::DrawNameFilterPanel()
 
     if (!ImGui::Begin("Agent Names", &m_showNameFilterPanel))
     {
+        m_panelLayout.TrackWindow("agent_names");
         ImGui::End();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(5);
         return;
     }
+
+    m_panelLayout.TrackWindow("agent_names");
 
     {
         ImVec2 pos = ImGui::GetWindowPos();
@@ -22833,7 +24367,11 @@ void ReplayWindow::DrawPiPPanel()
     float vpH = io.DisplaySize.y;
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(260.f, 200.f), ImVec2(vpW, vpH));
-    ImGui::SetNextWindowSize(ImVec2((float)m_pipWidth + 16.f, (float)m_pipHeight + 80.f), ImGuiCond_FirstUseEver);
+    if (m_panelLayout.HasSavedSize("split_camera"))
+        m_panelLayout.ApplySize("split_camera");
+    else
+        ImGui::SetNextWindowSize(ImVec2((float)m_pipWidth + 16.f, (float)m_pipHeight + 80.f), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("split_camera");
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg,             ImVec4(0.04f, 0.04f, 0.06f, 0.96f));
     ImGui::PushStyleColor(ImGuiCol_TitleBg,              ImVec4(0.07f, 0.08f, 0.10f, 1.f));
@@ -22845,11 +24383,14 @@ void ReplayWindow::DrawPiPPanel()
 
     if (!ImGui::Begin("Split Camera", &m_pipEnabled))
     {
+        m_panelLayout.TrackWindow("split_camera");
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(4);
         return;
     }
+
+    m_panelLayout.TrackWindow("split_camera");
 
     // Clamp to viewport
     {

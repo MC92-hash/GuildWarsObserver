@@ -225,6 +225,7 @@
     <ClInclude Include="SourceFiles\AtexDecompress.h" />
     <ClInclude Include="SourceFiles\AtexReader.h" />
     <ClInclude Include="SourceFiles\BlendStateManager.h" />
+    <ClInclude Include="SourceFiles\CustomFileBrowser.h" />
     <ClInclude Include="SourceFiles\Box.h" />
     <ClInclude Include="SourceFiles\byte_pattern_search_panel.h" />
     <ClInclude Include="SourceFiles\Camera.h" />
@@ -479,6 +480,7 @@
     <ClCompile Include="SourceFiles\SetupConfig.cpp" />
     <ClCompile Include="SourceFiles\FolderWatcher.cpp" />
     <ClCompile Include="SourceFiles\draw_setup_wizard.cpp" />
+    <ClCompile Include="SourceFiles\CustomFileBrowser.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_for_open_dat_file.cpp" />
     <ClCompile Include="SourceFiles\draw_gui_window_controller.cpp" />
     <ClCompile Include="SourceFiles\draw_hex_editor_panel.cpp" />

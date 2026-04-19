@@ -201,7 +201,7 @@ PixelInputType main(SkinnedVertexInputType input)
     // Color by bone index mode
     // highlight_state == 3: remapped skeleton bone (boneIndices[0])
     // highlight_state == 4: raw FA0 palette index (boneIndices[1])
-    if (highlight_state >= 3)
+    if (highlight_state == 3 || highlight_state == 4)
     {
         // Choose which bone index to use based on mode
         uint boneIdx = (highlight_state == 4) ? input.boneIndices[1] : input.boneIndices[0];

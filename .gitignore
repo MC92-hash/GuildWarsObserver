@@ -384,6 +384,9 @@ FodyWeavers.xsd
 /scripts/upload_status.json
 /scripts/logs/
 
+# Private documentation (pushed to gwobserver-private only)
+/Docs/AgentModelReference.md
+
 # ============================================================
 # Unused textures, fonts, and build artifacts
 # ============================================================

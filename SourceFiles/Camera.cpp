@@ -130,12 +130,12 @@ void Camera::SetOrientation(float pitch, float yaw)
     LookAt(XMLoadFloat3(&m_position), XMVectorAdd(XMLoadFloat3(&m_position), look), up);
 }
 
-void Camera::Strafe(StrafeDirection strafe_direction, double dt)
+void Camera::Strafe(StrafeDirection strafe_direction, double dt, float speed_scale)
 {
-    float velocity = m_strafe_speed;
+    float velocity = m_strafe_speed * speed_scale;
     if (strafe_direction == StrafeDirection::Left)
     {
-        velocity = -m_strafe_speed;
+        velocity = -velocity;
     }
     XMVECTOR dVec = XMVectorReplicate(velocity);
     XMVECTOR newPos = XMVectorMultiplyAdd(XMLoadFloat3(&m_right), dVec, XMLoadFloat3(&m_position));
@@ -143,12 +143,12 @@ void Camera::Strafe(StrafeDirection strafe_direction, double dt)
     m_view_should_update = true;
 }
 
-void Camera::Walk(WalkDirection walk_direction, double dt)
+void Camera::Walk(WalkDirection walk_direction, double dt, float speed_scale)
 {
-    float velocity = m_walk_speed;
+    float velocity = m_walk_speed * speed_scale;
     if (walk_direction == WalkDirection::Backward)
     {
-        velocity = -m_walk_speed;
+        velocity = -velocity;
     }
     XMVECTOR dVec = XMVectorReplicate(velocity);
     XMVECTOR newPos = XMVectorMultiplyAdd(XMLoadFloat3(&m_look), dVec, XMLoadFloat3(&m_position));

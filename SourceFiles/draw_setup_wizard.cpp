@@ -5,6 +5,7 @@
 #include "GuiGlobalConstants.h"
 #include "FolderWatcher.h"
 #include "TextureCache.h"
+#include "CustomFileBrowser.h"
 #include "imgui.h"
 #include <filesystem>
 #include <chrono>
@@ -664,8 +665,8 @@ static bool DrawStep2(ImVec2 display)
                         if (std::filesystem::exists(parent))
                             initial = parent.string();
                     }
-                    ImGuiFileDialog::Instance()->OpenDialog("SetupChooseGwDat", "Select Gw.dat",
-                        ".dat", initial + "\\.");
+                    CustomFileBrowser::Instance().Open("SetupChooseGwDat", "Select Gw.dat",
+                        CustomFileBrowser::Mode::SelectFile, ".dat", initial);
                     s_datDialogOpen = true;
                 }
                 ImGui::PopStyleVar();
@@ -799,8 +800,8 @@ static bool DrawStep2(ImVec2 display)
                             else if (std::filesystem::exists(p.parent_path()))
                                 initial = p.parent_path().string();
                         }
-                        ImGuiFileDialog::Instance()->OpenDialog("SetupChooseMatchFolder",
-                            "Select Match Data Folder", nullptr, initial + "\\.");
+                        CustomFileBrowser::Instance().Open("SetupChooseMatchFolder",
+                            "Select Match Data Folder", CustomFileBrowser::Mode::SelectFolder, nullptr, initial);
                         s_matchFolderDialogOpen = true;
                     }
                     ImGui::PopStyleVar();
@@ -892,35 +893,33 @@ static bool DrawStep2(ImVec2 display)
     PopCardStyle();
 
     // DAT file dialog
-    if (s_datDialogOpen && ImGuiFileDialog::Instance()->Display("SetupChooseGwDat",
-        ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+    if (s_datDialogOpen && CustomFileBrowser::Instance().Display("SetupChooseGwDat"))
     {
-        if (ImGuiFileDialog::Instance()->IsOk())
+        if (CustomFileBrowser::Instance().IsOk())
         {
-            std::string fp = ImGuiFileDialog::Instance()->GetFilePathName();
+            std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
             size_t len = std::min(fp.size(), sizeof(s_datPathBuf) - 1);
             memcpy(s_datPathBuf, fp.c_str(), len);
             s_datPathBuf[len] = '\0';
             s_datValidation = ValidateDatPath(s_datPathBuf);
             s_autoDetectMsg.clear();
         }
-        ImGuiFileDialog::Instance()->Close();
+        CustomFileBrowser::Instance().Close();
         s_datDialogOpen = false;
     }
 
     // Match folder dialog
-    if (s_matchFolderDialogOpen && ImGuiFileDialog::Instance()->Display("SetupChooseMatchFolder",
-        ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+    if (s_matchFolderDialogOpen && CustomFileBrowser::Instance().Display("SetupChooseMatchFolder"))
     {
-        if (ImGuiFileDialog::Instance()->IsOk())
+        if (CustomFileBrowser::Instance().IsOk())
         {
-            std::string fp = ImGuiFileDialog::Instance()->GetCurrentPath();
+            std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
             size_t len = std::min(fp.size(), sizeof(s_matchFolderBuf) - 1);
             memcpy(s_matchFolderBuf, fp.c_str(), len);
             s_matchFolderBuf[len] = '\0';
             s_matchFolderValidation = ValidateMatchFolder(s_matchFolderBuf);
         }
-        ImGuiFileDialog::Instance()->Close();
+        CustomFileBrowser::Instance().Close();
         s_matchFolderDialogOpen = false;
     }
 
@@ -1171,8 +1170,8 @@ void draw_dat_settings_modal(bool* open, FolderWatcher* watcher)
                 if (std::filesystem::exists(parent))
                     initial = parent.string();
             }
-            ImGuiFileDialog::Instance()->OpenDialog("ModalChooseGwDat", "Select Gw.dat",
-                ".dat", initial + "\\.");
+            CustomFileBrowser::Instance().Open("ModalChooseGwDat", "Select Gw.dat",
+                CustomFileBrowser::Mode::SelectFile, ".dat", initial);
             modalDatDialogOpen = true;
         }
         ImGui::PopStyleVar();
@@ -1291,8 +1290,8 @@ void draw_dat_settings_modal(bool* open, FolderWatcher* watcher)
                 if (std::filesystem::exists(p) && std::filesystem::is_directory(p))
                     initial = p.string();
             }
-            ImGuiFileDialog::Instance()->OpenDialog("ModalChooseMatchFolder",
-                "Select Match Data Folder", nullptr, initial + "\\.");
+            CustomFileBrowser::Instance().Open("ModalChooseMatchFolder",
+                "Select Match Data Folder", CustomFileBrowser::Mode::SelectFolder, nullptr, initial);
             modalFolderDialogOpen = true;
         }
         ImGui::PopStyleVar();
@@ -1365,35 +1364,33 @@ void draw_dat_settings_modal(bool* open, FolderWatcher* watcher)
     ImGui::PopStyleColor(1);
 
     // DAT file dialog
-    if (modalDatDialogOpen && ImGuiFileDialog::Instance()->Display("ModalChooseGwDat",
-        ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+    if (modalDatDialogOpen && CustomFileBrowser::Instance().Display("ModalChooseGwDat"))
     {
-        if (ImGuiFileDialog::Instance()->IsOk())
+        if (CustomFileBrowser::Instance().IsOk())
         {
-            std::string fp = ImGuiFileDialog::Instance()->GetFilePathName();
+            std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
             size_t len = std::min(fp.size(), sizeof(modalDatBuf) - 1);
             memcpy(modalDatBuf, fp.c_str(), len);
             modalDatBuf[len] = '\0';
             modalDatVal = ValidateDatPath(modalDatBuf);
             modalAutoMsg.clear();
         }
-        ImGuiFileDialog::Instance()->Close();
+        CustomFileBrowser::Instance().Close();
         modalDatDialogOpen = false;
     }
 
     // Match folder dialog
-    if (modalFolderDialogOpen && ImGuiFileDialog::Instance()->Display("ModalChooseMatchFolder",
-        ImGuiWindowFlags_NoCollapse, ImVec2(500, 400)))
+    if (modalFolderDialogOpen && CustomFileBrowser::Instance().Display("ModalChooseMatchFolder"))
     {
-        if (ImGuiFileDialog::Instance()->IsOk())
+        if (CustomFileBrowser::Instance().IsOk())
         {
-            std::string fp = ImGuiFileDialog::Instance()->GetCurrentPath();
+            std::string fp = CustomFileBrowser::Instance().GetSelectedPath();
             size_t len = std::min(fp.size(), sizeof(modalFolderBuf) - 1);
             memcpy(modalFolderBuf, fp.c_str(), len);
             modalFolderBuf[len] = '\0';
             modalFolderVal = ValidateMatchFolder(modalFolderBuf);
         }
-        ImGuiFileDialog::Instance()->Close();
+        CustomFileBrowser::Instance().Close();
         modalFolderDialogOpen = false;
     }
 

@@ -24,6 +24,7 @@
 #include "AnimatedMeshInstance.h"
 #include "animation_state.h"
 #include "Cache/AnimationDiscoveryCache.h"
+#include "ReplayPanelLayout.h"
 #include <string>
 #include <memory>
 #include <utility>
@@ -60,6 +61,8 @@ public:
 
     // Phase 2+ entry point
     void LoadReplayData(const std::filesystem::path& matchFolderPath);
+
+    void ApplyReplayCameraFovFromSettings();
 
 private:
     ReplayWindow() = default;
@@ -132,6 +135,7 @@ private:
     FFNA_MapFile m_mapFile;
     using ModelVariant = std::variant<FFNA_ModelFile>;
     std::vector<ModelVariant> m_propModelFiles;
+    std::vector<uint32_t> m_propModelFileHashes;
     int m_propModelLoadIndex = 0;
     int m_propPlaceIndex = 0;
     int m_totalPropFilenames = 0;
@@ -139,6 +143,16 @@ private:
 
     static constexpr int kPropModelBatchSize = 15;
     static constexpr int kPropPlaceBatchSize = 10;
+
+    void SetupAnimatedProp(int propIndex, const FFNA_ModelFile& modelFile,
+                           uint32_t modelFileHash,
+                           const std::vector<Mesh>& meshes,
+                           const std::vector<PerObjectCB>& perObjectCBs,
+                           const std::vector<int>& meshIds,
+                           const std::vector<std::vector<int>>& perMeshTexIds,
+                           PixelShaderType pst,
+                           uint32_t segmentHash,
+                           size_t segmentFallbackIndex);
 
     // --- ImGui state ---
     bool m_imguiInitialized = false;
@@ -288,6 +302,12 @@ private:
     bool m_showInterfacePrefs = false;
     int  m_draggingUIElement  = -1;   // -1=none, 0=jumbo, 1=moBlue, 2=moRed, 3=timer
 
+    ReplayPanelLayout m_panelLayout;
+    bool m_panelLayoutRegistered = false;
+    void RegisterPanelLayout();
+    uint64_t m_lastPanelStateHash = 0;
+    uint64_t ComputePanelStateHash() const;
+
     void DrawInterfacePreferences();
     void SaveUILayout();
     void LoadUILayout();
@@ -300,12 +320,35 @@ private:
     bool m_showTeam1Party = true;
     bool m_showTeam2Party = true;
     bool m_partyWindowsPositioned = false;
+    bool m_alliesOpenTeam1 = false;
+    bool m_alliesOpenTeam2 = false;
     std::vector<int> m_team1PlayerIds;
     std::vector<int> m_team2PlayerIds;
     std::vector<int> m_team1NpcIds;
     std::vector<int> m_team2NpcIds;
     std::string m_team1GuildHeader;
     std::string m_team2GuildHeader;
+
+    // --- Damage / Heal meter (party window bars) ---
+    bool m_showDamageMeter = false;
+    bool m_showHealMeter   = false;
+
+    struct MeterEntry { int value = 0; };
+    std::unordered_map<int, MeterEntry> m_meterDmg;
+    std::unordered_map<int, MeterEntry> m_meterHeal;
+    int   m_meterMaxDmg    = 0;
+    int   m_meterMaxHeal   = 0;
+    int   m_meterTotalDmg  = 0;
+    int   m_meterTotalHeal = 0;
+    float m_meterLastTime  = -1.f;
+    int   m_meterLastIdx   = 0;
+
+    struct MeterAbsEntry { float time = 0.f; int casterId = 0; int absValue = 0; bool isDamage = false; };
+    std::vector<MeterAbsEntry> m_meterAbsCache;
+    bool m_meterAbsCacheBuilt = false;
+
+    void AccumulateMeterData();
+    void BuildMeterAbsCache();
 
     // --- Agent overlay & calibration (Phase 2) ---
     bool m_showAgentOverlay = true;
@@ -496,11 +539,18 @@ private:
     float      m_followYaw       = 0.f;
     float      m_followPitch     = 0.f;
     static constexpr float kFollowLerpSpeed   = 6.0f;
-    static constexpr float kFollowZoomFactor  = 0.6f;
     static constexpr float kFollowMinDist     = 50.f;
     static constexpr float kFollowMaxDist     = 10000.f;
     static constexpr float kFollowMinPitch    = -1.40f;  // ~-80 degrees
     static constexpr float kFollowMaxPitch    =  1.40f;  // ~+80 degrees
+
+    // Smooth transition when switching between followed agents:
+    // interpolates the orbit center from old agent to new agent while
+    // keeping orbit distance/angles fixed (no disorienting camera roll).
+    bool                   m_followTransActive       = false;
+    float                  m_followTransElapsed      = 0.f;
+    static constexpr float kFollowTransDuration      = 1.5f;
+    int                    m_followTransFromAgentId   = -1;
 
     void UpdateFollowCamera(float dt);
     void EnterFollowMode(int agentId);
@@ -645,6 +695,14 @@ private:
         bool wasKnockedDown = false;
         bool postKdGetUp = false;
         float effectiveSpeedMult = 1.0f;
+
+        // Movement animation state
+        float prevPosX = 0.f, prevPosY = 0.f;
+        float prevTime = -1.f;
+        float smoothVelocity = 0.f;
+        int   currentMovementDirIndex = -1;
+        bool  isPlayingMovementAnim = false;
+        bool  isPlayingIdleAnim = false;
     };
     std::unordered_map<int, AgentAnimState> m_agentAnimStates;
     void DrawSkinnedAgentModels();
