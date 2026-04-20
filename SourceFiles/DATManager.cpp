@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "DATManager.h"
-
 FFNA_MapFile DATManager::parse_ffna_map_file(int index)
 {
     MFTEntry* mft_entry = m_dat.get_MFT_entry_ptr(index);
@@ -195,6 +194,8 @@ void DATManager::read_all_files()
         }
     }
 
+    m_animIndexReady.store(true, std::memory_order_release);
+
     if (file_indices_queue.empty())
     {
         m_initialization_state = InitializationState::Completed;
@@ -213,6 +214,36 @@ static unsigned char* SafeReadDatFile(GWDat& dat, HANDLE file_handle, int index)
     }
 }
 
+static void ScanFFNA2ForAnimHashes(const unsigned char* data, size_t size,
+                                   std::vector<std::pair<uint32_t, uint32_t>>& outPairs)
+{
+    if (size < 5 || data[0] != 'f' || data[1] != 'f' || data[2] != 'n' || data[3] != 'a')
+        return;
+    size_t off = 5;
+    while (off + 8 <= size) {
+        uint32_t cid, csz;
+        std::memcpy(&cid, &data[off], 4);
+        std::memcpy(&csz, &data[off + 4], 4);
+        if (cid == 0 || csz == 0 || off + 8 + csz > size) break;
+        size_t cDataOff = off + 8;
+        if (cid == 0x00000BB9 && csz >= 44) {
+            uint32_t h0, h1;
+            std::memcpy(&h0, &data[cDataOff + 0x0C], 4);
+            std::memcpy(&h1, &data[cDataOff + 0x10], 4);
+            if (h0 != 0 || h1 != 0)
+                outPairs.push_back({ h0, h1 });
+        }
+        else if (cid == 0x00000FA1 && csz >= 88) {
+            uint32_t h0, h1;
+            std::memcpy(&h0, &data[cDataOff + 0x0C], 4);
+            std::memcpy(&h1, &data[cDataOff + 0x10], 4);
+            if (h0 != 0 || h1 != 0)
+                outPairs.push_back({ h0, h1 });
+        }
+        off += 8 + csz;
+    }
+}
+
 void DATManager::read_files_thread(Concurrency::concurrent_queue<int>& file_indices_queue)
 {
     HANDLE file_handle = m_dat.get_dat_filehandle(m_dat_filepath.c_str());
@@ -222,6 +253,7 @@ void DATManager::read_files_thread(Concurrency::concurrent_queue<int>& file_indi
         return;
     }
 
+    std::vector<std::pair<uint64_t, AnimIndexEntry>> localEntries;
     int index;
 
     while (file_indices_queue.try_pop(index))
@@ -229,13 +261,28 @@ void DATManager::read_files_thread(Concurrency::concurrent_queue<int>& file_indi
         try
         {
             unsigned char* data = SafeReadDatFile(m_dat, file_handle, index);
-            if (data)
+            if (data) {
+                MFTEntry* entry = m_dat.get_MFT_entry_ptr(index);
+                if (entry && entry->type == FFNA_Type2 && entry->uncompressedSize > 0) {
+                    std::vector<std::pair<uint32_t, uint32_t>> hashPairs;
+                    ScanFFNA2ForAnimHashes(data, entry->uncompressedSize, hashPairs);
+                    AnimIndexEntry ae{ index, static_cast<uint32_t>(entry->Hash) };
+                    for (auto& [h0, h1] : hashPairs)
+                        localEntries.push_back({ MakeAnimKey(h0, h1), ae });
+                }
                 delete[] data;
+            }
             m_num_types_read.fetch_add(1, std::memory_order_relaxed);
         }
         catch (...)
         {
         }
+    }
+
+    if (!localEntries.empty()) {
+        std::lock_guard<std::mutex> lock(m_animIndexMutex);
+        for (auto& [key, entry] : localEntries)
+            m_animIndex[key].push_back(entry);
     }
 
     CloseHandle(file_handle);

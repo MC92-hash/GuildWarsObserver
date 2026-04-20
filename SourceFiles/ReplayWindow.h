@@ -80,6 +80,7 @@ private:
     void StepLoadInit();
     void StepLoadPropModels();
     void StepPlaceProps();
+    void ProgressiveAgentModelPump();
 
     void Update(double elapsedMs);
     void Render();
@@ -143,6 +144,27 @@ private:
 
     static constexpr int kPropModelBatchSize = 15;
     static constexpr int kPropPlaceBatchSize = 10;
+
+    // Time-budgeted loading: process items until this per-frame budget is exceeded.
+    // Replaces fixed batch caps for prop and agent GPU creation phases.
+    static constexpr float kLoadFrameBudgetMs = 30.0f;
+
+    // Per-phase timing instrumentation (measured durations in seconds)
+    using LoadClock = std::chrono::steady_clock;
+    LoadClock::time_point m_phaseStartTime;
+    LoadClock::time_point m_totalLoadStartTime;
+    bool m_totalLoadTimerStarted = false;
+    struct LoadPhaseTiming {
+        double validateSec  = 0.0;
+        double initSec      = 0.0;
+        double propModelSec = 0.0;
+        double placePropSec = 0.0;
+        double agentIOSec   = 0.0;
+        double agentGPUSec  = 0.0;
+        double totalSec     = 0.0;
+        bool   placePropsLogged = false;
+    };
+    LoadPhaseTiming m_loadTiming;
 
     void SetupAnimatedProp(int propIndex, const FFNA_ModelFile& modelFile,
                            uint32_t modelFileHash,
@@ -622,6 +644,8 @@ private:
     void LoadAgentModelsAsync();
     void LoadAgentModelsIO();
     void StepCreateAgentModelResources();
+    void DrawAgentModelLoadingBanner();
+    float m_agentLoadBannerFade = 0.f;
 
     GW::Cache::AnimationDiscoveryCache m_animDiscoveryCache;
 

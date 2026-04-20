@@ -1057,6 +1057,12 @@ void ReplayWindow::ShutdownImGui()
 
 void ReplayWindow::StepValidate()
 {
+    if (!m_totalLoadTimerStarted) {
+        m_totalLoadStartTime = LoadClock::now();
+        m_totalLoadTimerStarted = true;
+    }
+    m_phaseStartTime = LoadClock::now();
+
     if (!m_datManager || !m_hashIndex)
     {
         m_errorMsg = "gw.dat is missing or unreadable.";
@@ -1103,6 +1109,9 @@ void ReplayWindow::StepValidate()
         LaunchStoCParsing(m_replayCtx.matchFolderPath, m_replayCtx.stocParseProgress);
     }
 
+    m_loadTiming.validateSec = std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
+    OutputDebugStringA(std::format("[ReplayLoad] Validate: {:.3f}s\n", m_loadTiming.validateSec).c_str());
+
     m_loadingPhase = LoadingPhase::Init;
 }
 
@@ -1112,6 +1121,8 @@ void ReplayWindow::StepValidate()
 
 void ReplayWindow::StepLoadInit()
 {
+    m_phaseStartTime = LoadClock::now();
+
     uint32_t datFileHash = m_replayCtx.datMapId;
     auto it = m_hashIndex->find(static_cast<int>(datFileHash));
     int mftIndex = it->second.at(0);
@@ -1443,8 +1454,12 @@ void ReplayWindow::StepLoadInit()
 
     AssetBlacklist::Get().LoadForMap(m_replayCtx.mapId);
 
+    m_loadTiming.initSec = std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
+    OutputDebugStringA(std::format("[ReplayLoad] Init: {:.3f}s\n", m_loadTiming.initSec).c_str());
+
     m_loadProgress = 0.05f;
     m_loadingPhase = LoadingPhase::PropModels;
+    m_phaseStartTime = LoadClock::now();
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,10 +1471,13 @@ void ReplayWindow::StepLoadPropModels()
     const auto& propFN = m_mapFile.prop_filenames_chunk.array;
     const auto& moreFN = m_mapFile.more_filnames_chunk.array;
     int total = m_totalPropFilenames;
-    int end = std::min(m_propModelLoadIndex + kPropModelBatchSize, total);
 
-    for (int i = m_propModelLoadIndex; i < end; i++)
+    auto frameStart = LoadClock::now();
+    int processed = 0;
+
+    while (m_propModelLoadIndex < total)
     {
+        int i = m_propModelLoadIndex;
         const auto& fn = (i < (int)propFN.size())
             ? propFN[i]
             : moreFN[i - (int)propFN.size()];
@@ -1473,17 +1491,28 @@ void ReplayWindow::StepLoadPropModels()
                 m_propModelFileHashes.push_back(static_cast<uint32_t>(decoded));
             }
         }
-    }
 
-    m_propModelLoadIndex = end;
+        m_propModelLoadIndex++;
+        processed++;
+
+        if (processed >= kPropModelBatchSize) {
+            auto elapsed = std::chrono::duration<float, std::milli>(LoadClock::now() - frameStart).count();
+            if (elapsed > kLoadFrameBudgetMs)
+                break;
+        }
+    }
 
     if (total > 0)
         m_loadProgress = 0.05f + 0.25f * (static_cast<float>(m_propModelLoadIndex) / total);
 
     if (m_propModelLoadIndex >= total)
     {
+        m_loadTiming.propModelSec += std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
+        OutputDebugStringA(std::format("[ReplayLoad] PropModels: {:.3f}s\n", m_loadTiming.propModelSec).c_str());
+
         m_loadProgress = 0.30f;
         m_loadingPhase = LoadingPhase::PlaceProps;
+        m_phaseStartTime = LoadClock::now();
     }
 }
 
@@ -1496,176 +1525,186 @@ void ReplayWindow::StepPlaceProps()
     auto* map_renderer = m_mapRenderer.get();
     const auto& propsInfo = m_mapFile.props_info_chunk.prop_array.props_info;
     int total = m_totalPropInstances;
-    int end = std::min(m_propPlaceIndex + kPropPlaceBatchSize, total);
 
-    for (int i = m_propPlaceIndex; i < end; i++)
+    auto frameStart = LoadClock::now();
+    int processed = 0;
+
+    while (m_propPlaceIndex < total)
     {
+        int i = m_propPlaceIndex++;
+        processed++;
         PropInfo prop_info = propsInfo[i];
 
-        if (prop_info.filename_index >= m_propModelFiles.size()) continue;
-        auto* modelFilePtr = std::get_if<FFNA_ModelFile>(&m_propModelFiles[prop_info.filename_index]);
-        if (!modelFilePtr || !modelFilePtr->parsed_correctly) continue;
+        do {
+            if (prop_info.filename_index >= m_propModelFiles.size()) break;
+            auto* modelFilePtr = std::get_if<FFNA_ModelFile>(&m_propModelFiles[prop_info.filename_index]);
+            if (!modelFilePtr || !modelFilePtr->parsed_correctly) break;
 
-        const auto& geom = modelFilePtr->geometry_chunk;
-        std::vector<Mesh> propMeshes;
-        for (size_t j = 0; j < geom.models.size(); j++)
-        {
-            AMAT_file amat;
-            if (!modelFilePtr->AMAT_filenames_chunk.texture_filenames.empty()) {
-                int subIdx = geom.models[j].unknown;
-                if (!geom.tex_and_vertex_shader_struct.uts0.empty())
-                    subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
-                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
-                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF) % (int)modelFilePtr->AMAT_filenames_chunk.texture_filenames.size();
-                auto amatFn = modelFilePtr->AMAT_filenames_chunk.texture_filenames[amatIdx];
-                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
-                auto aIt = m_hashIndex->find(amatHash);
-                if (aIt != m_hashIndex->end())
-                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            const auto& geom = modelFilePtr->geometry_chunk;
+            std::vector<Mesh> propMeshes;
+            for (size_t j = 0; j < geom.models.size(); j++)
+            {
+                AMAT_file amat;
+                if (!modelFilePtr->AMAT_filenames_chunk.texture_filenames.empty()) {
+                    int subIdx = geom.models[j].unknown;
+                    if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                        subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
+                    const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                    int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF) % (int)modelFilePtr->AMAT_filenames_chunk.texture_filenames.size();
+                    auto amatFn = modelFilePtr->AMAT_filenames_chunk.texture_filenames[amatIdx];
+                    auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                    auto aIt = m_hashIndex->find(amatHash);
+                    if (aIt != m_hashIndex->end())
+                        amat = m_datManager->parse_amat_file(aIt->second.at(0));
+                }
+                Mesh mesh = modelFilePtr->GetMesh((int)j, amat);
+                if (mesh.indices.size() % 3 == 0)
+                    propMeshes.push_back(mesh);
             }
-            Mesh mesh = modelFilePtr->GetMesh((int)j, amat);
-            if (mesh.indices.size() % 3 == 0)
-                propMeshes.push_back(mesh);
-        }
-        if (propMeshes.empty()) continue;
+            if (propMeshes.empty()) break;
 
-        // Load textures for this model
-        std::vector<int> textureIds;
-        if (modelFilePtr->textures_parsed_correctly) {
-            for (size_t t = 0; t < modelFilePtr->texture_filenames_chunk.texture_filenames.size(); t++) {
-                auto tf = modelFilePtr->texture_filenames_chunk.texture_filenames[t];
-                auto decoded = decode_filename(tf.id0, tf.id1);
-                int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
-                if (texId >= 0) { textureIds.push_back(texId); continue; }
-                auto mit = m_hashIndex->find(decoded);
-                if (mit != m_hashIndex->end()) {
-                    DatTexture dt = m_datManager->parse_ffna_texture_file(mit->second.at(0));
-                    if (dt.width > 0 && dt.height > 0) {
-                        map_renderer->GetTextureManager()->CreateTextureFromRGBA(
-                            dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+            // Load textures for this model
+            std::vector<int> textureIds;
+            if (modelFilePtr->textures_parsed_correctly) {
+                for (size_t t = 0; t < modelFilePtr->texture_filenames_chunk.texture_filenames.size(); t++) {
+                    auto tf = modelFilePtr->texture_filenames_chunk.texture_filenames[t];
+                    auto decoded = decode_filename(tf.id0, tf.id1);
+                    int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+                    if (texId >= 0) { textureIds.push_back(texId); continue; }
+                    auto mit = m_hashIndex->find(decoded);
+                    if (mit != m_hashIndex->end()) {
+                        DatTexture dt = m_datManager->parse_ffna_texture_file(mit->second.at(0));
+                        if (dt.width > 0 && dt.height > 0) {
+                            map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                                dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                        }
+                        textureIds.push_back(texId);
                     }
-                    textureIds.push_back(texId);
                 }
             }
-        }
 
-        // Remap per-mesh texture indices
-        std::vector<std::vector<int>> perMeshTexIds(propMeshes.size());
-        for (size_t k = 0; k < propMeshes.size(); k++) {
-            std::vector<uint8_t> remappedIndices;
-            for (size_t ti = 0; ti < propMeshes[k].tex_indices.size(); ti++) {
-                int idx = std::min((int)propMeshes[k].tex_indices[ti], (int)textureIds.size() - 1);
-                if (idx >= 0 && idx < (int)textureIds.size()) {
-                    perMeshTexIds[k].push_back(textureIds[idx]);
-                    remappedIndices.push_back((uint8_t)ti);
+            // Remap per-mesh texture indices
+            std::vector<std::vector<int>> perMeshTexIds(propMeshes.size());
+            for (size_t k = 0; k < propMeshes.size(); k++) {
+                std::vector<uint8_t> remappedIndices;
+                for (size_t ti = 0; ti < propMeshes[k].tex_indices.size(); ti++) {
+                    int idx = std::min((int)propMeshes[k].tex_indices[ti], (int)textureIds.size() - 1);
+                    if (idx >= 0 && idx < (int)textureIds.size()) {
+                        perMeshTexIds[k].push_back(textureIds[idx]);
+                        remappedIndices.push_back((uint8_t)ti);
+                    }
+                }
+                propMeshes[k].tex_indices = remappedIndices;
+            }
+
+            // Build per-object constant buffers with correct transform
+            std::vector<PerObjectCB> perObjectCBs(propMeshes.size());
+            for (size_t j = 0; j < propMeshes.size(); j++) {
+                XMFLOAT3 translation(prop_info.x, prop_info.y, prop_info.z);
+                XMFLOAT3 vec1{ prop_info.f4, -prop_info.f6, prop_info.f5 };
+                XMFLOAT3 vec2{ prop_info.sin_angle, -prop_info.f9, prop_info.cos_angle };
+
+                XMVECTOR v2 = XMLoadFloat3(&vec1);
+                XMVECTOR v3 = XMLoadFloat3(&vec2);
+                XMVECTOR v1 = XMVector3Cross(v3, v2);
+                v1 = XMVector3Normalize(v1);
+                v2 = XMVector3Normalize(v2);
+                v3 = XMVector3Normalize(v3);
+
+                auto rotation_matrix = XMMATRIX(
+                    -XMVectorGetX(v1), -XMVectorGetY(v1),  XMVectorGetZ(v1), 0.0f,
+                     XMVectorGetX(v2),  XMVectorGetY(v2),  XMVectorGetZ(v2), 0.0f,
+                    -XMVectorGetX(v3), -XMVectorGetY(v3),  XMVectorGetZ(v3), 0.0f,
+                    0.0f, 0.0f, 0.0f, 1.0f);
+
+                float scale = prop_info.scaling_factor;
+                XMMATRIX scaling_matrix = XMMatrixScaling(scale, scale, scale);
+                XMMATRIX translation_matrix = XMMatrixTranslationFromVector(XMLoadFloat3(&translation));
+                XMMATRIX transform = scaling_matrix * XMMatrixTranspose(rotation_matrix) * translation_matrix;
+                XMStoreFloat4x4(&perObjectCBs[j].world, transform);
+
+                auto& mesh = propMeshes[j];
+                if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                    mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                    modelFilePtr->textures_parsed_correctly) {
+                    perObjectCBs[j].num_uv_texture_pairs = (uint32_t)mesh.uv_coord_indices.size();
+                    for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++) {
+                        perObjectCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
+                        perObjectCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
+                        perObjectCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
+                        perObjectCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                    }
                 }
             }
-            propMeshes[k].tex_indices = remappedIndices;
-        }
 
-        // Build per-object constant buffers with correct transform
-        std::vector<PerObjectCB> perObjectCBs(propMeshes.size());
-        for (size_t j = 0; j < propMeshes.size(); j++) {
-            XMFLOAT3 translation(prop_info.x, prop_info.y, prop_info.z);
-            XMFLOAT3 vec1{ prop_info.f4, -prop_info.f6, prop_info.f5 };
-            XMFLOAT3 vec2{ prop_info.sin_angle, -prop_info.f9, prop_info.cos_angle };
+            auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+            auto meshIds = map_renderer->AddProp(propMeshes, perObjectCBs, (uint32_t)i, pst);
 
-            XMVECTOR v2 = XMLoadFloat3(&vec1);
-            XMVECTOR v3 = XMLoadFloat3(&vec2);
-            XMVECTOR v1 = XMVector3Cross(v3, v2);
-            v1 = XMVector3Normalize(v1);
-            v2 = XMVector3Normalize(v2);
-            v3 = XMVector3Normalize(v3);
-
-            auto rotation_matrix = XMMATRIX(
-                -XMVectorGetX(v1), -XMVectorGetY(v1),  XMVectorGetZ(v1), 0.0f,
-                 XMVectorGetX(v2),  XMVectorGetY(v2),  XMVectorGetZ(v2), 0.0f,
-                -XMVectorGetX(v3), -XMVectorGetY(v3),  XMVectorGetZ(v3), 0.0f,
-                0.0f, 0.0f, 0.0f, 1.0f);
-
-            float scale = prop_info.scaling_factor;
-            XMMATRIX scaling_matrix = XMMatrixScaling(scale, scale, scale);
-            XMMATRIX translation_matrix = XMMatrixTranslationFromVector(XMLoadFloat3(&translation));
-            XMMATRIX transform = scaling_matrix * XMMatrixTranspose(rotation_matrix) * translation_matrix;
-            XMStoreFloat4x4(&perObjectCBs[j].world, transform);
-
-            auto& mesh = propMeshes[j];
-            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
-                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
-                modelFilePtr->textures_parsed_correctly) {
-                perObjectCBs[j].num_uv_texture_pairs = (uint32_t)mesh.uv_coord_indices.size();
-                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++) {
-                    perObjectCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
-                    perObjectCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
-                    perObjectCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
-                    perObjectCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+            if (modelFilePtr->textures_parsed_correctly) {
+                for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++) {
+                    map_renderer->GetMeshManager()->SetTexturesForMesh(
+                        meshIds[l], map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]), 3);
                 }
             }
-        }
 
-        auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
-        auto meshIds = map_renderer->AddProp(propMeshes, perObjectCBs, (uint32_t)i, pst);
-
-        if (modelFilePtr->textures_parsed_correctly) {
-            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++) {
-                map_renderer->GetMeshManager()->SetTexturesForMesh(
-                    meshIds[l], map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]), 3);
-            }
-        }
-
-        if (prop_info.filename_index < m_propModelFileHashes.size())
-        {
-            uint32_t fileHash = m_propModelFileHashes[prop_info.filename_index];
-            uint32_t segHash = 0;
-            size_t   segFallback = SIZE_MAX;
-
-            if (m_replayCtx.datMapId == 0x334A2 && fileHash == 0x2E13A)
+            if (prop_info.filename_index < m_propModelFileHashes.size())
             {
-                segHash = 0x0000000;
-                segFallback = 1;
+                uint32_t fileHash = m_propModelFileHashes[prop_info.filename_index];
+                uint32_t segHash = 0;
+                size_t   segFallback = SIZE_MAX;
+
+                if (m_replayCtx.datMapId == 0x334A2 && fileHash == 0x2E13A)
+                {
+                    segHash = 0x0000000;
+                    segFallback = 1;
+                }
+                else if (m_replayCtx.datMapId == 0x26625 && fileHash == 0x285EA)
+                {
+                    segHash = 0x35E6AE29;
+                    segFallback = 1;
+                }
+
+                if (segFallback != SIZE_MAX)
+                {
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, segHash, segFallback);
+                }
             }
-            else if (m_replayCtx.datMapId == 0x26625 && fileHash == 0x285EA)
-            {
-                segHash = 0x35E6AE29;
-                segFallback = 1;
-            }
 
-            if (segFallback != SIZE_MAX)
-            {
-                SetupAnimatedProp(i, *modelFilePtr, fileHash,
-                                  propMeshes, perObjectCBs, meshIds,
-                                  perMeshTexIds, pst, segHash, segFallback);
-            }
-        }
-
-        for (int mid : meshIds)
-            m_meshIdToPropIndex[mid] = static_cast<uint32_t>(i);
-
-        auto& bl = AssetBlacklist::Get();
-        uint32_t propIdx = static_cast<uint32_t>(i);
-
-        if (bl.IsHidden(propIdx))
-        {
             for (int mid : meshIds)
-                map_renderer->GetMeshManager()->SetMeshShouldRender(mid, false);
-        }
+                m_meshIdToPropIndex[mid] = static_cast<uint32_t>(i);
 
-        if (bl.HasAlphaOverride(propIdx))
-        {
-            float alpha = bl.GetAlpha(propIdx);
-            for (int mid : meshIds)
+            auto& bl = AssetBlacklist::Get();
+            uint32_t propIdx = static_cast<uint32_t>(i);
+
+            if (bl.IsHidden(propIdx))
             {
-                auto data = map_renderer->GetMeshManager()->GetMeshPerObjectData(mid);
-                if (data.has_value()) {
-                    auto updated = data.value();
-                    updated.mesh_alpha = alpha;
-                    map_renderer->GetMeshManager()->UpdateMeshPerObjectData(mid, updated);
+                for (int mid : meshIds)
+                    map_renderer->GetMeshManager()->SetMeshShouldRender(mid, false);
+            }
+
+            if (bl.HasAlphaOverride(propIdx))
+            {
+                float alpha = bl.GetAlpha(propIdx);
+                for (int mid : meshIds)
+                {
+                    auto data = map_renderer->GetMeshManager()->GetMeshPerObjectData(mid);
+                    if (data.has_value()) {
+                        auto updated = data.value();
+                        updated.mesh_alpha = alpha;
+                        map_renderer->GetMeshManager()->UpdateMeshPerObjectData(mid, updated);
+                    }
                 }
             }
+        } while (false);
+
+        if (processed >= kPropPlaceBatchSize) {
+            auto elapsed = std::chrono::duration<float, std::milli>(LoadClock::now() - frameStart).count();
+            if (elapsed > kLoadFrameBudgetMs)
+                break;
         }
     }
-
-    m_propPlaceIndex = end;
 
     if (total > 0) {
         float propRange = m_useAgentModels ? 0.60f : 0.70f;
@@ -1674,32 +1713,143 @@ void ReplayWindow::StepPlaceProps()
 
     if (m_propPlaceIndex >= total)
     {
-        if (m_useAgentModels && !m_agentModelsLoaded && !m_agentModelsLoading)
-            LoadAgentModelsAsync();
+        if (!m_loadTiming.placePropsLogged) {
+            m_loadTiming.placePropSec = std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
+            OutputDebugStringA(std::format("[ReplayLoad] PlaceProps: {:.3f}s\n", m_loadTiming.placePropSec).c_str());
+            m_loadTiming.placePropsLogged = true;
+        }
 
-        if (m_agentModelsLoading && !m_agentModelsLoaded) {
-            if (m_bgLoadDone)
-                StepCreateAgentModelResources();
-
-            // Update progress: 0.90..0.95 for IO, 0.95..1.0 for D3D creation
-            if (m_bgLoadTotal > 0) {
-                float ioFrac = static_cast<float>(m_bgLoadProgress.load()) / m_bgLoadTotal;
-                if (!m_bgLoadDone) {
-                    m_loadProgress = 0.90f + 0.05f * ioFrac;
-                } else {
-                    float createFrac = static_cast<float>(m_agentModelCreateIndex)
-                                       / static_cast<float>(m_agentModelCreateOrder.size());
-                    m_loadProgress = 0.95f + 0.05f * createFrac;
-                }
-            }
-            return;
+        // Fire-and-forget: start async agent model loading, but don't block.
+        // The background thread will continue during FadingOut and Ready phases.
+        if (m_useAgentModels && !m_agentModelsLoaded && !m_agentModelsLoading) {
+            if (m_agentsClassified)
+                LoadAgentModelsAsync();
         }
 
         m_replayCtx.mapLoaded = true;
         m_loadProgress = 1.0f;
         m_loadingPhase = LoadingPhase::FadingOut;
 
+        if (m_totalLoadTimerStarted) {
+            m_loadTiming.totalSec = std::chrono::duration<double>(LoadClock::now() - m_totalLoadStartTime).count();
+            OutputDebugStringA(std::format(
+                "[ReplayLoad] TOTAL: {:.3f}s  (validate={:.3f} init={:.3f} propModel={:.3f} "
+                "placeProps={:.3f})\n",
+                m_loadTiming.totalSec,
+                m_loadTiming.validateSec, m_loadTiming.initSec,
+                m_loadTiming.propModelSec, m_loadTiming.placePropSec).c_str());
+        }
+
         SetWindowTextW(m_hwnd, BuildWindowTitle(m_matchMeta).c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Progressive agent model loading: called each frame during FadingOut & Ready
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::ProgressiveAgentModelPump()
+{
+    if (!m_useAgentModels) return;
+    if (m_agentModelsLoaded) return;
+
+    // If agents weren't classified when StepPlaceProps finished, retry here
+    if (!m_agentModelsLoading && m_agentsClassified)
+        LoadAgentModelsAsync();
+
+    // Once the background IO thread is done, create GPU resources in batches
+    if (m_agentModelsLoading && m_bgLoadDone)
+        StepCreateAgentModelResources();
+}
+
+// ---------------------------------------------------------------------------
+// In-scene banner: shows agent model loading progress during playback
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawAgentModelLoadingBanner()
+{
+    bool isLoading = m_useAgentModels && m_agentModelsLoading && !m_agentModelsLoaded;
+
+    float dt = static_cast<float>(m_timer.GetElapsedSeconds());
+    if (isLoading)
+        m_agentLoadBannerFade = std::min(m_agentLoadBannerFade + dt * 4.f, 1.f);
+    else
+        m_agentLoadBannerFade = std::max(m_agentLoadBannerFade - dt * 2.f, 0.f);
+
+    if (m_agentLoadBannerFade <= 0.001f) return;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float vpW = vp->Size.x;
+    const float alpha = m_agentLoadBannerFade;
+
+    const float bannerW = std::min(340.f, vpW * 0.35f);
+    const float bannerH = 32.f;
+    const float bannerX = (vpW - bannerW) * 0.5f + vp->Pos.x;
+    const float playbarH = 76.f;
+    const float bannerY = vp->Pos.y + vp->Size.y - playbarH - bannerH - 6.f;
+
+    const ImU32 cBg      = IM_COL32(  8,   9,  12, static_cast<int>(180 * alpha));
+    const ImU32 cBorder  = IM_COL32(160, 120,  40, static_cast<int>( 46 * alpha));
+    const ImU32 cTrackBg = IM_COL32( 30,  28,  22, static_cast<int>(200 * alpha));
+    const ImU32 cGold    = IM_COL32(200, 168,  75, static_cast<int>(255 * alpha));
+    const ImU32 cGoldDim = IM_COL32(122,  96,  32, static_cast<int>(255 * alpha));
+    const ImU32 cText    = IM_COL32(200, 184, 140, static_cast<int>(220 * alpha));
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+    dl->AddRectFilled(ImVec2(bannerX, bannerY),
+                      ImVec2(bannerX + bannerW, bannerY + bannerH), cBg, 4.f);
+    dl->AddRect(ImVec2(bannerX, bannerY),
+                ImVec2(bannerX + bannerW, bannerY + bannerH), cBorder, 4.f);
+
+    float progress = 0.f;
+    std::string label;
+    int total = m_bgLoadTotal;
+    if (total > 0) {
+        int ioProgress = m_bgLoadProgress.load();
+        if (!m_bgLoadDone) {
+            progress = static_cast<float>(ioProgress) / total * 0.8f;
+
+            const char* phaseNames[] = {
+                "", "Parsing 3D models", "Loading textures", "Loading animations",
+                "Loading animations", "Loading animations", "Loading animations"
+            };
+            int phase = m_bgLoadSubPhase.load();
+            if (phase >= 0 && phase < 7)
+                label = std::format("{}  ({}/{})", phaseNames[phase], ioProgress, total);
+            else
+                label = std::format("Loading 3D models  ({}/{})", ioProgress, total);
+        } else {
+            int createTotal = static_cast<int>(m_agentModelCreateOrder.size());
+            float createFrac = createTotal > 0
+                ? static_cast<float>(m_agentModelCreateIndex) / createTotal : 1.f;
+            progress = 0.8f + 0.2f * createFrac;
+            label = std::format("Preparing 3D models  ({}/{})", m_agentModelCreateIndex, createTotal);
+        }
+    }
+
+    float padX = 10.f;
+    float trackY = bannerY + bannerH - 8.f;
+    float trackH = 3.f;
+    float trackW = bannerW - padX * 2.f;
+    float trackX = bannerX + padX;
+
+    dl->AddRectFilled(ImVec2(trackX, trackY), ImVec2(trackX + trackW, trackY + trackH), cTrackBg, 1.5f);
+    float fillW = trackW * std::clamp(progress, 0.f, 1.f);
+    if (fillW > 0.f)
+        dl->AddRectFilledMultiColor(
+            ImVec2(trackX, trackY), ImVec2(trackX + fillW, trackY + trackH),
+            cGoldDim, cGold, cGold, cGoldDim);
+
+    if (!label.empty()) {
+        ImFont* font = ImGui::GetFont();
+        float fontSize = font->FontSize * 0.85f;
+        ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
+        float textX = bannerX + (bannerW - textSz.x) * 0.5f;
+        float textY = bannerY + (bannerH - trackH - 4.f - textSz.y) * 0.5f + 1.f;
+        dl->AddText(font, fontSize, ImVec2(textX + 1.f, textY + 1.f),
+                    IM_COL32(0, 0, 0, static_cast<int>(120 * alpha)), label.c_str());
+        dl->AddText(font, fontSize, ImVec2(textX, textY), cText, label.c_str());
     }
 }
 
@@ -2834,10 +2984,12 @@ void ReplayWindow::Tick()
         break;
 
     case LoadingPhase::FadingOut:
+        ProgressiveAgentModelPump();
         RenderLoadingScreen();
         break;
 
     case LoadingPhase::Ready:
+        ProgressiveAgentModelPump();
         Render();
         break;
 
@@ -3671,6 +3823,7 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     DrawTimelineController();
+    DrawAgentModelLoadingBanner();
     DrawEventTimeline();
 
     if (m_showAgentDataWindow)
@@ -5231,7 +5384,15 @@ void ReplayWindow::LoadAgentModelsAsync()
 
 void ReplayWindow::LoadAgentModelsIO()
 {
+    auto ioStart = LoadClock::now();
+
     const auto& mft = m_datManager->get_MFT();
+
+    HANDLE datHandle = m_datManager->open_dat_handle();
+    if (datHandle == INVALID_HANDLE_VALUE || datHandle == nullptr) {
+        m_bgLoadDone.store(true);
+        return;
+    }
 
     // Load persistent animation discovery cache
     {
@@ -5243,21 +5404,55 @@ void ReplayWindow::LoadAgentModelsIO()
         m_animDiscoveryCache.LoadFromFile(cachePath, datPath, datSize);
     }
 
+    struct FoundClipInfo {
+        GW::Animation::AnimationClip clip;
+        uint32_t sourceFileHash;
+    };
+
+    // Per-model geometry needed for bone extraction in Phase C
+    struct GeoModelInfo {
+        std::vector<uint8_t> extra_data;
+        uint32_t u0 = 0, u1 = 0;
+        std::vector<std::pair<bool, uint32_t>> vertexGroups;
+    };
+
+    struct ModelWorkItem {
+        uint32_t fileHash = 0;
+        int mftIndex = -1;
+        AgentModelInstance tmpl;
+        std::vector<FoundClipInfo> foundClips;
+        std::vector<GeoModelInfo> geoModels;
+        bool needsMftScan = false;
+        bool valid = false;
+    };
+
+    std::vector<ModelWorkItem> workItems;
+    workItems.reserve(m_agentModelCreateOrder.size());
+
+    // ====== Phase A: Parse models, try cache + embedded + references ======
+    m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ParsingModel));
+
     for (uint32_t fileHash : m_agentModelCreateOrder)
     {
-        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ParsingModel));
+        ModelWorkItem wi;
+        wi.fileHash = fileHash;
 
         auto hashIt = m_hashIndex->find(static_cast<int>(fileHash));
         if (hashIt == m_hashIndex->end() || hashIt->second.empty()) {
-            m_bgLoadProgress.fetch_add(1); continue;
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
         }
 
         int mftIndex = hashIt->second.at(0);
-        if (mftIndex < 0 || mftIndex >= (int)mft.size()) { m_bgLoadProgress.fetch_add(1); continue; }
-        if (mft[mftIndex].type != FFNA_Type2) { m_bgLoadProgress.fetch_add(1); continue; }
+        wi.mftIndex = mftIndex;
+        if (mftIndex < 0 || mftIndex >= (int)mft.size() || mft[mftIndex].type != FFNA_Type2) {
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
+        }
 
         bool isOtherFormat = m_datManager->is_other_model_format(mftIndex);
-
         FFNA_ModelFile modelFile;
         FFNA_ModelFile_Other modelFileOther;
 
@@ -5266,18 +5461,30 @@ void ReplayWindow::LoadAgentModelsIO()
                 modelFileOther = m_datManager->parse_ffna_model_file_other(mftIndex);
             else
                 modelFile = m_datManager->parse_ffna_model_file(mftIndex);
-        } catch (...) { m_bgLoadProgress.fetch_add(1); continue; }
+        } catch (...) {
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
+        }
 
-        if (isOtherFormat && !modelFileOther.parsed_correctly) { m_bgLoadProgress.fetch_add(1); continue; }
-        if (!isOtherFormat && !modelFile.parsed_correctly) { m_bgLoadProgress.fetch_add(1); continue; }
+        if (isOtherFormat && !modelFileOther.parsed_correctly) {
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
+        }
+        if (!isOtherFormat && !modelFile.parsed_correctly) {
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
+        }
 
-        const size_t numModels = isOtherFormat
-            ? modelFileOther.geometry_chunk.models.size()
-            : modelFile.geometry_chunk.models.size();
+        const auto& geoModelsRef = isOtherFormat
+            ? modelFileOther.geometry_chunk.models
+            : modelFile.geometry_chunk.models;
+        const size_t numModels = geoModelsRef.size();
 
         std::vector<Mesh> propMeshes;
-        for (size_t j = 0; j < numModels; j++)
-        {
+        for (size_t j = 0; j < numModels; j++) {
             AMAT_file amat;
             if (!isOtherFormat && !modelFile.AMAT_filenames_chunk.texture_filenames.empty()) {
                 const auto& geom = modelFile.geometry_chunk;
@@ -5293,22 +5500,34 @@ void ReplayWindow::LoadAgentModelsIO()
                 if (aIt != m_hashIndex->end())
                     amat = m_datManager->parse_amat_file(aIt->second.at(0));
             }
-
             Mesh mesh = isOtherFormat
                 ? modelFileOther.GetMesh((int)j, amat)
                 : modelFile.GetMesh((int)j, amat);
-
             if (mesh.indices.size() % 3 == 0 && !mesh.indices.empty())
                 propMeshes.push_back(mesh);
         }
-        if (propMeshes.empty()) { m_bgLoadProgress.fetch_add(1); continue; }
+        if (propMeshes.empty()) {
+            workItems.push_back(std::move(wi));
+            m_bgLoadProgress.fetch_add(1);
+            continue;
+        }
 
-        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::LoadingTextures));
+        // Extract geometry bone data for Phase C (before modelFile goes out of scope)
+        for (size_t si = 0; si < geoModelsRef.size() && si < propMeshes.size(); si++) {
+            GeoModelInfo gmi;
+            gmi.extra_data = geoModelsRef[si].extra_data;
+            gmi.u0 = geoModelsRef[si].u0;
+            gmi.u1 = geoModelsRef[si].u1;
+            gmi.vertexGroups.reserve(geoModelsRef[si].vertices.size());
+            for (const auto& mv : geoModelsRef[si].vertices)
+                gmi.vertexGroups.push_back({ mv.has_group, mv.group });
+            wi.geoModels.push_back(std::move(gmi));
+        }
 
+        // Textures
         const bool texOk = isOtherFormat
             ? modelFileOther.textures_parsed_correctly
             : modelFile.textures_parsed_correctly;
-
         std::vector<int> texFileHashes;
         if (texOk) {
             if (isOtherFormat) {
@@ -5319,7 +5538,6 @@ void ReplayWindow::LoadAgentModelsIO()
                     texFileHashes.push_back(decode_filename(tf.id0, tf.id1));
             }
         }
-
         std::vector<ParsedTextureEntry> parsedTextures;
         for (int decoded : texFileHashes) {
             ParsedTextureEntry pt;
@@ -5337,7 +5555,6 @@ void ReplayWindow::LoadAgentModelsIO()
         const bool hasNewTexStuff = isOtherFormat
             ? !modelFileOther.geometry_chunk.unknown_tex_stuff1.empty()
             : !modelFile.geometry_chunk.unknown_tex_stuff1.empty();
-        auto pst = hasNewTexStuff ? PixelShaderType::NewModel : PixelShaderType::OldModel;
 
         // Bounding box
         float bbMinX = FLT_MAX, bbMinY = FLT_MAX, bbMinZ = FLT_MAX;
@@ -5353,65 +5570,54 @@ void ReplayWindow::LoadAgentModelsIO()
             }
         }
 
-        AgentModelInstance tmpl;
-        tmpl.nativeHeight = bbMaxY - bbMinY;
-        tmpl.nativeMinY = bbMinY;
-        tmpl.nativeCenter = { (bbMinX + bbMaxX) * 0.5f, (bbMinY + bbMaxY) * 0.5f, (bbMinZ + bbMaxZ) * 0.5f };
-        tmpl.originalMeshes = propMeshes;
-        tmpl.parsedTextures_ = std::move(parsedTextures);
-        tmpl.pixelShaderType = pst;
-        tmpl.texturesOk = texOk;
-
-        // Extract model identity hashes for animation matching
+        wi.tmpl.nativeHeight = bbMaxY - bbMinY;
+        wi.tmpl.nativeMinY = bbMinY;
+        wi.tmpl.nativeCenter = { (bbMinX + bbMaxX) * 0.5f, (bbMinY + bbMaxY) * 0.5f, (bbMinZ + bbMaxZ) * 0.5f };
+        wi.tmpl.originalMeshes = propMeshes;
+        wi.tmpl.parsedTextures_ = std::move(parsedTextures);
+        wi.tmpl.pixelShaderType = hasNewTexStuff ? PixelShaderType::NewModel : PixelShaderType::OldModel;
+        wi.tmpl.texturesOk = texOk;
         if (isOtherFormat) {
-            tmpl.modelHash0 = modelFileOther.geometry_chunk.header.model_hash0;
-            tmpl.modelHash1 = modelFileOther.geometry_chunk.header.model_hash1;
+            wi.tmpl.modelHash0 = modelFileOther.geometry_chunk.header.model_hash0;
+            wi.tmpl.modelHash1 = modelFileOther.geometry_chunk.header.model_hash1;
         } else {
-            tmpl.modelHash0 = modelFile.geometry_chunk.sub_1.f0xC;
-            tmpl.modelHash1 = modelFile.geometry_chunk.sub_1.f0x10;
+            wi.tmpl.modelHash0 = modelFile.geometry_chunk.sub_1.f0xC;
+            wi.tmpl.modelHash1 = modelFile.geometry_chunk.sub_1.f0x10;
         }
+        wi.valid = true;
 
-        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::DiscoveringAnimations));
-        struct FoundClipInfo {
-            GW::Animation::AnimationClip clip;
-            uint32_t sourceFileHash;
-        };
-        std::vector<FoundClipInfo> foundClips;
-
+        // Try animation cache
         const auto* cachedAnimInfo = m_animDiscoveryCache.GetModel(fileHash);
         bool usedCache = false;
-
         if (cachedAnimInfo && !cachedAnimInfo->animSources.empty() &&
-            cachedAnimInfo->modelHash0 == tmpl.modelHash0 &&
-            cachedAnimInfo->modelHash1 == tmpl.modelHash1)
+            cachedAnimInfo->modelHash0 == wi.tmpl.modelHash0 &&
+            cachedAnimInfo->modelHash1 == wi.tmpl.modelHash1)
         {
             for (const auto& src : cachedAnimInfo->animSources) {
                 if (src.mftIndex < 0 || src.mftIndex >= (int)mft.size()) continue;
                 try {
-                    uint8_t* data = m_datManager->read_file(src.mftIndex);
+                    uint8_t* data = m_datManager->read_file(src.mftIndex, datHandle);
                     if (!data) continue;
                     size_t dataSize = mft[src.mftIndex].uncompressedSize;
                     auto clip = GW::Parsers::ParseAnimationFromFile(data, dataSize);
                     delete[] data;
                     if (clip && clip->IsValid())
-                        foundClips.push_back({ std::move(*clip), src.fileHash });
+                        wi.foundClips.push_back({ std::move(*clip), src.fileHash });
                 } catch (...) {}
             }
-            usedCache = !foundClips.empty();
+            usedCache = !wi.foundClips.empty();
         }
 
-        if (!usedCache)
-        {
+        // Try embedded + references if cache missed
+        if (!usedCache) {
             try {
-                uint8_t* rawData = m_datManager->read_file(mftIndex);
+                uint8_t* rawData = m_datManager->read_file(mftIndex, datHandle);
                 if (rawData) {
                     size_t rawSize = mft[mftIndex].uncompressedSize;
-
                     auto clipOpt = GW::Parsers::ParseAnimationFromFile(rawData, rawSize);
                     if (clipOpt && clipOpt->IsValid())
-                        foundClips.push_back({ std::move(*clipOpt), fileHash });
+                        wi.foundClips.push_back({ std::move(*clipOpt), fileHash });
 
-                    m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningReferences));
                     std::vector<uint32_t> animFileIds;
                     size_t scanOffset = 5;
                     while (scanOffset + 8 <= rawSize) {
@@ -5454,159 +5660,261 @@ void ReplayWindow::LoadAgentModelsIO()
                         if (refIt == m_hashIndex->end() || refIt->second.empty()) continue;
                         int refMftIdx = refIt->second.at(0);
                         if (refMftIdx < 0 || refMftIdx >= (int)mft.size()) continue;
-                        uint8_t* refData = m_datManager->read_file(refMftIdx);
+                        uint8_t* refData = m_datManager->read_file(refMftIdx, datHandle);
                         if (!refData) continue;
                         size_t refSize = mft[refMftIdx].uncompressedSize;
                         auto refClip = GW::Parsers::ParseAnimationFromFile(refData, refSize);
                         delete[] refData;
                         if (refClip && refClip->IsValid())
-                            foundClips.push_back({ std::move(*refClip), animFileId });
-                    }
-
-                    if (foundClips.empty() && tmpl.modelHash0 != 0) {
-                        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningMFT));
-                        for (size_t mi = 0; mi < mft.size(); mi++) {
-                            if ((int)mi == mftIndex) continue;
-                            if (mft[mi].type != FFNA_Type2) continue;
-                            if (mft[mi].uncompressedSize < 5 + 8 + 44) continue;
-                            uint8_t* scanData = m_datManager->read_file(static_cast<int>(mi));
-                            if (!scanData) continue;
-                            size_t scanSize = mft[mi].uncompressedSize;
-                            bool matched = false;
-                            if (scanSize >= 5 && scanData[0] == 'f' && scanData[1] == 'f' &&
-                                scanData[2] == 'n' && scanData[3] == 'a') {
-                                size_t off = 5;
-                                while (off + 8 <= scanSize) {
-                                    uint32_t cid, csz;
-                                    std::memcpy(&cid, &scanData[off], sizeof(uint32_t));
-                                    std::memcpy(&csz, &scanData[off + 4], sizeof(uint32_t));
-                                    if (cid == 0 || csz == 0 || off + 8 + csz > scanSize) break;
-                                    size_t cDataOff = off + 8;
-                                    if (cid == GW::Parsers::CHUNK_ID_BB9 &&
-                                        cDataOff + sizeof(GW::Parsers::BB9Header) <= scanSize) {
-                                        GW::Parsers::BB9Header hdr;
-                                        std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
-                                        if (hdr.modelHash0 == tmpl.modelHash0 && hdr.modelHash1 == tmpl.modelHash1)
-                                            matched = true;
-                                    } else if (cid == GW::Parsers::CHUNK_ID_FA1 &&
-                                               cDataOff + sizeof(GW::Parsers::FA1Header) <= scanSize) {
-                                        GW::Parsers::FA1Header hdr;
-                                        std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
-                                        if (hdr.boundingBoxId == tmpl.modelHash0 && hdr.collisionMeshId == tmpl.modelHash1)
-                                            matched = true;
-                                    }
-                                    if (matched) break;
-                                    off += 8 + csz;
-                                }
-                            }
-                            if (matched) {
-                                auto scanClip = GW::Parsers::ParseAnimationFromFile(scanData, scanSize);
-                                if (scanClip && scanClip->IsValid())
-                                    foundClips.push_back({ std::move(*scanClip), static_cast<uint32_t>(mft[mi].Hash) });
-                            }
-                            delete[] scanData;
-                        }
+                            wi.foundClips.push_back({ std::move(*refClip), animFileId });
                     }
 
                     delete[] rawData;
                 }
             } catch (...) {}
 
-            if (!foundClips.empty()) {
+            if (wi.foundClips.empty() && wi.tmpl.modelHash0 != 0)
+                wi.needsMftScan = true;
+        }
+
+        workItems.push_back(std::move(wi));
+        m_bgLoadProgress.fetch_add(1);
+    }
+
+    // ====== Phase B: Single MFT scan for ALL models needing discovery ======
+    // Build lookup: (modelHash0, modelHash1) → work item indices
+    std::unordered_map<uint64_t, std::vector<size_t>> hashToWorkIndices;
+    std::unordered_set<int> skipMftIndices;
+
+    for (size_t idx = 0; idx < workItems.size(); idx++) {
+        if (!workItems[idx].needsMftScan) continue;
+        uint64_t key = (uint64_t(workItems[idx].tmpl.modelHash0) << 32) | workItems[idx].tmpl.modelHash1;
+        hashToWorkIndices[key].push_back(idx);
+        skipMftIndices.insert(workItems[idx].mftIndex);
+    }
+
+    if (!hashToWorkIndices.empty()) {
+        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningMFT));
+        OutputDebugStringA(std::format("[ReplayLoad] MFT scan: {} models need discovery\n",
+                                       hashToWorkIndices.size()).c_str());
+
+        for (size_t mi = 0; mi < mft.size(); mi++) {
+            if (mft[mi].type != FFNA_Type2) continue;
+            if (mft[mi].uncompressedSize < 5 + 8 + 44) continue;
+            if (skipMftIndices.count(static_cast<int>(mi))) continue;
+
+            uint8_t* scanData = m_datManager->read_file(static_cast<int>(mi), datHandle);
+            if (!scanData) continue;
+            size_t scanSize = mft[mi].uncompressedSize;
+
+            if (scanSize < 5 || scanData[0] != 'f' || scanData[1] != 'f' ||
+                scanData[2] != 'n' || scanData[3] != 'a') {
+                delete[] scanData;
+                continue;
+            }
+
+            // Extract all BB9/FA1 hash pairs and check against needed models
+            bool anyMatch = false;
+            size_t off = 5;
+            while (off + 8 <= scanSize) {
+                uint32_t cid, csz;
+                std::memcpy(&cid, &scanData[off], sizeof(uint32_t));
+                std::memcpy(&csz, &scanData[off + 4], sizeof(uint32_t));
+                if (cid == 0 || csz == 0 || off + 8 + csz > scanSize) break;
+                size_t cDataOff = off + 8;
+
+                uint32_t h0 = 0, h1 = 0;
+                bool gotHash = false;
+                if (cid == GW::Parsers::CHUNK_ID_BB9 &&
+                    cDataOff + sizeof(GW::Parsers::BB9Header) <= scanSize) {
+                    GW::Parsers::BB9Header hdr;
+                    std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                    h0 = hdr.modelHash0;
+                    h1 = hdr.modelHash1;
+                    gotHash = true;
+                } else if (cid == GW::Parsers::CHUNK_ID_FA1 &&
+                           cDataOff + sizeof(GW::Parsers::FA1Header) <= scanSize) {
+                    GW::Parsers::FA1Header hdr;
+                    std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                    h0 = hdr.boundingBoxId;
+                    h1 = hdr.collisionMeshId;
+                    gotHash = true;
+                }
+
+                if (gotHash) {
+                    uint64_t key = (uint64_t(h0) << 32) | h1;
+                    auto it = hashToWorkIndices.find(key);
+                    if (it != hashToWorkIndices.end()) {
+                        anyMatch = true;
+                        break;
+                    }
+                }
+                off += 8 + csz;
+            }
+
+            if (anyMatch) {
+                auto scanClip = GW::Parsers::ParseAnimationFromFile(scanData, scanSize);
+                if (scanClip && scanClip->IsValid()) {
+                    uint32_t fHash = static_cast<uint32_t>(mft[mi].Hash);
+                    off = 5;
+                    while (off + 8 <= scanSize) {
+                        uint32_t cid, csz;
+                        std::memcpy(&cid, &scanData[off], sizeof(uint32_t));
+                        std::memcpy(&csz, &scanData[off + 4], sizeof(uint32_t));
+                        if (cid == 0 || csz == 0 || off + 8 + csz > scanSize) break;
+                        size_t cDataOff = off + 8;
+
+                        uint32_t h0 = 0, h1 = 0;
+                        bool gotHash = false;
+                        if (cid == GW::Parsers::CHUNK_ID_BB9 &&
+                            cDataOff + sizeof(GW::Parsers::BB9Header) <= scanSize) {
+                            GW::Parsers::BB9Header hdr;
+                            std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                            h0 = hdr.modelHash0; h1 = hdr.modelHash1; gotHash = true;
+                        } else if (cid == GW::Parsers::CHUNK_ID_FA1 &&
+                                   cDataOff + sizeof(GW::Parsers::FA1Header) <= scanSize) {
+                            GW::Parsers::FA1Header hdr;
+                            std::memcpy(&hdr, &scanData[cDataOff], sizeof(hdr));
+                            h0 = hdr.boundingBoxId; h1 = hdr.collisionMeshId; gotHash = true;
+                        }
+                        if (gotHash) {
+                            uint64_t key = (uint64_t(h0) << 32) | h1;
+                            auto it = hashToWorkIndices.find(key);
+                            if (it != hashToWorkIndices.end()) {
+                                for (size_t wiIdx : it->second)
+                                    workItems[wiIdx].foundClips.push_back({ *scanClip, fHash });
+                            }
+                        }
+                        off += 8 + csz;
+                    }
+                }
+            }
+            delete[] scanData;
+        }
+    }
+
+    // ====== Phase C: Build animation data + finalize templates ======
+    m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::BuildingAnimData));
+
+    for (auto& wi : workItems) {
+        if (!wi.valid) {
+            m_agentModelTemplates[wi.fileHash] = std::move(wi.tmpl);
+            continue;
+        }
+
+        // Update discovery cache for models that did fresh discovery
+        if (wi.needsMftScan && !wi.foundClips.empty()) {
+            GW::Cache::CachedModelAnimInfo cacheEntry;
+            cacheEntry.modelHash0 = wi.tmpl.modelHash0;
+            cacheEntry.modelHash1 = wi.tmpl.modelHash1;
+            for (const auto& fc : wi.foundClips) {
+                GW::Cache::AnimSourceEntry src;
+                src.fileHash = fc.sourceFileHash;
+                auto srcIt = m_hashIndex->find(static_cast<int>(fc.sourceFileHash));
+                if (srcIt != m_hashIndex->end() && !srcIt->second.empty())
+                    src.mftIndex = srcIt->second.at(0);
+                else
+                    src.mftIndex = wi.mftIndex;
+                cacheEntry.animSources.push_back(src);
+            }
+            m_animDiscoveryCache.SetModel(wi.fileHash, std::move(cacheEntry));
+        }
+        // Also cache models resolved via embedded/refs (not from cache hit, not needing MFT scan)
+        if (!wi.needsMftScan && !wi.foundClips.empty()) {
+            const auto* existing = m_animDiscoveryCache.GetModel(wi.fileHash);
+            if (!existing) {
                 GW::Cache::CachedModelAnimInfo cacheEntry;
-                cacheEntry.modelHash0 = tmpl.modelHash0;
-                cacheEntry.modelHash1 = tmpl.modelHash1;
-                for (const auto& fc : foundClips) {
+                cacheEntry.modelHash0 = wi.tmpl.modelHash0;
+                cacheEntry.modelHash1 = wi.tmpl.modelHash1;
+                for (const auto& fc : wi.foundClips) {
                     GW::Cache::AnimSourceEntry src;
                     src.fileHash = fc.sourceFileHash;
                     auto srcIt = m_hashIndex->find(static_cast<int>(fc.sourceFileHash));
                     if (srcIt != m_hashIndex->end() && !srcIt->second.empty())
                         src.mftIndex = srcIt->second.at(0);
                     else
-                        src.mftIndex = mftIndex;
+                        src.mftIndex = wi.mftIndex;
                     cacheEntry.animSources.push_back(src);
                 }
-                m_animDiscoveryCache.SetModel(fileHash, std::move(cacheEntry));
+                m_animDiscoveryCache.SetModel(wi.fileHash, std::move(cacheEntry));
             }
         }
 
-        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::BuildingAnimData));
-        if (!foundClips.empty()) {
-            for (size_t ci = 0; ci < foundClips.size(); ci++) {
+        if (!wi.foundClips.empty()) {
+            for (size_t ci = 0; ci < wi.foundClips.size(); ci++) {
                 AnimClipEntry entry;
-                entry.clip = std::make_shared<GW::Animation::AnimationClip>(std::move(foundClips[ci].clip));
+                entry.clip = std::make_shared<GW::Animation::AnimationClip>(std::move(wi.foundClips[ci].clip));
                 entry.clip->BuildAnimationGroups();
                 entry.skeleton = std::make_shared<GW::Animation::Skeleton>(
                     GW::Parsers::BB9AnimationParser::CreateSkeleton(*entry.clip));
-                entry.sourceFileHash = foundClips[ci].sourceFileHash;
-                tmpl.allClips.push_back(std::move(entry));
+                entry.sourceFileHash = wi.foundClips[ci].sourceFileHash;
+                wi.tmpl.allClips.push_back(std::move(entry));
             }
-            tmpl.clip = tmpl.allClips[0].clip;
-            tmpl.skeleton = tmpl.allClips[0].skeleton;
+            wi.tmpl.clip = wi.tmpl.allClips[0].clip;
+            wi.tmpl.skeleton = wi.tmpl.allClips[0].skeleton;
 
-            const auto& models = isOtherFormat
-                ? modelFileOther.geometry_chunk.models
-                : modelFile.geometry_chunk.models;
-
-            for (size_t si = 0; si < models.size() && si < propMeshes.size(); si++) {
-                const auto& geoModel = models[si];
+            for (size_t si = 0; si < wi.geoModels.size(); si++) {
                 auto boneData = AnimationPanelState::ExtractBoneData(
-                    geoModel.extra_data, geoModel.u0, geoModel.u1);
-                tmpl.submeshBoneData.push_back(std::move(boneData));
+                    wi.geoModels[si].extra_data, wi.geoModels[si].u0, wi.geoModels[si].u1);
+                wi.tmpl.submeshBoneData.push_back(std::move(boneData));
                 std::vector<uint32_t> vbg;
-                vbg.reserve(geoModel.vertices.size());
-                for (const auto& mv : geoModel.vertices)
-                    vbg.push_back(mv.has_group ? mv.group : 0);
-                tmpl.perVertexBoneGroups.push_back(std::move(vbg));
+                vbg.reserve(wi.geoModels[si].vertexGroups.size());
+                for (const auto& [hasGroup, group] : wi.geoModels[si].vertexGroups)
+                    vbg.push_back(hasGroup ? group : 0);
+                wi.tmpl.perVertexBoneGroups.push_back(std::move(vbg));
             }
 
             std::unordered_map<uint32_t, SegmentRef> segHashToRef;
-            for (int ci = 0; ci < static_cast<int>(tmpl.allClips.size()); ci++) {
-                const auto& clipEntry = tmpl.allClips[ci];
+            for (int ci = 0; ci < static_cast<int>(wi.tmpl.allClips.size()); ci++) {
+                const auto& clipEntry = wi.tmpl.allClips[ci];
                 for (size_t si = 0; si < clipEntry.clip->animationSegments.size(); si++) {
                     uint32_t segHash = clipEntry.clip->animationSegments[si].hash;
                     SegmentRef ref{ ci, static_cast<int>(si) };
                     if (!segHashToRef.count(segHash)) segHashToRef[segHash] = ref;
-                    if (!tmpl.animCodeToSegment.count(segHash)) tmpl.animCodeToSegment[segHash] = ref;
+                    if (!wi.tmpl.animCodeToSegment.count(segHash)) wi.tmpl.animCodeToSegment[segHash] = ref;
                     auto& lookup = GW::Animation::AnimationHashLookup::Instance();
                     int stateIdx = lookup.GetStateIndex(segHash);
                     if (stateIdx >= 0 && stateIdx < (int)GW::Animation::g_animationStateCount) {
                         uint32_t primary = GW::Animation::g_animationStateTable[stateIdx].primaryHash;
-                        if (!tmpl.animCodeToSegment.count(primary))
-                            tmpl.animCodeToSegment[primary] = ref;
+                        if (!wi.tmpl.animCodeToSegment.count(primary))
+                            wi.tmpl.animCodeToSegment[primary] = ref;
                     }
                     for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount; bs++) {
                         uint32_t fallback = GW::Animation::ReverseSegmentHash(
                             segHash, GW::Animation::g_boneSlotChars[bs]);
-                        if (fallback != 0 && !tmpl.animCodeToSegment.count(fallback))
-                            tmpl.animCodeToSegment[fallback] = ref;
+                        if (fallback != 0 && !wi.tmpl.animCodeToSegment.count(fallback))
+                            wi.tmpl.animCodeToSegment[fallback] = ref;
                     }
                 }
             }
             for (size_t i = 0; i < GW::Animation::g_animationStateCount; i++) {
                 uint32_t primary = GW::Animation::g_animationStateTable[i].primaryHash;
-                if (tmpl.animCodeToSegment.count(primary)) continue;
+                if (wi.tmpl.animCodeToSegment.count(primary)) continue;
                 for (size_t bs = 0; bs < GW::Animation::g_boneSlotCount; bs++) {
                     uint32_t candidate = GW::Animation::ComputeSegmentHash(
                         primary, GW::Animation::g_boneSlotChars[bs]);
                     auto it = segHashToRef.find(candidate);
                     if (it != segHashToRef.end()) {
-                        tmpl.animCodeToSegment[primary] = it->second;
+                        wi.tmpl.animCodeToSegment[primary] = it->second;
                         break;
                     }
                 }
             }
-            tmpl.hasAnimation = true;
+            wi.tmpl.hasAnimation = true;
         }
 
-        m_agentModelTemplates[fileHash] = std::move(tmpl);
-        m_bgLoadProgress.fetch_add(1);
+        m_agentModelTemplates[wi.fileHash] = std::move(wi.tmpl);
     }
+
+    CloseHandle(datHandle);
 
     if (m_animDiscoveryCache.IsDirty()) {
         auto cachePath = GW::Cache::AnimationDiscoveryCache::GetDefaultCachePath();
         m_animDiscoveryCache.SaveToFile(cachePath);
     }
+
+    m_loadTiming.agentIOSec = std::chrono::duration<double>(LoadClock::now() - ioStart).count();
+    OutputDebugStringA(std::format("[ReplayLoad] AgentIO: {:.3f}s\n", m_loadTiming.agentIOSec).c_str());
 
     m_bgLoadDone.store(true);
 }
@@ -5628,9 +5936,9 @@ void ReplayWindow::StepCreateAgentModelResources()
     auto* device = m_deviceResources->GetD3DDevice();
     if (!device) return;
 
+    auto frameStart = LoadClock::now();
     int processed = 0;
-    while (m_agentModelCreateIndex < static_cast<int>(m_agentModelCreateOrder.size()) &&
-           processed < kAgentModelBatchSize)
+    while (m_agentModelCreateIndex < static_cast<int>(m_agentModelCreateOrder.size()))
     {
         uint32_t fileHash = m_agentModelCreateOrder[m_agentModelCreateIndex];
         m_agentModelCreateIndex++;
@@ -5748,9 +6056,18 @@ void ReplayWindow::StepCreateAgentModelResources()
 
         tmpl.parsedTextures_.clear();
         tmpl.parsedTextures_.shrink_to_fit();
+
+        if (processed >= kAgentModelBatchSize) {
+            auto elapsed = std::chrono::duration<float, std::milli>(LoadClock::now() - frameStart).count();
+            if (elapsed > kLoadFrameBudgetMs)
+                break;
+        }
     }
 
     if (m_agentModelCreateIndex >= static_cast<int>(m_agentModelCreateOrder.size())) {
+        m_loadTiming.agentGPUSec += std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
+        OutputDebugStringA(std::format("[ReplayLoad] AgentGPU: {:.3f}s\n", m_loadTiming.agentGPUSec).c_str());
+
         m_agentModelsLoaded = true;
         m_agentModelsLoading = false;
     }
@@ -5782,7 +6099,7 @@ void ReplayWindow::LoadAgentModels()
 
 void ReplayWindow::DrawAgentModels()
 {
-    if (!m_useAgentModels || !m_agentModelsLoaded) return;
+    if (!m_useAgentModels) return;
     if (!m_showAgentOverlay) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
 
@@ -6424,9 +6741,8 @@ void ReplayWindow::DrawAgentCylinders()
         if (ard.snapshots.empty()) continue;
         if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
 
-        // Skip cylinder for agents that have a 3D model when models are enabled.
-        // DrawAgentModels() already set currentLOD (0=icon at distance, 2=3D model).
-        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId))
+        // Skip cylinder for agents that already have a 3D model loaded.
+        if (m_useAgentModels && m_agentMeshIds.count(agentId))
             continue;
 
         float sx, sy, sz;
@@ -6808,7 +7124,7 @@ void ReplayWindow::DrawAgentOverlay()
         bool showDot = !is3DAgent;
 
         // Agents with 3D models don't need dots
-        if (m_useAgentModels && m_agentModelsLoaded && m_agentMeshIds.count(agentId))
+        if (m_useAgentModels && m_agentMeshIds.count(agentId))
             showDot = false;
 
         // For players/NPCs, check LOD: if Dot mode, use stylized profession icon for players

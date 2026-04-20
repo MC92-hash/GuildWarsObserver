@@ -23,6 +23,7 @@ struct CachedModelAnimInfo {
 
 class AnimationDiscoveryCache
 {
+    static constexpr int kCacheVersion = 2;
 public:
     void SetDatIdentity(const std::wstring& datPath, uintmax_t datFileSize)
     {
@@ -62,6 +63,7 @@ public:
 
         std::wstring storedDatPath;
         uintmax_t storedDatSize = 0;
+        int storedVersion = 0;
 
         std::string line;
         enum class Section { Header, Model, AnimSources } section = Section::Header;
@@ -87,7 +89,10 @@ public:
             std::string key = line.substr(0, eq);
             std::string val = line.substr(eq + 1);
 
-            if (key == "dat_path") {
+            if (key == "cache_version") {
+                try { storedVersion = std::stoi(val); } catch (...) {}
+            }
+            else if (key == "dat_path") {
                 storedDatPath = Utf8ToWide(val);
             }
             else if (key == "dat_size") {
@@ -117,7 +122,8 @@ public:
         }
         flushModel();
 
-        if (storedDatPath != currentDatPath || storedDatSize != currentDatSize) {
+        if (storedVersion != kCacheVersion ||
+            storedDatPath != currentDatPath || storedDatSize != currentDatSize) {
             m_models.clear();
             return false;
         }
@@ -134,6 +140,7 @@ public:
             return false;
 
         file << "# GW Observer animation discovery cache\n";
+        file << "cache_version=" << kCacheVersion << "\n";
         file << "dat_path=" << WideToUtf8(m_datPath) << "\n";
         file << "dat_size=" << m_datFileSize << "\n";
 
