@@ -19772,6 +19772,35 @@ void ReplayWindow::UpdateIncomingEffects()
     }
 }
 
+static std::filesystem::path FindTexturesDDSDir()
+{
+    wchar_t exeBuf[MAX_PATH];
+    GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
+    auto dir = std::filesystem::path(exeBuf).parent_path();
+    for (; ; dir = dir.parent_path())
+    {
+        auto candidate = dir / L"Textures" / L"DDS";
+        if (std::filesystem::is_directory(candidate))
+            return candidate;
+        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+    }
+    return {};
+}
+
+void ReplayWindow::EnsureBitmapFontsLoaded()
+{
+    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded) return;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    auto ddsDir = FindTexturesDDSDir();
+    if (ddsDir.empty()) return;
+
+    if (!m_damageBitmapFont.loaded)
+        m_damageBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0x753F0FB5.dds").c_str());
+    if (!m_healBitmapFont.loaded)
+        m_healBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0xA0629E7F.dds").c_str());
+}
+
 void ReplayWindow::RenderIncomingEffects()
 {
     if (m_incomingEffects.empty()) return;
@@ -19798,7 +19827,6 @@ void ReplayWindow::RenderIncomingEffects()
     constexpr float FLOAT_DISTANCE   = 90.f;
     constexpr float ICON_SZ   = 26.f;
     constexpr float GAP       = 4.f;
-    constexpr float PILL_PAD  = 4.f;
 
     // Compute model-top Y using the same logic as the profession icon in DrawAgentOverlay,
     // so the floating numbers anchor just above the icon regardless of camera zoom/angle.
@@ -19829,21 +19857,47 @@ void ReplayWindow::RenderIncomingEffects()
     anchorY -= iconSz + kScreenPad * 2.f;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    const float labelFs = 13.f;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     EnsureSkillIconIndex();
+    EnsureBitmapFontsLoaded();
 
-    for (const auto& e : m_incomingEffects)
+    const float glyphHeight = std::clamp(vpH * 0.013f, 9.f, 18.f);
+
+    // Sort render order: oldest first (background) → newest last (foreground).
+    // ImGui draws later calls on top, so newest effects appear in front.
+    static std::vector<size_t> sortedIdx;
+    sortedIdx.clear();
+    for (size_t i = 0; i < m_incomingEffects.size(); ++i)
     {
+        float age = now - m_incomingEffects[i].spawnTime;
+        if (age >= 0.f && age < kEffectLifetime)
+            sortedIdx.push_back(i);
+    }
+    std::sort(sortedIdx.begin(), sortedIdx.end(), [&](size_t a, size_t b) {
+        return m_incomingEffects[a].spawnTime < m_incomingEffects[b].spawnTime;
+    });
+
+    const size_t totalActive = sortedIdx.size();
+
+    for (size_t si = 0; si < totalActive; ++si)
+    {
+        const auto& e = m_incomingEffects[sortedIdx[si]];
         float age = now - e.spawnTime;
-        if (age < 0.f || age >= kEffectLifetime) continue;
 
         float t = age / kEffectLifetime;
         float opacity = (t < 0.65f) ? 1.f : 1.f - ((t - 0.65f) / 0.35f);
         opacity = std::clamp(opacity, 0.f, 1.f);
-        uint8_t alpha = (uint8_t)(opacity * 255.f);
+
+        // Depth effect: older effects (drawn first) appear receded.
+        // depthRank 0.0 = oldest, 1.0 = newest.
+        float depthRank = (totalActive > 1)
+            ? static_cast<float>(si) / static_cast<float>(totalActive - 1)
+            : 1.f;
+        float depthDim     = 0.55f + 0.45f * depthRank;
+        opacity *= depthDim;
+
+        uint8_t alpha = static_cast<uint8_t>(opacity * 255.f);
 
         float fy = anchorY - t * FLOAT_DISTANCE;
         float fx = anchorX + e.xOffset;
@@ -19853,13 +19907,77 @@ void ReplayWindow::RenderIncomingEffects()
         constexpr float ATK_ICON_SZ = 18.f;
         float iconW = isBasicAttack ? ATK_ICON_SZ : ICON_SZ;
 
+        bool useBitmapFont = !e.label.empty()
+            && (e.type == IncomingEffectType::Damage
+                || e.type == IncomingEffectType::Heal
+                || e.type == IncomingEffectType::BasicAttack);
+
+        const BitmapFont* bmFont = nullptr;
+        if (useBitmapFont)
+        {
+            bmFont = (e.type == IncomingEffectType::Heal)
+                         ? &m_healBitmapFont
+                         : &m_damageBitmapFont;
+            if (!bmFont->srv.Get()) bmFont = nullptr;
+        }
+
+        float labelW = 0.f;
+        if (bmFont && !e.label.empty())
+            labelW = bmFont->MeasureString(e.label.c_str(), glyphHeight);
+
         float totalW = 0.f;
-        ImVec2 tsz(0, 0);
-        if (!e.label.empty())
-            tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
         if (hasIcon) totalW += iconW;
-        if (hasIcon && tsz.x > 0) totalW += GAP;
-        if (tsz.x > 0) totalW += PILL_PAD * 2.f + tsz.x;
+        if (hasIcon && labelW > 0.f) totalW += GAP;
+        if (labelW > 0.f) totalW += labelW;
+
+        if (!bmFont && !e.label.empty())
+        {
+            const float labelFs = 13.f;
+            ImFont* font = ImGui::GetFont();
+            ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
+            constexpr float PILL_PAD = 4.f;
+            totalW = 0.f;
+            if (hasIcon) totalW += iconW;
+            if (hasIcon && tsz.x > 0) totalW += GAP;
+            if (tsz.x > 0) totalW += PILL_PAD * 2.f + tsz.x;
+
+            float startX = fx - totalW * 0.5f;
+            float curX = startX;
+
+            if (hasIcon)
+            {
+                ImTextureID tex = nullptr;
+                if (isBasicAttack)
+                    tex = LoadFlagIcon(dev, "kill.png");
+                else
+                    tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+                ImVec2 iconTL(curX, fy - iconW * 0.5f);
+                ImVec2 iconBR(curX + iconW, fy + iconW * 0.5f);
+                if (tex)
+                    dl->AddImage(tex, iconTL, iconBR,
+                        ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
+                curX += iconW + GAP;
+            }
+
+            ImU32 labelCol;
+            switch (e.type) {
+            case IncomingEffectType::Interrupt:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+            case IncomingEffectType::Condition:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+            case IncomingEffectType::Hex:         labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+            default:                              labelCol = IM_COL32(0xFF, 0xFF, 0xFF, alpha); break;
+            }
+
+            float pillX = curX;
+            float pillY = fy - (tsz.y + PILL_PAD * 2.f) * 0.5f;
+            float pillW = tsz.x + PILL_PAD * 2.f;
+            float pillH = tsz.y + PILL_PAD * 2.f;
+
+            dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH),
+                IM_COL32(0, 0, 0, (uint8_t)(0.55f * 255.f * opacity)), 3.f);
+            dl->AddText(font, labelFs,
+                ImVec2(pillX + PILL_PAD, fy - tsz.y * 0.5f), labelCol, e.label.c_str());
+            continue;
+        }
 
         float startX = fx - totalW * 0.5f;
         float curX = startX;
@@ -19881,26 +19999,8 @@ void ReplayWindow::RenderIncomingEffects()
 
         if (e.label.empty()) continue;
 
-        ImU32 labelCol;
-        switch (e.type) {
-        case IncomingEffectType::Damage:      labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
-        case IncomingEffectType::Heal:        labelCol = IM_COL32(0x60, 0xFF, 0x80, alpha); break;
-        case IncomingEffectType::Interrupt:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-        case IncomingEffectType::Condition:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-        case IncomingEffectType::Hex:         labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
-        case IncomingEffectType::BasicAttack: labelCol = IM_COL32(0xFF, 0x60, 0x60, alpha); break;
-        }
-
-        float pillX = curX;
-        float pillY = fy - (tsz.y + PILL_PAD * 2.f) * 0.5f;
-        float pillW = tsz.x + PILL_PAD * 2.f;
-        float pillH = tsz.y + PILL_PAD * 2.f;
-
-        dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH),
-            IM_COL32(0, 0, 0, (uint8_t)(0.55f * 255.f * opacity)), 3.f);
-
-        dl->AddText(font, labelFs,
-            ImVec2(pillX + PILL_PAD, fy - tsz.y * 0.5f), labelCol, e.label.c_str());
+        float labelCenterX = curX + labelW * 0.5f;
+        bmFont->DrawString(dl, e.label.c_str(), labelCenterX, fy, glyphHeight, alpha);
     }
 }
 

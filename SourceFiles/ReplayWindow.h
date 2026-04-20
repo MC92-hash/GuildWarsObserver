@@ -25,6 +25,7 @@
 #include "animation_state.h"
 #include "Cache/AnimationDiscoveryCache.h"
 #include "ReplayPanelLayout.h"
+#include "BitmapFont.h"
 #include <string>
 #include <memory>
 #include <utility>
@@ -996,6 +997,11 @@ private:
     std::vector<IncomingEffect> m_incomingEffects;
     float m_lastEffectScanTime = -1.f;
     int   m_focusedAgentId     = -1;
+
+    // Bitmap font textures for GW-style floating numbers
+    BitmapFont m_damageBitmapFont;
+    BitmapFont m_healBitmapFont;
+    void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();
     void RenderIncomingEffects();
