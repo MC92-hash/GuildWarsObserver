@@ -893,6 +893,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_pipSRV;
     bool m_pipResourcesReady = false;
 
+    uint64_t m_frameCount = 0;
+    uint64_t m_lastAnimUpdateFrame = 0;
+
     void InitPiPResources();
     void RenderPiP();
     void UpdatePiPTarget();
@@ -1007,6 +1010,12 @@ private:
     void RenderIncomingEffects();
     void DrawFollowedAgentHUD();
     int  GetFocusedAgentId() const;
+
+    // PiP-specific incoming effects (simplified scan of raw combat events)
+    std::vector<IncomingEffect> m_pipIncomingEffects;
+    float m_pipLastEffectScanTime = -1.f;
+    int   m_pipEffectAgentId      = -1;
+    void  UpdatePiPIncomingEffects();
 
     // --- Spatial Audio ---
     std::unique_ptr<SpatialAudioEngine> m_audioEngine;
