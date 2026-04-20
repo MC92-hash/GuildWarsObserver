@@ -19287,6 +19287,18 @@ void ReplayWindow::UpdateIncomingEffects()
         m_incomingEffects.push_back(std::move(eff));
     };
 
+    // Skills that target a foe but only deal damage to the caster (self-damage).
+    // These must never consume combat damage events on the target.
+    auto isCasterDamageOnly = [](int skillId) -> bool {
+        switch (skillId) {
+        case 141:   // Rend Enchantments — "you lose 55..25 Health" per monk enchantment removed
+        case 863:   // Order of Apostasy — "you lose 25..15% max Health" per monk enchantment removed
+            return true;
+        default:
+            return false;
+        }
+    };
+
     // Delayed damage pass (runs FIRST to prevent the primary scan's
     // findCombatValue from stealing delayed hits). For each unconsumed damage
     // event, finds the skill whose endTime is closest to exactly 3.0s before
@@ -19294,6 +19306,12 @@ void ReplayWindow::UpdateIncomingEffects()
     // findCombatValue's [−0.1, 1.5] window, so ordering is safe.
     constexpr float kDelayCenter = 3.0f;
     constexpr float kDelayHalf   = 0.5f;
+    auto castKey = [](int casterId, float endTime) -> uint64_t {
+        uint32_t a = (uint32_t)casterId;
+        uint32_t b; std::memcpy(&b, &endTime, sizeof(b));
+        return ((uint64_t)a << 32) | b;
+    };
+    std::unordered_set<uint64_t> delayConsumedCasts;
     for (size_t ci = 0; ci < combatVec.size(); ++ci)
     {
         if (consumedCombat.count(ci)) continue;
@@ -19308,10 +19326,19 @@ void ReplayWindow::UpdateIncomingEffects()
 
         int bestSkillId = 0;
         float bestDist2 = 1e9f;
+        float bestEndTime = 0.f;
         for (const auto& su : casterIt->second.skillUseHistory)
         {
             if (su.wasCancelled) continue;
             if (su.targetId != focused) continue;
+            if (isCasterDamageOnly(su.skillId)) continue;
+            if (delayConsumedCasts.count(castKey(dce.caster_id, su.endTime))) continue;
+            {
+                const SkillInfo* dsi = db.Get(su.skillId);
+                if (dsi && !dsi->description.empty() &&
+                    dsi->description.find("damage") == std::string::npos)
+                    continue;
+            }
             float ddt = dce.time - su.endTime;
             if (ddt < kDelayCenter - kDelayHalf || ddt > kDelayCenter + kDelayHalf) continue;
             float dist = std::abs(ddt - kDelayCenter);
@@ -19319,10 +19346,12 @@ void ReplayWindow::UpdateIncomingEffects()
             {
                 bestDist2 = dist;
                 bestSkillId = su.skillId;
+                bestEndTime = su.endTime;
             }
         }
         if (bestSkillId == 0) continue;
 
+        delayConsumedCasts.insert(castKey(dce.caster_id, bestEndTime));
         float totalValue = dce.value;
         consumedCombat.insert(ci);
         consumedSkillMap[ci] = bestSkillId;
@@ -19352,8 +19381,25 @@ void ReplayWindow::UpdateIncomingEffects()
         pushEffect(std::move(deff));
     }
 
-    // Primary source: scan all agents' skill use histories for skills targeting the focused agent
+    // Primary source: two-pass approach that collects all skill→damage candidates
+    // then resolves conflicts so each damage event is attributed to the skill
+    // whose cast end time is closest to the damage impact time.
     constexpr float kProjectileWindow = 1.5f;
+
+    struct PrimaryCandidate {
+        int agentId = 0;
+        int skillId = 0;
+        float endTime = 0.f;
+        int skillType = 0;
+        const SkillInfo* si = nullptr;
+        size_t primaryHitIdx = SIZE_MAX;
+        float hitTime = 0.f;
+        float timeDelta = 0.f;
+    };
+    std::vector<PrimaryCandidate> primCandidates;
+
+    // Pass 1: collect candidates, peek combat matches without consuming.
+    // Hexes and caster-damage-only skills are emitted immediately.
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         if (agentId == focused) continue;
@@ -19362,7 +19408,6 @@ void ReplayWindow::UpdateIncomingEffects()
             if (su.wasCancelled) continue;
             if (su.targetId != focused) continue;
             float endT = su.endTime;
-            // Look back up to kProjectileWindow for skills whose damage lands with a delay
             if (endT > scanTo || endT < scanFrom - kProjectileWindow) continue;
 
             const SkillInfo* si = db.Get(su.skillId);
@@ -19376,52 +19421,153 @@ void ReplayWindow::UpdateIncomingEffects()
                     hexEff.spawnTime = endT;
                     hexEff.skillId = su.skillId;
                     hexEff.type = IncomingEffectType::Hex;
-                    hexEff.label = si ? si->name : "Hex";
                     pushEffect(std::move(hexEff));
                 }
                 continue;
             }
 
-            auto cm = findCombatValue(agentId, focused, endT);
+            if (isCasterDamageOnly(su.skillId))
+            {
+                if (endT > scanFrom && endT <= scanTo)
+                {
+                    IncomingEffect eff;
+                    eff.spawnTime = endT;
+                    eff.skillId = su.skillId;
+                    eff.type = IncomingEffectType::Condition;
+                    pushEffect(std::move(eff));
+                }
+                continue;
+            }
 
-            // Use combat event timestamp (damage impact) when available,
-            // otherwise fall back to cast end time.
-            float showTime = cm.found ? cm.time : endT;
+            // Skills whose description never mentions "damage" cannot produce
+            // DAMAGE combat events on the target (e.g. Gale = pure knockdown).
+            // Show icon only so they don't steal damage events from real damage skills.
+            if (si && !si->description.empty() &&
+                si->description.find("damage") == std::string::npos)
+            {
+                if (endT > scanFrom && endT <= scanTo)
+                {
+                    IncomingEffect eff;
+                    eff.spawnTime = endT;
+                    eff.skillId = su.skillId;
+                    eff.type = IncomingEffectType::Condition;
+                    pushEffect(std::move(eff));
+                }
+                continue;
+            }
 
-            // Only show if the display time falls within the current scan window
+            PrimaryCandidate cand;
+            cand.agentId = agentId;
+            cand.skillId = su.skillId;
+            cand.endTime = endT;
+            cand.skillType = skillType;
+            cand.si = si;
+
+            for (size_t i = 0; i < combatVec.size(); ++i)
+            {
+                const auto& ce = combatVec[i];
+                if (ce.type != "DAMAGE") continue;
+                if (ce.caster_id != agentId) continue;
+                if (ce.target_id != focused) continue;
+                if (consumedCombat.count(i)) continue;
+                float dt = ce.time - endT;
+                if (dt < -0.1f) continue;
+                if (dt > 1.5f) break;
+                cand.primaryHitIdx = i;
+                cand.hitTime = ce.time;
+                cand.timeDelta = std::abs(dt);
+                break;
+            }
+
+            primCandidates.push_back(cand);
+        }
+    }
+
+    // Pass 2: resolve conflicts — when multiple skills claim the same damage
+    // event, the one with the smallest timeDelta (closest cast end to impact)
+    // wins; losers fall through to name-only display.
+    {
+        std::unordered_map<size_t, size_t> bestForHit;
+        for (size_t ci = 0; ci < primCandidates.size(); ++ci)
+        {
+            auto& c = primCandidates[ci];
+            if (c.primaryHitIdx == SIZE_MAX) continue;
+            auto it = bestForHit.find(c.primaryHitIdx);
+            if (it == bestForHit.end())
+            {
+                bestForHit[c.primaryHitIdx] = ci;
+            }
+            else
+            {
+                if (c.timeDelta < primCandidates[it->second].timeDelta)
+                {
+                    primCandidates[it->second].primaryHitIdx = SIZE_MAX;
+                    it->second = ci;
+                }
+                else
+                {
+                    c.primaryHitIdx = SIZE_MAX;
+                }
+            }
+        }
+    }
+
+    // Pass 3: emit effects — winners consume their damage event, losers show name only.
+    for (auto& cand : primCandidates)
+    {
+        if (cand.primaryHitIdx != SIZE_MAX)
+        {
+            const auto& primaryHit = combatVec[cand.primaryHitIdx];
+            float totalValue = primaryHit.value;
+            consumedCombat.insert(cand.primaryHitIdx);
+            consumedSkillMap[cand.primaryHitIdx] = cand.skillId;
+
+            for (size_t j = cand.primaryHitIdx + 1; j < combatVec.size(); ++j)
+            {
+                const auto& ce2 = combatVec[j];
+                if (ce2.type != "DAMAGE") continue;
+                if (ce2.caster_id != cand.agentId || ce2.target_id != focused) continue;
+                if (ce2.time - primaryHit.time > 0.15f) break;
+                if (consumedCombat.count(j)) continue;
+                totalValue += ce2.value;
+                consumedCombat.insert(j);
+                consumedSkillMap[j] = cand.skillId;
+            }
+
+            float showTime = primaryHit.time;
             if (showTime <= scanFrom || showTime > scanTo) continue;
 
-            if (cm.found)
-            {
-                consumedCombat.insert(cm.index);
-                consumedSkillMap[cm.index] = su.skillId;
-            }
+            bool isHeal = (totalValue > 0.f);
+            IncomingEffect eff;
+            eff.spawnTime = showTime;
+            eff.skillId = cand.skillId;
+            eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
+            uint32_t mhp = findAgentMaxHp(focused, primaryHit.time);
+            int rawVal = (mhp > 0) ? (int)std::round(std::abs(totalValue) * mhp) : 0;
+            if (rawVal > 0)
+                eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
+            else
+                eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(totalValue) * 100.f);
+
+            pushEffect(std::move(eff));
+        }
+        else
+        {
+            // Damage-dealing skills that reached the candidate pool but had no
+            // matching DAMAGE event were blocked, dodged, or absorbed — hide them.
+            // Only enchantments (friendly buffs applied without a combat value)
+            // are still worth showing.
+            if (cand.skillType != 23 && cand.skillType != 33 && cand.skillType != 34)
+                continue;
+
+            float showTime = cand.endTime;
+            if (showTime <= scanFrom || showTime > scanTo) continue;
 
             IncomingEffect eff;
             eff.spawnTime = showTime;
-            eff.skillId = su.skillId;
-
-            if (cm.found)
-            {
-                bool isHeal = (cm.value > 0.f);
-                eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
-                uint32_t mhp = findAgentMaxHp(focused, cm.time);
-                int rawVal = (mhp > 0) ? (int)std::round(std::abs(cm.value) * mhp) : 0;
-                if (rawVal > 0)
-                    eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
-                else
-                    eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(cm.value) * 100.f);
-            }
-            else if (skillType == 23 || skillType == 33 || skillType == 34)
-            {
-                eff.type = IncomingEffectType::Heal;
-                eff.label = si ? si->name : "Enchantment";
-            }
-            else if (si && !si->name.empty())
-            {
-                eff.type = IncomingEffectType::Condition;
-                eff.label = si->name;
-            }
+            eff.skillId = cand.skillId;
+            eff.type = IncomingEffectType::Heal;
+            eff.label = cand.si ? cand.si->name : "Enchantment";
 
             pushEffect(std::move(eff));
         }
@@ -19649,15 +19795,38 @@ void ReplayWindow::RenderIncomingEffects()
     InterpolateAgentPosition(ard, now, m_replayCtx.interpSettings, sx, sy, sz);
     XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
 
-    constexpr float FLOAT_WORLD_BASE = 150.f;
     constexpr float FLOAT_DISTANCE   = 90.f;
     constexpr float ICON_SZ   = 26.f;
     constexpr float GAP       = 4.f;
     constexpr float PILL_PAD  = 4.f;
 
-    XMFLOAT3 floatBase = { worldPos.x, worldPos.y + FLOAT_WORLD_BASE, worldPos.z };
+    // Compute model-top Y using the same logic as the profession icon in DrawAgentOverlay,
+    // so the floating numbers anchor just above the icon regardless of camera zoom/angle.
+    float modelTopY = worldPos.y;
+    if (m_useAgentModels && m_agentModelsLoaded) {
+        auto hashIt = m_agentFileHashCache.find(focused);
+        if (hashIt != m_agentFileHashCache.end()) {
+            auto tmplIt = m_agentModelTemplates.find(hashIt->second);
+            if (tmplIt != m_agentModelTemplates.end()) {
+                AgentModelInfo minfo = LookupAgentModelInfo(
+                    ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+                float scale = minfo.npcAdjustment * m_agentModelScale;
+                modelTopY += tmplIt->second.nativeHeight * scale;
+            }
+        }
+    }
+    if (modelTopY <= worldPos.y)
+        modelTopY = worldPos.y + 120.f;
+
+    XMFLOAT3 topPos = { worldPos.x, modelTopY, worldPos.z };
     float anchorX, anchorY;
-    if (!ProjectToScreen(viewProj, vpW, vpH, floatBase, anchorX, anchorY)) return;
+    if (!ProjectToScreen(viewProj, vpW, vpH, topPos, anchorX, anchorY)) return;
+
+    // Offset upward in screen space: skip past the profession icon (iconSz + padding)
+    // plus a small gap so numbers don't overlap the icon.
+    float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
+    constexpr float kScreenPad = 4.f;
+    anchorY -= iconSz + kScreenPad * 2.f;
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImFont* font = ImGui::GetFont();
