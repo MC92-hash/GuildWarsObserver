@@ -156,6 +156,39 @@ bool DATManager::save_raw_decompressed_data_to_file(int index, std::wstring file
         return false;
     }
 }
+
+void DATManager::EnsureTypeClassified(int index)
+{
+    auto* entry = m_dat.get_MFT_entry_ptr(index);
+    if (!entry || entry->type != NOTREAD)
+        return;  // already classified or invalid
+
+    HANDLE fh = m_dat.get_dat_filehandle(m_dat_filepath.c_str());
+    if (fh == INVALID_HANDLE_VALUE)
+        return;
+
+    unsigned char* data = m_dat.readFile(fh, index, false);
+    if (data)
+        delete[] data;
+    CloseHandle(fh);
+}
+
+std::vector<int> DATManager::FindAnimationFiles(uint32_t modelHash0, uint32_t modelHash1)
+{
+    std::vector<int> results;
+    if (modelHash0 == 0 && modelHash1 == 0)
+        return results;
+
+    const auto& mft = m_dat.get_MFT();
+    for (int i = 0; i < (int)mft.size(); i++)
+    {
+        if (mft[i].type != FFNA_Type2) continue;
+        if (mft[i].animModelHash0 == modelHash0 && mft[i].animModelHash1 == modelHash1)
+            results.push_back(i);
+    }
+    return results;
+}
+
 void DATManager::read_all_files()
 {
     const auto num_files = m_dat.getNumFiles();
@@ -198,9 +231,141 @@ void DATManager::read_all_files()
 
     if (file_indices_queue.empty())
     {
+        // Save cache so the next launch skips the full scan
+        SaveMftCache();
         m_initialization_state = InitializationState::Completed;
     }
 }
+
+// ── MFT type cache ────────────────────────────────────────────────────
+
+static constexpr uint32_t kMftCacheMagic   = 0x4D465443; // "MFTC"
+static constexpr uint32_t kMftCacheVersion = 3;  // v3: added animModelHash0/1
+
+struct MftCacheHeader
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t entryCount;
+    uint64_t datFileSize;  // for invalidation
+};
+
+std::filesystem::path DATManager::GetMftCachePath() const
+{
+    return std::filesystem::path(m_dat_filepath).parent_path() / "gw_dat_cache.bin";
+}
+
+bool DATManager::LoadMftCache()
+{
+    auto cachePath = GetMftCachePath();
+    if (!std::filesystem::exists(cachePath))
+        return false;
+
+    // Check DAT file size for invalidation
+    std::error_code ec;
+    auto datSize = std::filesystem::file_size(m_dat_filepath, ec);
+    if (ec)
+        return false;
+
+    std::ifstream file(cachePath, std::ios::binary);
+    if (!file.is_open())
+        return false;
+
+    MftCacheHeader header{};
+    file.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!file || header.magic != kMftCacheMagic || header.version != kMftCacheVersion)
+        return false;
+
+    auto& mft = m_dat.get_MFT();
+    if (header.entryCount != static_cast<uint32_t>(mft.size()))
+        return false;
+    if (header.datFileSize != datSize)
+        return false;
+
+    // Read per-entry data
+    for (uint32_t i = 0; i < header.entryCount; ++i)
+    {
+        int32_t type = 0, uncompressedSize = 0;
+        uint32_t murmurhash = 0, chunkCount = 0;
+        uint32_t animHash0 = 0, animHash1 = 0;
+
+        file.read(reinterpret_cast<char*>(&type), sizeof(type));
+        file.read(reinterpret_cast<char*>(&uncompressedSize), sizeof(uncompressedSize));
+        file.read(reinterpret_cast<char*>(&murmurhash), sizeof(murmurhash));
+        file.read(reinterpret_cast<char*>(&chunkCount), sizeof(chunkCount));
+        file.read(reinterpret_cast<char*>(&animHash0), sizeof(animHash0));
+        file.read(reinterpret_cast<char*>(&animHash1), sizeof(animHash1));
+
+        if (!file)
+            return false;
+
+        mft[i].type = type;
+        mft[i].uncompressedSize = uncompressedSize;
+        mft[i].murmurhash3 = murmurhash;
+        mft[i].animModelHash0 = animHash0;
+        mft[i].animModelHash1 = animHash1;
+
+        if (chunkCount > 0)
+        {
+            mft[i].chunk_ids.resize(chunkCount);
+            file.read(reinterpret_cast<char*>(mft[i].chunk_ids.data()),
+                      chunkCount * sizeof(uint32_t));
+            if (!file)
+                return false;
+        }
+    }
+
+    return true;
+}
+
+void DATManager::SaveMftCache()
+{
+    auto cachePath = GetMftCachePath();
+
+    std::error_code ec;
+    auto datSize = std::filesystem::file_size(m_dat_filepath, ec);
+    if (ec)
+        return;
+
+    const auto& mft = m_dat.get_MFT();
+
+    std::ofstream file(cachePath, std::ios::binary);
+    if (!file.is_open())
+        return;
+
+    MftCacheHeader header{};
+    header.magic = kMftCacheMagic;
+    header.version = kMftCacheVersion;
+    header.entryCount = static_cast<uint32_t>(mft.size());
+    header.datFileSize = datSize;
+
+    file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+    for (const auto& entry : mft)
+    {
+        int32_t type = entry.type;
+        int32_t uncompressedSize = entry.uncompressedSize;
+        uint32_t murmurhash = entry.murmurhash3;
+        uint32_t chunkCount = static_cast<uint32_t>(entry.chunk_ids.size());
+        uint32_t animHash0 = entry.animModelHash0;
+        uint32_t animHash1 = entry.animModelHash1;
+
+        file.write(reinterpret_cast<const char*>(&type), sizeof(type));
+        file.write(reinterpret_cast<const char*>(&uncompressedSize), sizeof(uncompressedSize));
+        file.write(reinterpret_cast<const char*>(&murmurhash), sizeof(murmurhash));
+        file.write(reinterpret_cast<const char*>(&chunkCount), sizeof(chunkCount));
+        file.write(reinterpret_cast<const char*>(&animHash0), sizeof(animHash0));
+        file.write(reinterpret_cast<const char*>(&animHash1), sizeof(animHash1));
+
+        if (chunkCount > 0)
+        {
+            file.write(reinterpret_cast<const char*>(entry.chunk_ids.data()),
+                       chunkCount * sizeof(uint32_t));
+        }
+    }
+}
+
+// ── Background scan ───────────────────────────────────────────────────
 
 static unsigned char* SafeReadDatFile(GWDat& dat, HANDLE file_handle, int index)
 {

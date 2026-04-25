@@ -175,6 +175,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
     if (FAILED(hr))
         return 1;
 
+    // Clean up leftover files from a previous in-app update
+    {
+        std::error_code ec;
+        auto exeDir = std::filesystem::current_path();
+        std::filesystem::remove(exeDir / "_gwobs_update.bat", ec);
+        std::filesystem::remove(exeDir / "GWObserver_update.exe", ec);
+    }
 
     // Register class and create window
     {

@@ -278,6 +278,7 @@
     <ClInclude Include="SourceFiles\draw_text_panel.h" />
     <ClInclude Include="SourceFiles\draw_ui.h" />
     <ClInclude Include="SourceFiles\draw_sync_status.h" />
+    <ClInclude Include="SourceFiles\draw_update_panel.h" />
     <ClInclude Include="SourceFiles\Net\HttpClient.h" />
     <ClInclude Include="SourceFiles\Net\S3Auth.h" />
     <ClInclude Include="SourceFiles\Net\UpdateChecker.h" />
@@ -497,6 +498,7 @@
     <ClCompile Include="SourceFiles\draw_text_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_ui.cpp" />
     <ClCompile Include="SourceFiles\draw_sync_status.cpp" />
+    <ClCompile Include="SourceFiles\draw_update_panel.cpp" />
     <ClCompile Include="SourceFiles\Net\HttpClient.cpp" />
     <ClCompile Include="SourceFiles\Net\S3Auth.cpp" />
     <ClCompile Include="SourceFiles\Net\UpdateChecker.cpp" />

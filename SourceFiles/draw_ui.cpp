@@ -3,6 +3,7 @@
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_first_launch.h"
 #include "Net/UpdateChecker.h"
+#include "draw_update_panel.h"
 #include "build_config.h"
 #include "draw_setup_wizard.h"
 #include "SetupConfig.h"
@@ -806,6 +807,22 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
 				GuiGlobalConstants::SaveSettings();
 			}
+			if (ImGui::BeginMenu("Simulate Update")) {
+				if (ImGui::MenuItem("Update Available"))
+					g_debugSimulateUpdateState = UpdateChecker::State::UpdateAvailable;
+				if (ImGui::MenuItem("Downloading (40%)"))
+					g_debugSimulateUpdateState = UpdateChecker::State::Downloading;
+				if (ImGui::MenuItem("Ready to Install"))
+					g_debugSimulateUpdateState = UpdateChecker::State::ReadyToInstall;
+				if (ImGui::MenuItem("Error"))
+					g_debugSimulateUpdateState = UpdateChecker::State::Error;
+				if (ImGui::MenuItem("Checking..."))
+					g_debugSimulateUpdateState = UpdateChecker::State::Checking;
+				ImGui::Separator();
+				if (ImGui::MenuItem("Full Test (Copy & Restart)"))
+					g_debugFullUpdateTest = true;
+				ImGui::EndMenu();
+			}
 			if (ImGui::BeginMenu("Responsive Test Mode")) {
 				struct Preset { const char* label; int w; int h; };
 				static const Preset presets[] = {
@@ -834,6 +851,9 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("Help")) {
+			if (ImGui::MenuItem("Check for Updates"))
+				g_checkForUpdatesRequested = true;
+			ImGui::Separator();
 			if (ImGui::MenuItem("Licence & Credits"))
 				s_licenceModalOpen = true;
 			ImGui::EndMenu();

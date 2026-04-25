@@ -248,6 +248,21 @@ unsigned char* GWDat::readFile(HANDLE file_handle, unsigned int n, bool translat
 					uint32_t chunk_id = *reinterpret_cast<uint32_t*>(&Output[offset]);
 					uint32_t chunk_size = *reinterpret_cast<uint32_t*>(&Output[offset + 4]);
 					m.chunk_ids.push_back(chunk_id);
+
+					// Extract animation model hashes from BB9/FA1 headers
+					// (both store modelHash0 at offset +0x0C, modelHash1 at +0x10)
+					if (m.animModelHash0 == 0) {
+						size_t dataOff = offset + 8;
+						if (chunk_id == 0x00000BB9 && dataOff + 44 <= (size_t)OutSize) {
+							m.animModelHash0 = *reinterpret_cast<uint32_t*>(&Output[dataOff + 0x0C]);
+							m.animModelHash1 = *reinterpret_cast<uint32_t*>(&Output[dataOff + 0x10]);
+						}
+						else if (chunk_id == 0x00000FA1 && dataOff + 88 <= (size_t)OutSize) {
+							m.animModelHash0 = *reinterpret_cast<uint32_t*>(&Output[dataOff + 0x0C]);
+							m.animModelHash1 = *reinterpret_cast<uint32_t*>(&Output[dataOff + 0x10]);
+						}
+					}
+
 					offset += 8 + chunk_size;
 				}
 			}

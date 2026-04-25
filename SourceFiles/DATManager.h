@@ -12,7 +12,8 @@ enum InitializationState
 {
     NotStarted,
     Started,
-    Completed
+    IndexReady,  // MFT metadata loaded, hash index can be built, replays can open
+    Completed    // Background scan done, all types classified, cache written
 };
 
 struct AnimIndexEntry {
@@ -39,6 +40,27 @@ public:
             return LoadFileForCache(fileId);
         });
 
+        // Try to load cached MFT type data from a previous scan
+        if (LoadMftCache())
+        {
+            // Cache loaded — count files per type and mark as done
+            const auto& mft = get_MFT();
+            for (const auto& entry : mft) {
+                const auto it = num_files_per_type.find(static_cast<FileType>(entry.type));
+                if (it != num_files_per_type.end())
+                    it->second += 1;
+                else
+                    num_files_per_type.emplace(static_cast<FileType>(entry.type), 1);
+            }
+            m_num_types_read.store(static_cast<int>(mft.size()));
+            m_initialization_state = InitializationState::Completed;
+            return true;
+        }
+
+        // MFT metadata is loaded — hash index can be built and replays can open
+        m_initialization_state = InitializationState::IndexReady;
+
+        // Full scan runs in the background to classify all file types
         auto read_all_thread = std::thread(&DATManager::read_all_files, this);
         read_all_thread.detach();
 
@@ -65,6 +87,13 @@ public:
     std::vector<uint8_t> parse_dds_file(int index);
 
     bool save_raw_decompressed_data_to_file(int index, std::wstring filepath);
+
+    // Classify a single file's type on-demand if the background scan hasn't reached it yet.
+    void EnsureTypeClassified(int index);
+
+    // Find all MFT indices whose BB9/FA1 animation header matches the given model hashes.
+    // Uses the animModelHash0/1 fields populated during background scan — no file I/O.
+    std::vector<int> FindAnimationFiles(uint32_t modelHash0, uint32_t modelHash1);
 
     unsigned char* read_file(int index)
     {
@@ -145,6 +174,10 @@ private:
 
 private:
     void read_all_files();
-
     void read_files_thread(Concurrency::concurrent_queue<int>& file_indices_queue);
+
+    // MFT type cache — avoids re-decompressing all files on subsequent launches
+    bool LoadMftCache();
+    void SaveMftCache();
+    std::filesystem::path GetMftCachePath() const;
 };

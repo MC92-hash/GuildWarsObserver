@@ -24,6 +24,7 @@
 #include "AnimatedMeshInstance.h"
 #include "animation_state.h"
 #include "Cache/AnimationDiscoveryCache.h"
+#include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
 #include "BitmapFont.h"
 #include <string>
@@ -649,6 +650,7 @@ private:
     float m_agentLoadBannerFade = 0.f;
 
     GW::Cache::AnimationDiscoveryCache m_animDiscoveryCache;
+    GW::Cache::AnimationClipCache m_clipCache;
 
     struct SegmentRef {
         int clipIndex = 0;

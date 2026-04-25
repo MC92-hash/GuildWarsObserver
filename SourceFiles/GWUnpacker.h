@@ -66,6 +66,8 @@ struct MFTEntry
 	__int32 Hash;
 	uint32_t murmurhash3;
 	std::vector<uint32_t> chunk_ids;  // Chunk IDs found in FFNA files
+	uint32_t animModelHash0 = 0;     // BB9/FA1 model signature for animation matching
+	uint32_t animModelHash1 = 0;
 };
 
 struct MFTExpansion

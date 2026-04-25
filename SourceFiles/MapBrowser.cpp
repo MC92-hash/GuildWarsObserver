@@ -10,6 +10,7 @@
 #include "draw_picking_info.h"
 #include "draw_ui.h"
 #include "draw_sync_status.h"
+#include "draw_update_panel.h"
 #include "draw_first_launch.h"
 #include "SetupConfig.h"
 #include "draw_timeline.h"
@@ -467,6 +468,27 @@ void MapBrowser::Tick()
         }
     }
 
+    // Handle manual "Check for Updates" request
+    if (g_checkForUpdatesRequested)
+    {
+        g_checkForUpdatesRequested = false;
+        m_updateChecker.Check(GWO_VERSION, "MC92-hash/gwobserver", true);
+    }
+
+    // Handle debug simulate update state
+    if (g_debugSimulateUpdateState != UpdateChecker::State::Idle)
+    {
+        m_updateChecker.DebugSimulate(g_debugSimulateUpdateState);
+        g_debugSimulateUpdateState = UpdateChecker::State::Idle;
+    }
+
+    // Handle debug full update test
+    if (g_debugFullUpdateTest)
+    {
+        g_debugFullUpdateTest = false;
+        m_updateChecker.DebugFullTest();
+    }
+
     if (!is_extracting) {
         if (IsIconic(m_deviceResources->GetWindow())) {
             return;
@@ -536,9 +558,9 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
         }
     }
 
-    // Check if the currently shown DAT manager is fully initialized before building hash index
+    // Build hash index as soon as MFT metadata is loaded (don't wait for full background scan)
     if (m_dat_managers.count(m_dat_manager_to_show_in_dat_browser) > 0 &&
-        m_dat_managers[m_dat_manager_to_show_in_dat_browser]->m_initialization_state == InitializationState::Completed &&
+        m_dat_managers[m_dat_manager_to_show_in_dat_browser]->m_initialization_state >= InitializationState::IndexReady &&
         !m_hash_index_initialized)
     {
         const auto& mft = m_dat_managers[m_dat_manager_to_show_in_dat_browser]->get_MFT();
@@ -974,6 +996,9 @@ void MapBrowser::Render()
                     m_playDl.bytesReceived.load(), m_playDl.bytesTotal.load(),
                     dlState == PlayDownloadState::Error, m_playDl.errorMsg);
         }
+
+        // Update notification overlay
+        draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow());
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active
@@ -2015,9 +2040,9 @@ void MapBrowser::ProcessPendingReplayRequest()
     if (m_playDl.state.load() == PlayDownloadState::Downloading)
         return;
 
-    // Require DAT to be loaded
+    // Require DAT MFT metadata to be loaded (don't need full background scan)
     if (m_dat_managers.count(0) == 0 ||
-        m_dat_managers[0]->m_initialization_state != InitializationState::Completed)
+        m_dat_managers[0]->m_initialization_state < InitializationState::IndexReady)
     {
         MessageBoxA(m_deviceResources->GetWindow(),
             "gw.dat is not loaded yet. Please open gw.dat first.",

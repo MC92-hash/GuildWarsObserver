@@ -1083,7 +1083,7 @@ void ReplayWindow::StepValidate()
         return;
     }
 
-    if (m_datManager->m_initialization_state != InitializationState::Completed)
+    if (m_datManager->m_initialization_state < InitializationState::IndexReady)
     {
         m_errorMsg = "gw.dat is still loading. Please wait and try again.";
         m_loadingPhase = LoadingPhase::Error;
@@ -1272,6 +1272,7 @@ void ReplayWindow::StepLoadInit()
         auto mit = m_hashIndex->find(decoded);
         if (mit == m_hashIndex->end()) return nullptr;
         int ti = mit->second.at(0);
+        m_datManager->EnsureTypeClassified(ti);
         auto type = m_datManager->get_MFT()[ti].type;
         int texId = -1;
         if (type == DDS) {
@@ -1498,6 +1499,7 @@ void ReplayWindow::StepLoadPropModels()
         auto decoded = decode_filename(fn.filename.id0, fn.filename.id1);
         auto mit = m_hashIndex->find(decoded);
         if (mit != m_hashIndex->end()) {
+            m_datManager->EnsureTypeClassified(mit->second.at(0));
             auto type = m_datManager->get_MFT()[mit->second.at(0)].type;
             if (type == FFNA_Type2) {
                 m_propModelFiles.emplace_back(m_datManager->parse_ffna_model_file(mit->second.at(0)));
@@ -5409,14 +5411,15 @@ void ReplayWindow::LoadAgentModelsIO()
         return;
     }
 
-    // Load persistent animation discovery cache
+    // Load persistent animation discovery cache and parsed clip cache
+    uintmax_t datSize = 0;
     {
         auto cachePath = GW::Cache::AnimationDiscoveryCache::GetDefaultCachePath();
         auto datPath = m_datManager->get_filepath();
-        uintmax_t datSize = 0;
         try { datSize = std::filesystem::file_size(datPath); } catch (...) {}
         m_animDiscoveryCache.SetDatIdentity(datPath, datSize);
         m_animDiscoveryCache.LoadFromFile(cachePath, datPath, datSize);
+        m_clipCache.Load(GW::Cache::AnimationClipCache::GetDefaultCachePath(), datSize);
     }
 
     struct FoundClipInfo {
@@ -5610,14 +5613,22 @@ void ReplayWindow::LoadAgentModelsIO()
         {
             for (const auto& src : cachedAnimInfo->animSources) {
                 if (src.mftIndex < 0 || src.mftIndex >= (int)mft.size()) continue;
+                // Try parsed clip cache first
+                auto* cached = m_clipCache.Get(src.mftIndex, src.fileHash);
+                if (cached) {
+                    foundClips.push_back({ *cached, src.fileHash });
+                    continue;
+                }
                 try {
                     uint8_t* data = m_datManager->read_file(src.mftIndex, datHandle);
                     if (!data) continue;
                     size_t dataSize = mft[src.mftIndex].uncompressedSize;
                     auto clip = GW::Parsers::ParseAnimationFromFile(data, dataSize);
                     delete[] data;
-                    if (clip && clip->IsValid())
+                    if (clip && clip->IsValid()) {
+                        m_clipCache.Put(src.mftIndex, src.fileHash, *clip);
                         wi.foundClips.push_back({ std::move(*clip), src.fileHash });
+                    }
                 } catch (...) {}
             }
             usedCache = !wi.foundClips.empty();
@@ -5675,13 +5686,45 @@ void ReplayWindow::LoadAgentModelsIO()
                         if (refIt == m_hashIndex->end() || refIt->second.empty()) continue;
                         int refMftIdx = refIt->second.at(0);
                         if (refMftIdx < 0 || refMftIdx >= (int)mft.size()) continue;
+                        // Try parsed clip cache first
+                        auto* cached = m_clipCache.Get(refMftIdx, animFileId);
+                        if (cached) {
+                            wi.foundClips.push_back({ *cached, animFileId });
+                            continue;
+                        }
                         uint8_t* refData = m_datManager->read_file(refMftIdx, datHandle);
                         if (!refData) continue;
                         size_t refSize = mft[refMftIdx].uncompressedSize;
                         auto refClip = GW::Parsers::ParseAnimationFromFile(refData, refSize);
                         delete[] refData;
-                        if (refClip && refClip->IsValid())
+                        if (refClip && refClip->IsValid()) {
+                            m_clipCache.Put(refMftIdx, animFileId, *refClip);
                             wi.foundClips.push_back({ std::move(*refClip), animFileId });
+                        }
+                    }
+
+                    if (wi.foundClips.empty() && tmpl.modelHash0 != 0) {
+                        m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningMFT));
+                        // Use pre-built model hash index instead of scanning entire MFT
+                        auto animIndices = m_datManager->FindAnimationFiles(tmpl.modelHash0, tmpl.modelHash1);
+                        for (int mi : animIndices) {
+                            if (mi == mftIndex) continue;
+                            uint32_t fHash = static_cast<uint32_t>(mft[mi].Hash);
+                            auto* cached = m_clipCache.Get(mi, fHash);
+                            if (cached) {
+                                wi.foundClips.push_back({ *cached, fHash });
+                                continue;
+                            }
+                            uint8_t* scanData = m_datManager->read_file(mi, datHandle);
+                            if (!scanData) continue;
+                            size_t scanSize = mft[mi].uncompressedSize;
+                            auto scanClip = GW::Parsers::ParseAnimationFromFile(scanData, scanSize);
+                            if (scanClip && scanClip->IsValid()) {
+                                m_clipCache.Put(mi, fHash, *scanClip);
+                                wi.foundClips.push_back({ std::move(*scanClip), fHash });
+                            }
+                            delete[] scanData;
+                        }
                     }
 
                     delete[] rawData;
@@ -5926,6 +5969,10 @@ void ReplayWindow::LoadAgentModelsIO()
     if (m_animDiscoveryCache.IsDirty()) {
         auto cachePath = GW::Cache::AnimationDiscoveryCache::GetDefaultCachePath();
         m_animDiscoveryCache.SaveToFile(cachePath);
+    }
+
+    if (m_clipCache.IsDirty()) {
+        m_clipCache.Save(GW::Cache::AnimationClipCache::GetDefaultCachePath(), datSize);
     }
 
     m_loadTiming.agentIOSec = std::chrono::duration<double>(LoadClock::now() - ioStart).count();

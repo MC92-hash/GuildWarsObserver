@@ -119,6 +119,9 @@ public:
 	inline static int replay_filter_width = -1;
 	inline static int replay_list_height = -1;
 
+	// Update settings
+	inline static std::string dismissed_update_version;
+
 	inline static bool prev_is_dat_browser_open;
 	inline static bool prev_is_dat_browser_resizeable;
 	inline static bool prev_is_dat_browser_movable;
@@ -332,6 +335,9 @@ public:
 		file << "replay_filter_width=" << replay_filter_width << "\n";
 		file << "replay_list_height=" << replay_list_height << "\n";
 
+		file << "\n[Updates]\n";
+		file << "dismissed_update_version=" << dismissed_update_version << "\n";
+
 		file << "\n[Rendering]\n";
 		file << "use_3d_agent_models=" << (use_3d_agent_models ? 1 : 0) << "\n";
 		file << "replay_camera_fov_degrees=" << replay_camera_fov_degrees << "\n";
@@ -443,6 +449,10 @@ public:
 			}
 			if (key == "contributor_key") {
 				contributor_key = val_str;
+				continue;
+			}
+			if (key == "dismissed_update_version") {
+				dismissed_update_version = val_str;
 				continue;
 			}
 
