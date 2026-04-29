@@ -57,6 +57,7 @@ public:
 	inline static bool is_byte_search_panel_open = false;
 	inline static bool is_pathfinding_panel_open = false;
 	inline static bool is_model_viewer_panel_open = false;
+	inline static bool is_character_builder_open = false;
 	inline static bool is_window_controller_open = true;
 	inline static bool is_compass_open = true;
 	inline static bool is_debug_match_metadata_open = false;
@@ -135,6 +136,7 @@ public:
 	inline static bool prev_is_byte_search_panel_open;
 	inline static bool prev_is_pathfinding_panel_open;
 	inline static bool prev_is_model_viewer_panel_open;
+	inline static bool prev_is_character_builder_open;
 	inline static bool prev_is_window_controller_open;
 	inline static bool prev_is_compass_open;
 
@@ -157,6 +159,7 @@ public:
 		prev_is_byte_search_panel_open = is_byte_search_panel_open;
 		prev_is_pathfinding_panel_open = is_pathfinding_panel_open;
 		prev_is_model_viewer_panel_open = is_model_viewer_panel_open;
+		prev_is_character_builder_open = is_character_builder_open;
 		prev_is_window_controller_open = is_window_controller_open;
 		prev_is_compass_open = is_compass_open;
 	}
@@ -180,6 +183,7 @@ public:
 		is_byte_search_panel_open = prev_is_byte_search_panel_open;
 		is_pathfinding_panel_open = prev_is_pathfinding_panel_open;
 		is_model_viewer_panel_open = prev_is_model_viewer_panel_open;
+		is_character_builder_open = prev_is_character_builder_open;
 		is_window_controller_open = prev_is_window_controller_open;
 		is_compass_open = prev_is_compass_open;
 	}
@@ -209,6 +213,7 @@ public:
 			is_byte_search_panel_open = false;
 			is_pathfinding_panel_open = false;
 			is_model_viewer_panel_open = false;
+			is_character_builder_open = false;
 			is_compass_open = false;
 		}
 		else
@@ -238,6 +243,7 @@ public:
 		is_byte_search_panel_open = false;
 		is_pathfinding_panel_open = false;
 		is_model_viewer_panel_open = false;
+		is_character_builder_open = false;
 		is_window_controller_open = true;
 		is_compass_open = true;
 	}
@@ -319,6 +325,7 @@ public:
 		file << "byte_search_panel=" << (is_byte_search_panel_open ? 1 : 0) << "\n";
 		file << "pathfinding_panel=" << (is_pathfinding_panel_open ? 1 : 0) << "\n";
 		file << "model_viewer_panel=" << (is_model_viewer_panel_open ? 1 : 0) << "\n";
+		file << "character_builder=" << (is_character_builder_open ? 1 : 0) << "\n";
 		file << "window_controller=" << (is_window_controller_open ? 1 : 0) << "\n";
 		file << "compass=" << (is_compass_open ? 1 : 0) << "\n";
 		file << "debug_match_metadata=" << (is_debug_match_metadata_open ? 1 : 0) << "\n";
@@ -465,6 +472,7 @@ public:
 			else if (key == "byte_search_panel") is_byte_search_panel_open = (value != 0);
 			else if (key == "pathfinding_panel") is_pathfinding_panel_open = (value != 0);
 			else if (key == "model_viewer_panel") is_model_viewer_panel_open = (value != 0);
+			else if (key == "character_builder") is_character_builder_open = (value != 0);
 			else if (key == "window_controller") is_window_controller_open = (value != 0);
 			else if (key == "compass") is_compass_open = (value != 0);
 			else if (key == "debug_match_metadata") is_debug_match_metadata_open = (value != 0);

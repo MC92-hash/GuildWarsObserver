@@ -11,6 +11,8 @@
 #include "draw_picking_info.h"
 #include "draw_replay_browser.h"
 #include "GuiGlobalConstants.h"
+#include "CharacterBuilder/draw_character_builder.h"
+#include "ModelViewer/ModelViewer.h"
 #include "ReplayLibrary.h"
 #include "FolderWatcher.h"
 #include "FontConfig.h"
@@ -796,6 +798,10 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (ImGui::MenuItem("Settings...")) {
 				s_settingsOpen = true;
 			}
+			if (ImGui::MenuItem("Character Builder", NULL, GuiGlobalConstants::is_character_builder_open)) {
+				GuiGlobalConstants::is_character_builder_open = !GuiGlobalConstants::is_character_builder_open;
+				GuiGlobalConstants::SaveSettings();
+			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Exit")) {
 				PostQuitMessage(0);
@@ -879,11 +885,24 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	if (folder_watcher.HasPendingRefresh() && replay_library.IsLoaded())
 		replay_library.RescanDiff();
 
-	// Replay browser (available regardless of DAT state)
-	draw_replay_browser(replay_library);
+	// When the model viewer is active (from Character Builder or DAT browser),
+	// hide the replay browser so the 3D viewport behind is visible.
+	if (!g_modelViewerState.isActive)
+	{
+		// Replay browser (available regardless of DAT state)
+		draw_replay_browser(replay_library);
 
-	// Debug panels (available regardless of DAT state)
-	draw_debug_match_metadata_panel(replay_library);
+		// Debug panels (available regardless of DAT state)
+		draw_debug_match_metadata_panel(replay_library);
+	}
+
+	// Character Builder panel
+	if (GuiGlobalConstants::is_character_builder_open &&
+		dat_managers.count(dat_manager_to_show) &&
+		initialization_state == InitializationState::Completed)
+	{
+		draw_character_builder(dat_managers, dat_manager_to_show, map_renderer, hash_index);
+	}
 
 	// Settings window
 	draw_settings_window();

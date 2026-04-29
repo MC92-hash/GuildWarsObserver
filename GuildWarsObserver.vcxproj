@@ -245,6 +245,8 @@
     <ClInclude Include="SourceFiles\json.hpp" />
     <ClInclude Include="SourceFiles\map_exporter.h" />
     <ClInclude Include="SourceFiles\model_exporter.h" />
+    <ClInclude Include="SourceFiles\CharacterBuilder\CharacterBuilder.h" />
+    <ClInclude Include="SourceFiles\CharacterBuilder\draw_character_builder.h" />
     <ClInclude Include="SourceFiles\ModelViewer\ModelViewer.h" />
     <ClInclude Include="SourceFiles\ModelViewer\ModelViewerPanel.h" />
     <ClInclude Include="SourceFiles\ModelViewer\OrbitalCamera.h" />
@@ -544,6 +546,8 @@
     <ClCompile Include="SourceFiles\MeshInstance.cpp" />
     <ClCompile Include="SourceFiles\MeshManager.cpp" />
     <ClCompile Include="SourceFiles\model_exporter.cpp" />
+    <ClCompile Include="SourceFiles\CharacterBuilder\CharacterBuilder.cpp" />
+    <ClCompile Include="SourceFiles\CharacterBuilder\draw_character_builder.cpp" />
     <ClCompile Include="SourceFiles\ModelViewer\ModelViewer.cpp" />
     <ClCompile Include="SourceFiles\ModelViewer\ModelViewerPanel.cpp" />
     <ClCompile Include="SourceFiles\ModelViewer\OrbitalCamera.cpp" />
