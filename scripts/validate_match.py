@@ -99,6 +99,47 @@ def check_match_completion(match_dir: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def check_recording_start(
+    match_dir: Path,
+    max_start_delay_seconds: float = 60.0,
+) -> tuple[bool, str]:
+    """Reject recordings that began significantly after the match started.
+
+    Uses the first timestamp in StoC/agent_events.txt.gz as ground truth
+    (IPC-reported age is unreliable per project convention).
+    """
+    events = match_dir / "StoC" / "agent_events.txt.gz"
+    if not events.is_file():
+        return True, ""
+
+    try:
+        with gzip.open(events, "rt", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("["):
+                    continue
+                bracket_end = line.find("]")
+                if bracket_end < 0:
+                    continue
+                ts = parse_timestamp(line[: bracket_end + 1])
+                if ts < 0:
+                    continue
+                if ts > max_start_delay_seconds:
+                    mins = int(ts // 60)
+                    secs = ts - mins * 60
+                    return False, (
+                        f"Recording started late: first event at "
+                        f"{mins:02d}:{secs:05.2f} "
+                        f"(> {max_start_delay_seconds:.0f}s threshold). "
+                        f"Missing ~{ts:.0f}s of match data from the start."
+                    )
+                return True, ""
+    except OSError:
+        return True, ""
+
+    return True, ""
+
+
 def parse_timestamp(ts_str: str) -> float:
     """Parse '[MM:SS.mmm]' or '[MM:SS]' -> seconds as float.
 
@@ -195,6 +236,7 @@ def validate_match(
     match_dir: Path,
     p95_threshold: float = 50.0,
     jump_distance: float = 200.0,
+    max_start_delay_seconds: float = 60.0,
 ) -> ValidationResult:
     """Validate a match recording for position data corruption.
 
@@ -222,6 +264,21 @@ def validate_match(
             median_p95=0.0,
             duration_minutes=0.0,
             reason=complete_reason,
+        )
+
+    start_ok, start_reason = check_recording_start(match_dir, max_start_delay_seconds)
+    if not start_ok:
+        return ValidationResult(
+            passed=False,
+            match_folder=match_dir.name,
+            total_players=0,
+            players_with_jumps=0,
+            total_jumps_200=0,
+            total_snapshots=0,
+            corruption_ratio=0.0,
+            median_p95=0.0,
+            duration_minutes=0.0,
+            reason=start_reason,
         )
 
     hench_ok, hench_reason = check_henchmen(match_dir)
@@ -361,6 +418,12 @@ def main():
         help="Median p95 step distance threshold (default: 50.0)",
     )
     parser.add_argument(
+        "--max-start-delay",
+        type=float,
+        default=60.0,
+        help="Max seconds of missing data at match start before rejecting (default: 60)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print detailed per-agent information",
@@ -391,7 +454,7 @@ def main():
         print("-" * 100)
         corrupt_count = 0
         for d in dirs:
-            r = validate_match(d, p95_threshold=args.p95_threshold)
+            r = validate_match(d, p95_threshold=args.p95_threshold, max_start_delay_seconds=args.max_start_delay)
             status = "CORRUPT" if not r.passed else "ok"
             if not r.passed:
                 corrupt_count += 1
@@ -404,7 +467,7 @@ def main():
         sys.exit(1 if corrupt_count > 0 else 0)
 
     # Single match mode
-    result = validate_match(args.match_dir, p95_threshold=args.p95_threshold)
+    result = validate_match(args.match_dir, p95_threshold=args.p95_threshold, max_start_delay_seconds=args.max_start_delay)
 
     if args.json:
         print(json.dumps(asdict(result), indent=2))
