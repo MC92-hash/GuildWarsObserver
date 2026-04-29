@@ -969,6 +969,21 @@ void LoadAnimationFromSearchResult(int resultIndex, std::map<int, std::unique_pt
     LoadAnimationFromResult(result, dat_managers);
 }
 
+void StartAnimationSearchFromStoredManagers()
+{
+    if (s_datManagersPtr) StartAnimationSearch(*s_datManagersPtr);
+}
+
+void PumpAnimationSearchResultsFromStoredManagers()
+{
+    if (s_datManagersPtr) PumpAnimationSearchResults(*s_datManagersPtr);
+}
+
+void LoadAnimationFromSearchResultFromStoredManagers(int resultIndex)
+{
+    if (s_datManagersPtr) LoadAnimationFromSearchResult(resultIndex, *s_datManagersPtr);
+}
+
 void LoadAnimationFromReference(int refIndex, std::map<int, std::unique_ptr<DATManager>>& dat_managers)
 {
     if (refIndex < 0 || refIndex >= static_cast<int>(g_animationState.animationSources.size()))

@@ -805,6 +805,13 @@ void PumpAnimationSearchResults(std::map<int, std::unique_ptr<DATManager>>& dat_
 void LoadAnimationFromSearchResult(int resultIndex, std::map<int, std::unique_ptr<DATManager>>& dat_managers);
 
 /**
+ * @brief Wrappers using the stored DAT managers pointer (set by AutoLoadAnimation / SetAnimationDATManagers).
+ */
+void StartAnimationSearchFromStoredManagers();
+void PumpAnimationSearchResultsFromStoredManagers();
+void LoadAnimationFromSearchResultFromStoredManagers(int resultIndex);
+
+/**
  * @brief Loads an animation from a referenced file (BBC/BBD chunk).
  *
  * @param refIndex Index into g_animationState.animationSources

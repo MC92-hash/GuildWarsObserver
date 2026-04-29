@@ -243,6 +243,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 
 		// Clear up some GPU memory (especially important for GPUs with little VRAM)
 		map_renderer->GetTextureManager()->Clear();
+		map_renderer->ClearProps();
 		map_renderer->ClearSceneForModeSwitch();
 
 		// Check if this is an "other" model format (uses 0xBB* chunks instead of 0xFA*)
@@ -493,11 +494,11 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 				overallMaxZ = std::max(overallMaxZ, models[i].maxZ);
 
 				uint32_t sort_order = amat_file.GRMT_chunk.sort_order;
-				sort_orders.push_back(sort_order);
 
 				if ((prop_mesh.indices.size() % 3) == 0) {
 					prop_meshes.push_back(prop_mesh);
 					g_animationState.originalMeshes.push_back(prop_mesh);
+					sort_orders.push_back(sort_order);
 					if (using_other_model_format) {
 						LogBB8Debug("draw_dat_browser: Mesh added to prop_meshes\n");
 					}
