@@ -184,6 +184,7 @@ private:
     bool m_showAgentDataWindow = false;
     int  m_selectedAgentId = -1;
     float m_debugTimeline = 0.f;
+    float m_scrubRightClickTime = 0.f;
     bool m_showParsedView = true;
     float m_agentListWidth = 220.f;
     std::vector<int> m_sortedAgentIds;

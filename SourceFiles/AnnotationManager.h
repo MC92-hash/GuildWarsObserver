@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <functional>
 #include <DirectXMath.h>
 
 class Terrain;
@@ -36,6 +37,8 @@ public:
     std::vector<std::vector<MapDrawing>>   undo_stack;
     std::vector<Bookmark>                  bookmarks;
 
+    std::function<void()> onBookmarksChanged;
+
     void Update(const Terrain* terrain, DirectX::XMMATRIX viewProj,
                 float vpW, float vpH, DirectX::XMFLOAT3 camPos,
                 float currentTimeSec);
@@ -47,10 +50,18 @@ public:
     void RenderBookmarkPanel(float currentTimeSec, float& timelineOut,
                              bool& isPlayingRef);
 
+    void RenderBookmarkDrawer(float drawerX, float drawerY, float drawerW, float drawerH,
+                              float currentTimeSec, float& timelineOut,
+                              bool& isPlayingRef, float displayTimeOffset);
+
     void RenderTimelineMarkers(float trackX, float trackW,
                                float trackBarY, float trackH,
                                float maxTimeSec, float& timelineOut,
                                float displayTimeOffset);
+
+    void BeginAddBookmark();
+
+    void AddBookmarkDirect(uint32_t timestampMs);
 
     bool IsBookmarkPopupActive() const { return m_bookmarkPopupOpen || m_renamePopupOpen; }
 

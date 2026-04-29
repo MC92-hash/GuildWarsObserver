@@ -3,6 +3,7 @@
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "MatchBookmarks.h"
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
@@ -121,6 +122,7 @@ void ReplayHotkeys::Save() const
       << "  \"toggleTopView\": "       << toggleTopView       << ",\n"
       << "  \"togglePianoRoll\": "     << togglePianoRoll     << ",\n"
       << "  \"toggleHeatmap\": "       << toggleHeatmap       << ",\n"
+      << "  \"addBookmark\": "         << addBookmark         << ",\n"
       << "  \"exitFollowMode\": "      << exitFollowMode      << ",\n"
       << "  \"camForward\": "          << camForward          << ",\n"
       << "  \"camBackward\": "         << camBackward         << ",\n"
@@ -160,6 +162,7 @@ void ReplayHotkeys::Load()
         readKey("toggleTopView",       toggleTopView);
         readKey("togglePianoRoll",     togglePianoRoll);
         readKey("toggleHeatmap",       toggleHeatmap);
+        readKey("addBookmark",         addBookmark);
         readKey("exitFollowMode",      exitFollowMode);
         readKey("camForward",          camForward);
         readKey("camBackward",         camBackward);
@@ -762,6 +765,32 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
     rw->m_alive = true;
     rw->m_useAgentModels = GuiGlobalConstants::use_3d_agent_models;
     rw->m_loadingPhase = LoadingPhase::Validate;
+
+    // Restore persisted bookmarks for this match
+    {
+        auto& saved = MatchBookmarks::Get().GetBookmarks(match.folder_name);
+        rw->m_annotationMgr.bookmarks.reserve(saved.size());
+        for (auto& e : saved)
+        {
+            AnnotationManager::Bookmark bk;
+            bk.timestamp_ms = e.time_ms;
+            bk.title        = e.title;
+            rw->m_annotationMgr.bookmarks.push_back(std::move(bk));
+        }
+        if (!rw->m_annotationMgr.bookmarks.empty())
+            rw->m_annotationMgr.bookmarks_visible = true;
+    }
+
+    // Persist bookmarks whenever they change
+    std::string folderName = match.folder_name;
+    rw->m_annotationMgr.onBookmarksChanged = [folderName, rw]()
+    {
+        std::vector<MatchBookmarks::Entry> entries;
+        entries.reserve(rw->m_annotationMgr.bookmarks.size());
+        for (auto& bk : rw->m_annotationMgr.bookmarks)
+            entries.push_back({ bk.timestamp_ms, bk.title });
+        MatchBookmarks::Get().SetBookmarks(folderName, entries);
+    };
 
     ShowWindow(rw->m_hwnd, SW_SHOWMAXIMIZED);
     UpdateWindow(rw->m_hwnd);
@@ -4042,8 +4071,6 @@ void ReplayWindow::DrawImGuiOverlay()
                                cam->GetPosition3f(), m_debugTimeline);
     }
     m_annotationMgr.RenderToolbar();
-    m_annotationMgr.RenderBookmarkPanel(m_debugTimeline, m_debugTimeline,
-                                        m_replayCtx.isPlaying);
     {
         Camera* cam = m_mapRenderer->GetCamera();
         XMMATRIX annVP = cam->GetView() * cam->GetProj();
@@ -4253,6 +4280,9 @@ void ReplayWindow::DrawImGuiOverlay()
                 m_heatmapSettings.show = !m_heatmapSettings.show;
                 SaveHeatmapSettings();
             }
+
+            if (HotkeyPressed(hk.addBookmark))
+                m_annotationMgr.BeginAddBookmark();
         }
     }
 
@@ -14220,6 +14250,7 @@ void ReplayWindow::DrawShortcutPreferences()
         HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage, true);
         HotkeyInput("Heatmap",             &editing.toggleHeatmap, true);
         HotkeyInput("Piano Roll",          &editing.togglePianoRoll, true);
+        HotkeyInput("Add Bookmark",        &editing.addBookmark, true);
 
         ImGui::Dummy(ImVec2(0, 8.f));
         DrawPrefsSectionHeader("CAMERA & VIEW");
@@ -14832,6 +14863,20 @@ void ReplayWindow::DrawTimelineController()
         float t = (mouseX - trackX) / trackW;
         m_debugTimeline = std::clamp(t, 0.f, 1.f) * maxT;
     }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        float mouseX = ImGui::GetIO().MousePos.x;
+        m_scrubRightClickTime = std::clamp((mouseX - trackX) / trackW, 0.f, 1.f) * maxT;
+        ImGui::OpenPopup("##ScrubCtx");
+    }
+    if (ImGui::BeginPopup("##ScrubCtx"))
+    {
+        if (ImGui::MenuItem("Add bookmark here"))
+        {
+            m_annotationMgr.AddBookmarkDirect((uint32_t)(m_scrubRightClickTime * 1000.f));
+        }
+        ImGui::EndPopup();
+    }
 
     // ── Frame badge (right of track) ─────────────────────────────────────
     {
@@ -15060,6 +15105,78 @@ void ReplayWindow::DrawTimelineController()
         cx += loopW;
     }
 
+    // ── Add Bookmark ─────────────────────────────────────────────────────
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    {
+        float bkmW = BTN_H;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##AddBkm", ImVec2(bkmW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        ImU32 fg  = hov ? cGoldBright : cTextMid;
+        FillBtn(cx, cy, bkmW, BTN_H, hov, 0, 0);
+
+        float thick = 1.3f * sf;
+        float mx = cx + bkmW * 0.5f;
+        float my = cy + BTN_H * 0.5f;
+
+        // Flag/bookmark icon
+        float fw = 5.f * sf, fh = 7.f * sf;
+        float ftop = my - fh * 0.5f - 1.f * sf;
+        // Pole
+        dl->AddLine(ImVec2(mx - fw * 0.5f, ftop), ImVec2(mx - fw * 0.5f, ftop + fh + 3.f * sf), fg, thick);
+        // Flag shape (triangular pennant)
+        ImVec2 f1(mx - fw * 0.5f, ftop);
+        ImVec2 f2(mx + fw * 0.5f + 1.f * sf, ftop + fh * 0.35f);
+        ImVec2 f3(mx - fw * 0.5f, ftop + fh * 0.7f);
+        dl->AddTriangleFilled(f1, f2, f3, fg);
+
+        // Badge dot when bookmarks exist but drawer is hidden
+        if (!m_annotationMgr.bookmarks.empty() && !m_annotationMgr.bookmarks_visible)
+        {
+            float dotX = cx + bkmW - 4.f * sf;
+            float dotY = cy + 4.f * sf;
+            dl->AddCircleFilled(ImVec2(dotX, dotY), 2.5f * sf, cGold);
+        }
+
+        if (clk) m_annotationMgr.BeginAddBookmark();
+        const char* bkmKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().addBookmark);
+        if (hov) ImGui::SetTooltip("Add Bookmark (%s)", bkmKey);
+        cx += bkmW;
+    }
+
+    // ── Toggle Bookmark Drawer ───────────────────────────────────────────
+    {
+        float tbkW = BTN_H;
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##TogBkm", ImVec2(tbkW, BTN_H));
+        bool hov = ImGui::IsItemHovered();
+        bool clk = ImGui::IsItemClicked();
+
+        bool on = m_annotationMgr.bookmarks_visible;
+        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
+        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
+        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
+        FillBtn(cx, cy, tbkW, BTN_H, hov, bg, bdr);
+
+        float thick = 1.3f * sf;
+        float mx = cx + tbkW * 0.5f;
+        float my = cy + BTN_H * 0.5f;
+
+        // Three horizontal lines (list icon)
+        for (int li = -1; li <= 1; li++)
+        {
+            float ly = my + (float)li * 3.5f * sf;
+            dl->AddLine(ImVec2(mx - 5.f * sf, ly), ImVec2(mx + 5.f * sf, ly), fg, thick);
+        }
+
+        if (clk) m_annotationMgr.bookmarks_visible = !m_annotationMgr.bookmarks_visible;
+        if (hov) ImGui::SetTooltip(on ? "Hide Bookmarks" : "Show Bookmarks");
+        cx += tbkW;
+    }
+
     // ── Auto Camera toggle ───────────────────────────────────────────────
     cx += GDIV;
     Divider(cx - GDIV * 0.5f);
@@ -15202,6 +15319,12 @@ void ReplayWindow::DrawTimelineController()
     }
 
     m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
+
+    // ── Bookmark floating panel (above the bar, left side) ─────────────
+    m_annotationMgr.RenderBookmarkDrawer(O.x, O.y, vpW, barH,
+                                         m_debugTimeline, m_debugTimeline,
+                                         m_replayCtx.isPlaying,
+                                         m_displayTimeOffset);
 
     ImGui::End();
     ImGui::PopStyleColor(4);

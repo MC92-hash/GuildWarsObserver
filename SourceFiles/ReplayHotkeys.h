@@ -18,6 +18,7 @@ struct ReplayHotkeys
     int toggleTopView       = ImGuiKey_V;
     int togglePianoRoll     = ImGuiKey_P;
     int toggleHeatmap       = ImGuiKey_H;
+    int addBookmark         = ImGuiKey_B;
     int exitFollowMode      = ImGuiKey_Escape;
 
     // Camera movement

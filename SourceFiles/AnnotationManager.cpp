@@ -819,6 +819,45 @@ void AnnotationManager::RenderToolbar()
 }
 
 // ════════════════════════════════════════════════════════════════════════
+// BeginAddBookmark — opens the bookmark creation popup from any caller
+// ════════════════════════════════════════════════════════════════════════
+
+void AnnotationManager::BeginAddBookmark()
+{
+    if (m_bookmarkPopupOpen) return;
+    m_bookmarkPopupOpen = true;
+    m_bookmarkPopupJustOpened = true;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// AddBookmarkDirect — instantly create a bookmark without showing the popup
+// ════════════════════════════════════════════════════════════════════════
+
+void AnnotationManager::AddBookmarkDirect(uint32_t timestampMs)
+{
+    Bookmark bk;
+    bk.timestamp_ms = timestampMs;
+
+    char timeBuf[16];
+    FormatTimeMMSS(timestampMs, timeBuf, sizeof(timeBuf));
+    char defTitle[32];
+    snprintf(defTitle, sizeof(defTitle), "Bookmark at %s", timeBuf);
+    bk.title = defTitle;
+
+    auto it = std::lower_bound(bookmarks.begin(), bookmarks.end(), bk,
+        [](const Bookmark& a, const Bookmark& b){ return a.timestamp_ms < b.timestamp_ms; });
+    bookmarks.insert(it, bk);
+    if (onBookmarksChanged) onBookmarksChanged();
+
+    if (!m_everCreatedBookmark)
+    {
+        m_everCreatedBookmark = true;
+        bookmarks_visible = true;
+        m_bookmarkToastTimer = kBookmarkToastDur;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // Bookmark creation popup
 // ════════════════════════════════════════════════════════════════════════
 
@@ -878,9 +917,14 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
             needFocus = false;
         }
 
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.10f, 0.09f, 0.07f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,  ImVec4(0.15f, 0.13f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,   ImVec4(0.18f, 0.15f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,  ImVec4(0.78f, 0.63f, 0.13f, 0.3f));
         bool entered = ImGui::InputText("##bkTitle", m_bookmarkTitleBuf,
                                         sizeof(m_bookmarkTitleBuf),
                                         ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopStyleColor(4);
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -889,12 +933,16 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
         bool cancelled = false;
         bool confirmed = entered;
 
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.12f, 0.06f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.25f, 0.20f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.30f, 0.24f, 0.10f, 1.f));
         if (ImGui::Button("Cancel", ImVec2(70, 0)))
             cancelled = true;
 
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 50.f);
+        ImGui::SameLine(240.f - 10.f * 2.f - 60.f);
         if (ImGui::Button("Add", ImVec2(60, 0)))
             confirmed = true;
+        ImGui::PopStyleColor(3);
 
         if (ImGui::IsKeyPressed(ImGuiKey_Escape))
             cancelled = true;
@@ -915,6 +963,7 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
             auto it = std::lower_bound(bookmarks.begin(), bookmarks.end(), bk,
                 [](const Bookmark& a, const Bookmark& b){ return a.timestamp_ms < b.timestamp_ms; });
             bookmarks.insert(it, bk);
+            if (onBookmarksChanged) onBookmarksChanged();
 
             if (!m_everCreatedBookmark)
             {
@@ -970,6 +1019,7 @@ void AnnotationManager::RenderBookmarkRenamePopup()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 8.f));
 
+    ImGui::SetNextWindowSize(ImVec2(240.f, 0.f));
     if (ImGui::BeginPopupModal("##BookmarkRename", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar))
     {
@@ -998,9 +1048,14 @@ void AnnotationManager::RenderBookmarkRenamePopup()
         if (!ImGui::IsAnyItemActive()) rnFocus = true;
         if (rnFocus) { ImGui::SetKeyboardFocusHere(); rnFocus = false; }
 
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.10f, 0.09f, 0.07f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,  ImVec4(0.15f, 0.13f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,   ImVec4(0.18f, 0.15f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,  ImVec4(0.78f, 0.63f, 0.13f, 0.3f));
         bool entered = ImGui::InputText("##rnTitle", m_renameTitleBuf,
                                         sizeof(m_renameTitleBuf),
                                         ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopStyleColor(4);
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -1009,16 +1064,21 @@ void AnnotationManager::RenderBookmarkRenamePopup()
         bool cancelled = ImGui::IsKeyPressed(ImGuiKey_Escape);
         bool confirmed = entered;
 
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.12f, 0.06f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.25f, 0.20f, 0.08f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.30f, 0.24f, 0.10f, 1.f));
         if (ImGui::Button("Cancel", ImVec2(70, 0)))
             cancelled = true;
 
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 50.f);
+        ImGui::SameLine(240.f - 10.f * 2.f - 60.f);
         if (ImGui::Button("Save", ImVec2(60, 0)))
             confirmed = true;
+        ImGui::PopStyleColor(3);
 
         if (confirmed && m_renameTitleBuf[0] != '\0')
         {
             bk.title = m_renameTitleBuf;
+            if (onBookmarksChanged) onBookmarksChanged();
             m_renamePopupOpen = false;
             ImGui::CloseCurrentPopup();
         }
@@ -1218,8 +1278,229 @@ void AnnotationManager::RenderBookmarkPanel(float currentTimeSec, float& timelin
         }
 
         if (removeIdx >= 0)
+        {
             bookmarks.erase(bookmarks.begin() + removeIdx);
+            if (onBookmarksChanged) onBookmarksChanged();
+        }
 
+        ImGui::EndChild();
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Bookmark floating panel (compact, above the left of the timeline bar)
+// ════════════════════════════════════════════════════════════════════════
+
+void AnnotationManager::RenderBookmarkDrawer(float barX, float barY, float /*barW*/, float /*barH*/,
+                                             float currentTimeSec, float& timelineOut,
+                                             bool& isPlayingRef, float /*displayTimeOffset*/)
+{
+    m_bookmarkPopupTimeMs = (uint32_t)(currentTimeSec * 1000.f);
+    RenderBookmarkCreationPopup(isPlayingRef);
+    RenderBookmarkRenamePopup();
+
+    if (!bookmarks_visible) return;
+
+    constexpr float kPanelW = 240.f;
+    constexpr float kRowH   = 22.f;
+    constexpr float kHeaderH = 26.f;
+    constexpr float kMaxListH = 180.f;
+    constexpr float kPad = 8.f;
+
+    int bkCount = (int)bookmarks.size();
+    float listH = std::min(kMaxListH, std::max(kRowH, (float)bkCount * kRowH));
+    float panelH = kHeaderH + listH + kPad;
+
+    float panelX = barX + 8.f;
+    float panelY = barY - panelH - 4.f;
+
+    ImGui::SetNextWindowPos(ImVec2(panelX, panelY), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(kPanelW, panelH), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.94f);
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(0.5f, 0.4f, 0.1f, 0.6f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,  6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kPad, 4.f));
+
+    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar
+                        | ImGuiWindowFlags_NoResize
+                        | ImGuiWindowFlags_NoMove
+                        | ImGuiWindowFlags_NoCollapse
+                        | ImGuiWindowFlags_NoFocusOnAppearing
+                        | ImGuiWindowFlags_NoNavInputs
+                        | ImGuiWindowFlags_NoScrollbar;
+
+    if (!ImGui::Begin("##BookmarkFloatPanel", nullptr, wf))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(2);
+        return;
+    }
+
+    // Header
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
+    ImGui::Text("Bookmarks");
+    ImGui::PopStyleColor();
+
+    ImGui::SameLine(kPanelW - kPad * 2.f - 14.f);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.4f, 0.2f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.15f, 0.05f, 0.6f));
+    if (ImGui::SmallButton("x##closeBkFloat"))
+        bookmarks_visible = false;
+    ImGui::PopStyleColor(3);
+
+    ImGui::Separator();
+
+    // Find closest bookmark
+    int closestIdx = -1;
+    {
+        uint32_t curMs = (uint32_t)(currentTimeSec * 1000.f);
+        uint32_t bestDist = UINT32_MAX;
+        for (int i = 0; i < bkCount; ++i)
+        {
+            uint32_t d = (bookmarks[i].timestamp_ms > curMs)
+                       ? (bookmarks[i].timestamp_ms - curMs)
+                       : (curMs - bookmarks[i].timestamp_ms);
+            if (d < bestDist) { bestDist = d; closestIdx = i; }
+        }
+    }
+
+    if (bookmarks.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.43f, 0.3f, 0.7f));
+        ImGui::TextWrapped("No bookmarks yet. Press B or right-click the timeline.");
+        ImGui::PopStyleColor();
+    }
+    else
+    {
+        ImGui::BeginChild("##BkFloatList", ImVec2(0, listH), false,
+                          ImGuiWindowFlags_NoBackground);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.10f, 0.06f, 0.6f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.18f, 0.08f, 0.8f));
+
+        int removeIdx = -1;
+        for (int i = 0; i < bkCount; ++i)
+        {
+            auto& bk = bookmarks[i];
+            char timeBuf[16];
+            FormatTimeMMSS(bk.timestamp_ms, timeBuf, sizeof(timeBuf));
+
+            bool isClosest = (i == closestIdx);
+
+            ImGui::PushID(i);
+
+            if (isClosest)
+            {
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                ImDrawList* dlC = ImGui::GetWindowDrawList();
+                float rw = kPanelW - kPad * 2.f;
+                dlC->AddRectFilled(ImVec2(p.x - 2.f, p.y), ImVec2(p.x + rw, p.y + kRowH),
+                                   IM_COL32(0x1a, 0x14, 0x00, 0x60), 3.f);
+                dlC->AddRectFilled(ImVec2(p.x - 2.f, p.y), ImVec2(p.x + 1.f, p.y + kRowH),
+                                   IM_COL32(0xc8, 0xa0, 0x20, 0xFF));
+            }
+
+            // Timestamp (clickable to jump)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
+            char jumpLabel[24];
+            snprintf(jumpLabel, sizeof(jumpLabel), "[%s]##j", timeBuf);
+            if (ImGui::SmallButton(jumpLabel))
+            {
+                timelineOut = bk.timestamp_ms / 1000.f;
+                isPlayingRef = true;
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+
+            // Title (truncated to fit)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.68f, 0.58f, 1.f));
+            float availForTitle = ImGui::GetContentRegionAvail().x - 65.f;
+            const char* title = bk.title.c_str();
+            ImVec2 tsz = ImGui::CalcTextSize(title);
+            if (tsz.x > availForTitle && availForTitle > 20.f)
+            {
+                char trunc[44];
+                snprintf(trunc, sizeof(trunc), "%.28s...", title);
+                ImGui::TextUnformatted(trunc);
+            }
+            else
+            {
+                ImGui::TextUnformatted(title);
+            }
+            ImGui::PopStyleColor();
+
+            // Action buttons (right-aligned)
+            float btnsX = kPanelW - kPad * 2.f - 42.f;
+            ImGui::SameLine(btnsX);
+
+            // Rename button (pencil-on-page icon drawn over a SmallButton)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
+                bool renClk = ImGui::SmallButton(" ##ren");
+                bool renHov = ImGui::IsItemHovered();
+                ImGui::PopStyleColor();
+
+                ImVec2 rMin = ImGui::GetItemRectMin();
+                ImVec2 rMax = ImGui::GetItemRectMax();
+                float cx = (rMin.x + rMax.x) * 0.5f;
+                float cy = (rMin.y + rMax.y) * 0.5f;
+
+                ImU32 col = renHov ? IM_COL32(0xe8, 0xc8, 0x60, 0xFF)
+                                   : IM_COL32(0x99, 0x80, 0x4d, 0xFF);
+                ImDrawList* dlP = ImGui::GetWindowDrawList();
+                float s = 4.5f;
+
+                // Page outline (open top-right corner for the pencil)
+                dlP->AddLine(ImVec2(cx - s, cy - s),     ImVec2(cx - s, cy + s),   col, 1.2f);
+                dlP->AddLine(ImVec2(cx - s, cy + s),     ImVec2(cx + s, cy + s),   col, 1.2f);
+                dlP->AddLine(ImVec2(cx + s, cy + s),     ImVec2(cx + s, cy - 1.f), col, 1.2f);
+                dlP->AddLine(ImVec2(cx - s, cy - s),     ImVec2(cx + 1.f, cy - s), col, 1.2f);
+
+                // Pencil (diagonal)
+                float px1 = cx - 2.f, py1 = cy + 2.f;
+                float px2 = cx + 4.f, py2 = cy - 4.f;
+                dlP->AddLine(ImVec2(px1, py1), ImVec2(px2, py2), col, 1.4f);
+                // Pencil tip
+                dlP->AddLine(ImVec2(px1, py1), ImVec2(px1 - 1.2f, py1 + 1.2f), col, 1.2f);
+                // Eraser cap
+                dlP->AddLine(ImVec2(px2 - 0.8f, py2 - 0.8f), ImVec2(px2 + 0.8f, py2 + 0.8f), col, 2.f);
+
+                if (renClk)
+                {
+                    m_renamePopupOpen = true;
+                    m_renameBookmarkIdx = i;
+                    memset(m_renameTitleBuf, 0, sizeof(m_renameTitleBuf));
+                    strncpy(m_renameTitleBuf, bk.title.c_str(), sizeof(m_renameTitleBuf) - 1);
+                }
+                if (renHov) ImGui::SetTooltip("Rename");
+            }
+
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.3f, 0.2f, 1.f));
+            if (ImGui::SmallButton("x"))
+                removeIdx = i;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete");
+            ImGui::PopStyleColor();
+
+            ImGui::PopID();
+        }
+
+        if (removeIdx >= 0)
+        {
+            bookmarks.erase(bookmarks.begin() + removeIdx);
+            if (onBookmarksChanged) onBookmarksChanged();
+        }
+
+        ImGui::PopStyleColor(2);
         ImGui::EndChild();
     }
 
