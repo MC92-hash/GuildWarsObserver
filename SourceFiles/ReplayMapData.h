@@ -126,6 +126,7 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
         { 5766, { 1730, "Spirit of Infuriating Heat" } },
         { 4286, { 1213, "Spirit of Tranquility" } },
         { 2932, { 470,  "Spirit of Predatory Season" } },
+        { 2934, { 472,  "Spirit of Favorable Winds" } },
     };
     for (auto& e : table)
         if (e.modelId == modelId) return &e.info;
@@ -155,6 +156,7 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
     case 5767: // Toxicity
     case 5766: // Infuriating Heat
     case 4286: // Tranquility
+    case 2934: // Favorable Winds
         return 3500.f;
 
     // --- Ritualist Binding Rituals ---
@@ -170,7 +172,7 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
 inline bool IsNatureRitual(uint32_t modelId)
 {
     switch (modelId) {
-    case 2927: case 2929: case 2932: case 2936: case 2937:
+    case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
     case 2938: case 2939: case 4289: case 5767: case 5766:
     case 4286:
         return true;
@@ -363,7 +365,7 @@ inline float GetSpiritRange(uint32_t modelId)
     case 4265: return 322.f;   // Pain
 
     // Nature Rituals (all 3500)
-    case 2927: case 2929: case 2932: case 2936: case 2937:
+    case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
     case 2938: case 2939: case 4289: case 5767: case 5766:
     case 4286:
         return 3500.f;
