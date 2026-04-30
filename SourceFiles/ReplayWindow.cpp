@@ -2778,7 +2778,7 @@ void ReplayWindow::Tick()
 
             for (auto& ce : m_replayCtx.stocData.combat)
             {
-                if (ce.type == "DAMAGE")
+                if (ce.IsDamageOrHeal())
                 {
                     int bestIdx = -1;
                     float bestDt = 99.f;
@@ -17644,7 +17644,7 @@ void ReplayWindow::BuildMeterAbsCache()
 
     for (auto& ce : m_replayCtx.stocData.combat)
     {
-        if (ce.type != "DAMAGE") continue;
+        if (!ce.IsDamageOrHeal()) continue;
         uint32_t mhp = findMaxHp(ce.target_id, ce.time);
         int absVal = (mhp > 0) ? (int)(std::abs(ce.value) * mhp) : 0;
         if (absVal <= 0) continue;
@@ -17668,6 +17668,10 @@ void ReplayWindow::AccumulateMeterData()
         m_meterHeal.clear();
         m_meterTotalDmg = 0;
         m_meterTotalHeal = 0;
+        m_meterTotalDmgTeam1 = 0;
+        m_meterTotalDmgTeam2 = 0;
+        m_meterTotalHealTeam1 = 0;
+        m_meterTotalHealTeam2 = 0;
         m_meterMaxDmg = 0;
         m_meterMaxHeal = 0;
         m_meterLastIdx = 0;
@@ -17679,10 +17683,18 @@ void ReplayWindow::AccumulateMeterData()
         auto& e = m_meterAbsCache[i];
         if (e.time > curTime) break;
 
+        uint8_t casterTeam = 0;
+        auto ait = m_replayCtx.agents.find(e.casterId);
+        if (ait != m_replayCtx.agents.end())
+            casterTeam = ait->second.teamId;
+
         if (e.isDamage)
         {
             m_meterDmg[e.casterId].value += e.absValue;
             m_meterTotalDmg += e.absValue;
+            if (casterTeam == 1)       m_meterTotalDmgTeam1 += e.absValue;
+            else if (casterTeam == 2)  m_meterTotalDmgTeam2 += e.absValue;
+            else { m_meterTotalDmgTeam1 += e.absValue; m_meterTotalDmgTeam2 += e.absValue; }
             if (m_meterDmg[e.casterId].value > m_meterMaxDmg)
                 m_meterMaxDmg = m_meterDmg[e.casterId].value;
         }
@@ -17690,6 +17702,9 @@ void ReplayWindow::AccumulateMeterData()
         {
             m_meterHeal[e.casterId].value += e.absValue;
             m_meterTotalHeal += e.absValue;
+            if (casterTeam == 1)       m_meterTotalHealTeam1 += e.absValue;
+            else if (casterTeam == 2)  m_meterTotalHealTeam2 += e.absValue;
+            else { m_meterTotalHealTeam1 += e.absValue; m_meterTotalHealTeam2 += e.absValue; }
             if (m_meterHeal[e.casterId].value > m_meterMaxHeal)
                 m_meterMaxHeal = m_meterHeal[e.casterId].value;
         }
@@ -17762,7 +17777,8 @@ void ReplayWindow::DrawPartyWindows()
 
     auto DrawBars = [&](ImDrawList* dl, float availW,
                         const std::vector<int>& ids, float barH,
-                        bool filterSpirits, bool leftSide, float maxBarW)
+                        bool filterSpirits, bool leftSide, float maxBarW,
+                        int teamTotalDmg, int teamTotalHeal)
     {
         int n = static_cast<int>(ids.size());
         for (int i = 0; i < n; ++i)
@@ -17826,7 +17842,7 @@ void ReplayWindow::DrawPartyWindows()
                     int dmgVal = (dit != m_meterDmg.end()) ? dit->second.value : 0;
                     float slotY = cursor.y + singleOffset;
                     DrawMeterBar(fgDl, cursor, availW, slotY, meterH,
-                                 dmgVal, m_meterMaxDmg, m_meterTotalDmg,
+                                 dmgVal, m_meterMaxDmg, teamTotalDmg,
                                  leftSide, maxBarW, kDmgBarCol);
                 }
 
@@ -17837,7 +17853,7 @@ void ReplayWindow::DrawPartyWindows()
                     float slotY = bothMeters ? cursor.y + barH * 0.5f
                                              : cursor.y + singleOffset;
                     DrawMeterBar(fgDl, cursor, availW, slotY, meterH,
-                                 healVal, m_meterMaxHeal, m_meterTotalHeal,
+                                 healVal, m_meterMaxHeal, teamTotalHeal,
                                  leftSide, maxBarW, kHealBarCol);
                 }
             }
@@ -17865,7 +17881,8 @@ void ReplayWindow::DrawPartyWindows()
                              const std::vector<int>& npcIds,
                              ImVec4 bgCol, bool leftSide,
                              bool* prevAlliesOpen,
-                             const char* layoutKey)
+                             const char* layoutKey,
+                             int teamTotalDmg, int teamTotalHeal)
     {
         if (!*show || playerIds.empty()) return;
 
@@ -17995,7 +18012,8 @@ void ReplayWindow::DrawPartyWindows()
             }
 
             float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
-            DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW);
+            DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW,
+                     teamTotalDmg, teamTotalHeal);
 
             if (m_showDamageMeter || m_showHealMeter)
             {
@@ -18067,7 +18085,8 @@ void ReplayWindow::DrawPartyWindows()
 
                 if (alliesOpen)
                 {
-                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true, leftSide, maxBarW);
+                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                             teamTotalDmg, teamTotalHeal);
                 }
             }
         }
@@ -18084,12 +18103,14 @@ void ReplayWindow::DrawPartyWindows()
     DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PlayerIds,
                   m_team1NpcIds,
                   ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), true,
-                  &s_alliesOpenTeam1, "team1_party");
+                  &s_alliesOpenTeam1, "team1_party",
+                  m_meterTotalDmgTeam1, m_meterTotalHealTeam1);
 
     DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PlayerIds,
                   m_team2NpcIds,
                   ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), false,
-                  &s_alliesOpenTeam2, "team2_party");
+                  &s_alliesOpenTeam2, "team2_party",
+                  m_meterTotalDmgTeam2, m_meterTotalHealTeam2);
 
     if (!m_partyWindowsPositioned)
         m_partyWindowsPositioned = true;
@@ -19426,7 +19447,7 @@ void ReplayWindow::UpdateIncomingEffects()
         for (size_t i = 0; i < combatVec.size(); ++i)
         {
             const auto& ce = combatVec[i];
-            if (ce.type != "DAMAGE") continue;
+            if (!ce.IsDamageOrHeal()) continue;
             if (ce.caster_id != casterId) continue;
             if (ce.target_id != targetId) continue;
             if (consumedCombat.count(i)) continue;
@@ -19503,7 +19524,7 @@ void ReplayWindow::UpdateIncomingEffects()
     {
         if (consumedCombat.count(ci)) continue;
         const auto& dce = combatVec[ci];
-        if (dce.type != "DAMAGE") continue;
+        if (!dce.IsDamageOrHeal()) continue;
         if (dce.target_id != focused) continue;
         if (dce.caster_id == focused) continue;
         if (dce.time <= scanFrom || dce.time > scanTo) continue;
@@ -19653,7 +19674,7 @@ void ReplayWindow::UpdateIncomingEffects()
             for (size_t i = 0; i < combatVec.size(); ++i)
             {
                 const auto& ce = combatVec[i];
-                if (ce.type != "DAMAGE") continue;
+                if (!ce.IsDamageOrHeal()) continue;
                 if (ce.caster_id != agentId) continue;
                 if (ce.target_id != focused) continue;
                 if (consumedCombat.count(i)) continue;
@@ -19909,7 +19930,7 @@ void ReplayWindow::UpdateIncomingEffects()
     for (size_t i = 0; i < combatVec.size(); ++i)
     {
         const auto& ce = combatVec[i];
-        if (ce.type != "DAMAGE") continue;
+        if (!ce.IsDamageOrHeal()) continue;
         if (ce.target_id != focused) continue;
         if (ce.time <= scanFrom || ce.time > scanTo) continue;
         if (ce.caster_id == focused) continue;
@@ -20037,7 +20058,7 @@ void ReplayWindow::UpdatePiPIncomingEffects()
 
     for (size_t i = 0; i < combatVec.size(); ++i) {
         const auto& ce = combatVec[i];
-        if (ce.type != "DAMAGE") continue;
+        if (!ce.IsDamageOrHeal()) continue;
         if (ce.target_id != pipTarget) continue;
         if (ce.time <= scanFrom || ce.time > scanTo) continue;
         if (consumed.count(i)) continue;

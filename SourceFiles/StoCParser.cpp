@@ -428,6 +428,14 @@ static void ParseCombatEvents(const std::string& content, StoCData& data)
                         ev.value       = ToFloat(tok[3].begin, tok[3].end);
                         ev.damage_type = ToInt(tok[4].begin, tok[4].end);
                     }
+                    else if (ev.type == "HEAL" && n >= 5)
+                    {
+                        ev.caster_id   = ToInt(tok[1].begin, tok[1].end);
+                        ev.target_id   = ToInt(tok[2].begin, tok[2].end);
+                        ev.value       = ToFloat(tok[3].begin, tok[3].end);
+                        std::string_view dmgToken(tok[4].begin, tok[4].end - tok[4].begin);
+                        ev.damage_type = (dmgToken == "ARMORIGNORING") ? 55 : ToInt(tok[4].begin, tok[4].end);
+                    }
                     else if (ev.type == "KNOCKED_DOWN" && n >= 3)
                     {
                         ev.target_id = ToInt(tok[1].begin, tok[1].end);

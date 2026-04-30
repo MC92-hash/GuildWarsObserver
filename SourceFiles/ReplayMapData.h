@@ -977,6 +977,8 @@ struct CombatEvent
     float       value = 0.f;
     int         damage_type = 0;
     std::string raw_line;
+
+    bool IsDamageOrHeal() const { return type == "DAMAGE" || type == "HEAL"; }
 };
 
 struct JumboMessageEvent
