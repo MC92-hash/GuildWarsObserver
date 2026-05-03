@@ -266,6 +266,72 @@ static std::string ComputeTeamBuild(const PartyMeta& party)
     return ComputeProfSignature(profCounts);
 }
 
+// ─── GW1 skill template encoder ─────────────────────────────────────────────
+
+static std::string EncodeSkillTemplate(int primary, int secondary,
+                                       const std::vector<int>& skills)
+{
+    // GW1 template code format: variable-length bitstream, base64 encoded.
+    // Reference: https://wiki.guildwars.com/wiki/Skill_template_format
+    std::vector<bool> bits;
+
+    auto pushBits = [&](int value, int count) {
+        for (int i = 0; i < count; i++)
+            bits.push_back((value >> i) & 1);
+    };
+
+    // Header: type 14 (skill template), version 0
+    pushBits(14, 4);  // template type = skill bar
+    pushBits(0, 4);   // version
+
+    // Profession IDs: need enough bits for max ID (10 = Dervish)
+    int profBits = 4; // 4 bits covers 0-15
+    pushBits(profBits - 4, 2); // bits-per-prof minus 4, encoded in 2 bits (0 = 4 bits)
+    pushBits(primary, profBits);
+    pushBits(secondary, profBits);
+
+    // Attributes: 0 attributes, 0 bits per value
+    pushBits(0, 4);  // number of attributes
+    pushBits(0, 4);  // bits per attribute value
+
+    // Skills: need enough bits for max skill ID
+    int maxSkill = 0;
+    for (int s : skills)
+        if (s > maxSkill) maxSkill = s;
+
+    int skillBits = 8;
+    if (maxSkill > 0)
+    {
+        skillBits = 0;
+        int tmp = maxSkill;
+        while (tmp > 0) { skillBits++; tmp >>= 1; }
+    }
+
+    pushBits(skillBits - 8, 4); // bits-per-skill minus 8, encoded in 4 bits
+
+    // 8 skill slots
+    for (int i = 0; i < 8; i++)
+        pushBits(i < (int)skills.size() ? skills[i] : 0, skillBits);
+
+    // Pad to multiple of 6 bits for base64
+    while (bits.size() % 6 != 0)
+        bits.push_back(false);
+
+    // Base64 encode (GW1 uses a custom alphabet)
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string result;
+    for (size_t i = 0; i < bits.size(); i += 6)
+    {
+        int val = 0;
+        for (int b = 0; b < 6; b++)
+            if (bits[i + b]) val |= (1 << b);
+        result += alphabet[val];
+    }
+    return result;
+}
+
 // ─── Profession helpers ──────────────────────────────────────────────────────
 
 static const char* GetProfessionName(int id)
@@ -2595,6 +2661,8 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     const float skillIconSize = sz.skillIcon;
     const float smallIconSize = sz.cupIcon + 2.0f;
 
+    static std::unordered_map<std::string, float> s_copyFeedbackTimes;
+
     ImGui::BeginGroup();
 
     // Team name header (full width, bold font)
@@ -2673,7 +2741,8 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
     float statsNeeded = 0.0f;
     for (int si = 0; si < numStats; si++) statsNeeded += statCols[si].w + 6.0f;
-    float fixedNeeded = iconSize + (iconSize + 2) + nameColW + skillsNeeded;
+    float copyBtnW = ImGui::CalcTextSize("\xe2\x8e\x98").x + 12.0f;
+    float fixedNeeded = iconSize + (iconSize + 2) + nameColW + copyBtnW + skillsNeeded;
     bool statsOverflow = (fixedNeeded + statsNeeded) > availW;
 
     bool showStats = true;
@@ -2681,7 +2750,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
         showStats = s_state.statsExpanded;
 
     int fixedCols = 3;
-    int numCols = fixedCols + (showSkills ? 1 : 0) + (showStats ? numStats : 0);
+    int numCols = fixedCols + (showSkills ? 1 : 0) + 1 + (showStats ? numStats : 0);
 
     if (statsOverflow)
     {
@@ -2710,6 +2779,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
         if (showSkills)
             ImGui::TableSetupColumn("Skills", ImGuiTableColumnFlags_WidthFixed,
                 8 * (skillIconSize + 2) + 16.0f);
+        ImGui::TableSetupColumn("##Copy", ImGuiTableColumnFlags_WidthFixed, copyBtnW);
         if (showStats)
             for (int si = 0; si < numStats; si++)
                 ImGui::TableSetupColumn(statCols[si].hdr, ImGuiTableColumnFlags_WidthFixed, statCols[si].w);
@@ -2722,6 +2792,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             ImGui::TableNextColumn(); // Sec
             ImGui::TableNextColumn(); // Name
             if (showSkills) ImGui::TableNextColumn(); // Skills
+            ImGui::TableNextColumn(); // Copy
 
             for (int si = 0; si < numStats; si++)
             {
@@ -2759,6 +2830,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             ImGui::TableNextColumn();
             ImGui::TableNextColumn();
             if (showSkills) ImGui::TableNextColumn();
+            ImGui::TableNextColumn(); // Copy
 
             for (int si = 0; si < numStats; si++)
             {
@@ -2835,6 +2907,59 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                             ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
                     }
                 }
+            }
+
+            // Copy template button column
+            ImGui::TableNextColumn();
+            if (!p.used_skills.empty() || !p.skill_template_code.empty())
+            {
+                float btnPad = (std::max(skillIconSize, ImGui::GetTextLineHeight()) - ImGui::GetTextLineHeight()) * 0.5f;
+                if (btnPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + btnPad);
+
+                std::string tmplKey = partyId + "_" + std::to_string(p.player_number);
+
+                float now = (float)ImGui::GetTime();
+                auto feedbackIt = s_copyFeedbackTimes.find(tmplKey);
+                bool showFeedback = (feedbackIt != s_copyFeedbackTimes.end())
+                                 && (now - feedbackIt->second < 1.5f);
+
+                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 0.9f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.25f, 0.15f, 0.9f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   kColorAccentDim);
+                ImGui::PushStyleColor(ImGuiCol_Text,           kColorAccent);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(3, 1));
+
+                if (showFeedback)
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
+
+                const char* label = showFeedback ? "\xe2\x9c\x93" : "\xe2\x8e\x98";
+                std::string btnId = std::string(label) + "###cpytmpl_" + tmplKey;
+
+                if (ImGui::SmallButton(btnId.c_str()))
+                {
+                    std::string code = p.skill_template_code;
+                    if (code.empty())
+                        code = EncodeSkillTemplate(p.primary, p.secondary, p.used_skills);
+                    std::string chatLink = "[" + cleanName + "-Skills;" + code + "]";
+                    ImGui::SetClipboardText(chatLink.c_str());
+                    s_copyFeedbackTimes[tmplKey] = now;
+                }
+
+                if (ImGui::IsItemHovered())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
+                    ImGui::TextUnformatted(showFeedback ? "Copied!" : "Copy template code");
+                    ImGui::PopStyleColor();
+                    ImGui::EndTooltip();
+                }
+
+                if (showFeedback)
+                    ImGui::PopStyleColor();
+
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(4);
             }
 
             if (showStats)
