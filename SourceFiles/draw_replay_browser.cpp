@@ -2741,7 +2741,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
     float statsNeeded = 0.0f;
     for (int si = 0; si < numStats; si++) statsNeeded += statCols[si].w + 6.0f;
-    float copyBtnW = ImGui::CalcTextSize("\xe2\x8e\x98").x + 12.0f;
+    float copyBtnW = skillIconSize + 8.0f;
     float fixedNeeded = iconSize + (iconSize + 2) + nameColW + copyBtnW + skillsNeeded;
     bool statsOverflow = (fixedNeeded + statsNeeded) > availW;
 
@@ -2913,9 +2913,6 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             ImGui::TableNextColumn();
             if (!p.used_skills.empty() || !p.skill_template_code.empty())
             {
-                float btnPad = (std::max(skillIconSize, ImGui::GetTextLineHeight()) - ImGui::GetTextLineHeight()) * 0.5f;
-                if (btnPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + btnPad);
-
                 std::string tmplKey = partyId + "_" + std::to_string(p.player_number);
 
                 float now = (float)ImGui::GetTime();
@@ -2923,20 +2920,12 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 bool showFeedback = (feedbackIt != s_copyFeedbackTimes.end())
                                  && (now - feedbackIt->second < 1.5f);
 
-                ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 0.9f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.25f, 0.15f, 0.9f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,   kColorAccentDim);
-                ImGui::PushStyleColor(ImGuiCol_Text,           kColorAccent);
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(3, 1));
+                float btnSize = skillIconSize;
+                ImVec2 cursor = ImGui::GetCursorScreenPos();
 
-                if (showFeedback)
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 0.4f, 1.0f));
-
-                const char* label = showFeedback ? "\xe2\x9c\x93" : "\xe2\x8e\x98";
-                std::string btnId = std::string(label) + "###cpytmpl_" + tmplKey;
-
-                if (ImGui::SmallButton(btnId.c_str()))
+                // Invisible button for click + hover
+                std::string btnId = "###cpytmpl_" + tmplKey;
+                if (ImGui::InvisibleButton(btnId.c_str(), ImVec2(btnSize, btnSize)))
                 {
                     std::string code = p.skill_template_code;
                     if (code.empty())
@@ -2945,8 +2934,63 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                     ImGui::SetClipboardText(chatLink.c_str());
                     s_copyFeedbackTimes[tmplKey] = now;
                 }
+                bool hovered = ImGui::IsItemHovered();
 
-                if (ImGui::IsItemHovered())
+                // Draw clipboard icon
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 iconCol;
+                if (showFeedback)
+                    iconCol = IM_COL32(102, 204, 102, 255);
+                else if (hovered)
+                    iconCol = IM_COL32(255, 210, 100, 255);
+                else
+                    iconCol = IM_COL32(200, 155, 60, 255); // kColorAccent
+
+                // Background on hover
+                if (hovered && !showFeedback)
+                    dl->AddRectFilled(cursor, ImVec2(cursor.x + btnSize, cursor.y + btnSize),
+                        IM_COL32(77, 64, 38, 180), 3.0f);
+
+                float m = btnSize * 0.15f; // margin
+                float cx = cursor.x + m;
+                float cy = cursor.y + m;
+                float cw = btnSize - 2 * m;
+                float ch = btnSize - 2 * m;
+                float t = std::max(1.0f, btnSize * 0.07f); // line thickness
+
+                if (showFeedback)
+                {
+                    // Checkmark
+                    float mx = cursor.x + btnSize * 0.5f;
+                    float my = cursor.y + btnSize * 0.5f;
+                    float s = btnSize * 0.25f;
+                    dl->AddLine(ImVec2(mx - s, my),          ImVec2(mx - s * 0.3f, my + s * 0.7f), iconCol, t * 1.5f);
+                    dl->AddLine(ImVec2(mx - s * 0.3f, my + s * 0.7f), ImVec2(mx + s, my - s * 0.5f), iconCol, t * 1.5f);
+                }
+                else
+                {
+                    // Board (main rectangle, rounded)
+                    float boardTop = cy + ch * 0.12f;
+                    dl->AddRect(ImVec2(cx, boardTop), ImVec2(cx + cw, cy + ch), iconCol, 2.0f, 0, t);
+
+                    // Clip (tab at top center)
+                    float clipW = cw * 0.4f;
+                    float clipH = ch * 0.18f;
+                    float clipX = cx + (cw - clipW) * 0.5f;
+                    dl->AddRect(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + clipH + t), iconCol, 1.5f, 0, t);
+
+                    // Text lines inside board
+                    float lineL = cx + cw * 0.2f;
+                    float lineR = cx + cw * 0.8f;
+                    float lineY1 = boardTop + ch * 0.35f;
+                    float lineY2 = boardTop + ch * 0.55f;
+                    float lineY3 = boardTop + ch * 0.75f;
+                    dl->AddLine(ImVec2(lineL, lineY1), ImVec2(lineR, lineY1), iconCol, t);
+                    dl->AddLine(ImVec2(lineL, lineY2), ImVec2(lineR, lineY2), iconCol, t);
+                    dl->AddLine(ImVec2(lineL, lineY3), ImVec2(cx + cw * 0.65f, lineY3), iconCol, t);
+                }
+
+                if (hovered)
                 {
                     ImGui::BeginTooltip();
                     ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
@@ -2954,12 +2998,6 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                     ImGui::PopStyleColor();
                     ImGui::EndTooltip();
                 }
-
-                if (showFeedback)
-                    ImGui::PopStyleColor();
-
-                ImGui::PopStyleVar(2);
-                ImGui::PopStyleColor(4);
             }
 
             if (showStats)

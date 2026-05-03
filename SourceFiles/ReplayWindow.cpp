@@ -5616,7 +5616,7 @@ void ReplayWindow::LoadAgentModelsIO()
                 // Try parsed clip cache first
                 auto* cached = m_clipCache.Get(src.mftIndex, src.fileHash);
                 if (cached) {
-                    foundClips.push_back({ *cached, src.fileHash });
+                    wi.foundClips.push_back({ *cached, src.fileHash });
                     continue;
                 }
                 try {
@@ -5703,10 +5703,10 @@ void ReplayWindow::LoadAgentModelsIO()
                         }
                     }
 
-                    if (wi.foundClips.empty() && tmpl.modelHash0 != 0) {
+                    if (wi.foundClips.empty() && wi.tmpl.modelHash0 != 0) {
                         m_bgLoadSubPhase.store(static_cast<int>(AgentLoadSubPhase::ScanningMFT));
                         // Use pre-built model hash index instead of scanning entire MFT
-                        auto animIndices = m_datManager->FindAnimationFiles(tmpl.modelHash0, tmpl.modelHash1);
+                        auto animIndices = m_datManager->FindAnimationFiles(wi.tmpl.modelHash0, wi.tmpl.modelHash1);
                         for (int mi : animIndices) {
                             if (mi == mftIndex) continue;
                             uint32_t fHash = static_cast<uint32_t>(mft[mi].Hash);
