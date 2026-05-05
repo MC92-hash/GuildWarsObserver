@@ -1728,6 +1728,57 @@ static void DrawDateRangeFilter()
     }
 }
 
+// ─── Sort helpers ────────────────────────────────────────────────────────────
+
+static int GetOccasionOrder(const std::string& occasion)
+{
+    if (occasion == "A AT")                return 0;
+    if (occasion == "B AT")                return 1;
+    if (occasion == "C AT")                return 2;
+    if (occasion == "Swiss-Rounds mAT")    return 3;
+    if (occasion == "mAT Playoffs")        return 4;
+    if (occasion == "mAT Quarterfinals")   return 5;
+    if (occasion == "mAT Semifinals")      return 6;
+    if (occasion == "mAT Finals")          return 7;
+    return 99;
+}
+
+static int GetMapRotationOrder(int month, const std::string& mapName)
+{
+    static const char* rotations[12][5] = {
+        // January
+        {"Isle of Weeping Stone", "Uncharted Isle", "Druid's Isle", "Burning Isle", "Warrior's Isle"},
+        // February
+        {"Isle of Wurms", "Isle of Jade", "Isle of Meditation", "Imperial Isle", "Druid's Isle"},
+        // March
+        {"Burning Isle", "Frozen Isle", "Warrior's Isle", "Isle of Solitude", "Uncharted Isle"},
+        // April
+        {"Isle of the Dead", "Isle of Solitude", "Imperial Isle", "Isle of Wurms", "Isle of Jade"},
+        // May
+        {"Isle of Wurms", "Imperial Isle", "Isle of Meditation", "Warrior's Isle", "Frozen Isle"},
+        // June
+        {"Isle of Weeping Stone", "Isle of Jade", "Warrior's Isle", "Uncharted Isle", "Imperial Isle"},
+        // July
+        {"Burning Isle", "Isle of Wurms", "Uncharted Isle", "Nomad's Isle", "Isle of Solitude"},
+        // August
+        {"Isle of the Dead", "Warrior's Isle", "Corrupted Isle", "Frozen Isle", "Isle of Meditation"},
+        // September
+        {"Isle of Solitude", "Druid's Isle", "Corrupted Isle", "Isle of Weeping Stone", "Uncharted Isle"},
+        // October
+        {"Isle of Meditation", "Uncharted Isle", "Isle of Jade", "Isle of Solitude", "Isle of the Dead"},
+        // November
+        {"Corrupted Isle", "Imperial Isle", "Nomad's Isle", "Isle of Meditation", "Isle of Jade"},
+        // December
+        {"Burning Isle", "Druid's Isle", "Warrior's Isle", "Uncharted Isle", "Frozen Isle"},
+    };
+
+    if (month < 1 || month > 12) return 99;
+    const char** rot = rotations[month - 1];
+    for (int i = 0; i < 5; i++)
+        if (mapName == rot[i]) return i;
+    return 99;
+}
+
 // ─── Match filtering ─────────────────────────────────────────────────────────
 
 struct FilteredMatch
@@ -1904,12 +1955,22 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             int r = 0;
             switch (col)
             {
-            case 0: // Date — tiebreak by folder name (contains timestamp)
+            case 0: // Date → Occasion → Map rotation
             {
                 if (a.meta->year != b.meta->year)       r = a.meta->year - b.meta->year;
                 else if (a.meta->month != b.meta->month) r = a.meta->month - b.meta->month;
                 else if (a.meta->day != b.meta->day)     r = a.meta->day - b.meta->day;
-                else r = a.meta->folder_name.compare(b.meta->folder_name);
+                else {
+                    int oa = GetOccasionOrder(a.meta->occasion);
+                    int ob = GetOccasionOrder(b.meta->occasion);
+                    if (oa != ob) r = oa - ob;
+                    else {
+                        int ma = GetMapRotationOrder(a.meta->month, a.mapName);
+                        int mb = GetMapRotationOrder(b.meta->month, b.mapName);
+                        if (ma != mb) r = ma - mb;
+                        else r = a.meta->folder_name.compare(b.meta->folder_name);
+                    }
+                }
                 break;
             }
             case 1: r = a.meta->occasion.compare(b.meta->occasion); break;
