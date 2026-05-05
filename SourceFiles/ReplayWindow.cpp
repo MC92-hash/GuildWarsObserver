@@ -10414,39 +10414,19 @@ void ReplayWindow::DrawFogOfWarToolbar()
 }
 
 // ---------------------------------------------------------------------------
-// Morale Panel
+// Morale computation (shared by Morale Panel + Player Info Panel)
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::DrawMoralePanel()
+int ReplayWindow::ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount, int* outBoostCount) const
 {
-    if (!m_showMoralePanel) return;
-
-    const float curTime = m_debugTimeline;
-    const auto* vp = ImGui::GetMainViewport();
-
-    struct PlayerMorale {
-        int    agentId = 0;
-        std::string name;
-        int    primaryProf = 0;
-        int    secondaryProf = 0;
-        int    morale = 0;
-        int    deathCount = 0;
-        bool   dead = false;
-    };
-
-    std::vector<PlayerMorale> blueTeam, redTeam;
-
-    // --- Death Pact Signet link tracking ---
-    // DPS (5413/8059) links caster to target for 120s; if the target dies
-    // during that window the caster also dies — that death is NOT penalised.
     constexpr int kDPS_Normal = 5413;
     constexpr int kDPS_PvP    = 8059;
 
     struct DPSLink { int casterId; int targetId; float linkStart; float linkEnd; };
     std::vector<DPSLink> dpsLinks;
-    for (auto& [aid, ard] : m_replayCtx.agents) {
-        if (ard.type != AgentType::Player) continue;
-        for (auto& ev : ard.skillUseHistory) {
+    for (auto& [aid, agentData] : m_replayCtx.agents) {
+        if (agentData.type != AgentType::Player) continue;
+        for (auto& ev : agentData.skillUseHistory) {
             if (ev.skillId != kDPS_Normal && ev.skillId != kDPS_PvP) continue;
             if (ev.wasCancelled || ev.wasInterrupted) continue;
             if (ev.endTime > curTime || ev.targetId <= 0) continue;
@@ -10471,9 +10451,8 @@ void ReplayWindow::DrawMoralePanel()
         return false;
     };
 
-    // Collect per-player death times (with grace period + DPS exclusion).
-    auto collectDeathTimes = [&](const AgentReplayData& ard) {
-        std::vector<float> deaths;
+    std::vector<float> deathTimes;
+    {
         float lastResTime = -999.f;
         for (size_t i = 1; i < ard.snapshots.size(); ++i) {
             if (ard.snapshots[i].time > curTime) break;
@@ -10483,91 +10462,94 @@ void ReplayWindow::DrawMoralePanel()
                 float dt = ard.snapshots[i].time;
                 if (dt - lastResTime < 5.f) continue;
                 if (isDPSLinkedDeath(ard.agent_id, dt)) continue;
-                deaths.push_back(dt);
+                deathTimes.push_back(dt);
             }
         }
-        return deaths;
-    };
+    }
 
-    // Collect timestamps when enemy players died.
-    auto collectEnemyKillTimes = [&](const std::vector<int>& enemyIds) {
-        std::vector<float> times;
-        for (int id : enemyIds) {
-            auto it = m_replayCtx.agents.find(id);
-            if (it == m_replayCtx.agents.end()) continue;
-            if (it->second.type != AgentType::Player) continue;
-            const auto& snaps = it->second.snapshots;
-            for (size_t i = 1; i < snaps.size(); ++i) {
-                if (snaps[i].time > curTime) break;
-                if (snaps[i].is_dead && !snaps[i - 1].is_dead)
-                    times.push_back(snaps[i].time);
-            }
+    int partyValue = (ard.teamId == 1) ? 1635021873 : 1635021874;
+    std::vector<float> boostTimes;
+    for (auto& ev : m_replayCtx.stocData.jumbo) {
+        if (ev.time > curTime) break;
+        if (ev.message == "MORALE_BOOST" && ev.party_value == partyValue)
+            boostTimes.push_back(ev.time);
+    }
+
+    const auto& enemyIds = (ard.teamId == 1) ? m_team2PlayerIds : m_team1PlayerIds;
+    std::vector<float> enemyKillTimes;
+    for (int id : enemyIds) {
+        auto it = m_replayCtx.agents.find(id);
+        if (it == m_replayCtx.agents.end()) continue;
+        if (it->second.type != AgentType::Player) continue;
+        const auto& snaps = it->second.snapshots;
+        for (size_t i = 1; i < snaps.size(); ++i) {
+            if (snaps[i].time > curTime) break;
+            if (snaps[i].is_dead && !snaps[i - 1].is_dead)
+                enemyKillTimes.push_back(snaps[i].time);
         }
-        std::sort(times.begin(), times.end());
-        return times;
-    };
+    }
+    std::sort(enemyKillTimes.begin(), enemyKillTimes.end());
 
-    // Collect timestamps when morale boosts fired for this team.
-    auto collectBoostTimes = [&](int partyValue) {
-        std::vector<float> times;
-        for (auto& ev : m_replayCtx.stocData.jumbo) {
-            if (ev.time > curTime) break;
-            if (ev.message == "MORALE_BOOST" && ev.party_value == partyValue)
-                times.push_back(ev.time);
+    enum class MET : uint8_t { Death, Boost, EnemyKill };
+    struct ME { float time; MET type; };
+
+    std::vector<ME> events;
+    events.reserve(deathTimes.size() + boostTimes.size() + enemyKillTimes.size());
+    for (float t : deathTimes)      events.push_back({ t, MET::Death });
+    for (float t : boostTimes)      events.push_back({ t, MET::Boost });
+    for (float t : enemyKillTimes)  events.push_back({ t, MET::EnemyKill });
+    std::sort(events.begin(), events.end(),
+              [](const ME& a, const ME& b) { return a.time < b.time; });
+
+    int morale = 0;
+    int deaths = 0;
+    int boosts = 0;
+    for (auto& ev : events) {
+        switch (ev.type) {
+        case MET::Death:
+            morale = std::max(morale - 15, -60);
+            ++deaths;
+            break;
+        case MET::Boost:
+            morale = std::min(morale + 10, 10);
+            ++boosts;
+            break;
+        case MET::EnemyKill:
+            if (morale < 0 && ard.isAliveAtTime(ev.time))
+                morale = std::min(morale + 2, 0);
+            break;
         }
-        return times;
+    }
+    if (outDeathCount) *outDeathCount = deaths;
+    if (outBoostCount) *outBoostCount = boosts;
+    return std::clamp(morale, -60, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Morale Panel
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawMoralePanel()
+{
+    if (!m_showMoralePanel) return;
+
+    const float curTime = m_debugTimeline;
+    const auto* vp = ImGui::GetMainViewport();
+
+    struct PlayerMorale {
+        int    agentId = 0;
+        std::string name;
+        int    primaryProf = 0;
+        int    secondaryProf = 0;
+        int    morale = 0;
+        int    deathCount = 0;
+        int    boostCount = 0;
+        bool   dead = false;
     };
 
-    auto blueBoostTimes = collectBoostTimes(1635021873);
-    auto redBoostTimes  = collectBoostTimes(1635021874);
-    auto blueEnemyKills = collectEnemyKillTimes(m_team2PlayerIds);
-    auto redEnemyKills  = collectEnemyKillTimes(m_team1PlayerIds);
+    std::vector<PlayerMorale> blueTeam, redTeam;
 
-    // Compute morale chronologically so kill-based DP reduction is applied
-    // only when the player actually has DP at the moment the enemy dies.
-    // Events: own death (-15), team morale boost (+10), enemy kill (+2 if DP<0 and alive).
-    // Kill reduction can never push morale above 0%.
-    enum class MoraleEventType : uint8_t { Death, Boost, EnemyKill };
-    struct MoraleEvent { float time; MoraleEventType type; };
-
-    auto computeMorale = [&](const AgentReplayData& ard,
-                             const std::vector<float>& boostTimes,
-                             const std::vector<float>& enemyKillTimes,
-                             int& outDeathCount) -> int {
-        auto deathTimes = collectDeathTimes(ard);
-
-        std::vector<MoraleEvent> events;
-        events.reserve(deathTimes.size() + boostTimes.size() + enemyKillTimes.size());
-        for (float t : deathTimes)      events.push_back({ t, MoraleEventType::Death });
-        for (float t : boostTimes)      events.push_back({ t, MoraleEventType::Boost });
-        for (float t : enemyKillTimes)  events.push_back({ t, MoraleEventType::EnemyKill });
-        std::sort(events.begin(), events.end(),
-                  [](const MoraleEvent& a, const MoraleEvent& b) { return a.time < b.time; });
-
-        int morale = 0;
-        int deaths = 0;
-        for (auto& ev : events) {
-            switch (ev.type) {
-            case MoraleEventType::Death:
-                morale = std::max(morale - 15, -60);
-                ++deaths;
-                break;
-            case MoraleEventType::Boost:
-                morale = std::min(morale + 10, 10);
-                break;
-            case MoraleEventType::EnemyKill:
-                if (morale < 0 && ard.isAliveAtTime(ev.time))
-                    morale = std::min(morale + 2, 0);
-                break;
-            }
-        }
-        outDeathCount = deaths;
-        return std::clamp(morale, -60, 10);
-    };
-
-    auto buildTeam = [&](const std::vector<int>& ids,
-                         const std::vector<float>& boostTimes,
-                         const std::vector<float>& enemyKillTimes) {
+    auto buildTeam = [&](const std::vector<int>& ids) {
         std::vector<PlayerMorale> result;
         for (int id : ids) {
             auto it = m_replayCtx.agents.find(id);
@@ -10580,15 +10562,15 @@ void ReplayWindow::DrawMoralePanel()
             pm.name = ard.playerName;
             pm.primaryProf = ard.primaryProf;
             pm.secondaryProf = ard.secondaryProf;
-            pm.morale = computeMorale(ard, boostTimes, enemyKillTimes, pm.deathCount);
+            pm.morale = ComputeAgentMorale(ard, curTime, &pm.deathCount, &pm.boostCount);
             pm.dead = ard.isDeadAtTime(curTime);
             result.push_back(std::move(pm));
         }
         return result;
     };
 
-    blueTeam = buildTeam(m_team1PlayerIds, blueBoostTimes, blueEnemyKills);
-    redTeam  = buildTeam(m_team2PlayerIds, redBoostTimes, redEnemyKills);
+    blueTeam = buildTeam(m_team1PlayerIds);
+    redTeam  = buildTeam(m_team2PlayerIds);
 
     auto getGuildLabel = [&](const std::string& partyId) -> std::string {
         auto pit = m_matchMeta.parties.find(partyId);
@@ -10731,10 +10713,16 @@ void ReplayWindow::DrawMoralePanel()
         if (pm.morale > 0) {
             snprintf(valBuf, sizeof(valBuf), "+%d%%", pm.morale);
             ImVec2 valSz = ImGui::CalcTextSize(valBuf);
-            float valX = rightEdge - valSz.x - 2.f;
-            dl->AddText(ImVec2(valX, y + (kRowH - fontSize) * 0.5f), kGreen, valBuf);
-            float starX = valX - fontSize;
-            dl->AddText(ImVec2(starX, y + (kRowH - fontSize) * 0.5f), kGreen, "\xe2\x98\x85");
+            int stars = std::min(4, pm.boostCount);
+            ImVec2 starSz = ImGui::CalcTextSize("\xe2\x98\x85");
+            float starSpacing = starSz.x + 1.f;
+            float starsWidth = stars > 0 ? (stars * starSpacing) : 0.f;
+            float totalW = starsWidth + 2.f + valSz.x + 2.f;
+            float vx = rightEdge - totalW;
+            float ty = y + (kRowH - fontSize) * 0.5f;
+            for (int s = 0; s < stars; ++s)
+                dl->AddText(ImVec2(vx + s * starSpacing, ty), kGreen, "\xe2\x98\x85");
+            dl->AddText(ImVec2(rightEdge - valSz.x - 2.f, ty), kGreen, valBuf);
         }
         else if (pm.morale == 0) {
             ImVec2 zSz = ImGui::CalcTextSize("0%");
@@ -20000,8 +19988,25 @@ void ReplayWindow::UpdateIncomingEffects()
     // Short-delay triggers (~3s) are already handled in the delayed damage pass above.
     // This pass catches truly long-delayed triggers (Mind Wrack at +6-40s) by
     // searching the caster's skillUseHistory for a hex (type 24) or unknown skill.
+    //
+    // Two-tier attribution: if damage coincides with the focused agent attacking,
+    // prefer hexes whose description mentions "attack" (e.g. Empathy) over other
+    // hexes (e.g. Mind Wrack).  Fallback prefers the earliest active hex.
     constexpr int   kSkillType_Hex    = 24;
     constexpr float kDelayedHexWindow = 60.f;
+
+    std::vector<float> focusedAttackTimes;
+    for (const auto& ev : m_replayCtx.stocData.basicAttack) {
+        if (ev.type != "ATTACK_FINISHED") continue;
+        if (ev.caster_id != focused) continue;
+        focusedAttackTimes.push_back(ev.time);
+    }
+
+    auto coincideWithAttack = [&](float dmgTime) -> bool {
+        auto it = std::lower_bound(focusedAttackTimes.begin(),
+                                   focusedAttackTimes.end(), dmgTime - 0.3f);
+        return it != focusedAttackTimes.end() && (*it - dmgTime) < 0.3f;
+    };
 
     for (size_t i = 0; i < combatVec.size(); ++i)
     {
@@ -20017,7 +20022,13 @@ void ReplayWindow::UpdateIncomingEffects()
         auto casterIt = m_replayCtx.agents.find(ce.caster_id);
         if (casterIt != m_replayCtx.agents.end())
         {
-            float bestDt = 1e9f;
+            bool attackCorrelated = coincideWithAttack(ce.time);
+
+            int   bestAttackHex   = 0;
+            float bestAttackDt    = 1e9f;
+            int   bestFallbackHex = 0;
+            float bestFallbackDt  = -1.f;
+
             for (const auto& su : casterIt->second.skillUseHistory)
             {
                 if (su.wasCancelled) continue;
@@ -20029,12 +20040,25 @@ void ReplayWindow::UpdateIncomingEffects()
                 if (si_db && si_db->type != kSkillType_Hex) continue;
 
                 float dt = ce.time - su.endTime;
-                if (dt < bestDt)
+
+                if (attackCorrelated && si_db &&
+                    si_db->description.find("attack") != std::string::npos)
                 {
-                    bestDt = dt;
-                    attrSkillId = su.skillId;
+                    if (dt < bestAttackDt)
+                    {
+                        bestAttackDt  = dt;
+                        bestAttackHex = su.skillId;
+                    }
+                }
+
+                if (dt > bestFallbackDt)
+                {
+                    bestFallbackDt  = dt;
+                    bestFallbackHex = su.skillId;
                 }
             }
+
+            attrSkillId = (bestAttackHex != 0) ? bestAttackHex : bestFallbackHex;
         }
 
         bool isHeal = (ce.value > 0.f);
@@ -23033,31 +23057,8 @@ void ReplayWindow::DrawPlayerInfoPanel()
         ImVec2 sec = ImGui::GetCursorScreenPos();
         float barW = contentW - 2 * kPadX;
 
-        // Compute morale (boost/penalty) for this agent
-        int moraleValue = 0;
-        {
-            float curTime = m_debugTimeline;
-            int teamBoosts = 0;
-            for (auto& ev : m_replayCtx.stocData.jumbo)
-            {
-                if (ev.time > curTime) break;
-                if (ev.message == "MORALE_BOOST")
-                {
-                    bool isTeam1 = (ev.party_value == 1635021873);
-                    bool isTeam2 = (ev.party_value == 1635021874);
-                    if ((ard.teamId == 1 && isTeam1) || (ard.teamId == 2 && isTeam2))
-                        ++teamBoosts;
-                }
-            }
-            int deathCount = 0;
-            for (size_t sIdx = 1; sIdx < ard.snapshots.size(); ++sIdx)
-            {
-                if (ard.snapshots[sIdx].time > curTime) break;
-                if (ard.snapshots[sIdx].is_dead && !ard.snapshots[sIdx - 1].is_dead)
-                    ++deathCount;
-            }
-            moraleValue = std::clamp(teamBoosts * 10 - deathCount * 15, -60, 10);
-        }
+        int boostCount = 0;
+        int moraleValue = ComputeAgentMorale(ard, m_debugTimeline, nullptr, &boostCount);
 
         // Morale row (only if non-zero), above HP bar, right-aligned
         if (moraleValue != 0)
@@ -23067,8 +23068,12 @@ void ReplayWindow::DrawPlayerInfoPanel()
 
             if (moraleValue > 0)
             {
-                char boostBuf[32];
-                snprintf(boostBuf, sizeof(boostBuf), "MORALE BOOST  +%d%%", moraleValue);
+                std::string stars;
+                int starCount = std::min(4, boostCount);
+                for (int s = 0; s < starCount; ++s) stars += "\xe2\x98\x85";
+
+                char boostBuf[64];
+                snprintf(boostBuf, sizeof(boostBuf), "MORALE BOOST  +%d%%  %s", moraleValue, stars.c_str());
                 ImVec2 bSz = ImGui::CalcTextSize(boostBuf);
                 float bScale = 12.f / ImGui::GetFontSize();
                 float bx = rowRight - bSz.x * bScale;

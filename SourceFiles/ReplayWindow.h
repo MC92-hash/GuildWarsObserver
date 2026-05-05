@@ -429,6 +429,7 @@ public:
     // --- Morale Panel ---
     bool m_showMoralePanel = false;
     void DrawMoralePanel();
+    int  ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount = nullptr, int* outBoostCount = nullptr) const;
 
     // --- Lord Damage Panel ---
     struct LordAttackerRow {
