@@ -178,6 +178,8 @@ private:
                            uint32_t segmentHash,
                            size_t segmentFallbackIndex);
 
+    void UpdateDoorAnimations();
+
     // --- ImGui state ---
     bool m_imguiInitialized = false;
     ImGuiContext* m_imguiContext = nullptr;
@@ -290,6 +292,11 @@ private:
     // --- Catapult lever state tracking (Warrior's Isle) ---
     static constexpr int kWarriorsIsleMapId = 171;
     std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
+
+    // --- Door animation state tracking (per door type, not per object) ---
+    bool  m_doorTypeOpen[3] = {};     // index 1 = Type1 (0x2873C), index 2 = Type2 (0x1F1EE)
+    float m_doorLastScanTime = -1.f;
+    int   m_doorAnimPropCount = 0;
 
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;

@@ -1714,6 +1714,70 @@ void ReplayWindow::StepPlaceProps()
                                       propMeshes, perObjectCBs, meshIds,
                                       perMeshTexIds, pst, segHash, segFallback);
                 }
+
+                if (m_replayCtx.datMapId == 0x28784)
+                {
+                    uint8_t doorType = 0;
+                    if (fileHash == 0x2873C || fileHash == 0x2873B || fileHash == 0x2646B)
+                        doorType = 1;
+                    else if (fileHash == 0x1F1EE)
+                        doorType = 2;
+
+                    if (doorType != 0)
+                    {
+                        SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                          propMeshes, perObjectCBs, meshIds,
+                                          perMeshTexIds, pst, 0x303419C9, 2);
+
+                        auto& animProps = m_mapRenderer->GetAnimatedProps();
+                        if (!animProps.empty())
+                        {
+                            auto& last = animProps.back();
+                            last.doorType = doorType;
+                            last.openSegmentIndex  = SIZE_MAX;
+                            last.closeSegmentIndex = SIZE_MAX;
+
+                            if (last.clip)
+                            {
+                                const auto& segs = last.clip->animationSegments;
+                                for (size_t s = 0; s < segs.size(); s++)
+                                {
+                                    if (segs[s].hash == 0x303419C9) last.openSegmentIndex  = s;
+                                    if (segs[s].hash == 0x31D3EDC8) last.closeSegmentIndex = s;
+                                }
+                                if (last.openSegmentIndex == SIZE_MAX)  last.openSegmentIndex  = 2;
+                                if (last.closeSegmentIndex == SIZE_MAX) last.closeSegmentIndex = 3;
+                            }
+
+                            last.controller->SetSegment(last.closeSegmentIndex);
+                            last.controller->SetLooping(false);
+                            last.controller->SetTime(
+                                static_cast<float>(last.clip->animationSegments[last.closeSegmentIndex].endTime));
+                            last.controller->Pause();
+
+                            if (doorType == 2)
+                            {
+                                for (int skip = static_cast<int>(last.meshes.size()) - 1; skip >= 0; skip--)
+                                {
+                                    if (skip == 3 || skip == 4)
+                                    {
+                                        last.meshes.erase(last.meshes.begin() + skip);
+                                        if (skip < static_cast<int>(last.perObjectCBs.size()))
+                                            last.perObjectCBs.erase(last.perObjectCBs.begin() + skip);
+                                        if (skip < static_cast<int>(last.staticMeshIds.size()))
+                                            m_mapRenderer->GetMeshManager()->SetMeshShouldRender(
+                                                last.staticMeshIds[skip], true);
+                                    }
+                                }
+                            }
+
+                            m_doorAnimPropCount++;
+                            OutputDebugStringA(
+                                std::format("[DoorAnim] Prop {} set up as door type {} (hash 0x{:X})\n",
+                                            i, doorType, fileHash).c_str());
+                        }
+                    }
+                }
             }
 
             for (int mid : meshIds)
@@ -1760,6 +1824,21 @@ void ReplayWindow::StepPlaceProps()
         if (!m_loadTiming.placePropsLogged) {
             m_loadTiming.placePropSec = std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
             OutputDebugStringA(std::format("[ReplayLoad] PlaceProps: {:.3f}s\n", m_loadTiming.placePropSec).c_str());
+
+            if (m_replayCtx.datMapId == 0x28784)
+            {
+                OutputDebugStringA(std::format(
+                    "[DoorAnim] Isle of Meditation: {} door animated props created\n",
+                    m_doorAnimPropCount).c_str());
+
+                std::unordered_map<uint32_t, int> hashCounts;
+                for (size_t h = 0; h < m_propModelFileHashes.size(); h++)
+                    hashCounts[m_propModelFileHashes[h]]++;
+                for (const auto& [hash, count] : hashCounts)
+                    OutputDebugStringA(std::format(
+                        "[DoorAnim]   model hash 0x{:X} x{}\n", hash, count).c_str());
+            }
+
             m_loadTiming.placePropsLogged = true;
         }
 
@@ -2010,6 +2089,87 @@ void ReplayWindow::SetupAnimatedProp(
     prop.pixelShaderType = pst;
 
     m_mapRenderer->AddAnimatedProp(std::move(prop));
+}
+
+// ---------------------------------------------------------------------------
+// Door animation update (event-driven, per door type)
+// ---------------------------------------------------------------------------
+
+static int GetIoMDoorType(uint32_t objectId)
+{
+    switch (objectId) {
+    case 56526: case 11692: case 12669: case 61318: return 1;
+    case 41431: case 1760:  case 54552:             return 2;
+    default: return 0;
+    }
+}
+
+void ReplayWindow::UpdateDoorAnimations()
+{
+    if (!m_mapRenderer || !m_replayCtx.stocLoaded || m_doorAnimPropCount == 0)
+        return;
+
+    const auto& doorEvents = m_replayCtx.stocData.doorEvents;
+    if (doorEvents.empty())
+        return;
+
+    float curTime = m_debugTimeline;
+    bool seeked = (curTime < m_doorLastScanTime);
+    m_doorLastScanTime = curTime;
+
+    bool prevOpen[3] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2] };
+
+    if (seeked)
+    {
+        m_doorTypeOpen[1] = false;
+        m_doorTypeOpen[2] = false;
+    }
+
+    for (const auto& ev : doorEvents)
+    {
+        if (ev.time > curTime)
+            break;
+
+        int dt = GetIoMDoorType(ev.object_id);
+        if (dt == 0)
+            continue;
+
+        if (!ev.isState)
+            m_doorTypeOpen[dt] = (ev.status == 1);
+        else
+            m_doorTypeOpen[dt] = (ev.state == 1);
+    }
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+    for (auto& ap : animProps)
+    {
+        if (ap.doorType == 0)
+            continue;
+
+        bool isOpen = m_doorTypeOpen[ap.doorType];
+        bool changed = seeked || (isOpen != prevOpen[ap.doorType]);
+
+        if (!changed)
+            continue;
+
+        size_t targetSeg = isOpen ? ap.openSegmentIndex : ap.closeSegmentIndex;
+        const auto& segments = ap.clip->animationSegments;
+        if (targetSeg >= segments.size())
+            continue;
+
+        if (seeked)
+        {
+            ap.controller->SetSegment(targetSeg);
+            ap.controller->SetTime(static_cast<float>(segments[targetSeg].endTime));
+            ap.controller->Pause();
+        }
+        else
+        {
+            ap.controller->SetSegment(targetSeg);
+            ap.controller->SetLooping(false);
+            ap.controller->Play();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3056,6 +3216,8 @@ void ReplayWindow::Update(double elapsedMs)
         UpdateFollowCamera(dt);
     m_mapRenderer->m_replayPlaybackSpeed = m_replayCtx.playbackSpeed;
     m_mapRenderer->Update(dt);
+
+    UpdateDoorAnimations();
 
     if (m_pipEnabled)
         UpdatePiPTarget();
@@ -18624,6 +18786,7 @@ static ImU32 StoCCategoryColor(StoCCategory cat)
     case StoCCategory::Unknown:       return IM_COL32(220, 220, 220, 255);
     case StoCCategory::Lifecycle:     return IM_COL32(100, 220, 160, 255);
     case StoCCategory::MapObject:     return IM_COL32(220, 180, 100, 255);
+    case StoCCategory::DoorEvent:     return IM_COL32(180, 130, 220, 255);
     case StoCCategory::FlagEvent:     return IM_COL32(60,  200, 60,  255);
     default:                          return IM_COL32(255, 255, 255, 255);
     }
@@ -18641,6 +18804,7 @@ static int StoCCategoryCount(const StoCData& d, StoCCategory cat)
     case StoCCategory::Unknown:       return static_cast<int>(d.unknown.size());
     case StoCCategory::Lifecycle:     return static_cast<int>(d.lifecycle.size());
     case StoCCategory::MapObject:     return static_cast<int>(d.mapObject.size());
+    case StoCCategory::DoorEvent:     return static_cast<int>(d.doorEvents.size());
     case StoCCategory::FlagEvent:     return d.flagEvents.totalCount();
     default: return 0;
     }
@@ -18761,6 +18925,8 @@ void ReplayWindow::DrawStoCWindow()
             PlotEvents(sd.lifecycle, StoCCategory::Lifecycle);
         if (m_selectedStoCCategory == StoCCategory::MapObject || m_selectedStoCCategory == StoCCategory::_Count)
             PlotEvents(sd.mapObject, StoCCategory::MapObject);
+        if (m_selectedStoCCategory == StoCCategory::DoorEvent || m_selectedStoCCategory == StoCCategory::_Count)
+            PlotEvents(sd.doorEvents, StoCCategory::DoorEvent);
         if (m_selectedStoCCategory == StoCCategory::FlagEvent || m_selectedStoCCategory == StoCCategory::_Count)
         {
             auto PlotFlagSub = [&](const auto& vec) {
@@ -19299,6 +19465,80 @@ void ReplayWindow::DrawStoCWindow()
                     ImGui::Text("%d", ev.state);
                     ImGui::TableSetColumnIndex(6);
                     ImGui::Text("%d", ev.unk1);
+                }
+            }
+            ImGui::EndTable();
+        }
+        break;
+    }
+
+    // ====================== DOOR EVENTS ======================
+    case StoCCategory::DoorEvent:
+    {
+        ImGui::Text("Door Events: %d", static_cast<int>(sd.doorEvents.size()));
+        if (sd.doorEvents.empty())
+        {
+            ImGui::TextWrapped("No door_events.txt found for this replay.");
+            break;
+        }
+        if (ImGui::BeginTable("DETable", 7,
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
+            ImVec2(0, 0)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Time",        ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableSetupColumn("Type",         ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("Object ID",    ImGuiTableColumnFlags_WidthFixed, 65);
+            ImGui::TableSetupColumn("Anim Type",    ImGuiTableColumnFlags_WidthFixed, 65);
+            ImGui::TableSetupColumn("Anim Stage",   ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Status",        ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableSetupColumn("State",         ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableHeadersRow();
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(sd.doorEvents.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    auto& ev = sd.doorEvents[row];
+                    int sec = static_cast<int>(ev.time);
+                    int ms  = static_cast<int>((ev.time - static_cast<float>(sec)) * 1000.f);
+
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    if (ImGui::Selectable(std::format("{:02d}:{:02d}.{:03d}##de{}", sec / 60, sec % 60, ms, row).c_str(),
+                                          m_selectedStoCEventIdx == row,
+                                          ImGuiSelectableFlags_SpanAllColumns))
+                    {
+                        m_selectedStoCEventIdx = row;
+                        m_debugTimeline = ev.time;
+                    }
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextUnformatted(ev.isState ? "DOOR_STATE" : "DOOR_ANIMATION");
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%u", ev.object_id);
+                    ImGui::TableSetColumnIndex(3);
+                    if (!ev.isState) ImGui::Text("%d", ev.animation_type); else ImGui::TextUnformatted("-");
+                    ImGui::TableSetColumnIndex(4);
+                    if (!ev.isState) ImGui::Text("%d", ev.animation_stage); else ImGui::TextUnformatted("-");
+                    ImGui::TableSetColumnIndex(5);
+                    if (!ev.isState)
+                    {
+                        const char* statusText = ev.status == 1 ? "OPENING" : ev.status == 2 ? "CLOSING" : "UNKNOWN";
+                        ImGui::TextUnformatted(statusText);
+                    }
+                    else
+                        ImGui::TextUnformatted("-");
+                    ImGui::TableSetColumnIndex(6);
+                    if (ev.isState)
+                    {
+                        const char* stateText = ev.state == 0 ? "CLOSED" : ev.state == 1 ? "OPEN" : "UNKNOWN";
+                        ImGui::TextUnformatted(stateText);
+                    }
+                    else
+                        ImGui::TextUnformatted("-");
                 }
             }
             ImGui::EndTable();

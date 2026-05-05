@@ -908,7 +908,7 @@ struct CombatLogRow {
 
 enum class StoCCategory : uint8_t
 {
-    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, Lifecycle, MapObject, FlagEvent, _Count
+    AgentMovement, Skill, AttackSkill, BasicAttack, Combat, Jumbo, Unknown, Lifecycle, MapObject, DoorEvent, FlagEvent, _Count
 };
 
 inline const char* StoCCategoryName(StoCCategory c)
@@ -923,6 +923,7 @@ inline const char* StoCCategoryName(StoCCategory c)
     case StoCCategory::Unknown:       return "Unknown Events";
     case StoCCategory::Lifecycle:     return "Lifecycle Events";
     case StoCCategory::MapObject:     return "Map Object Events";
+    case StoCCategory::DoorEvent:     return "Door Events";
     case StoCCategory::FlagEvent:     return "Flag Events";
     default:                          return "?";
     }
@@ -1054,6 +1055,21 @@ struct MapObjectEvent
 };
 
 // ---------------------------------------------------------------------------
+// Door events (from door_events.txt)
+// ---------------------------------------------------------------------------
+
+struct DoorEvent
+{
+    float    time = 0.f;
+    uint32_t object_id = 0;
+    bool     isState = false;
+    int      animation_type = 0;
+    int      animation_stage = 0;
+    int      status = 0;
+    int      state = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Flag events (from flag_events.txt — GvG flag StoC packets)
 // ---------------------------------------------------------------------------
 
@@ -1165,6 +1181,7 @@ struct StoCData
     std::vector<StoCLordDamageEvent>    lordDamage;
     std::vector<LifecycleEvent>         lifecycle;
     std::vector<MapObjectEvent>         mapObject;
+    std::vector<DoorEvent>              doorEvents;
     FlagEventData                       flagEvents;
 };
 

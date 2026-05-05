@@ -36,6 +36,10 @@ struct MapAnimatedProp
     std::vector<int> staticMeshIds;
     PixelShaderType pixelShaderType = PixelShaderType::OldModel;
     bool active = false;
+
+    uint8_t  doorType = 0;
+    size_t   openSegmentIndex = 0;
+    size_t   closeSegmentIndex = 0;
 };
 
 using namespace DirectX;
@@ -1341,6 +1345,8 @@ public:
         prop.active = true;
         m_animated_props.push_back(std::move(prop));
     }
+
+    std::vector<MapAnimatedProp>& GetAnimatedProps() { return m_animated_props; }
 
     void RefreshPerFrameCB(float time_elapsed = 0.f)
     {

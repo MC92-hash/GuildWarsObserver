@@ -703,6 +703,65 @@ static void ParseMapObjectEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Door events (door_events.txt)
+// ---------------------------------------------------------------------------
+
+static void ParseDoorEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[6];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 6);
+                if (n >= 3)
+                {
+                    std::string_view typeName(tok[0].begin,
+                                              tok[0].end - tok[0].begin);
+                    if (typeName == "DOOR_ANIMATION" && n >= 5)
+                    {
+                        DoorEvent ev;
+                        ev.time            = li.time;
+                        ev.isState         = false;
+                        ev.object_id       = static_cast<uint32_t>(
+                            strtoul(std::string(tok[1].begin, tok[1].end).c_str(), nullptr, 10));
+                        ev.animation_type  = ToInt(tok[2].begin, tok[2].end);
+                        ev.animation_stage = ToInt(tok[3].begin, tok[3].end);
+                        ev.status          = ToInt(tok[4].begin, tok[4].end);
+                        data.doorEvents.push_back(std::move(ev));
+                    }
+                    else if (typeName == "DOOR_STATE" && n >= 3)
+                    {
+                        DoorEvent ev;
+                        ev.time      = li.time;
+                        ev.isState   = true;
+                        ev.object_id = static_cast<uint32_t>(
+                            strtoul(std::string(tok[1].begin, tok[1].end).c_str(), nullptr, 10));
+                        ev.state     = ToInt(tok[2].begin, tok[2].end);
+                        data.doorEvents.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+
+    std::sort(data.doorEvents.begin(), data.doorEvents.end(),
+              [](const DoorEvent& a, const DoorEvent& b) { return a.time < b.time; });
+}
+
+// ---------------------------------------------------------------------------
 // Flag events (flag_events.txt — GvG flag StoC packets, codes 0-6)
 // ---------------------------------------------------------------------------
 
@@ -844,6 +903,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "lord_events",                   ParseLordEvents },
     { "lifecycle_events",              ParseLifecycleEvents },
     { "manipulate_map_object_events",  ParseMapObjectEvents },
+    { "door_events",                   ParseDoorEvents },
     { "flag_events",                   ParseFlagEvents },
 };
 
