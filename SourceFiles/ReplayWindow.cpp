@@ -4146,6 +4146,8 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSkillLasers();
     UpdateIncomingEffects();
     RenderIncomingEffects();
+    UpdateSpeechBubbles();
+    RenderSpeechBubbles();
     DrawFollowedAgentHUD();
     DrawRangeRings();
     DrawSpiritRanges();
@@ -16412,6 +16414,80 @@ static ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename)
     return (ImTextureID)srv.Get();
 }
 
+static ImTextureID LoadSpeechBubbleTexture(ID3D11Device* device)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static ComPtr<ID3D11ShaderResourceView> s_srv;
+    if (device != s_cachedDevice) { s_srv.Reset(); s_cachedDevice = device; }
+    if (s_srv.Get()) return (ImTextureID)s_srv.Get();
+
+    auto fullPath = GetOthersUIBasePath() / L"Speech_bubble_0x21997386.dds";
+    if (!std::filesystem::exists(fullPath)) return nullptr;
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromDDSFile(fullPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) return nullptr;
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) return nullptr;
+
+    DirectX::ScratchImage decompressed;
+    if (DirectX::IsCompressed(meta.format))
+    {
+        hr = DirectX::Decompress(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+        if (FAILED(hr)) return nullptr;
+        image = std::move(decompressed);
+    }
+
+    DirectX::ScratchImage converted;
+    if (image.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    hr = device->CreateShaderResourceView(tex.Get(), &srvDesc, s_srv.GetAddressOf());
+    if (FAILED(hr)) return nullptr;
+
+    return (ImTextureID)s_srv.Get();
+}
+
+static std::string StripPvpSuffix(const std::string& name)
+{
+    constexpr const char* kSuffix = " (PvP)";
+    constexpr size_t kSuffixLen = 6;
+    if (name.size() >= kSuffixLen &&
+        name.compare(name.size() - kSuffixLen, kSuffixLen, kSuffix) == 0)
+        return name.substr(0, name.size() - kSuffixLen);
+    return name;
+}
+
 struct PartyIcons {
     ImTextureID weaponSpell = nullptr;
     ImTextureID enchanted   = nullptr;
@@ -20333,6 +20409,175 @@ void ReplayWindow::RenderIncomingEffects()
 
         float labelCenterX = curX + labelW * 0.5f;
         bmFont->DrawString(dl, e.label.c_str(), labelCenterX, fy, glyphHeight, alpha);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shout speech bubbles — update + render
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::UpdateSpeechBubbles()
+{
+    float now = m_debugTimeline;
+
+    if (now < m_lastShoutScanTime - 0.5f)
+    {
+        m_speechBubbles.clear();
+        m_shoutScanCursor.clear();
+        m_lastShoutScanTime = now;
+        return;
+    }
+
+    float scanFrom = m_lastShoutScanTime;
+    m_lastShoutScanTime = now;
+    if (now <= scanFrom) return;
+
+    for (auto it = m_speechBubbles.begin(); it != m_speechBubbles.end(); )
+    {
+        if ((now - it->second.spawnTime) >= kSpeechBubbleLifetime)
+            it = m_speechBubbles.erase(it);
+        else
+            ++it;
+    }
+
+    auto& db = GetSkillDatabase();
+    if (!db.IsLoaded()) return;
+
+    constexpr int kShoutType = 20;
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+        if (ard.skillUseHistory.empty()) continue;
+
+        size_t& cursor = m_shoutScanCursor[agentId];
+        if (cursor >= ard.skillUseHistory.size()) continue;
+
+        for (; cursor < ard.skillUseHistory.size(); ++cursor)
+        {
+            const auto& ev = ard.skillUseHistory[cursor];
+            if (ev.startTime > now) break;
+            if (ev.startTime <= scanFrom) continue;
+
+            const SkillInfo* si = db.Get(ev.skillId);
+            if (!si || si->type != kShoutType) continue;
+
+            SpeechBubble sb;
+            sb.agentId   = agentId;
+            sb.skillId   = ev.skillId;
+            sb.text      = StripPvpSuffix(si->name);
+            sb.spawnTime = ev.startTime;
+            m_speechBubbles[agentId] = std::move(sb);
+        }
+    }
+}
+
+void ReplayWindow::RenderSpeechBubbles()
+{
+    if (m_speechBubbles.empty()) return;
+    if (!m_showAgentOverlay) return;
+    if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return;
+
+    XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    auto* vp = ImGui::GetMainViewport();
+    float vpW = vp->Size.x, vpH = vp->Size.y;
+    float now = m_debugTimeline;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID bubbleTex = LoadSpeechBubbleTexture(dev);
+
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    const MapTransform& mt = m_replayCtx.mapTransform;
+
+    for (auto& [agentId, sb] : m_speechBubbles)
+    {
+        float age = now - sb.spawnTime;
+        if (age < 0.f || age >= kSpeechBubbleLifetime) continue;
+
+        auto ait = m_replayCtx.agents.find(agentId);
+        if (ait == m_replayCtx.agents.end()) continue;
+        const auto& ard = ait->second;
+        if (ard.snapshots.empty()) continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, now, is, sx, sy, sz);
+        XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, mt);
+
+        float modelTopY = worldPos.y;
+        if (m_useAgentModels && m_agentModelsLoaded) {
+            auto hashIt = m_agentFileHashCache.find(agentId);
+            if (hashIt != m_agentFileHashCache.end()) {
+                auto tmplIt = m_agentModelTemplates.find(hashIt->second);
+                if (tmplIt != m_agentModelTemplates.end()) {
+                    AgentModelInfo minfo = LookupAgentModelInfo(
+                        ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+                    float scale = minfo.npcAdjustment * m_agentModelScale;
+                    modelTopY += tmplIt->second.nativeHeight * scale;
+                }
+            }
+        }
+        if (modelTopY <= worldPos.y)
+            modelTopY = worldPos.y + 120.f;
+
+        XMFLOAT3 topPos = { worldPos.x, modelTopY, worldPos.z };
+        float anchorX, anchorY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, topPos, anchorX, anchorY)) continue;
+
+        float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
+        constexpr float kScreenPad = 4.f;
+        anchorY -= iconSz + kScreenPad;
+
+        float t = age / kSpeechBubbleLifetime;
+        float opacity = (t < 0.65f) ? 1.f : 1.f - ((t - 0.65f) / 0.35f);
+        opacity = std::clamp(opacity, 0.f, 1.f);
+        uint8_t alpha = static_cast<uint8_t>(opacity * 255.f);
+
+        float fontSize = std::clamp(vpH * 0.011f, 9.f, 13.f);
+        ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, sb.text.c_str());
+
+        float padH = fontSize * 0.6f;
+        float padV = fontSize * 0.35f;
+        float bubbleW = textSize.x + padH * 2.f;
+        float bubbleH = textSize.y + padV * 2.f;
+        float tailH   = fontSize * 0.45f;
+
+        float bx = anchorX - bubbleW * 0.5f;
+        float by = anchorY - bubbleH - tailH;
+
+        if (bubbleTex)
+        {
+            ImVec2 bubbleTL(bx, by);
+            ImVec2 bubbleBR(bx + bubbleW, anchorY);
+            dl->AddImage(bubbleTex, bubbleTL, bubbleBR,
+                         ImVec2(0, 0), ImVec2(1, 1),
+                         IM_COL32(255, 255, 255, alpha));
+        }
+        else
+        {
+            ImVec2 rectTL(bx, by);
+            ImVec2 rectBR(bx + bubbleW, by + bubbleH);
+            dl->AddRectFilled(rectTL, rectBR, IM_COL32(20, 20, 20, (uint8_t)(0.85f * alpha)), 3.f);
+            dl->AddRect(rectTL, rectBR, IM_COL32(200, 200, 200, alpha), 3.f, 0, 1.f);
+
+            float triCx = anchorX;
+            float triTop = by + bubbleH;
+            dl->AddTriangleFilled(
+                ImVec2(triCx - tailH * 0.4f, triTop),
+                ImVec2(triCx + tailH * 0.4f, triTop),
+                ImVec2(triCx, triTop + tailH),
+                IM_COL32(20, 20, 20, (uint8_t)(0.85f * alpha)));
+        }
+
+        float textX = bx + (bubbleW - textSize.x) * 0.5f;
+        float textY = by + (bubbleH - textSize.y) * 0.5f;
+        dl->AddText(font, fontSize, ImVec2(textX, textY),
+                    IM_COL32(255, 255, 255, alpha), sb.text.c_str());
     }
 }
 
