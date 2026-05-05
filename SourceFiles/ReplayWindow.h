@@ -365,6 +365,10 @@ private:
     int   m_meterMaxHeal   = 0;
     int   m_meterTotalDmg  = 0;
     int   m_meterTotalHeal = 0;
+    int   m_meterTotalDmgTeam1  = 0;
+    int   m_meterTotalDmgTeam2  = 0;
+    int   m_meterTotalHealTeam1 = 0;
+    int   m_meterTotalHealTeam2 = 0;
     float m_meterLastTime  = -1.f;
     int   m_meterLastIdx   = 0;
 
@@ -1019,6 +1023,20 @@ private:
     float m_pipLastEffectScanTime = -1.f;
     int   m_pipEffectAgentId      = -1;
     void  UpdatePiPIncomingEffects();
+
+    // --- Shout speech bubbles ---
+    struct SpeechBubble {
+        int   agentId   = -1;
+        int   skillId   = 0;
+        std::string text;
+        float spawnTime = 0.f;
+    };
+    static constexpr float kSpeechBubbleLifetime = 1.5f;
+    std::unordered_map<int, SpeechBubble> m_speechBubbles;   // keyed by agentId (replaces on new shout)
+    std::unordered_map<int, size_t> m_shoutScanCursor;       // per-agent cursor into skillUseHistory
+    float m_lastShoutScanTime = -1.f;
+    void  UpdateSpeechBubbles();
+    void  RenderSpeechBubbles();
 
     // --- Spatial Audio ---
     std::unique_ptr<SpatialAudioEngine> m_audioEngine;

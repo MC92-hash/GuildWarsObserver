@@ -24502,7 +24502,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             return tPos.x + ((t - windowStart) / kFullWindow) * tlW;
         };
 
-        // Collect visible cast bars
+        // Collect visible timeline entries (cast bars + instant skill icons)
         struct TlBar {
             float x0 = 0.f, x1 = 0.f;
             float rawStart = 0.f, rawEnd = 0.f;
@@ -24510,21 +24510,33 @@ void ReplayWindow::DrawPlayerInfoPanel()
             ImU32 barCol = 0;
             bool isActive = false;
             float castProgress = 0.f;
+            bool isInstant = false;
+            bool wasInterrupted = false;
+            bool wasCancelled = false;
         };
         std::vector<TlBar> tlBars;
 
         auto agentIt2 = m_replayCtx.agents.find(m_playerInfoAgentId);
         if (agentIt2 != m_replayCtx.agents.end())
         {
-            const auto& castHist = agentIt2->second.castHistory;
+            const auto& skillHist = agentIt2->second.skillUseHistory;
             auto& db = GetSkillDatabase();
-            for (const auto& ci : castHist)
+            for (const auto& ev : skillHist)
             {
-                if (ci.end < windowStart) continue;
-                if (ci.start > windowEnd) break;
+                if (ev.endTime < windowStart) continue;
+                if (ev.startTime > windowEnd) break;
 
-                float x0raw = timeToX(ci.start);
-                float x1raw = timeToX(ci.end);
+                if (ev.isInstant)
+                {
+                    float ix = timeToX(ev.startTime);
+                    if (ix < tPos.x || ix > tPos.x + tlW) continue;
+                    tlBars.push_back({ ix, ix, ev.startTime, ev.endTime, ev.skillId,
+                        0, false, 1.f, true, ev.wasInterrupted, ev.wasCancelled });
+                    continue;
+                }
+
+                float x0raw = timeToX(ev.startTime);
+                float x1raw = timeToX(ev.endTime);
                 float x0 = std::max(x0raw, tPos.x);
                 float x1 = std::min(x1raw, tPos.x + tlW);
                 if (x1 <= x0) continue;
@@ -24532,7 +24544,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 ImU32 barCol = IM_COL32(0xD4, 0xA0, 0x20, 200);
                 if (db.IsLoaded())
                 {
-                    const SkillInfo* si = db.Get(ci.skillId);
+                    const SkillInfo* si = db.Get(ev.skillId);
                     if (si)
                     {
                         int type = si->type;
@@ -24545,18 +24557,21 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     }
                 }
 
-                bool isActive = (ci.start <= curTime && ci.end > curTime);
-                float castDur = ci.end - ci.start;
-                float progress = (castDur > 0.f) ? std::clamp((curTime - ci.start) / castDur, 0.f, 1.f) : 1.f;
+                if (ev.wasInterrupted)
+                    barCol = IM_COL32(0x90, 0x30, 0xD0, 200);
+                else if (ev.wasCancelled)
+                    barCol = IM_COL32(0xE0, 0x80, 0x20, 200);
+
+                bool isActive = (ev.startTime <= curTime && ev.endTime > curTime);
+                float castDur = ev.endTime - ev.startTime;
+                float progress = (castDur > 0.f) ? std::clamp((curTime - ev.startTime) / castDur, 0.f, 1.f) : 1.f;
 
                 if (isActive)
                 {
-                    // Elapsed portion: full opacity
                     float fillX = timeToX(curTime);
                     fillX = std::clamp(fillX, x0, x1);
                     if (fillX > x0)
                         dl->AddRectFilled(ImVec2(x0, barTopY), ImVec2(fillX, barTopY + kTlBarH), barCol, 3.f);
-                    // Remaining portion: dim track
                     if (fillX < x1)
                     {
                         ImU32 dimCol = (barCol & 0x00FFFFFF) | (((ImU32)80) << 24);
@@ -24565,20 +24580,21 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 }
                 else
                 {
-                    bool isFuture = (ci.start > curTime);
+                    bool isFuture = (ev.startTime > curTime);
                     ImU32 drawCol = barCol;
                     if (isFuture)
                         drawCol = (barCol & 0x00FFFFFF) | (((ImU32)kFutureAlpha) << 24);
                     dl->AddRectFilled(ImVec2(x0, barTopY), ImVec2(x1, barTopY + kTlBarH), drawCol, 3.f);
                 }
 
-                tlBars.push_back({ x0, x1, ci.start, ci.end, ci.skillId, barCol, isActive, progress });
+                tlBars.push_back({ x0, x1, ev.startTime, ev.endTime, ev.skillId, barCol,
+                    isActive, progress, false, ev.wasInterrupted, ev.wasCancelled });
 
                 if (ImGui::IsMouseHoveringRect(ImVec2(x0, barTopY), ImVec2(x1, barTopY + kTlBarH)))
                 {
-                    std::string sName = GetSkillDisplayName(ci.skillId);
-                    int mins = (int)(ci.start / 60.f);
-                    float secs = ci.start - mins * 60.f;
+                    std::string sName = GetSkillDisplayName(ev.skillId);
+                    int mins = (int)(ev.startTime / 60.f);
+                    float secs = ev.startTime - mins * 60.f;
                     ImGui::SetTooltip("%s -- %d:%05.2f", sName.c_str(), mins, secs);
                 }
             }
@@ -24595,9 +24611,12 @@ void ReplayWindow::DrawPlayerInfoPanel()
             float icoSz = tb.isActive ? kTlIconCastSz : kTlIconSz;
             ImU32 icoTint = isFuture ? IM_COL32(255, 255, 255, kFutureAlpha) : IM_COL32(255, 255, 255, 255);
 
-            // Position icon: past→right edge of bar, future→left edge, active→fill edge
             float icoX;
-            if (tb.isActive)
+            if (tb.isInstant)
+            {
+                icoX = tb.x0 - icoSz * 0.5f;
+            }
+            else if (tb.isActive)
             {
                 float fillEdge = tb.x0 + (tb.x1 - tb.x0) * tb.castProgress;
                 icoX = fillEdge - icoSz * 0.5f;
@@ -24626,11 +24645,32 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     ImVec2(0, 0), ImVec2(1, 1), icoTint, 3.f);
             }
 
-            if (tb.isActive)
+            // Border color: green=active cast, purple=interrupted, orange=cancelled
+            if (tb.wasInterrupted)
             {
                 dl->AddRect(ImVec2(icoX - 0.5f, icoY - 0.5f),
                     ImVec2(icoX + icoSz + 0.5f, icoY + icoSz + 0.5f),
-                    IM_COL32(0xFF, 0xB8, 0x20, 0xFF), 3.f, 0, 1.5f);
+                    IM_COL32(0xA0, 0x30, 0xE0, 0xFF), 3.f, 0, 1.5f);
+            }
+            else if (tb.wasCancelled)
+            {
+                dl->AddRect(ImVec2(icoX - 0.5f, icoY - 0.5f),
+                    ImVec2(icoX + icoSz + 0.5f, icoY + icoSz + 0.5f),
+                    IM_COL32(0xF0, 0x80, 0x20, 0xFF), 3.f, 0, 1.5f);
+            }
+            else if (tb.isActive)
+            {
+                dl->AddRect(ImVec2(icoX - 0.5f, icoY - 0.5f),
+                    ImVec2(icoX + icoSz + 0.5f, icoY + icoSz + 0.5f),
+                    IM_COL32(0x30, 0xC0, 0x30, 0xFF), 3.f, 0, 1.5f);
+            }
+
+            if (tb.isInstant && ImGui::IsMouseHoveringRect(ImVec2(icoX, icoY), ImVec2(icoX + icoSz, icoY + icoSz)))
+            {
+                std::string sName = GetSkillDisplayName(tb.skillId);
+                int mins = (int)(tb.rawStart / 60.f);
+                float secs = tb.rawStart - mins * 60.f;
+                ImGui::SetTooltip("%s -- %d:%05.2f", sName.c_str(), mins, secs);
             }
 
             lastBelow = placeBelow;
