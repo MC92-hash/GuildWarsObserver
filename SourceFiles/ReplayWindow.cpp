@@ -2114,7 +2114,10 @@ void ReplayWindow::UpdateDoorAnimations()
         return;
 
     float curTime = m_debugTimeline;
-    bool seeked = (curTime < m_doorLastScanTime);
+    float timeDelta = curTime - m_doorLastScanTime;
+    bool seeked = (m_doorLastScanTime < 0.f)
+               || (timeDelta < 0.f)
+               || (timeDelta > 1.0f);
     m_doorLastScanTime = curTime;
 
     bool prevOpen[3] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2] };
@@ -2130,15 +2133,19 @@ void ReplayWindow::UpdateDoorAnimations()
         if (ev.time > curTime)
             break;
 
+        if (ev.isState)
+            continue;
+        if (ev.animation_stage != 2)
+            continue;
+
         int dt = GetIoMDoorType(ev.object_id);
         if (dt == 0)
             continue;
 
-        if (!ev.isState)
-            m_doorTypeOpen[dt] = (ev.status == 1);
-        else
-            m_doorTypeOpen[dt] = (ev.state == 1);
+        m_doorTypeOpen[dt] = (ev.status == 1);
     }
+
+    float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 
     auto& animProps = m_mapRenderer->GetAnimatedProps();
     for (auto& ap : animProps)
@@ -2147,28 +2154,31 @@ void ReplayWindow::UpdateDoorAnimations()
             continue;
 
         bool isOpen = m_doorTypeOpen[ap.doorType];
-        bool changed = seeked || (isOpen != prevOpen[ap.doorType]);
+        bool stateChanged = seeked || (isOpen != prevOpen[ap.doorType]);
 
-        if (!changed)
-            continue;
-
-        size_t targetSeg = isOpen ? ap.openSegmentIndex : ap.closeSegmentIndex;
-        const auto& segments = ap.clip->animationSegments;
-        if (targetSeg >= segments.size())
-            continue;
-
-        if (seeked)
+        if (stateChanged)
         {
-            ap.controller->SetSegment(targetSeg);
-            ap.controller->SetTime(static_cast<float>(segments[targetSeg].endTime));
-            ap.controller->Pause();
+            size_t targetSeg = isOpen ? ap.openSegmentIndex : ap.closeSegmentIndex;
+            const auto& segments = ap.clip->animationSegments;
+            if (targetSeg >= segments.size())
+                continue;
+
+            if (seeked)
+            {
+                ap.controller->SetSegment(targetSeg);
+                ap.controller->SetTime(static_cast<float>(segments[targetSeg].endTime));
+                ap.controller->Pause();
+            }
+            else
+            {
+                ap.controller->SetSegment(targetSeg);
+                ap.controller->SetLooping(false);
+                ap.controller->Play();
+            }
         }
-        else
-        {
-            ap.controller->SetSegment(targetSeg);
-            ap.controller->SetLooping(false);
-            ap.controller->Play();
-        }
+
+        if (m_replayCtx.isPlaying && ap.controller->IsPlaying())
+            ap.controller->Update(frameDt * m_replayCtx.playbackSpeed);
     }
 }
 
