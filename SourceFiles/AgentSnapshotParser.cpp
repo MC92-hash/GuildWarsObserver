@@ -591,6 +591,14 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
             continue;
         }
 
+        // Obelisk Flag Stand check (gadget_id 4720, Isle of Meditation)
+        if (first.gadget_id == 4720)
+        {
+            ard.type         = AgentType::ObeliskFlagStand;
+            ard.categoryName = "Obelisk Flag Stand";
+            continue;
+        }
+
         // Gadget check (use gadget_id field from the snapshot)
         const char* gadgetName = LookupGadgetName(first.gadget_id);
         if (gadgetName)

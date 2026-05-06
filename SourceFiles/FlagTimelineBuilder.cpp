@@ -265,6 +265,26 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         }
     }
 
+    // Phase 3b: Resolve obelisk flagstand position and agent ID
+    int obeliskStandId = -1;
+    if (input.agents) {
+        for (auto& [aid, ard] : *input.agents) {
+            if (ard.categoryName == "Obelisk Flag Stand" && !ard.snapshots.empty()) {
+                obeliskStandId = aid;
+                break;
+            }
+        }
+    }
+    if (obeliskStandId >= 0) {
+        result.obelisk.standAgentId = obeliskStandId;
+        float sx, sy, sz;
+        if (GetAgentFirstPos(obeliskStandId, input.agents, sx, sy, sz)) {
+            result.obelisk.standX = sx;
+            result.obelisk.standY = sy;
+            result.obelisk.standZ = sz;
+        }
+    }
+
     // Phase 4: Merge and process events chronologically
     struct RawEvent {
         float time;
@@ -649,6 +669,64 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             break;
         }
 
+        case 4: // FLAG_STAND — detect obelisk captures
+        {
+            if (obeliskStandId < 0) break;
+            auto& e = fe.stands[raw.index];
+            if (e.stand_agent_id != obeliskStandId) break;
+            if (e.sub_field != 0 || e.value != 4) break;
+
+            // Determine capturing team from the concurrent FLAG_ITEM event
+            // (more reliable than carrier check when both teams carry simultaneously).
+            int ti = -1;
+            for (auto& fi : fe.items) {
+                if (std::abs(fi.time - e.time) > 0.01f) continue;
+                if (fi.extra_id == kBlueExtraId)      { ti = 0; break; }
+                else if (fi.extra_id == kRedExtraId)   { ti = 1; break; }
+            }
+
+            // Fallback: check which team currently has a carrier
+            if (ti < 0) {
+                for (int t = 0; t < 2; t++) {
+                    if (carrier[t] >= 0) { ti = t; break; }
+                }
+            }
+            if (ti < 0) break;
+
+            FlagTimelineEvent stickEv;
+            stickEv.time           = e.time;
+            stickEv.flagTeam       = static_cast<FlagTeam>(ti);
+            stickEv.eventType      = FlagTimelineEventType::Stick;
+            stickEv.newLocation    = FlagLocation::Stand;
+            stickEv.actorAgentId   = carrier[ti];
+            stickEv.carrierAgentId = -1;
+            stickEv.x = result.obelisk.standX;
+            stickEv.y = result.obelisk.standY;
+            stickEv.z = result.obelisk.standZ;
+            stickEv.standAgentId = obeliskStandId;
+            result.teams[ti].events.push_back(stickEv);
+
+            FlagTimelineEvent spawnEv;
+            spawnEv.time        = e.time + 0.001f;
+            spawnEv.flagTeam    = static_cast<FlagTeam>(ti);
+            spawnEv.eventType   = FlagTimelineEventType::Spawn;
+            spawnEv.newLocation = FlagLocation::Base;
+            spawnEv.x = result.teams[ti].spawnX;
+            spawnEv.y = result.teams[ti].spawnY;
+            spawnEv.z = result.teams[ti].spawnZ;
+            result.teams[ti].events.push_back(spawnEv);
+
+            StandControlEvent sc;
+            sc.time         = e.time;
+            sc.owner        = (ti == 0) ? StandOwner::Blue : StandOwner::Red;
+            sc.standAgentId = obeliskStandId;
+            sc.moraleExpiry = 0.f;
+            result.obelisk.events.push_back(sc);
+
+            carrier[ti] = -1;
+            break;
+        }
+
         default:
             break;
         }
@@ -718,6 +796,29 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             }
         }
         std::stable_sort(result.stand.events.begin(), result.stand.events.end(),
+            [](const StandControlEvent& a, const StandControlEvent& b) { return a.time < b.time; });
+    }
+
+    // Phase 5b: Build obelisk stand control from MAP_OBJECT overcap events
+    if (input.mapObject && result.obelisk.standAgentId >= 0) {
+        uint32_t obeliskObjId = static_cast<uint32_t>(result.obelisk.standAgentId);
+        for (auto& mo : *input.mapObject) {
+            if (mo.isState || mo.object_id != obeliskObjId) continue;
+            if (mo.animation_stage == 2) {
+                bool alreadyHandled = false;
+                for (auto& sc : result.obelisk.events) {
+                    if (std::abs(sc.time - mo.time) < 0.5f) { alreadyHandled = true; break; }
+                }
+                if (!alreadyHandled) {
+                    StandControlEvent sc;
+                    sc.time  = mo.time;
+                    sc.owner = StandOwner::Neutral;
+                    sc.standAgentId = result.obelisk.standAgentId;
+                    result.obelisk.events.push_back(sc);
+                }
+            }
+        }
+        std::stable_sort(result.obelisk.events.begin(), result.obelisk.events.end(),
             [](const StandControlEvent& a, const StandControlEvent& b) { return a.time < b.time; });
     }
 

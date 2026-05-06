@@ -250,6 +250,7 @@ private:
         int playerTeam = 0;    // 0=blue, 1=red
         int flagTeam   = 0;    // 0=blue, 1=red
         FlagTimelineEventType eventType = FlagTimelineEventType::Spawn;
+        int standAgentId = -1; // which stand for Stick events (-1 = tower, else obelisk)
     };
     std::vector<FlagEventMessage> m_flagMessages;
     void BuildFlagMessages();
@@ -297,6 +298,16 @@ private:
     bool  m_doorTypeOpen[3] = {};     // index 1 = Type1 (0x2873C), index 2 = Type2 (0x1F1EE)
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
+
+    // --- Obelisk Flag Stand 3D model (Isle of Meditation) ---
+    int  m_obeliskAnimPropIndex = -1;
+    bool m_obeliskModelLoaded   = false;
+    std::vector<int> m_obeliskStaticMeshIds;
+    int  m_obeliskBannerMeshId  = -1;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_obeliskRedFlagSRV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_obeliskBlueFlagSRV;
+    void SetupObeliskFlagStand();
+    void UpdateObeliskFlagStand();
 
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
@@ -469,7 +480,7 @@ public:
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
-    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory, ShrineCaptured, ShrineNeutralized };
+    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory, ShrineCaptured, ShrineNeutralized, ObeliskCapture };
     struct TimelineEvent {
         float time = 0.f;
         TimelineEventType type = TimelineEventType::Death;
@@ -489,11 +500,11 @@ public:
     bool m_tlFilterDeath = true;
     bool m_tlFilterRes = true;
     bool m_tlFilterFlag = true;
-    bool m_tlFilterFlagReturn = true;
     bool m_tlFilterMorale = true;
     bool m_tlFilterLord = true;
     bool m_tlFilterVictory = true;
     bool m_tlFilterShrine = true;
+    bool m_tlFilterObelisk = true;
     void BuildTimelineData();
     void DrawEventTimeline();
 

@@ -26,7 +26,7 @@ enum class FlagLocation : uint8_t {
     Base,         // sitting at team's neutral spawn point
     Carried,      // held by a player (no world agent)
     Ground,       // dropped on the ground
-    Stand         // placed on the tower flagstand
+    Stand         // placed on a flagstand (tower or obelisk — check standAgentId)
 };
 
 enum class StandOwner : uint8_t { Neutral, Blue, Red };
@@ -77,7 +77,8 @@ struct StandTimeline {
 // Top-level output
 struct FlagTimeline {
     FlagTeamTimeline teams[2];  // [0]=blue, [1]=red
-    StandTimeline    stand;
+    StandTimeline    stand;     // tower flagstand
+    StandTimeline    obelisk;   // obelisk flagstand (Isle of Meditation); stays empty on other maps
     std::vector<FlagTimelineEvent> allEvents; // merged, sorted chronologically
     std::unordered_set<int> allFlagItemIds;   // all item_ids from FLAG_ITEM events
     bool valid = false;

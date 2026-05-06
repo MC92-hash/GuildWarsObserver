@@ -40,6 +40,12 @@ struct MapAnimatedProp
     uint8_t  doorType = 0;
     size_t   openSegmentIndex = 0;
     size_t   closeSegmentIndex = 0;
+
+    std::vector<bool> submeshVisibility;
+
+    bool IsSubmeshVisible(size_t idx) const {
+        return idx < submeshVisibility.size() ? submeshVisibility[idx] : true;
+    }
 };
 
 using namespace DirectX;
@@ -1060,7 +1066,8 @@ public:
         {
             if (!ap.active || !ap.controller)
                 continue;
-            ap.controller->Update(static_cast<float>(dt_seconds) * m_replayPlaybackSpeed);
+            if (ap.doorType == 0)
+                ap.controller->Update(static_cast<float>(dt_seconds) * m_replayPlaybackSpeed);
             const auto& boneMatrices = ap.controller->GetBoneMatrices();
             for (auto& mesh : ap.meshes)
             {
@@ -1560,6 +1567,9 @@ private:
             {
                 auto& mesh = ap.meshes[i];
                 if (!mesh)
+                    continue;
+
+                if (!ap.IsSubmeshVisible(i))
                     continue;
 
                 if (i < ap.perObjectCBs.size())

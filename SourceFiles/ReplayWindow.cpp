@@ -224,10 +224,10 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashBool(m_clAutoScroll);
     hashBool(m_tlFilterDeath);
     hashBool(m_tlFilterFlag);
-    hashBool(m_tlFilterFlagReturn);
     hashBool(m_tlFilterMorale);
     hashBool(m_tlFilterLord);
     hashBool(m_tlFilterShrine);
+    hashBool(m_tlFilterObelisk);
     hashInt(m_pianoRollZoomIdx);
     hashBool(m_pianoRollTeam1Open);
     hashBool(m_pianoRollTeam2Open);
@@ -310,10 +310,10 @@ void ReplayWindow::SaveUILayout()
     // Event Timeline filters
     ps["tlFilterDeath"]       = m_tlFilterDeath;
     ps["tlFilterFlag"]        = m_tlFilterFlag;
-    ps["tlFilterFlagReturn"]  = m_tlFilterFlagReturn;
     ps["tlFilterMorale"]      = m_tlFilterMorale;
     ps["tlFilterLord"]        = m_tlFilterLord;
     ps["tlFilterShrine"]      = m_tlFilterShrine;
+    ps["tlFilterObelisk"]     = m_tlFilterObelisk;
 
     // Piano Roll state
     ps["pianoRollZoomIdx"]    = m_pianoRollZoomIdx;
@@ -406,10 +406,10 @@ void ReplayWindow::LoadUILayout()
             // Event Timeline filters
             bv("tlFilterDeath",      m_tlFilterDeath);
             bv("tlFilterFlag",       m_tlFilterFlag);
-            bv("tlFilterFlagReturn", m_tlFilterFlagReturn);
             bv("tlFilterMorale",     m_tlFilterMorale);
             bv("tlFilterLord",       m_tlFilterLord);
             bv("tlFilterShrine",     m_tlFilterShrine);
+            bv("tlFilterObelisk",    m_tlFilterObelisk);
 
             // Piano Roll state
             iv("pianoRollZoomIdx",   m_pianoRollZoomIdx);
@@ -2092,6 +2092,661 @@ void ReplayWindow::SetupAnimatedProp(
 }
 
 // ---------------------------------------------------------------------------
+// Obelisk Flag Stand — load and render 3D model (Isle of Meditation)
+// ---------------------------------------------------------------------------
+
+static std::ofstream g_obeliskLog;
+static void ObeliskLog(const char* msg)
+{
+    OutputDebugStringA(msg);
+    if (!g_obeliskLog.is_open())
+        g_obeliskLog.open("obelisk_debug.txt", std::ios::trunc);
+    if (g_obeliskLog.is_open())
+    {
+        g_obeliskLog << msg;
+        g_obeliskLog.flush();
+    }
+}
+
+static XMFLOAT3 ApplyMapTransformToPos(float snapX, float snapY, float snapZ,
+                                        const MapTransform& t);
+
+void ReplayWindow::SetupObeliskFlagStand()
+{
+    if (m_obeliskModelLoaded)
+        return;
+    m_obeliskModelLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+    {
+        ObeliskLog("[Obelisk] Missing datManager/hashIndex/mapRenderer\n");
+        return;
+    }
+
+    if (m_flagTimeline.obelisk.standAgentId < 0)
+    {
+        ObeliskLog("[Obelisk] No obelisk stand agent found in timeline\n");
+        return;
+    }
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    constexpr uint32_t kObeliskFileHash = 0x212DB;
+
+    auto mit = m_hashIndex->find(static_cast<int>(kObeliskFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+    {
+        ObeliskLog("[Obelisk] Hash 0x212DB not found in hash index\n");
+        return;
+    }
+
+    int mftIndex = mit->second.at(0);
+
+    ObeliskLog(std::format("[Obelisk] Loading model from MFT index {}\n", mftIndex).c_str());
+
+    // Parse FFNA model (geometry + textures)
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        ObeliskLog("[Obelisk] Exception parsing model file\n");
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+    {
+        ObeliskLog("[Obelisk] Model file not parsed correctly\n");
+        return;
+    }
+
+    // Build meshes
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+    {
+        ObeliskLog("[Obelisk] No valid meshes built from model\n");
+        return;
+    }
+
+    ObeliskLog(std::format("[Obelisk] Built {} meshes from model\n", meshes.size()).c_str());
+
+    // Load textures
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    ObeliskLog(std::format("[Obelisk] textures_parsed_correctly={}, textureIds.size()={}\n",
+        modelFile.textures_parsed_correctly, textureIds.size()).c_str());
+    for (size_t t = 0; t < textureIds.size(); t++)
+    {
+        ObeliskLog(std::format("[Obelisk]   texture[{}] id={}\n", t, textureIds[t]).c_str());
+    }
+
+    // Remap per-mesh texture indices (must match prop pipeline pattern)
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    // Compute world transform: place at obelisk agent position
+    float ox = m_flagTimeline.obelisk.standX;
+    float oy = m_flagTimeline.obelisk.standY;
+    float oz = m_flagTimeline.obelisk.standZ;
+    XMFLOAT3 pos = ApplyMapTransformToPos(ox, oy, oz, m_replayCtx.mapTransform);
+
+    ObeliskLog(std::format("[Obelisk] GWCA pos ({:.0f}, {:.0f}, {:.0f}) -> render pos ({:.0f}, {:.0f}, {:.0f})\n",
+        ox, oy, oz, pos.x, pos.y, pos.z).c_str());
+
+    XMMATRIX worldMat = XMMatrixTranslation(pos.x, pos.y, pos.z);
+
+    std::vector<PerObjectCB> perObjectCBs(meshes.size());
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+
+        auto& mesh = meshes[j];
+        if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+            mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+            modelFile.textures_parsed_correctly)
+        {
+            perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+            for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+            {
+                perObjectCBs[j].uv_indices[k / 4][k % 4]       = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                perObjectCBs[j].texture_indices[k / 4][k % 4]   = static_cast<uint32_t>(mesh.tex_indices[k]);
+                // Force opaque blending for flag submeshes (0,1) to avoid
+                // alpha-discard issues with blend_flag=8 on flag textures
+                uint32_t bf = static_cast<uint32_t>(mesh.blend_flags[k]);
+                if (j <= 1) bf = 0;
+                perObjectCBs[j].blend_flags[k / 4][k % 4]       = bf;
+                perObjectCBs[j].texture_types[k / 4][k % 4]     = static_cast<uint32_t>(mesh.texture_types[k]);
+            }
+        }
+    }
+
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        ObeliskLog(std::format("[Obelisk] Submesh {} : verts={} tris={} uv_coords={} tex_indices={} num_uv_tex_pairs={} perMeshTexIds={} cull={} mesh_alpha={}\n",
+            j,
+            meshes[j].vertices.size(),
+            meshes[j].indices.size() / 3,
+            meshes[j].uv_coord_indices.size(),
+            meshes[j].tex_indices.size(),
+            perObjectCBs[j].num_uv_texture_pairs,
+            perMeshTexIds[j].size(),
+            meshes[j].should_cull,
+            perObjectCBs[j].mesh_alpha).c_str());
+
+        if (j == 0 && !meshes[j].vertices.empty())
+        {
+            float minX = FLT_MAX, minY = FLT_MAX, minZ = FLT_MAX;
+            float maxX = -FLT_MAX, maxY = -FLT_MAX, maxZ = -FLT_MAX;
+            float minU = FLT_MAX, minV = FLT_MAX, maxU = -FLT_MAX, maxV = -FLT_MAX;
+            for (const auto& v : meshes[j].vertices)
+            {
+                minX = std::min(minX, v.position.x); maxX = std::max(maxX, v.position.x);
+                minY = std::min(minY, v.position.y); maxY = std::max(maxY, v.position.y);
+                minZ = std::min(minZ, v.position.z); maxZ = std::max(maxZ, v.position.z);
+                minU = std::min(minU, v.tex_coord0.x); maxU = std::max(maxU, v.tex_coord0.x);
+                minV = std::min(minV, v.tex_coord0.y); maxV = std::max(maxV, v.tex_coord0.y);
+            }
+            ObeliskLog(std::format("[Obelisk]   bbox: X[{:.2f},{:.2f}] Y[{:.2f},{:.2f}] Z[{:.2f},{:.2f}]\n",
+                minX, maxX, minY, maxY, minZ, maxZ).c_str());
+            ObeliskLog(std::format("[Obelisk]   UV0 range: U[{:.4f},{:.4f}] V[{:.4f},{:.4f}]\n",
+                minU, maxU, minV, maxV).c_str());
+            ObeliskLog(std::format("[Obelisk]   size: dX={:.2f} dY={:.2f} dZ={:.2f}\n",
+                maxX - minX, maxY - minY, maxZ - minZ).c_str());
+        }
+
+        for (size_t ti = 0; ti < perMeshTexIds[j].size(); ti++)
+        {
+            ObeliskLog(std::format("[Obelisk]   tex[{}] id={} blend={} (CB_blend={}) type={} uv={}\n",
+                ti, perMeshTexIds[j][ti],
+                ti < meshes[j].blend_flags.size() ? meshes[j].blend_flags[ti] : -1,
+                perObjectCBs[j].blend_flags[ti / 4][ti % 4],
+                ti < meshes[j].texture_types.size() ? meshes[j].texture_types[ti] : -1,
+                ti < meshes[j].uv_coord_indices.size() ? meshes[j].uv_coord_indices[ti] : -1).c_str());
+        }
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+    auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0001u, pst);
+
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+        {
+            auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+            map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            ObeliskLog(std::format("[Obelisk] Submesh {} textures bound: {} SRVs (meshId={})\n",
+                l, texVec.size(), meshIds[l]).c_str());
+            for (size_t ti2 = 0; ti2 < texVec.size(); ti2++)
+            {
+                ObeliskLog(std::format("[Obelisk]   SRV[{}] = {}\n",
+                    ti2, texVec[ti2] ? "valid" : "NULL").c_str());
+            }
+        }
+    }
+
+    ObeliskLog(std::format("[Obelisk] Added {} static mesh IDs via AddProp\n", meshIds.size()).c_str());
+
+    m_obeliskStaticMeshIds = meshIds;
+
+    // Hide submeshes 0 and 1 in static pipeline immediately
+    if (meshIds.size() > 0) map_renderer->SetMeshShouldRender(meshIds[0], false);
+    if (meshIds.size() > 1) map_renderer->SetMeshShouldRender(meshIds[1], false);
+
+    // Create a hanging flag banner quad using the flag texture (texture 178)
+    // The pole (submesh 0) extends from ~(0,45,10) to ~(0,112,92) in model space.
+    // We attach the banner to the outer portion of the pole, hanging downward.
+    if (modelFile.textures_parsed_correctly && !perMeshTexIds.empty() && !perMeshTexIds[0].empty())
+    {
+        Mesh bannerMesh;
+        float bannerHeight = 55.0f;
+
+        // Pole direction in model space: from (0.3, 45, 10) to (0.3, 112, 92)
+        // Banner attaches to the outer ~55% of the pole, hanging straight down
+        XMFLOAT3 poleStart = { 0.3f, 45.0f, 10.0f };
+        XMFLOAT3 poleEnd   = { 0.3f, 112.0f, 92.0f };
+
+        float t0 = 0.45f; // start of banner along pole
+        float t1 = 0.95f; // end of banner along pole
+
+        XMFLOAT3 topLeft = {
+            poleStart.x + t0 * (poleEnd.x - poleStart.x),
+            poleStart.y + t0 * (poleEnd.y - poleStart.y),
+            poleStart.z + t0 * (poleEnd.z - poleStart.z)
+        };
+        XMFLOAT3 topRight = {
+            poleStart.x + t1 * (poleEnd.x - poleStart.x),
+            poleStart.y + t1 * (poleEnd.y - poleStart.y),
+            poleStart.z + t1 * (poleEnd.z - poleStart.z)
+        };
+
+        XMFLOAT3 normal = { 1.0f, 0.0f, 0.0f };
+
+        GWVertex v0, v1, v2, v3;
+        v0.position = topLeft;
+        v0.normal = normal;
+        v0.tex_coord0 = { 0.0f, 0.0f };
+
+        v1.position = topRight;
+        v1.normal = normal;
+        v1.tex_coord0 = { 1.0f, 0.0f };
+
+        v2.position = { topLeft.x, topLeft.y - bannerHeight, topLeft.z };
+        v2.normal = normal;
+        v2.tex_coord0 = { 0.0f, 1.0f };
+
+        v3.position = { topRight.x, topRight.y - bannerHeight, topRight.z };
+        v3.normal = normal;
+        v3.tex_coord0 = { 1.0f, 1.0f };
+
+        bannerMesh.vertices = { v0, v1, v2, v3 };
+        bannerMesh.indices = { 0, 1, 2, 1, 3, 2 };
+        bannerMesh.should_cull = false;
+        bannerMesh.blend_state = BlendState::Opaque;
+        bannerMesh.num_textures = 1;
+        bannerMesh.uv_coord_indices = { 0 };
+        bannerMesh.tex_indices = { 0 };
+        bannerMesh.blend_flags = { 0 };
+        bannerMesh.texture_types = { 0 };
+
+        PerObjectCB bannerCB;
+        XMStoreFloat4x4(&bannerCB.world, worldMat);
+        bannerCB.num_uv_texture_pairs = 1;
+
+        std::vector<Mesh> bannerMeshes = { bannerMesh };
+        std::vector<PerObjectCB> bannerCBs = { bannerCB };
+        auto bannerIds = map_renderer->AddProp(bannerMeshes, bannerCBs, 0xFFFF0002u, pst);
+
+        if (!bannerIds.empty())
+        {
+            m_obeliskBannerMeshId = bannerIds[0];
+
+            // Load red and blue flag DDS textures from disk
+            auto loadFlagDDS = [&](const wchar_t* filename) -> ComPtr<ID3D11ShaderResourceView>
+            {
+                wchar_t exePath[MAX_PATH];
+                GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                auto baseDir = std::filesystem::path(exePath).parent_path();
+                for (int up = 0; up < 5; up++)
+                {
+                    if (std::filesystem::exists(baseDir / L"Textures" / L"Others_UI"))
+                    { baseDir = baseDir / L"Textures" / L"Others_UI"; break; }
+                    if (!baseDir.has_parent_path() || baseDir == baseDir.parent_path()) break;
+                    baseDir = baseDir.parent_path();
+                }
+                auto fullPath = baseDir / filename;
+                if (!std::filesystem::exists(fullPath)) return nullptr;
+
+                DirectX::ScratchImage image;
+                HRESULT hr2 = DirectX::LoadFromDDSFile(fullPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+                if (FAILED(hr2)) return nullptr;
+
+                const auto& meta = image.GetMetadata();
+                if (meta.width == 0 || meta.height == 0) return nullptr;
+
+                DirectX::ScratchImage decompressed;
+                if (DirectX::IsCompressed(meta.format))
+                {
+                    hr2 = DirectX::Decompress(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+                    if (FAILED(hr2)) return nullptr;
+                    image = std::move(decompressed);
+                }
+
+                DirectX::ScratchImage converted;
+                if (image.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM)
+                {
+                    hr2 = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+                        DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+                    if (FAILED(hr2)) return nullptr;
+                }
+                const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+                const auto* img = src.GetImage(0, 0, 0);
+
+                D3D11_TEXTURE2D_DESC texDesc = {};
+                texDesc.Width = static_cast<UINT>(img->width);
+                texDesc.Height = static_cast<UINT>(img->height);
+                texDesc.MipLevels = 1;
+                texDesc.ArraySize = 1;
+                texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                texDesc.SampleDesc.Count = 1;
+                texDesc.Usage = D3D11_USAGE_DEFAULT;
+                texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+                D3D11_SUBRESOURCE_DATA initData2 = {};
+                initData2.pSysMem = img->pixels;
+                initData2.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+                ComPtr<ID3D11Texture2D> tex;
+                hr2 = m_deviceResources->GetD3DDevice()->CreateTexture2D(&texDesc, &initData2, tex.GetAddressOf());
+                if (FAILED(hr2)) return nullptr;
+
+                ComPtr<ID3D11ShaderResourceView> srv;
+                hr2 = m_deviceResources->GetD3DDevice()->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
+                if (FAILED(hr2)) return nullptr;
+                return srv;
+            };
+
+            m_obeliskRedFlagSRV  = loadFlagDDS(L"GW.EXE_0x48C8D86F.dds");
+            m_obeliskBlueFlagSRV = loadFlagDDS(L"GW.EXE_0x901869A3.dds");
+
+            // Default to red flag texture
+            if (m_obeliskRedFlagSRV)
+            {
+                std::vector<ID3D11ShaderResourceView*> flagTex = { m_obeliskRedFlagSRV.Get() };
+                map_renderer->GetMeshManager()->SetTexturesForMesh(m_obeliskBannerMeshId, flagTex, 3);
+            }
+
+            map_renderer->SetMeshShouldRender(m_obeliskBannerMeshId, false);
+
+            ObeliskLog(std::format("[Obelisk] Banner quad created (meshId={}) redFlag={} blueFlag={}\n",
+                m_obeliskBannerMeshId,
+                m_obeliskRedFlagSRV ? "loaded" : "MISSING",
+                m_obeliskBlueFlagSRV ? "loaded" : "MISSING").c_str());
+        }
+    }
+
+    // Parse animation from separate FA1 file (0x21297)
+    bool animLoaded = false;
+    constexpr uint32_t kObeliskAnimFileHash = 0x21297;
+    auto animIt = m_hashIndex->find(static_cast<int>(kObeliskAnimFileHash));
+    if (animIt != m_hashIndex->end() && !animIt->second.empty())
+    {
+        int animMftIndex = animIt->second.at(0);
+        ObeliskLog(std::format("[Obelisk] Loading animation from FA1 file hash 0x21297, MFT index {}\n",
+            animMftIndex).c_str());
+
+        uint8_t* fileData = m_datManager->read_file(animMftIndex);
+        if (fileData)
+        {
+            size_t fileSize = m_datManager->get_MFT()[animMftIndex].uncompressedSize;
+            auto clipOpt = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
+            delete[] fileData;
+
+            if (clipOpt && clipOpt->IsValid())
+            {
+                auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                clip->BuildAnimationGroups();
+
+                const auto& segments = clip->animationSegments;
+                ObeliskLog(std::format("[Obelisk] Animation has {} segments\n", segments.size()).c_str());
+                for (size_t si = 0; si < segments.size(); si++)
+                {
+                    ObeliskLog(std::format("[Obelisk]   segment[{}] hash=0x{:X} startTime={} endTime={}\n",
+                        si, segments[si].hash, segments[si].startTime, segments[si].endTime).c_str());
+                }
+
+                if (segments.size() >= 2)
+                {
+                    constexpr uint32_t kObeliskAnimHash = 0x35E6AE29;
+                    size_t targetSegment = SIZE_MAX;
+                    for (size_t i = 0; i < segments.size(); i++)
+                    {
+                        if (segments[i].hash == kObeliskAnimHash)
+                        {
+                            targetSegment = i;
+                            break;
+                        }
+                    }
+                    if (targetSegment == SIZE_MAX)
+                        targetSegment = 1;
+
+                    auto controller = std::make_shared<GW::Animation::AnimationController>();
+                    controller->Initialize(clip);
+                    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                    controller->SetSegment(targetSegment);
+                    controller->SetLooping(true);
+                    controller->SetPlaybackSpeed(100000.0f);
+                    controller->Play();
+
+                    const auto& geomModels = modelFile.geometry_chunk.models;
+                    size_t boneCount = clip->boneTracks.size();
+
+                    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+                    std::vector<int> animStaticMeshIds;
+                    for (size_t j = 0; j < meshes.size(); j++)
+                    {
+                        const auto& mesh = meshes[j];
+
+                        // Extract bone data to check if submesh has real skeletal animation
+                        AnimationPanelState::SubmeshBoneData boneData;
+                        std::vector<uint32_t> vertexBoneGroups;
+                        bool hasSkeletal = false;
+                        if (j < geomModels.size())
+                        {
+                            const auto& geomModel = geomModels[j];
+                            boneData = AnimationPanelState::ExtractBoneData(
+                                geomModel.extra_data, geomModel.u0, geomModel.u1);
+
+                            vertexBoneGroups.reserve(geomModel.vertices.size());
+                            for (const auto& mv : geomModel.vertices)
+                                vertexBoneGroups.push_back(mv.group);
+
+                            // Only treat as animated if multiple bone groups (real deformation)
+                            hasSkeletal = (boneData.groupSizes.size() > 1);
+                        }
+
+                        ObeliskLog(std::format("[Obelisk] Submesh {} : u0={} groupSizes={} hasSkeletal={}\n",
+                            j,
+                            j < geomModels.size() ? geomModels[j].u0 : 0,
+                            boneData.groupSizes.size(),
+                            hasSkeletal).c_str());
+
+                        if (!hasSkeletal)
+                        {
+                            animatedMeshes.push_back(nullptr);
+                            continue;
+                        }
+
+                        if (j < meshIds.size())
+                            animStaticMeshIds.push_back(meshIds[j]);
+
+                        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                            mesh, boneData, vertexBoneGroups, boneCount,
+                            clip->hierarchyMode, j);
+
+                        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+                        if (j < perMeshTexIds.size())
+                        {
+                            auto texSRVs = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                            animMesh->SetTextures(texSRVs, 3);
+                        }
+
+                        animMesh->SetPerObjectData(perObjectCBs[j]);
+                        animatedMeshes.push_back(std::move(animMesh));
+                    }
+
+                    MapAnimatedProp prop;
+                    prop.controller     = controller;
+                    prop.clip           = clip;
+                    prop.meshes         = std::move(animatedMeshes);
+                    prop.perObjectCBs   = perObjectCBs;
+                    prop.staticMeshIds  = animStaticMeshIds;
+                    prop.pixelShaderType = pst;
+
+                    prop.submeshVisibility.resize(meshes.size(), true);
+                    if (prop.submeshVisibility.size() > 0) prop.submeshVisibility[0] = false;
+                    if (prop.submeshVisibility.size() > 1) prop.submeshVisibility[1] = false;
+
+                    map_renderer->AddAnimatedProp(std::move(prop));
+                    m_obeliskAnimPropIndex = static_cast<int>(map_renderer->GetAnimatedProps().size()) - 1;
+                    animLoaded = true;
+
+                    ObeliskLog(std::format("[Obelisk] Animated prop created (index={}, segment={})\n",
+                        m_obeliskAnimPropIndex, targetSegment).c_str());
+                }
+                else
+                {
+                    ObeliskLog("[Obelisk] Not enough animation segments\n");
+                }
+            }
+            else
+            {
+                ObeliskLog("[Obelisk] Animation clip invalid or not found\n");
+            }
+        }
+        else
+        {
+            ObeliskLog("[Obelisk] Failed to read animation file data\n");
+        }
+    }
+    else
+    {
+        ObeliskLog("[Obelisk] Animation file hash 0x21297 not found in hash index\n");
+    }
+
+    if (!animLoaded)
+    {
+        ObeliskLog(std::format("[Obelisk] Falling back to static rendering ({} meshes)\n",
+            meshIds.size()).c_str());
+    }
+}
+
+void ReplayWindow::UpdateObeliskFlagStand()
+{
+    if (m_obeliskAnimPropIndex < 0 || !m_mapRenderer)
+        return;
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+    if (m_obeliskAnimPropIndex >= static_cast<int>(animProps.size()))
+        return;
+
+    auto& ap = animProps[m_obeliskAnimPropIndex];
+    if (!ap.active || !ap.controller)
+        return;
+
+    StandOwner owner = m_flagTimeline.obelisk.ownerAtTime(m_debugTimeline);
+
+    bool visible = (owner == StandOwner::Neutral);
+
+    if (visible)
+    {
+        if (!ap.controller->IsPlaying())
+        {
+            ap.controller->SetLooping(true);
+            ap.controller->Play();
+        }
+    }
+    else
+    {
+        if (ap.controller->IsPlaying())
+            ap.controller->Pause();
+    }
+
+    // Submesh 0: visible when captured (flag)
+    if (ap.submeshVisibility.size() > 0) ap.submeshVisibility[0] = !visible;
+    // Submesh 1: always hidden (particles)
+    if (ap.submeshVisibility.size() > 1) ap.submeshVisibility[1] = false;
+
+    // Submeshes 2, 3: visible when neutral, hidden when captured
+    if (ap.submeshVisibility.size() > 2) ap.submeshVisibility[2] = visible;
+    if (ap.submeshVisibility.size() > 3) ap.submeshVisibility[3] = visible;
+
+    // Submesh 4: always visible (the static base)
+    if (ap.submeshVisibility.size() > 4) ap.submeshVisibility[4] = true;
+
+    // Toggle static meshes for boneless submeshes (not managed by animated pipeline)
+    auto* mr = m_mapRenderer.get();
+    for (size_t i = 0; i < m_obeliskStaticMeshIds.size(); i++)
+    {
+        bool isAnimated = (i < ap.meshes.size() && ap.meshes[i] != nullptr);
+        if (!isAnimated)
+        {
+            bool show = false;
+            if (i == 0)       show = !visible;    // show when captured (pole)
+            else if (i == 1)  show = false;        // always hidden (particles)
+            else if (i == 4)  show = true;         // always visible (base)
+            else              show = visible;      // 2,3: visible when neutral
+            mr->SetMeshShouldRender(m_obeliskStaticMeshIds[i], show);
+        }
+    }
+
+    // Toggle the hanging flag banner quad (show when captured) with team texture
+    if (m_obeliskBannerMeshId >= 0)
+    {
+        bool showBanner = !visible;
+        mr->SetMeshShouldRender(m_obeliskBannerMeshId, showBanner);
+
+        if (showBanner)
+        {
+            ID3D11ShaderResourceView* flagSRV = nullptr;
+            if (owner == StandOwner::Red && m_obeliskRedFlagSRV)
+                flagSRV = m_obeliskRedFlagSRV.Get();
+            else if (owner == StandOwner::Blue && m_obeliskBlueFlagSRV)
+                flagSRV = m_obeliskBlueFlagSRV.Get();
+
+            if (flagSRV)
+            {
+                std::vector<ID3D11ShaderResourceView*> flagTex = { flagSRV };
+                mr->GetMeshManager()->SetTexturesForMesh(m_obeliskBannerMeshId, flagTex, 3);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Door animation update (event-driven, per door type)
 // ---------------------------------------------------------------------------
 
@@ -2297,11 +2952,12 @@ void ReplayWindow::Tick()
             switch (ard.type) {
             case AgentType::Player:  m_playerIds.push_back(id);  break;
             case AgentType::NPC:     m_npcIds.push_back(id);     break;
-            case AgentType::Gadget:  m_gadgetIds.push_back(id);  break;
-            case AgentType::Flag:    m_flagIds.push_back(id);    break;
-            case AgentType::Spirit:  m_spiritIds.push_back(id);  break;
-            case AgentType::Item:    m_itemIds.push_back(id);    break;
-            default:                 m_unknownIds.push_back(id);  break;
+            case AgentType::Gadget:            m_gadgetIds.push_back(id);  break;
+            case AgentType::ObeliskFlagStand: m_gadgetIds.push_back(id);  break;
+            case AgentType::Flag:              m_flagIds.push_back(id);    break;
+            case AgentType::Spirit:            m_spiritIds.push_back(id);  break;
+            case AgentType::Item:              m_itemIds.push_back(id);    break;
+            default:                           m_unknownIds.push_back(id);  break;
             }
         }
         std::sort(m_sortedAgentIds.begin(), m_sortedAgentIds.end());
@@ -3151,6 +3807,11 @@ void ReplayWindow::Tick()
         m_calibrationLoaded = true;
     }
 
+    // Set up obelisk flag stand 3D model once timeline + calibration are ready
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_obeliskModelLoaded)
+        SetupObeliskFlagStand();
+
     m_timer.Tick([this]()
     {
         if (m_loadingPhase == LoadingPhase::Ready)
@@ -3228,6 +3889,7 @@ void ReplayWindow::Update(double elapsedMs)
     m_mapRenderer->Update(dt);
 
     UpdateDoorAnimations();
+    UpdateObeliskFlagStand();
 
     if (m_pipEnabled)
         UpdatePiPTarget();
@@ -4788,13 +5450,14 @@ static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
 static std::string GetAgentLabel(const AgentReplayData& ard)
 {
     switch (ard.type) {
-    case AgentType::Player: return ard.playerName;
-    case AgentType::NPC:    return ard.categoryName;
-    case AgentType::Gadget: return ard.categoryName;
-    case AgentType::Flag:   return "Flag";
-    case AgentType::Spirit: return ard.categoryName;
-    case AgentType::Item:   return ard.categoryName;
-    default:                return std::format("Agent {}", ard.agent_id);
+    case AgentType::Player:            return ard.playerName;
+    case AgentType::NPC:               return ard.categoryName;
+    case AgentType::Gadget:            return ard.categoryName;
+    case AgentType::ObeliskFlagStand:  return ard.categoryName;
+    case AgentType::Flag:              return "Flag";
+    case AgentType::Spirit:            return ard.categoryName;
+    case AgentType::Item:              return ard.categoryName;
+    default:                           return std::format("Agent {}", ard.agent_id);
     }
 }
 
@@ -4887,9 +5550,10 @@ void ReplayWindow::BuildFlagMessages()
             continue;
 
         FlagEventMessage msg;
-        msg.time      = ev.time;
-        msg.flagTeam  = static_cast<int>(ev.flagTeam);
-        msg.eventType = ev.eventType;
+        msg.time         = ev.time;
+        msg.flagTeam     = static_cast<int>(ev.flagTeam);
+        msg.eventType    = ev.eventType;
+        msg.standAgentId = ev.standAgentId;
 
         int actorId = ev.actorAgentId;
         if (actorId >= 0) {
@@ -7965,6 +8629,38 @@ void ReplayWindow::DrawFlags()
         }
     }
 
+    // --- Captured flag on obelisk (pulsing glow + icon + label) ---
+    if (m_flagTimeline.obelisk.standAgentId >= 0)
+    {
+        StandOwner obeliskOwner = m_flagTimeline.obelisk.ownerAtTime(m_debugTimeline);
+        if (obeliskOwner != StandOwner::Neutral)
+        {
+            int obTi = (obeliskOwner == StandOwner::Blue) ? 0 : 1;
+            ImTextureID obTex = (obTi == 0) ? texBlue : texRed;
+            float ox = m_flagTimeline.obelisk.standX;
+            float oy = m_flagTimeline.obelisk.standY;
+            float oz = m_flagTimeline.obelisk.standZ;
+
+            XMFLOAT3 obPos = ApplyMapTransformToPos(ox, oy, oz, t);
+            float obScrX, obScrY;
+            if (ProjectToScreen(viewProj, vpW, vpH, obPos, obScrX, obScrY) && obTex)
+            {
+                float offsetY = iconSz * 0.8f;
+                ImVec2 iconTL(obScrX - iconSz * 0.5f, obScrY - offsetY - iconSz);
+                ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+
+                ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
+                float glowRadius = iconSz * 0.75f;
+                float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 2.2f);
+                ImU32 glowCol = (obTi == 0)
+                    ? IM_COL32(80, 160, 255, (int)(45 * pulse))
+                    : IM_COL32(255, 80, 70,  (int)(45 * pulse));
+                dl->AddCircleFilled(center, glowRadius, glowCol, 32);
+                dl->AddImage(obTex, iconTL, iconBR);
+            }
+        }
+    }
+
     // --- Active flag per team ---
     for (int ti = 0; ti < 2; ti++)
     {
@@ -8102,8 +8798,14 @@ void ReplayWindow::DrawFlagDebugWindow()
     }
 
     StandOwner standOwner = m_flagTimeline.stand.ownerAtTime(t);
-    ImGui::Text("Stand: %s (at %.0f, %.0f)", StandOwnerName(standOwner),
+    ImGui::Text("Tower Stand: %s (at %.0f, %.0f)", StandOwnerName(standOwner),
                 m_flagTimeline.stand.standX, m_flagTimeline.stand.standY);
+
+    if (m_flagTimeline.obelisk.standAgentId >= 0) {
+        StandOwner obeliskOwner = m_flagTimeline.obelisk.ownerAtTime(t);
+        ImGui::Text("Obelisk Stand: %s (at %.0f, %.0f)", StandOwnerName(obeliskOwner),
+                    m_flagTimeline.obelisk.standX, m_flagTimeline.obelisk.standY);
+    }
     ImGui::Spacing();
 
     // Merged Event Timeline
@@ -11780,6 +12482,17 @@ void ReplayWindow::BuildTimelineData()
             te.label = "Flag returned";
             m_timeline.events.push_back(std::move(te));
         }
+
+        // Add obelisk capture events
+        for (auto& sc : m_flagTimeline.obelisk.events) {
+            if (sc.owner == StandOwner::Neutral) continue;
+            TimelineEvent te;
+            te.time = sc.time;
+            te.type = TimelineEventType::ObeliskCapture;
+            te.teamId = (sc.owner == StandOwner::Blue) ? 1 : 2;
+            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" captured obelisk");
+            m_timeline.events.push_back(std::move(te));
+        }
     }
 
     std::sort(m_timeline.events.begin(), m_timeline.events.end(),
@@ -12155,12 +12868,18 @@ void ReplayWindow::DrawEventTimeline()
 
         FilterPill("Death",   m_tlFilterDeath,  deathTex,  IM_COL32(208,  72,  72, 255));
         FilterPill("Flag",    m_tlFilterFlag,   flagTex,   IM_COL32(255, 200,  60, 255));
-        FilterPill("Return",  m_tlFilterFlagReturn, flagTex, IM_COL32(40, 200, 40, 255));
         FilterPill("Morale",  m_tlFilterMorale, moraleTex, IM_COL32(212, 160,  32, 255));
         FilterPill("Lord",    m_tlFilterLord,   lordTex,   IM_COL32(255,  90,  90, 255));
 
-        ImTextureID shrineTex = LoadFlagIcon(dev, "Health_Shrine_Bonus.jpg");
-        FilterPill("Shrine",  m_tlFilterShrine, shrineTex, IM_COL32(220, 200, 120, 255));
+        if (IsIsleOfWurmsMap(m_replayCtx.mapId)) {
+            ImTextureID shrineTex = LoadFlagIcon(dev, "Health_Shrine_Bonus.jpg");
+            FilterPill("Shrine",  m_tlFilterShrine, shrineTex, IM_COL32(220, 200, 120, 255));
+        }
+
+        if (m_flagTimeline.obelisk.standAgentId >= 0) {
+            ImTextureID obeliskTex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
+            FilterPill("Obelisk", m_tlFilterObelisk, obeliskTex, IM_COL32(180, 140, 255, 255));
+        }
     }
 
     // ── Clip to chart area ──────────────────────────────────────────────
@@ -12250,12 +12969,13 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::Death:        return m_tlFilterDeath;
         case TimelineEventType::Resurrection: return false;
         case TimelineEventType::FlagCapture:  return m_tlFilterFlag;
-        case TimelineEventType::FlagReturn:   return m_tlFilterFlagReturn;
+        case TimelineEventType::FlagReturn:   return m_tlFilterFlag;
         case TimelineEventType::MoraleBoost:  return m_tlFilterMorale;
         case TimelineEventType::LordAttacked:      return m_tlFilterLord;
         case TimelineEventType::Victory:            return false;
         case TimelineEventType::ShrineCaptured:     return m_tlFilterShrine;
         case TimelineEventType::ShrineNeutralized:  return m_tlFilterShrine;
+        case TimelineEventType::ObeliskCapture:     return m_tlFilterObelisk;
         }
         return true;
     };
@@ -12277,7 +12997,8 @@ void ReplayWindow::DrawEventTimeline()
         float ey;
 
         if (e.type == TimelineEventType::FlagCapture || e.type == TimelineEventType::FlagReturn
-            || e.type == TimelineEventType::ShrineCaptured || e.type == TimelineEventType::ShrineNeutralized)
+            || e.type == TimelineEventType::ShrineCaptured || e.type == TimelineEventType::ShrineNeutralized
+            || e.type == TimelineEventType::ObeliskCapture)
         {
             ey = bottomRowY;
         }
@@ -12289,7 +13010,8 @@ void ReplayWindow::DrawEventTimeline()
             {
                 if ((other.type == TimelineEventType::FlagCapture
                      || other.type == TimelineEventType::ShrineCaptured
-                     || other.type == TimelineEventType::ShrineNeutralized) &&
+                     || other.type == TimelineEventType::ShrineNeutralized
+                     || other.type == TimelineEventType::ObeliskCapture) &&
                     isEventVisible(other) &&
                     std::abs(e.time - other.time) <= 3.f)
                 {
@@ -12318,7 +13040,8 @@ void ReplayWindow::DrawEventTimeline()
             || t == TimelineEventType::FlagReturn
             || t == TimelineEventType::MoraleBoost
             || t == TimelineEventType::ShrineCaptured
-            || t == TimelineEventType::ShrineNeutralized;
+            || t == TimelineEventType::ShrineNeutralized
+            || t == TimelineEventType::ObeliskCapture;
     };
 
     for (size_t mi = 0; mi < markers.size(); ++mi)
@@ -12473,13 +13196,29 @@ void ReplayWindow::DrawEventTimeline()
             if (tex)
             {
                 dl->AddImage(tex, iconMin, iconMax);
-                // Grey desaturation overlay to visually distinguish from captured
                 dl->AddRectFilled(iconMin, iconMax, IM_COL32(60, 60, 60, 120), 2.f);
             }
             else
                 dl->AddText(font, fs * 0.65f,
                     ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
                     IM_COL32(180, 180, 180, 255), "N");
+            break;
+        }
+        case TimelineEventType::ObeliskCapture: {
+            ImTextureID tex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
+            ImU32 borderCol = (e.teamId == 2)
+                ? IM_COL32(255, 80, 70, 255)
+                : IM_COL32(80, 160, 255, 255);
+            constexpr float bw = 2.f;
+            dl->AddRectFilled(iconMin, iconMax, borderCol, 2.f);
+            ImVec2 imgMin(iconMin.x + bw, iconMin.y + bw);
+            ImVec2 imgMax(iconMax.x - bw, iconMax.y - bw);
+            if (tex)
+                dl->AddImage(tex, imgMin, imgMax);
+            else
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "O");
             break;
         }
         default: break;
@@ -12554,6 +13293,7 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::LordAttacked:      typeName = "Lord Attacked"; break;
         case TimelineEventType::ShrineCaptured:    typeName = "Shrine Captured"; break;
         case TimelineEventType::ShrineNeutralized: typeName = "Shrine Neutralized"; break;
+        case TimelineEventType::ObeliskCapture:    typeName = "Obelisk Capture"; break;
         default: break;
         }
 
@@ -12837,11 +13577,17 @@ void ReplayWindow::DrawFlagEventMessages()
             break;
         case FlagTimelineEventType::Stick:
         {
-            const char* teamName = (active->flagTeam == 0) ? "Blue" : "Red";
+            bool isObelisk = (m_flagTimeline.obelisk.standAgentId >= 0 &&
+                              active->standAgentId == m_flagTimeline.obelisk.standAgentId);
             line1.push_back({ active->playerName, playerCol });
-            line1.push_back({ " has taken control of the watchtower!", whiteCol });
-            line2.push_back({ teamName, flagCol });
-            line2.push_back({ " team will earn a morale boost every two minutes they hold the watchtower.", whiteCol });
+            if (isObelisk) {
+                line1.push_back({ " has taken control of the obelisk!", whiteCol });
+            } else {
+                const char* teamName = (active->flagTeam == 0) ? "Blue" : "Red";
+                line1.push_back({ " has taken control of the watchtower!", whiteCol });
+                line2.push_back({ teamName, flagCol });
+                line2.push_back({ " team will earn a morale boost every two minutes they hold the watchtower.", whiteCol });
+            }
             break;
         }
         default:

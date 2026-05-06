@@ -41,18 +41,19 @@ inline uint32_t GetDatMapId(int metadataMapId)
     }
 }
 
-enum class AgentType : uint8_t { Unknown, Player, NPC, Gadget, Flag, Spirit, Item };
+enum class AgentType : uint8_t { Unknown, Player, NPC, Gadget, Flag, Spirit, Item, ObeliskFlagStand };
 
 inline const char* AgentTypeName(AgentType t)
 {
     switch (t) {
-    case AgentType::Player:  return "Player";
-    case AgentType::NPC:     return "NPC";
-    case AgentType::Gadget:  return "Gadget";
-    case AgentType::Flag:    return "Flag";
-    case AgentType::Spirit:  return "Spirit";
-    case AgentType::Item:    return "Item";
-    default:                 return "Unknown";
+    case AgentType::Player:            return "Player";
+    case AgentType::NPC:               return "NPC";
+    case AgentType::Gadget:            return "Gadget";
+    case AgentType::Flag:              return "Flag";
+    case AgentType::Spirit:            return "Spirit";
+    case AgentType::Item:              return "Item";
+    case AgentType::ObeliskFlagStand:  return "Obelisk Flag Stand";
+    default:                           return "Unknown";
     }
 }
 
