@@ -2681,18 +2681,10 @@ void ReplayWindow::UpdateObeliskFlagStand()
 
     bool visible = (owner == StandOwner::Neutral);
 
-    if (visible)
+    if (!ap.controller->IsPlaying())
     {
-        if (!ap.controller->IsPlaying())
-        {
-            ap.controller->SetLooping(true);
-            ap.controller->Play();
-        }
-    }
-    else
-    {
-        if (ap.controller->IsPlaying())
-            ap.controller->Pause();
+        ap.controller->SetLooping(true);
+        ap.controller->Play();
     }
 
     // Submesh 0: visible when captured (flag)
@@ -3157,18 +3149,10 @@ void ReplayWindow::UpdateTowerFlagStand()
 
     bool neutral = (owner == StandOwner::Neutral);
 
-    if (neutral)
+    if (!ap.controller->IsPlaying())
     {
-        if (!ap.controller->IsPlaying())
-        {
-            ap.controller->SetLooping(true);
-            ap.controller->Play();
-        }
-    }
-    else
-    {
-        if (ap.controller->IsPlaying())
-            ap.controller->Pause();
+        ap.controller->SetLooping(true);
+        ap.controller->Play();
     }
 
     // Submesh 0 (pole): show when capped
@@ -3216,6 +3200,278 @@ void ReplayWindow::UpdateTowerFlagStand()
                 mr->GetMeshManager()->SetTexturesForMesh(m_towerBannerMeshId, flagTex, 3);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gate Lock — load and render animated lever models (Isle of Meditation)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupGateLockProps()
+{
+    if (m_gateLockModelsLoaded)
+        return;
+    m_gateLockModelsLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_replayCtx.datMapId != 0x28784)
+        return;
+
+    if (m_replayCtx.agents.empty())
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    struct GateLockPos { float x, y, z; };
+    std::vector<GateLockPos> positions;
+    for (auto& [aid, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        uint32_t gid = ard.snapshots[0].gadget_id;
+        if (gid != 4721 && gid != 4722) continue;
+        positions.push_back({ ard.snapshots[0].x, ard.snapshots[0].y, ard.snapshots[0].z });
+    }
+    if (positions.empty())
+        return;
+
+    constexpr uint32_t kGateLockModelHash = 0x2AD09;
+    auto mit = m_hashIndex->find(static_cast<int>(kGateLockModelHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+
+    constexpr uint32_t kGateLockAnimHash = 0x7079;
+    auto animIt = m_hashIndex->find(static_cast<int>(kGateLockAnimHash));
+    if (animIt == m_hashIndex->end() || animIt->second.empty())
+        return;
+
+    int animMftIndex = animIt->second.at(0);
+    uint8_t* animData = m_datManager->read_file(animMftIndex);
+    if (!animData)
+        return;
+
+    size_t animSize = m_datManager->get_MFT()[animMftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+    delete[] animData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX, closeSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+    {
+        if (segments[s].hash == 0x35E6AE29) openSeg = s;
+        if (segments[s].hash == 0x36F05E31) closeSeg = s;
+    }
+    if (openSeg == SIZE_MAX) openSeg = 2;
+    if (closeSeg == SIZE_MAX) closeSeg = 3;
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    for (const auto& pos : positions)
+    {
+        XMFLOAT3 renderPos = ApplyMapTransformToPos(pos.x, pos.y, pos.z, m_replayCtx.mapTransform);
+        XMMATRIX worldMat = XMMatrixTranslation(renderPos.x, renderPos.y, renderPos.z);
+
+        std::vector<PerObjectCB> perObjectCBs(meshes.size());
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+            auto& mesh = meshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                modelFile.textures_parsed_correctly)
+            {
+                perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+                {
+                    perObjectCBs[j].uv_indices[k / 4][k % 4]     = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                    perObjectCBs[j].texture_indices[k / 4][k % 4] = static_cast<uint32_t>(mesh.tex_indices[k]);
+                    perObjectCBs[j].blend_flags[k / 4][k % 4]     = static_cast<uint32_t>(mesh.blend_flags[k]);
+                    perObjectCBs[j].texture_types[k / 4][k % 4]   = static_cast<uint32_t>(mesh.texture_types[k]);
+                }
+            }
+        }
+
+        auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0005u, pst);
+
+        if (modelFile.textures_parsed_correctly)
+        {
+            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+            {
+                auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+                map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            }
+        }
+
+        auto controller = std::make_shared<GW::Animation::AnimationController>();
+        controller->Initialize(clip);
+        controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+        controller->SetLooping(false);
+
+        std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+        std::vector<int> animStaticMeshIds;
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            // Only submesh 0 is animated (lever on bone 0); submesh 1 stays static (base)
+            if (j != 0)
+            {
+                animatedMeshes.push_back(nullptr);
+                continue;
+            }
+
+            const auto& mesh = meshes[j];
+            AnimationPanelState::SubmeshBoneData boneData;
+            std::vector<uint32_t> vertexBoneGroups;
+            if (j < geomModels.size())
+            {
+                const auto& geomModel = geomModels[j];
+                boneData = AnimationPanelState::ExtractBoneData(
+                    geomModel.extra_data, geomModel.u0, geomModel.u1);
+                vertexBoneGroups.reserve(geomModel.vertices.size());
+                for (const auto& mv : geomModel.vertices)
+                    vertexBoneGroups.push_back(mv.group);
+            }
+
+            if (j < meshIds.size())
+                animStaticMeshIds.push_back(meshIds[j]);
+
+            auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                mesh, boneData, vertexBoneGroups, boneCount,
+                clip->hierarchyMode, j);
+
+            // Lock bone 1 vertices to identity so only bone 0 (lever) animates
+            for (auto& sv : skinnedVerts)
+            {
+                if (sv.boneIndices[0] == 1)
+                    sv.SetSingleBone(static_cast<uint32_t>(boneCount));
+            }
+
+            auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+            if (j < perMeshTexIds.size())
+            {
+                auto texSRVs = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                animMesh->SetTextures(texSRVs, 3);
+            }
+
+            animMesh->SetPerObjectData(perObjectCBs[j]);
+            animatedMeshes.push_back(std::move(animMesh));
+        }
+
+        MapAnimatedProp prop;
+        prop.controller      = controller;
+        prop.clip            = clip;
+        prop.meshes          = std::move(animatedMeshes);
+        prop.perObjectCBs    = perObjectCBs;
+        prop.staticMeshIds   = animStaticMeshIds;
+        prop.pixelShaderType = pst;
+        prop.doorType        = 2;
+        prop.openSegmentIndex  = openSeg;
+        prop.closeSegmentIndex = closeSeg;
+
+        controller->SetSegment(closeSeg);
+        controller->SetTime(static_cast<float>(segments[closeSeg].endTime));
+        controller->Pause();
+
+        map_renderer->AddAnimatedProp(std::move(prop));
+        m_doorAnimPropCount++;
     }
 }
 
@@ -4289,6 +4545,11 @@ void ReplayWindow::Tick()
     if (m_flagTimelineBuilt && m_calibrationLoaded &&
         m_loadingPhase == LoadingPhase::Ready && !m_towerModelLoaded)
         SetupTowerFlagStand();
+
+    // Set up gate lock animated levers (Isle of Meditation)
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_gateLockModelsLoaded)
+        SetupGateLockProps();
 
     m_timer.Tick([this]()
     {

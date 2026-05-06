@@ -319,6 +319,10 @@ private:
     void SetupTowerFlagStand();
     void UpdateTowerFlagStand();
 
+    // --- Gate Lock animated models (Isle of Meditation) ---
+    bool m_gateLockModelsLoaded = false;
+    void SetupGateLockProps();
+
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
     void DrawBundleItems();
