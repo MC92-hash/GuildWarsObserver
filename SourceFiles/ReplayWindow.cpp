@@ -2747,6 +2747,479 @@ void ReplayWindow::UpdateObeliskFlagStand()
 }
 
 // ---------------------------------------------------------------------------
+// Tower Flag Stand — load and render 3D model (all GvG maps)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupTowerFlagStand()
+{
+    if (m_towerModelLoaded)
+        return;
+    m_towerModelLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_flagTimeline.stand.standAgentId < 0)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    constexpr uint32_t kTowerFileHash = 0x13D84;
+
+    auto mit = m_hashIndex->find(static_cast<int>(kTowerFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    float tx = m_flagTimeline.stand.standX;
+    float ty = m_flagTimeline.stand.standY;
+    float tz = m_flagTimeline.stand.standZ;
+    XMFLOAT3 pos = ApplyMapTransformToPos(tx, ty, tz, m_replayCtx.mapTransform);
+
+    XMMATRIX worldMat = XMMatrixTranslation(pos.x, pos.y, pos.z);
+
+    std::vector<PerObjectCB> perObjectCBs(meshes.size());
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+
+        auto& mesh = meshes[j];
+        if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+            mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+            modelFile.textures_parsed_correctly)
+        {
+            perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+            for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+            {
+                perObjectCBs[j].uv_indices[k / 4][k % 4]       = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                perObjectCBs[j].texture_indices[k / 4][k % 4]   = static_cast<uint32_t>(mesh.tex_indices[k]);
+                uint32_t bf = static_cast<uint32_t>(mesh.blend_flags[k]);
+                if (j == 0) bf = 0;
+                perObjectCBs[j].blend_flags[k / 4][k % 4]       = bf;
+                perObjectCBs[j].texture_types[k / 4][k % 4]     = static_cast<uint32_t>(mesh.texture_types[k]);
+            }
+        }
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+    auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0003u, pst);
+
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+        {
+            auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+            map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+        }
+    }
+
+    m_towerStaticMeshIds = meshIds;
+
+    // Initial visibility: submesh 0 hidden (pole, shown when capped), 1 shown, 2 hidden, 3+4 shown (neutral)
+    if (meshIds.size() > 0) map_renderer->SetMeshShouldRender(meshIds[0], false);
+    if (meshIds.size() > 2) map_renderer->SetMeshShouldRender(meshIds[2], false);
+
+    // Banner quad on the pole (submesh 0)
+    if (modelFile.textures_parsed_correctly && meshes.size() > 0 && !meshes[0].vertices.empty())
+    {
+        float minX = FLT_MAX, minY = FLT_MAX, minZ = FLT_MAX;
+        float maxX = -FLT_MAX, maxY = -FLT_MAX, maxZ = -FLT_MAX;
+        for (const auto& v : meshes[0].vertices)
+        {
+            minX = std::min(minX, v.position.x); maxX = std::max(maxX, v.position.x);
+            minY = std::min(minY, v.position.y); maxY = std::max(maxY, v.position.y);
+            minZ = std::min(minZ, v.position.z); maxZ = std::max(maxZ, v.position.z);
+        }
+
+        Mesh bannerMesh;
+        float bannerHeight = 55.0f;
+
+        XMFLOAT3 poleStart = { (minX + maxX) * 0.5f, minY, minZ };
+        XMFLOAT3 poleEnd   = { (minX + maxX) * 0.5f, maxY, maxZ };
+
+        float t0 = 0.45f;
+        float t1 = 0.95f;
+
+        XMFLOAT3 topLeft = {
+            poleStart.x + t0 * (poleEnd.x - poleStart.x),
+            poleStart.y + t0 * (poleEnd.y - poleStart.y),
+            poleStart.z + t0 * (poleEnd.z - poleStart.z)
+        };
+        XMFLOAT3 topRight = {
+            poleStart.x + t1 * (poleEnd.x - poleStart.x),
+            poleStart.y + t1 * (poleEnd.y - poleStart.y),
+            poleStart.z + t1 * (poleEnd.z - poleStart.z)
+        };
+
+        XMFLOAT3 normal = { 1.0f, 0.0f, 0.0f };
+
+        GWVertex v0, v1, v2, v3;
+        v0.position = topLeft;
+        v0.normal = normal;
+        v0.tex_coord0 = { 0.0f, 0.0f };
+
+        v1.position = topRight;
+        v1.normal = normal;
+        v1.tex_coord0 = { 1.0f, 0.0f };
+
+        v2.position = { topLeft.x, topLeft.y - bannerHeight, topLeft.z };
+        v2.normal = normal;
+        v2.tex_coord0 = { 0.0f, 1.0f };
+
+        v3.position = { topRight.x, topRight.y - bannerHeight, topRight.z };
+        v3.normal = normal;
+        v3.tex_coord0 = { 1.0f, 1.0f };
+
+        bannerMesh.vertices = { v0, v1, v2, v3 };
+        bannerMesh.indices = { 0, 1, 2, 1, 3, 2 };
+        bannerMesh.should_cull = false;
+        bannerMesh.blend_state = BlendState::Opaque;
+        bannerMesh.num_textures = 1;
+        bannerMesh.uv_coord_indices = { 0 };
+        bannerMesh.tex_indices = { 0 };
+        bannerMesh.blend_flags = { 0 };
+        bannerMesh.texture_types = { 0 };
+
+        PerObjectCB bannerCB;
+        XMStoreFloat4x4(&bannerCB.world, worldMat);
+        bannerCB.num_uv_texture_pairs = 1;
+
+        std::vector<Mesh> bannerMeshes = { bannerMesh };
+        std::vector<PerObjectCB> bannerCBs = { bannerCB };
+        auto bannerIds = map_renderer->AddProp(bannerMeshes, bannerCBs, 0xFFFF0004u, pst);
+
+        if (!bannerIds.empty())
+        {
+            m_towerBannerMeshId = bannerIds[0];
+
+            auto loadFlagDDS = [&](const wchar_t* filename) -> ComPtr<ID3D11ShaderResourceView>
+            {
+                wchar_t exePath[MAX_PATH];
+                GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                auto baseDir = std::filesystem::path(exePath).parent_path();
+                for (int up = 0; up < 5; up++)
+                {
+                    if (std::filesystem::exists(baseDir / L"Textures" / L"Others_UI"))
+                    { baseDir = baseDir / L"Textures" / L"Others_UI"; break; }
+                    if (!baseDir.has_parent_path() || baseDir == baseDir.parent_path()) break;
+                    baseDir = baseDir.parent_path();
+                }
+                auto fullPath = baseDir / filename;
+                if (!std::filesystem::exists(fullPath)) return nullptr;
+
+                DirectX::ScratchImage image;
+                HRESULT hr = DirectX::LoadFromDDSFile(fullPath.c_str(),
+                    DirectX::DDS_FLAGS_NONE, nullptr, image);
+                if (FAILED(hr)) return nullptr;
+
+                ComPtr<ID3D11ShaderResourceView> srv;
+                hr = DirectX::CreateShaderResourceView(device,
+                    image.GetImages(), image.GetImageCount(),
+                    image.GetMetadata(), srv.GetAddressOf());
+                if (FAILED(hr)) return nullptr;
+                return srv;
+            };
+
+            m_towerRedFlagSRV  = loadFlagDDS(L"GW.EXE_0x48C8D86F.dds");
+            m_towerBlueFlagSRV = loadFlagDDS(L"GW.EXE_0x901869A3.dds");
+
+            if (m_towerRedFlagSRV)
+            {
+                std::vector<ID3D11ShaderResourceView*> flagTex = { m_towerRedFlagSRV.Get() };
+                map_renderer->GetMeshManager()->SetTexturesForMesh(m_towerBannerMeshId, flagTex, 3);
+            }
+
+            map_renderer->SetMeshShouldRender(m_towerBannerMeshId, false);
+        }
+    }
+
+    // Animation from FA1 file (0x21297), segment 1
+    bool animLoaded = false;
+    constexpr uint32_t kTowerAnimFileHash = 0x21297;
+    auto animIt = m_hashIndex->find(static_cast<int>(kTowerAnimFileHash));
+    if (animIt != m_hashIndex->end() && !animIt->second.empty())
+    {
+        int animMftIndex = animIt->second.at(0);
+
+        uint8_t* fileData = m_datManager->read_file(animMftIndex);
+        if (fileData)
+        {
+            size_t fileSize = m_datManager->get_MFT()[animMftIndex].uncompressedSize;
+            auto clipOpt = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
+            delete[] fileData;
+
+            if (clipOpt && clipOpt->IsValid())
+            {
+                auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                clip->BuildAnimationGroups();
+
+                const auto& segments = clip->animationSegments;
+                if (segments.size() >= 2)
+                {
+                    constexpr uint32_t kTowerAnimSegmentHash = 0x36F05E31;
+                    size_t targetSegment = SIZE_MAX;
+                    for (size_t i = 0; i < segments.size(); i++)
+                    {
+                        if (segments[i].hash == kTowerAnimSegmentHash)
+                        {
+                            targetSegment = i;
+                            break;
+                        }
+                    }
+                    if (targetSegment == SIZE_MAX)
+                        targetSegment = 1;
+
+                    auto controller = std::make_shared<GW::Animation::AnimationController>();
+                    controller->Initialize(clip);
+                    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                    controller->SetSegment(targetSegment);
+                    controller->SetLooping(true);
+                    controller->SetPlaybackSpeed(100000.0f);
+                    controller->Play();
+
+                    const auto& geomModels = modelFile.geometry_chunk.models;
+                    size_t boneCount = clip->boneTracks.size();
+
+                    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+                    std::vector<int> animStaticMeshIds;
+                    for (size_t j = 0; j < meshes.size(); j++)
+                    {
+                        // Only submeshes 3 and 4 are animated
+                        if (j != 3 && j != 4)
+                        {
+                            animatedMeshes.push_back(nullptr);
+                            continue;
+                        }
+
+                        const auto& mesh = meshes[j];
+
+                        AnimationPanelState::SubmeshBoneData boneData;
+                        std::vector<uint32_t> vertexBoneGroups;
+                        bool hasSkeletal = false;
+                        if (j < geomModels.size())
+                        {
+                            const auto& geomModel = geomModels[j];
+                            boneData = AnimationPanelState::ExtractBoneData(
+                                geomModel.extra_data, geomModel.u0, geomModel.u1);
+
+                            vertexBoneGroups.reserve(geomModel.vertices.size());
+                            for (const auto& mv : geomModel.vertices)
+                                vertexBoneGroups.push_back(mv.group);
+
+                            hasSkeletal = (boneData.groupSizes.size() > 1);
+                        }
+
+                        if (!hasSkeletal)
+                        {
+                            animatedMeshes.push_back(nullptr);
+                            continue;
+                        }
+
+                        if (j < meshIds.size())
+                            animStaticMeshIds.push_back(meshIds[j]);
+
+                        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                            mesh, boneData, vertexBoneGroups, boneCount,
+                            clip->hierarchyMode, j);
+
+                        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+                        if (j < perMeshTexIds.size())
+                        {
+                            auto texSRVs = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                            animMesh->SetTextures(texSRVs, 3);
+                        }
+
+                        animMesh->SetPerObjectData(perObjectCBs[j]);
+                        animatedMeshes.push_back(std::move(animMesh));
+                    }
+
+                    MapAnimatedProp prop;
+                    prop.controller     = controller;
+                    prop.clip           = clip;
+                    prop.meshes         = std::move(animatedMeshes);
+                    prop.perObjectCBs   = perObjectCBs;
+                    prop.staticMeshIds  = animStaticMeshIds;
+                    prop.pixelShaderType = pst;
+
+                    prop.submeshVisibility.resize(meshes.size(), true);
+                    // Initial: submesh 0 hidden (pole), 1 shown, 2 hidden, 3+4 shown (neutral)
+                    if (prop.submeshVisibility.size() > 0) prop.submeshVisibility[0] = false;
+                    if (prop.submeshVisibility.size() > 2) prop.submeshVisibility[2] = false;
+
+                    map_renderer->AddAnimatedProp(std::move(prop));
+                    m_towerAnimPropIndex = static_cast<int>(map_renderer->GetAnimatedProps().size()) - 1;
+                    animLoaded = true;
+                }
+            }
+        }
+    }
+}
+
+void ReplayWindow::UpdateTowerFlagStand()
+{
+    if (m_towerAnimPropIndex < 0 || !m_mapRenderer)
+        return;
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+    if (m_towerAnimPropIndex >= static_cast<int>(animProps.size()))
+        return;
+
+    auto& ap = animProps[m_towerAnimPropIndex];
+    if (!ap.active || !ap.controller)
+        return;
+
+    StandOwner owner = m_flagTimeline.stand.ownerAtTime(m_debugTimeline);
+
+    bool neutral = (owner == StandOwner::Neutral);
+
+    if (neutral)
+    {
+        if (!ap.controller->IsPlaying())
+        {
+            ap.controller->SetLooping(true);
+            ap.controller->Play();
+        }
+    }
+    else
+    {
+        if (ap.controller->IsPlaying())
+            ap.controller->Pause();
+    }
+
+    // Submesh 0 (pole): show when capped
+    if (ap.submeshVisibility.size() > 0) ap.submeshVisibility[0] = !neutral;
+    // Submesh 1: always show
+    if (ap.submeshVisibility.size() > 1) ap.submeshVisibility[1] = true;
+    // Submesh 2: always hide
+    if (ap.submeshVisibility.size() > 2) ap.submeshVisibility[2] = false;
+    // Submeshes 3, 4: show when neutral (animated parts)
+    if (ap.submeshVisibility.size() > 3) ap.submeshVisibility[3] = neutral;
+    if (ap.submeshVisibility.size() > 4) ap.submeshVisibility[4] = neutral;
+
+    auto* mr = m_mapRenderer.get();
+    for (size_t i = 0; i < m_towerStaticMeshIds.size(); i++)
+    {
+        bool isAnimated = (i < ap.meshes.size() && ap.meshes[i] != nullptr);
+        if (!isAnimated)
+        {
+            bool show = false;
+            if (i == 0)       show = !neutral;   // pole: show when capped
+            else if (i == 1)  show = true;       // always show
+            else if (i == 2)  show = false;      // always hide
+            else              show = neutral;    // 3, 4: show when neutral
+            mr->SetMeshShouldRender(m_towerStaticMeshIds[i], show);
+        }
+    }
+
+    // Banner: show when capped, set team texture
+    if (m_towerBannerMeshId >= 0)
+    {
+        bool showBanner = !neutral;
+        mr->SetMeshShouldRender(m_towerBannerMeshId, showBanner);
+
+        if (showBanner)
+        {
+            ID3D11ShaderResourceView* flagSRV = nullptr;
+            if (owner == StandOwner::Red && m_towerRedFlagSRV)
+                flagSRV = m_towerRedFlagSRV.Get();
+            else if (owner == StandOwner::Blue && m_towerBlueFlagSRV)
+                flagSRV = m_towerBlueFlagSRV.Get();
+
+            if (flagSRV)
+            {
+                std::vector<ID3D11ShaderResourceView*> flagTex = { flagSRV };
+                mr->GetMeshManager()->SetTexturesForMesh(m_towerBannerMeshId, flagTex, 3);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Door animation update (event-driven, per door type)
 // ---------------------------------------------------------------------------
 
@@ -3812,6 +4285,11 @@ void ReplayWindow::Tick()
         m_loadingPhase == LoadingPhase::Ready && !m_obeliskModelLoaded)
         SetupObeliskFlagStand();
 
+    // Set up tower flag stand 3D model once timeline + calibration are ready
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_towerModelLoaded)
+        SetupTowerFlagStand();
+
     m_timer.Tick([this]()
     {
         if (m_loadingPhase == LoadingPhase::Ready)
@@ -3890,6 +4368,7 @@ void ReplayWindow::Update(double elapsedMs)
 
     UpdateDoorAnimations();
     UpdateObeliskFlagStand();
+    UpdateTowerFlagStand();
 
     if (m_pipEnabled)
         UpdatePiPTarget();

@@ -309,6 +309,16 @@ private:
     void SetupObeliskFlagStand();
     void UpdateObeliskFlagStand();
 
+    // --- Tower Flag Stand 3D model (all maps) ---
+    int  m_towerAnimPropIndex = -1;
+    bool m_towerModelLoaded   = false;
+    std::vector<int> m_towerStaticMeshIds;
+    int  m_towerBannerMeshId  = -1;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_towerRedFlagSRV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_towerBlueFlagSRV;
+    void SetupTowerFlagStand();
+    void UpdateTowerFlagStand();
+
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
     void DrawBundleItems();
