@@ -2,7 +2,7 @@
 
 #include "Net/UpdateChecker.h"
 
-void draw_update_notification(UpdateChecker* checker, HWND appWindow);
+void draw_update_notification(UpdateChecker* checker, HWND appWindow, bool suppressIfIdle = false);
 
 // Set to true from the Help menu to trigger a manual update check
 inline bool g_checkForUpdatesRequested = false;

@@ -7,7 +7,7 @@
 static bool s_releaseNotesOpen = false;
 static std::string s_releaseNotesText;
 
-void draw_update_notification(UpdateChecker* checker, HWND appWindow)
+void draw_update_notification(UpdateChecker* checker, HWND appWindow, bool suppressIfIdle)
 {
     if (!checker)
         return;
@@ -16,6 +16,10 @@ void draw_update_notification(UpdateChecker* checker, HWND appWindow)
 
     // Nothing to show
     if (state == UpdateChecker::State::Idle)
+        return;
+
+    // Suppress entirely during loading screen — the central update banner handles all states.
+    if (suppressIfIdle)
         return;
 
     // User dismissed this notification

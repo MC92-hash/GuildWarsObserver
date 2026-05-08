@@ -472,7 +472,7 @@ void MapBrowser::Tick()
     if (g_checkForUpdatesRequested)
     {
         g_checkForUpdatesRequested = false;
-        m_updateChecker.Check(GWO_VERSION, "MC92-hash/gwobserver", true);
+        m_updateChecker.Check(GWO_VERSION, "MC92-hash/GuildWarsObserver", true);
     }
 
     // Handle debug simulate update state
@@ -998,7 +998,7 @@ void MapBrowser::Render()
         }
 
         // Update notification overlay
-        draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow());
+        draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow(), !g_loadingScreenDone);
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active

@@ -352,6 +352,10 @@ void UpdateChecker::CheckThread()
 
         if (!tagName.empty())
         {
+            // Strip leading 'v'/'V' so displayed versions are consistent with GWO_VERSION
+            if (tagName.front() == 'v' || tagName.front() == 'V')
+                tagName.erase(0, 1);
+
             std::lock_guard<std::mutex> lock(m_mutex);
             m_latestVersion = tagName;
             m_releaseUrl = htmlUrl;

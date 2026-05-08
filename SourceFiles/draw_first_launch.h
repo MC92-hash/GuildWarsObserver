@@ -1,6 +1,8 @@
 #pragma once
 #include <string>
 
+class UpdateChecker;
+
 struct LoadingProgress
 {
     bool  dat_path_is_set = false;
@@ -16,6 +18,8 @@ struct UpdateInfo
     std::string latestVersion;
     std::string releaseUrl;
     std::string repo;
+    UpdateChecker* checker = nullptr;
+    HWND   appWindow = nullptr;
 };
 
 // Draw the loading screen (background + progress bar + status text + optional dat-path prompt).

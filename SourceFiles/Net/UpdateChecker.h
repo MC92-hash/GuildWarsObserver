@@ -22,7 +22,7 @@ public:
     // currentVersion: e.g. "1.0.2" (no 'v' prefix)
     // repo: e.g. "MC92-hash/gwobserver"
     void Check(const std::string& currentVersion,
-               const std::string& repo = "MC92-hash/gwobserver",
+               const std::string& repo = "MC92-hash/GuildWarsObserver",
                bool userInitiated = false);
 
     // Download the release exe to <exe_dir>/GWObserver_update.exe.

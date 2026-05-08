@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "draw_first_launch.h"
+#include "Net/UpdateChecker.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
@@ -70,22 +71,31 @@ namespace
 }
 
 static bool s_updatePopupShown = false;
+static bool s_updateDismissed = false;
+static bool s_autoInstallAfterDownload = false;
 
 static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
 {
-    if (!update.available) return;
+    if (!update.available || !update.checker) return;
+    if (s_updateDismissed) return;
 
-    if (!s_updatePopupShown)
-    {
-        s_updatePopupShown = true;
-        ImGui::OpenPopup("##UpdateAvailable");
-    }
+    auto state = update.checker->GetState();
+
+    // Nothing to show once back to idle (e.g. after cancel)
+    if (state == UpdateChecker::State::Idle || state == UpdateChecker::State::Checking)
+        return;
 
     float cardW = 440.f;
     // Position below the logo text, slightly right of center
-    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f + 30.f, display.y * 0.62f),
-                            ImGuiCond_Appearing);
-    ImGui::SetNextWindowSize(ImVec2(cardW, 0), ImGuiCond_Appearing);
+    ImVec2 cardPos(display.x * 0.5f + 30.f, display.y * 0.62f);
+
+    ImGui::SetNextWindowPos(cardPos, ImGuiCond_Always, ImVec2(0.5f, 0.f));
+    ImGui::SetNextWindowSize(ImVec2(cardW, 0));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_AlwaysAutoResize;
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.078f, 0.102f, 0.95f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.08f));
@@ -93,92 +103,181 @@ static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32, 28));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
 
-    if (ImGui::BeginPopupModal("##UpdateAvailable", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::Begin("##UpdateCard", nullptr, flags))
     {
         // Gold heading
         ImFont* font = ImGui::GetFont();
         float headingSz = 22.f;
-        const char* heading = "Update Available";
+        const char* heading = (state == UpdateChecker::State::ReadyToInstall) ? "Update Ready!" :
+                              (state == UpdateChecker::State::Downloading)    ? "Downloading Update..." :
+                              (state == UpdateChecker::State::Error)          ? "Update Failed" :
+                                                                                "Update Available";
         ImVec2 hsz = font->CalcTextSizeA(headingSz, FLT_MAX, 0.f, heading);
         ImVec2 wpos = ImGui::GetWindowPos();
         ImVec2 cpos = ImGui::GetCursorPos();
         float hx = (cardW - hsz.x) * 0.5f;
         ImDrawList* wdl = ImGui::GetWindowDrawList();
         ImU32 shadow = IM_COL32(0, 0, 0, 200);
+        ImU32 headingCol = (state == UpdateChecker::State::Error) ? IM_COL32(224, 120, 48, 255) : IM_COL32(212, 160, 32, 255);
         wdl->AddText(font, headingSz, ImVec2(wpos.x + hx - 1.f, wpos.y + cpos.y + 1.f), shadow, heading);
         wdl->AddText(font, headingSz, ImVec2(wpos.x + hx + 1.f, wpos.y + cpos.y + 1.f), shadow, heading);
         wdl->AddText(font, headingSz, ImVec2(wpos.x + hx, wpos.y + cpos.y + 2.f), shadow, heading);
-        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx, wpos.y + cpos.y), IM_COL32(212, 160, 32, 255), heading);
+        wdl->AddText(font, headingSz, ImVec2(wpos.x + hx, wpos.y + cpos.y), headingCol, heading);
         ImGui::Dummy(ImVec2(0, hsz.y + 6.f));
 
-        // Subheading
-        const char* sub = "A new version of GW Observer is available.";
-        ImVec2 ssz = ImGui::CalcTextSize(sub);
-        ImGui::SetCursorPosX((cardW - ssz.x) * 0.5f);
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.65f), "%s", sub);
-
-        ImGui::Dummy(ImVec2(0, 12.f));
-        ImGui::Separator();
-        ImGui::Dummy(ImVec2(0, 12.f));
-
-        // Version info
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Current version:");
-        ImGui::SameLine(210.f);
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.90f), "%s", update.currentVersion.c_str());
-        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Latest version:");
-        ImGui::SameLine(210.f);
-        ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.45f, 1.f), "%s", update.latestVersion.c_str());
-
-        ImGui::Dummy(ImVec2(0, 16.f));
-
-        // Buttons
-        float btnW = 130.f;
-        float dlBtnW = 130.f;
-        float dismissW = 80.f;
-        float gap = 8.f;
-        float totalBtnW = btnW + gap + dlBtnW + gap + dismissW;
-        ImGui::SetCursorPosX((cardW - totalBtnW) * 0.5f);
-
-        // Gold accent buttons
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.14f, 0.05f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.23f, 0.19f, 0.08f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.91f, 0.69f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 0.84f, 0.39f, 0.85f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-
-        if (ImGui::Button("Release Page", ImVec2(btnW, 0)))
+        // State-specific content
+        switch (state)
         {
-            if (!update.releaseUrl.empty())
+        case UpdateChecker::State::UpdateAvailable:
+        {
+            const char* sub = "A new version of GW Observer is available.";
+            ImVec2 ssz = ImGui::CalcTextSize(sub);
+            ImGui::SetCursorPosX((cardW - ssz.x) * 0.5f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.65f), "%s", sub);
+
+            ImGui::Dummy(ImVec2(0, 12.f));
+            ImGui::Separator();
+            ImGui::Dummy(ImVec2(0, 12.f));
+
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Current version:");
+            ImGui::SameLine(210.f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.90f), "%s", update.currentVersion.c_str());
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.50f), "Latest version:");
+            ImGui::SameLine(210.f);
+            ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.45f, 1.f), "%s", update.latestVersion.c_str());
+
+            ImGui::Dummy(ImVec2(0, 16.f));
+
+            float btnW = 130.f;
+            float dlBtnW = 150.f;
+            float dismissW = 80.f;
+            float gap = 8.f;
+            float totalBtnW = btnW + gap + dlBtnW + gap + dismissW;
+            ImGui::SetCursorPosX((cardW - totalBtnW) * 0.5f);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.14f, 0.05f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.23f, 0.19f, 0.08f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.91f, 0.69f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 0.84f, 0.39f, 0.85f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+
+            if (ImGui::Button("Release Page", ImVec2(btnW, 0)))
             {
-                std::wstring wUrl(update.releaseUrl.begin(), update.releaseUrl.end());
-                ShellExecuteW(nullptr, L"open", wUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (!update.releaseUrl.empty())
+                {
+                    std::wstring wUrl(update.releaseUrl.begin(), update.releaseUrl.end());
+                    ShellExecuteW(nullptr, L"open", wUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
             }
-            ImGui::CloseCurrentPopup();
+            ImGui::SameLine(0, gap);
+            if (ImGui::Button("Download & Install", ImVec2(dlBtnW, 0)))
+            {
+                update.checker->StartDownload();
+                s_autoInstallAfterDownload = true;
+            }
+
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(4);
+
+            ImGui::SameLine(0, gap);
+            if (ImGui::Button("Dismiss", ImVec2(dismissW, 0)))
+                s_updateDismissed = true;
+            break;
         }
 
-        ImGui::SameLine(0, gap);
-        if (ImGui::Button("Direct Download", ImVec2(dlBtnW, 0)))
+        case UpdateChecker::State::Downloading:
         {
-            std::string tag = update.latestVersion;
-            std::string dlUrl = "https://github.com/" + update.repo
-                + "/releases/download/" + tag + "/GWObserver-" + tag + ".zip";
-            std::wstring wDlUrl(dlUrl.begin(), dlUrl.end());
-            ShellExecuteW(nullptr, L"open", wDlUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            ImGui::CloseCurrentPopup();
+            ImGui::Dummy(ImVec2(0, 4.f));
+            float progress = update.checker->GetDownloadProgress();
+            ImGui::ProgressBar(progress, ImVec2(-1.f, 18.f));
+
+            double recvMB = update.checker->GetDownloadedBytes() / (1024.0 * 1024.0);
+            double totalMB = update.checker->GetTotalBytes() / (1024.0 * 1024.0);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.1f / %.1f MB", recvMB, totalMB);
+            ImVec2 tsz = ImGui::CalcTextSize(buf);
+            ImGui::SetCursorPosX((cardW - tsz.x) * 0.5f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.65f), "%s", buf);
+
+            ImGui::Dummy(ImVec2(0, 8.f));
+            float cancelW = 80.f;
+            ImGui::SetCursorPosX((cardW - cancelW) * 0.5f);
+            if (ImGui::Button("Cancel", ImVec2(cancelW, 0)))
+                update.checker->Cancel();
+            break;
         }
 
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(4);
+        case UpdateChecker::State::ReadyToInstall:
+        {
+            if (s_autoInstallAfterDownload)
+            {
+                s_autoInstallAfterDownload = false;
+                update.checker->ApplyAndRestart(update.appWindow);
+            }
 
-        ImGui::SameLine(0, gap);
-        if (ImGui::Button("Dismiss", ImVec2(dismissW, 0)))
-            ImGui::CloseCurrentPopup();
+            const char* sub = "The update has been downloaded and is ready to install.";
+            ImVec2 ssz = ImGui::CalcTextSize(sub);
+            ImGui::SetCursorPosX((cardW - ssz.x) * 0.5f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.65f), "%s", sub);
 
-        ImGui::EndPopup();
+            ImGui::Dummy(ImVec2(0, 16.f));
+
+            float installW = 160.f;
+            float laterW = 80.f;
+            float gap = 8.f;
+            float totalW = installW + gap + laterW;
+            ImGui::SetCursorPosX((cardW - totalW) * 0.5f);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.18f, 0.08f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.10f, 0.25f, 0.10f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.25f, 0.85f, 0.45f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.75f, 0.37f, 0.85f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+
+            if (ImGui::Button("Install & Restart", ImVec2(installW, 0)))
+                update.checker->ApplyAndRestart(update.appWindow);
+
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(4);
+
+            ImGui::SameLine(0, gap);
+            if (ImGui::Button("Later", ImVec2(laterW, 0)))
+                s_updateDismissed = true;
+            break;
+        }
+
+        case UpdateChecker::State::Error:
+        {
+            std::string err = update.checker->GetLastError();
+            if (!err.empty())
+            {
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cardW - 64.f);
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.6f), "%s", err.c_str());
+                ImGui::PopTextWrapPos();
+            }
+
+            ImGui::Dummy(ImVec2(0, 12.f));
+            float retryW = 80.f;
+            float dismissW = 80.f;
+            float gap = 8.f;
+            float totalW = retryW + gap + dismissW;
+            ImGui::SetCursorPosX((cardW - totalW) * 0.5f);
+
+            if (ImGui::Button("Retry", ImVec2(retryW, 0)))
+                update.checker->Check(update.currentVersion);
+            ImGui::SameLine(0, gap);
+            if (ImGui::Button("Dismiss", ImVec2(dismissW, 0)))
+                s_updateDismissed = true;
+            break;
+        }
+
+        default:
+            break;
+        }
     }
+    ImGui::End();
 
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(2);
