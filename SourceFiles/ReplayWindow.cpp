@@ -1715,6 +1715,13 @@ void ReplayWindow::StepPlaceProps()
                                       perMeshTexIds, pst, segHash, segFallback);
                 }
 
+                // Imperial Isle: hide submesh 0 for gate frame props (only show submesh 1)
+                if (m_replayCtx.datMapId == 0x28736 && fileHash == 0x2D74A &&
+                    meshIds.size() > 1)
+                {
+                    map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[0], false);
+                }
+
                 if (m_replayCtx.datMapId == 0x28784)
                 {
                     uint8_t doorType = 0;
@@ -3476,16 +3483,197 @@ void ReplayWindow::SetupGateLockProps()
 }
 
 // ---------------------------------------------------------------------------
+// Gate Lock — render static lever models (Imperial Isle)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupImperialGateLockProps()
+{
+    if (m_imperialGateLockLoaded)
+        return;
+    m_imperialGateLockLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_replayCtx.datMapId != 0x28736)
+        return;
+
+    if (m_replayCtx.agents.empty())
+        return;
+
+    auto GetGateLockRotationOffset = [](uint32_t gadgetId) -> float {
+        constexpr float k90 = XM_PIDIV2;
+        switch (gadgetId) {
+        case 4645: return k90;
+        case 4646: return k90;
+        case 4647: return k90;
+        case 4648: return 0.f;
+        case 4649: return k90;
+        case 4650: return k90;
+        case 4651: return k90;
+        case 4652: return 0.f;
+        default:   return 0.f;
+        }
+    };
+
+    struct GateLockPos { float x, y, z, rotation; };
+    std::vector<GateLockPos> positions;
+    for (auto& [aid, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        uint32_t gid = ard.snapshots[0].gadget_id;
+        if (gid < 4645 || gid > 4652) continue;
+        float rot = ard.snapshots[0].rotation + GetGateLockRotationOffset(gid);
+        positions.push_back({ ard.snapshots[0].x, ard.snapshots[0].y,
+                              ard.snapshots[0].z, rot });
+    }
+    if (positions.empty())
+        return;
+
+    constexpr uint32_t kModelHash = 0x2AD08;
+    auto mit = m_hashIndex->find(static_cast<int>(kModelHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+
+    for (const auto& pos : positions)
+    {
+        XMFLOAT3 renderPos = ApplyMapTransformToPos(pos.x, pos.y, pos.z, m_replayCtx.mapTransform);
+        XMMATRIX rotMat = XMMatrixRotationY(pos.rotation);
+        XMMATRIX transMat = XMMatrixTranslation(renderPos.x, renderPos.y, renderPos.z);
+        XMMATRIX worldMat = rotMat * transMat;
+
+        std::vector<PerObjectCB> perObjectCBs(meshes.size());
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+            auto& mesh = meshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                modelFile.textures_parsed_correctly)
+            {
+                perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+                {
+                    perObjectCBs[j].uv_indices[k / 4][k % 4]     = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                    perObjectCBs[j].texture_indices[k / 4][k % 4] = static_cast<uint32_t>(mesh.tex_indices[k]);
+                    perObjectCBs[j].blend_flags[k / 4][k % 4]     = static_cast<uint32_t>(mesh.blend_flags[k]);
+                    perObjectCBs[j].texture_types[k / 4][k % 4]   = static_cast<uint32_t>(mesh.texture_types[k]);
+                }
+            }
+        }
+
+        auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0006u, pst);
+
+        if (modelFile.textures_parsed_correctly)
+        {
+            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+            {
+                auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+                map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Door animation update (event-driven, per door type)
 // ---------------------------------------------------------------------------
 
-static int GetIoMDoorType(uint32_t objectId)
+static int GetDoorType(uint32_t datMapId, uint32_t objectId)
 {
-    switch (objectId) {
-    case 56526: case 11692: case 12669: case 61318: return 1;
-    case 41431: case 1760:  case 54552:             return 2;
-    default: return 0;
+    if (datMapId == 0x28784) // Isle of Meditation
+    {
+        switch (objectId) {
+        case 56526: case 11692: case 12669: case 61318: return 1;
+        case 41431: case 1760:  case 54552:             return 2;
+        default: return 0;
+        }
     }
+    return 0;
 }
 
 void ReplayWindow::UpdateDoorAnimations()
@@ -3522,7 +3710,7 @@ void ReplayWindow::UpdateDoorAnimations()
         if (ev.animation_stage != 2)
             continue;
 
-        int dt = GetIoMDoorType(ev.object_id);
+        int dt = GetDoorType(m_replayCtx.datMapId, ev.object_id);
         if (dt == 0)
             continue;
 
@@ -4550,6 +4738,10 @@ void ReplayWindow::Tick()
     if (m_flagTimelineBuilt && m_calibrationLoaded &&
         m_loadingPhase == LoadingPhase::Ready && !m_gateLockModelsLoaded)
         SetupGateLockProps();
+
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_imperialGateLockLoaded)
+        SetupImperialGateLockProps();
 
     m_timer.Tick([this]()
     {

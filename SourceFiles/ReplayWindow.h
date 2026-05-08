@@ -295,7 +295,7 @@ private:
     std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
 
     // --- Door animation state tracking (per door type, not per object) ---
-    bool  m_doorTypeOpen[3] = {};     // index 1 = Type1 (0x2873C), index 2 = Type2 (0x1F1EE)
+    bool  m_doorTypeOpen[3] = {};     // index 1 = IoM doors, index 2 = IoM gate locks
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
 
@@ -322,6 +322,10 @@ private:
     // --- Gate Lock animated models (Isle of Meditation) ---
     bool m_gateLockModelsLoaded = false;
     void SetupGateLockProps();
+
+    // --- Gate Lock animated models (Imperial Isle) ---
+    bool m_imperialGateLockLoaded = false;
+    void SetupImperialGateLockProps();
 
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
