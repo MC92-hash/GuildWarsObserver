@@ -41,6 +41,9 @@ struct MapAnimatedProp
     size_t   openSegmentIndex = 0;
     size_t   closeSegmentIndex = 0;
 
+    std::vector<std::pair<int,int>> mirrorBonePairs;
+    bool doubleSided = false;
+
     std::vector<bool> submeshVisibility;
 
     bool IsSubmeshVisible(size_t idx) const {
@@ -1068,11 +1071,41 @@ public:
                 continue;
             if (ap.doorType == 0)
                 ap.controller->Update(static_cast<float>(dt_seconds) * m_replayPlaybackSpeed);
-            const auto& boneMatrices = ap.controller->GetBoneMatrices();
-            for (auto& mesh : ap.meshes)
+
+            const auto& srcMatrices = ap.controller->GetBoneMatrices();
+
+            if (!ap.mirrorBonePairs.empty())
             {
-                if (mesh)
-                    mesh->UpdateBoneMatrices(m_deviceContext, boneMatrices);
+                auto mirrored = srcMatrices;
+                size_t maxNeeded = mirrored.size();
+                for (const auto& [src, dst] : ap.mirrorBonePairs)
+                    maxNeeded = std::max(maxNeeded, static_cast<size_t>(dst) + 1);
+                mirrored.resize(maxNeeded);
+                for (size_t k = srcMatrices.size(); k < maxNeeded; k++)
+                    XMStoreFloat4x4(&mirrored[k], XMMatrixIdentity());
+
+                XMMATRIX S = XMMatrixScaling(-1.0f, 1.0f, 1.0f);
+                for (const auto& [srcIdx, dstIdx] : ap.mirrorBonePairs)
+                {
+                    if (static_cast<size_t>(srcIdx) < srcMatrices.size())
+                    {
+                        XMMATRIX m = XMLoadFloat4x4(&mirrored[srcIdx]);
+                        XMStoreFloat4x4(&mirrored[dstIdx], S * m * S);
+                    }
+                }
+                for (auto& mesh : ap.meshes)
+                {
+                    if (mesh)
+                        mesh->UpdateBoneMatrices(m_deviceContext, mirrored);
+                }
+            }
+            else
+            {
+                for (auto& mesh : ap.meshes)
+                {
+                    if (mesh)
+                        mesh->UpdateBoneMatrices(m_deviceContext, srcMatrices);
+                }
             }
         }
     }
@@ -1563,6 +1596,9 @@ private:
                 m_deviceContext->PSSetSamplers(1, 1, psIt->second->GetSamplerStateShadow());
             }
 
+            if (ap.doubleSided)
+                m_rasterizer_state_manager->SetRasterizerState(RasterizerStateType::Solid_NoCull);
+
             for (size_t i = 0; i < ap.meshes.size(); i++)
             {
                 auto& mesh = ap.meshes[i];
@@ -1583,6 +1619,9 @@ private:
 
                 mesh->Draw(m_deviceContext, m_lod_quality);
             }
+
+            if (ap.doubleSided)
+                m_rasterizer_state_manager->SetRasterizerState(RasterizerStateType::Solid);
         }
 
         BindRegularVertexShader();

@@ -295,7 +295,7 @@ private:
     std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
 
     // --- Door animation state tracking (per door type, not per object) ---
-    bool  m_doorTypeOpen[3] = {};     // index 1 = IoM doors, index 2 = IoM gate locks
+    bool  m_doorTypeOpen[5] = {};     // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
 

@@ -1785,6 +1785,359 @@ void ReplayWindow::StepPlaceProps()
                         }
                     }
                 }
+
+                // Imperial Isle doors
+                if (m_replayCtx.datMapId == 0x28736)
+                {
+                    bool isImperialDoor =
+                        fileHash == 0x2865D || fileHash == 0x2865B || fileHash == 0x28699;
+
+                    if (isImperialDoor && fileHash != 0x28699)
+                    {
+                        SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                          propMeshes, perObjectCBs, meshIds,
+                                          perMeshTexIds, pst, 0x303419C9, 2);
+
+                        auto& animProps = m_mapRenderer->GetAnimatedProps();
+                        if (!animProps.empty())
+                        {
+                            auto& last = animProps.back();
+                            last.doorType = (fileHash == 0x2865B) ? 4 : 3;
+                            last.openSegmentIndex  = SIZE_MAX;
+                            last.closeSegmentIndex = SIZE_MAX;
+
+                            if (last.clip)
+                            {
+                                const auto& segs = last.clip->animationSegments;
+                                for (size_t s = 0; s < segs.size(); s++)
+                                {
+                                    if (segs[s].hash == 0x303419C9) last.openSegmentIndex = s;
+                                }
+                                if (last.openSegmentIndex == SIZE_MAX) last.openSegmentIndex = 2;
+                            }
+
+                            last.controller->SetSegment(last.openSegmentIndex);
+                            last.controller->SetTime(
+                                static_cast<float>(last.clip->animationSegments[last.openSegmentIndex].startTime));
+                            last.controller->SetLooping(false);
+                            last.controller->Pause();
+
+                            // submesh hiding for 0x2865B disabled for testing
+                            // if (fileHash == 0x2865B)
+                            // {
+                            //     if (last.meshes.size() > 4) last.meshes[4] = nullptr;
+                            //     if (last.meshes.size() > 3) last.meshes[3] = nullptr;
+                            // }
+
+                            m_doorAnimPropCount++;
+                            {
+                                std::ofstream dbg("door_debug.log", std::ios::app);
+                                dbg << "[DoorAnim] Imperial prop " << i
+                                    << " door type " << static_cast<int>(last.doorType)
+                                    << " (hash 0x" << std::hex << fileHash << std::dec << ")\n";
+                            }
+                        }
+                    }
+                    else if (fileHash == 0x28699)
+                    {
+                        // Inline animated prop creation with bone-locking for submeshes 0-5
+                        auto* device = m_deviceResources->GetD3DDevice();
+                        auto mit = m_hashIndex->find(static_cast<int>(fileHash));
+                        if (device && mit != m_hashIndex->end() && !mit->second.empty())
+                        {
+                            int mftIndex = mit->second.at(0);
+                            uint8_t* animFileData = m_datManager->read_file(mftIndex);
+                            if (animFileData)
+                            {
+                                size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+                                delete[] animFileData;
+
+                                if (clipOpt && clipOpt->IsValid())
+                                {
+                                    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                    clip->BuildAnimationGroups();
+
+                                    const auto& segments = clip->animationSegments;
+                                    if (segments.size() >= 2)
+                                    {
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segments.size(); s++)
+                                        {
+                                            if (segments[s].hash == 0x303419C9) openSeg = s;
+                                        }
+                                        if (openSeg == SIZE_MAX) openSeg = 2;
+
+                                        auto controller = std::make_shared<GW::Animation::AnimationController>();
+                                        controller->Initialize(clip);
+                                        controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        controller->SetSegment(openSeg);
+                                        controller->SetLooping(false);
+                                        controller->SetPlaybackSpeed(100000.0f);
+                                        controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+                                        controller->Pause();
+
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+                                        size_t boneCount = clip->boneTracks.size();
+
+                                        // First pass: build skinned verts for all submeshes
+                                        // and find the center X of panel vertices (submeshes 6-7)
+                                        struct SubmeshSkinData {
+                                            std::vector<SkinnedGWVertex> verts;
+                                        };
+                                        std::vector<SubmeshSkinData> allSkinData(propMeshes.size());
+
+                                        float panelMinX =  FLT_MAX, panelMaxX = -FLT_MAX;
+                                        float panelMinZ =  FLT_MAX, panelMaxZ = -FLT_MAX;
+
+                                        for (size_t j = 0; j < propMeshes.size(); j++)
+                                        {
+                                            const auto& mesh = propMeshes[j];
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vertexBoneGroups;
+                                            if (j < geomModels.size())
+                                            {
+                                                const auto& geomModel = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(
+                                                    geomModel.extra_data, geomModel.u0, geomModel.u1);
+                                                vertexBoneGroups.reserve(geomModel.vertices.size());
+                                                for (const auto& mv : geomModel.vertices)
+                                                    vertexBoneGroups.push_back(mv.group);
+                                            }
+
+                                            allSkinData[j].verts = AnimationPanelState::CreateSkinnedVertices(
+                                                mesh, boneData, vertexBoneGroups, boneCount,
+                                                clip->hierarchyMode, j);
+
+                                            if (j >= 6)
+                                            {
+                                                for (const auto& sv : allSkinData[j].verts)
+                                                {
+                                                    panelMinX = std::min(panelMinX, sv.position.x);
+                                                    panelMaxX = std::max(panelMaxX, sv.position.x);
+                                                    panelMinZ = std::min(panelMinZ, sv.position.z);
+                                                    panelMaxZ = std::max(panelMaxZ, sv.position.z);
+                                                }
+                                            }
+                                        }
+
+                                        float extentX = panelMaxX - panelMinX;
+                                        float extentZ = panelMaxZ - panelMinZ;
+                                        bool splitOnX = (extentX >= extentZ);
+                                        float splitCenter = splitOnX
+                                            ? (panelMinX + panelMaxX) * 0.5f
+                                            : (panelMinZ + panelMaxZ) * 0.5f;
+
+                                        // Debug log to file
+                                        {
+                                            std::ofstream dbg("door_debug.log", std::ios::app);
+                                            dbg << "\n=== 0x28699 prop " << i << " ===\n";
+                                            dbg << "boneCount=" << boneCount
+                                                << "  outputBoneCount=" << clip->GetOutputBoneCount()
+                                                << "  hierarchyMode=" << static_cast<int>(clip->hierarchyMode) << "\n";
+                                            dbg << "panelX=[" << panelMinX << ", " << panelMaxX
+                                                << "]  panelZ=[" << panelMinZ << ", " << panelMaxZ << "]\n";
+                                            dbg << "splitAxis=" << (splitOnX ? "X" : "Z")
+                                                << "  splitCenter=" << splitCenter << "\n";
+
+                                            dbg << "  -- Bone bind positions (basePosition) --\n";
+                                            for (size_t b = 0; b < boneCount; b++)
+                                            {
+                                                const auto& bp = clip->boneTracks[b].basePosition;
+                                                int32_t parent = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                                dbg << "  bone " << b << " : pos=("
+                                                    << bp.x << ", " << bp.y << ", " << bp.z
+                                                    << ") parent=" << parent << "\n";
+                                            }
+
+                                            dbg << "  -- Bone skinning matrices at segment start (closed) --\n";
+                                            const auto& matrices = controller->GetBoneMatrices();
+                                            for (size_t b = 0; b < std::min(matrices.size(), (size_t)10); b++)
+                                            {
+                                                const auto& m = matrices[b];
+                                                dbg << "  bone " << b << " 4x4:\n";
+                                                dbg << "    [" << m._11 << ", " << m._12 << ", " << m._13 << ", " << m._14 << "]\n";
+                                                dbg << "    [" << m._21 << ", " << m._22 << ", " << m._23 << ", " << m._24 << "]\n";
+                                                dbg << "    [" << m._31 << ", " << m._32 << ", " << m._33 << ", " << m._34 << "]\n";
+                                                dbg << "    [" << m._41 << ", " << m._42 << ", " << m._43 << ", " << m._44 << "]\n";
+                                            }
+
+                                            // Also evaluate at segment end (open state)
+                                            controller->SetTime(static_cast<float>(segments[openSeg].endTime));
+                                            const auto& openMatrices = controller->GetBoneMatrices();
+                                            dbg << "  -- Bone skinning matrices at segment end (open) --\n";
+                                            for (size_t b = 0; b < std::min(openMatrices.size(), (size_t)10); b++)
+                                            {
+                                                const auto& m = openMatrices[b];
+                                                dbg << "  bone " << b << " 4x4:\n";
+                                                dbg << "    [" << m._11 << ", " << m._12 << ", " << m._13 << ", " << m._14 << "]\n";
+                                                dbg << "    [" << m._21 << ", " << m._22 << ", " << m._23 << ", " << m._24 << "]\n";
+                                                dbg << "    [" << m._31 << ", " << m._32 << ", " << m._33 << ", " << m._34 << "]\n";
+                                                dbg << "    [" << m._41 << ", " << m._42 << ", " << m._43 << ", " << m._44 << "]\n";
+                                            }
+                                            // Reset back to start
+                                            controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+
+                                            for (size_t j = 0; j < allSkinData.size(); j++)
+                                            {
+                                                std::set<uint32_t> uniqueBones;
+                                                for (const auto& sv : allSkinData[j].verts)
+                                                    uniqueBones.insert(sv.boneIndices[0]);
+                                                std::string boneList;
+                                                for (uint32_t b : uniqueBones)
+                                                    boneList += std::to_string(b) + " ";
+                                                dbg << "  submesh " << j << " : "
+                                                    << allSkinData[j].verts.size() << " verts, bones: [" << boneList << "]\n";
+                                            }
+                                        }
+
+                                        // Second pass: apply bone overrides and create meshes
+                                        std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+                                        int rightCount = 0, leftCount = 0;
+                                        for (size_t j = 0; j < propMeshes.size(); j++)
+                                        {
+                                            auto& skinnedVerts = allSkinData[j].verts;
+                                            std::vector<uint32_t> meshIndices = propMeshes[j].indices;
+
+                                            if (j <= 5)
+                                            {
+                                                for (auto& sv : skinnedVerts)
+                                                    sv.SetSingleBone(static_cast<uint32_t>(boneCount));
+                                            }
+                                            else
+                                            {
+                                                size_t numTris = meshIndices.size() / 3;
+
+                                                std::vector<bool> triIsLeft(numTris);
+                                                for (size_t t = 0; t < numTris; t++)
+                                                {
+                                                    uint32_t i0 = meshIndices[t*3], i1 = meshIndices[t*3+1], i2 = meshIndices[t*3+2];
+                                                    float centroid = splitOnX
+                                                        ? (skinnedVerts[i0].position.x + skinnedVerts[i1].position.x + skinnedVerts[i2].position.x) / 3.0f
+                                                        : (skinnedVerts[i0].position.z + skinnedVerts[i1].position.z + skinnedVerts[i2].position.z) / 3.0f;
+                                                    triIsLeft[t] = (centroid <= splitCenter);
+                                                }
+
+                                                enum VertSide : uint8_t { NONE=0, RIGHT_ONLY=1, LEFT_ONLY=2, SHARED=3 };
+                                                std::vector<uint8_t> vertSide(skinnedVerts.size(), NONE);
+                                                for (size_t t = 0; t < numTris; t++)
+                                                {
+                                                    uint8_t side = triIsLeft[t] ? LEFT_ONLY : RIGHT_ONLY;
+                                                    vertSide[meshIndices[t*3]]   |= side;
+                                                    vertSide[meshIndices[t*3+1]] |= side;
+                                                    vertSide[meshIndices[t*3+2]] |= side;
+                                                }
+
+                                                std::unordered_map<uint32_t, uint32_t> leftCopyMap;
+                                                size_t origSize = skinnedVerts.size();
+                                                for (uint32_t v = 0; v < static_cast<uint32_t>(origSize); v++)
+                                                {
+                                                    if (vertSide[v] == SHARED)
+                                                    {
+                                                        uint32_t newIdx = static_cast<uint32_t>(skinnedVerts.size());
+                                                        skinnedVerts.push_back(skinnedVerts[v]);
+                                                        leftCopyMap[v] = newIdx;
+                                                    }
+                                                }
+
+                                                for (size_t t = 0; t < numTris; t++)
+                                                {
+                                                    if (triIsLeft[t])
+                                                    {
+                                                        for (int k = 0; k < 3; k++)
+                                                        {
+                                                            auto it = leftCopyMap.find(meshIndices[t*3+k]);
+                                                            if (it != leftCopyMap.end())
+                                                                meshIndices[t*3+k] = it->second;
+                                                        }
+                                                    }
+                                                }
+
+                                                for (uint32_t v = 0; v < static_cast<uint32_t>(skinnedVerts.size()); v++)
+                                                {
+                                                    bool isLeft = false;
+                                                    if (v < origSize)
+                                                        isLeft = (vertSide[v] == LEFT_ONLY);
+                                                    else
+                                                        isLeft = true;
+
+                                                    if (isLeft)
+                                                    {
+                                                        uint32_t origBone = skinnedVerts[v].boneIndices[0];
+                                                        if (origBone == 0 || origBone == 7)
+                                                            skinnedVerts[v].SetSingleBone(9);
+                                                        else if (origBone == 8)
+                                                            skinnedVerts[v].SetSingleBone(11);
+                                                        else
+                                                            skinnedVerts[v].SetSingleBone(9);
+                                                        leftCount++;
+                                                    }
+                                                    else
+                                                    {
+                                                        uint32_t origBone = skinnedVerts[v].boneIndices[0];
+                                                        if (origBone == 7)
+                                                            skinnedVerts[v].SetSingleBone(0);
+                                                        rightCount++;
+                                                    }
+                                                }
+                                            }
+
+                                            auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                                                device, skinnedVerts, meshIndices, static_cast<int>(j));
+
+                                            if (j < perMeshTexIds.size())
+                                            {
+                                                auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                                                animMesh->SetTextures(texSRVs, 3);
+                                            }
+
+                                            animMesh->SetPerObjectData(perObjectCBs[j]);
+                                            animatedMeshes.push_back(std::move(animMesh));
+                                        }
+
+                                        {
+                                            std::ofstream dbg("door_debug.log", std::ios::app);
+                                            dbg << "  panel triangle-split: leftVerts=" << leftCount
+                                                << " rightVerts=" << rightCount << "\n";
+                                            for (size_t j = 6; j < allSkinData.size(); j++)
+                                            {
+                                                std::map<uint32_t, int> boneCounts;
+                                                for (const auto& sv : allSkinData[j].verts)
+                                                    boneCounts[sv.boneIndices[0]]++;
+                                                std::string detail;
+                                                for (const auto& [b, c] : boneCounts)
+                                                    detail += "bone" + std::to_string(b) + "=" + std::to_string(c) + " ";
+                                                dbg << "  submesh " << j << " verts=" << allSkinData[j].verts.size()
+                                                    << " after remap: " << detail << "\n";
+                                            }
+                                        }
+
+                                        MapAnimatedProp prop;
+                                        prop.controller     = controller;
+                                        prop.clip           = clip;
+                                        prop.meshes         = std::move(animatedMeshes);
+                                        prop.perObjectCBs   = perObjectCBs;
+                                        prop.staticMeshIds  = meshIds;
+                                        prop.pixelShaderType = pst;
+                                        prop.doorType        = 4;
+                                        prop.openSegmentIndex  = openSeg;
+                                        prop.closeSegmentIndex = SIZE_MAX;
+                                        prop.mirrorBonePairs = {{0, 9}, {8, 11}};
+                                        prop.doubleSided = true;
+
+                                        m_mapRenderer->AddAnimatedProp(std::move(prop));
+                                        m_doorAnimPropCount++;
+                                        {
+                                            std::ofstream dbg("door_debug.log", std::ios::app);
+                                            dbg << "[DoorAnim] Imperial prop " << i
+                                                << " door 0x28699 type 4 (position-split panels, mirror bone 0->9)\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             for (int mid : meshIds)
@@ -1832,11 +2185,13 @@ void ReplayWindow::StepPlaceProps()
             m_loadTiming.placePropSec = std::chrono::duration<double>(LoadClock::now() - m_phaseStartTime).count();
             OutputDebugStringA(std::format("[ReplayLoad] PlaceProps: {:.3f}s\n", m_loadTiming.placePropSec).c_str());
 
-            if (m_replayCtx.datMapId == 0x28784)
+            if (m_replayCtx.datMapId == 0x28784 || m_replayCtx.datMapId == 0x28736)
             {
+                const char* mapLabel = (m_replayCtx.datMapId == 0x28784)
+                    ? "Isle of Meditation" : "Imperial Isle";
                 OutputDebugStringA(std::format(
-                    "[DoorAnim] Isle of Meditation: {} door animated props created\n",
-                    m_doorAnimPropCount).c_str());
+                    "[DoorAnim] {}: {} door animated props created\n",
+                    mapLabel, m_doorAnimPropCount).c_str());
 
                 std::unordered_map<uint32_t, int> hashCounts;
                 for (size_t h = 0; h < m_propModelFileHashes.size(); h++)
@@ -2073,6 +2428,22 @@ void ReplayWindow::SetupAnimatedProp(
         auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
             mesh, boneData, vertexBoneGroups, boneCount,
             clip->hierarchyMode, j);
+
+        // Debug: log bone assignments per submesh to file
+        {
+            std::set<uint32_t> uniqueBones;
+            for (const auto& sv : skinnedVerts)
+                uniqueBones.insert(sv.boneIndices[0]);
+            std::string boneList;
+            for (uint32_t b : uniqueBones)
+                boneList += std::to_string(b) + " ";
+            bool usedPalette = !boneData.groupToSkeletonBone.empty();
+            std::ofstream dbg("door_debug.log", std::ios::app);
+            dbg << "[SetupAnimatedProp] hash 0x" << std::hex << modelFileHash << std::dec
+                << " submesh " << j << " : " << skinnedVerts.size()
+                << " verts, bones: [" << boneList << "], palette="
+                << usedPalette << ", boneCount=" << boneCount << "\n";
+        }
 
         auto animMesh = std::make_shared<AnimatedMeshInstance>(
             device, skinnedVerts, mesh.indices, static_cast<int>(j));
@@ -3673,6 +4044,13 @@ static int GetDoorType(uint32_t datMapId, uint32_t objectId)
         default: return 0;
         }
     }
+    if (datMapId == 0x28736) // Imperial Isle
+    {
+        switch (objectId) {
+        case 56526: case 147: case 12669: case 30563: return 3;
+        default: return 0;
+        }
+    }
     return 0;
 }
 
@@ -3692,13 +4070,17 @@ void ReplayWindow::UpdateDoorAnimations()
                || (timeDelta > 1.0f);
     m_doorLastScanTime = curTime;
 
-    bool prevOpen[3] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2] };
+    bool prevOpen[5] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2], m_doorTypeOpen[3], m_doorTypeOpen[4] };
 
     if (seeked)
     {
         m_doorTypeOpen[1] = false;
         m_doorTypeOpen[2] = false;
+        m_doorTypeOpen[3] = false;
+        m_doorTypeOpen[4] = false;
     }
+
+    m_doorTypeOpen[4] = (curTime >= 1.0f);
 
     for (const auto& ev : doorEvents)
     {
@@ -3732,8 +4114,18 @@ void ReplayWindow::UpdateDoorAnimations()
         {
             size_t targetSeg = isOpen ? ap.openSegmentIndex : ap.closeSegmentIndex;
             const auto& segments = ap.clip->animationSegments;
+
             if (targetSeg >= segments.size())
+            {
+                if (!isOpen && ap.openSegmentIndex < segments.size())
+                {
+                    ap.controller->SetSegment(ap.openSegmentIndex);
+                    ap.controller->SetTime(
+                        static_cast<float>(segments[ap.openSegmentIndex].startTime));
+                    ap.controller->Pause();
+                }
                 continue;
+            }
 
             if (seeked)
             {

@@ -474,8 +474,10 @@ struct AnimationPanelState
         {
             useDirectIndices = true;
         }
-        else if (maxVertexBoneIdx >= boneData.groupToSkeletonBone.size() && maxVertexBoneIdx < boneCount)
+        else if (maxVertexBoneIdx >= boneData.groupToSkeletonBone.size())
         {
+            // Vertices store skeleton bone indices (or indices into a larger table), not palette slots.
+            // Requiring max < boneCount wrongly fell through to palette mode and mapped OOB to bone 0.
             useDirectIndices = true;
         }
 

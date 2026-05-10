@@ -1015,6 +1015,14 @@ private:
             LogBB8Debug(debug_msg);
         }
 
+        // Snapshot FA0-style bone table before tail overwrite: per-vertex bytes index the chunk
+        // bb8_bone_palette (0x002), not the per-submesh tail block. Keeping per-vertex indices while
+        // still applying tail extra_data maps every vert to wrong bones (e.g. gate 0x2865B curtain).
+        const uint32_t saved_u0 = model.u0;
+        const uint32_t saved_u1 = model.u1;
+        const std::vector<uint8_t> saved_extra_data = model.extra_data;
+        const bool chunk_palette_for_skinning = !bb8_bone_palette.empty();
+
         // Read all indices
         model.indices.resize(num_indices);
         for (uint32_t i = 0; i < num_indices; i++)
@@ -1321,41 +1329,96 @@ private:
                 skel_bone_indices.push_back(bone_idx);
             }
 
-            // Assign vertex.group based on sequential vertex counts
-            // Vertices are assigned to bone groups in order: first N vertices to group 0, next M to group 1, etc.
+            // Optional: assign vertex.group from sequential vertex_counts (tail block).
+            // Per-vertex bone bytes after positions are authoritative for GW skinning; some
+            // submeshes (e.g. gate 0x2865B curtain) disagree with sequential layout — overwriting
+            // here mapped all verts to group 0 and broke animation.
+            uint32_t sum_vertex_counts = 0;
+            for (uint16_t c : vertex_counts)
+                sum_vertex_counts += static_cast<uint32_t>(c);
+
+            std::vector<uint32_t> sequential_group(num_vertices, 0);
             uint32_t vertex_idx = 0;
             for (uint32_t group = 0; group < boneGroupCount && vertex_idx < num_vertices; group++)
             {
-                uint32_t count = vertex_counts[group];
+                uint32_t count = static_cast<uint32_t>(vertex_counts[group]);
                 for (uint32_t v = 0; v < count && vertex_idx < num_vertices; v++, vertex_idx++)
+                    sequential_group[vertex_idx] = group;
+            }
+
+            const bool counts_cover_mesh =
+                (sum_vertex_counts == num_vertices) && (vertex_idx == num_vertices);
+
+            bool matches_per_vertex = true;
+            if (counts_cover_mesh && unique_groups.size() > 1)
+            {
+                for (uint32_t i = 0; i < num_vertices; i++)
                 {
-                    model.vertices[vertex_idx].group = group;
+                    if (model.vertices[i].group != sequential_group[i])
+                    {
+                        matches_per_vertex = false;
+                        break;
+                    }
                 }
             }
 
-            sprintf_s(debug_msg, "ParseSubmeshAtOffset: Assigned %u vertices to %u bone groups sequentially\n",
-                      vertex_idx, boneGroupCount);
-            LogBB8Debug(debug_msg);
+            const bool use_sequential_groups = counts_cover_mesh &&
+                (unique_groups.size() <= 1 || matches_per_vertex);
 
-            // Update model's bone mapping to use parsed data
-            model.u0 = boneGroupCount;      // boneGroupCount
-            model.u1 = totalBoneRefs;     // totalBoneRefs
-            model.u2 = 0;
-
-            // Build extra_data in FA0 format: [groupSizes...][skeletonBoneIndices...]
-            model.extra_data.resize((model.u0 + model.u1) * 4);
-            uint8_t* extra_ptr = model.extra_data.data();
-
-            // Write group sizes
-            for (uint32_t i = 0; i < boneGroupCount; i++)
+            if (use_sequential_groups)
             {
-                std::memcpy(extra_ptr + i * 4, &group_sizes[i], sizeof(uint32_t));
+                for (uint32_t i = 0; i < num_vertices; i++)
+                    model.vertices[i].group = sequential_group[i];
+
+                sprintf_s(debug_msg, "ParseSubmeshAtOffset: Assigned %u vertices to %u bone groups sequentially\n",
+                          num_vertices, boneGroupCount);
+                LogBB8Debug(debug_msg);
+            }
+            else
+            {
+                sprintf_s(debug_msg,
+                          "ParseSubmeshAtOffset: Keeping per-vertex bone indices (sequential skip: "
+                          "sumCounts=%u verts=%u unique=%u match=%d)\n",
+                          sum_vertex_counts, num_vertices,
+                          static_cast<unsigned>(unique_groups.size()),
+                          matches_per_vertex ? 1 : 0);
+                LogBB8Debug(debug_msg);
             }
 
-            // Write skeleton bone indices
-            for (uint32_t i = 0; i < totalBoneRefs; i++)
+            // Tail palette matches sequential vertex runs; per-vertex bytes index chunk palette when
+            // we skipped sequential — keep saved u0/u1/extra_data from bb8_bone_palette.
+            if (!use_sequential_groups && chunk_palette_for_skinning)
             {
-                std::memcpy(extra_ptr + (boneGroupCount + i) * 4, &skel_bone_indices[i], sizeof(uint32_t));
+                model.u0 = saved_u0;
+                model.u1 = saved_u1;
+                model.extra_data = saved_extra_data;
+                sprintf_s(debug_msg,
+                          "ParseSubmeshAtOffset: Restored chunk bb8 bone palette (u0=%u u1=%u) for per-vertex indices\n",
+                          model.u0, model.u1);
+                LogBB8Debug(debug_msg);
+            }
+            else
+            {
+                // Update model's bone mapping to use parsed data
+                model.u0 = boneGroupCount;      // boneGroupCount
+                model.u1 = totalBoneRefs;     // totalBoneRefs
+                model.u2 = 0;
+
+                // Build extra_data in FA0 format: [groupSizes...][skeletonBoneIndices...]
+                model.extra_data.resize((model.u0 + model.u1) * 4);
+                uint8_t* extra_ptr = model.extra_data.data();
+
+                // Write group sizes
+                for (uint32_t i = 0; i < boneGroupCount; i++)
+                {
+                    std::memcpy(extra_ptr + i * 4, &group_sizes[i], sizeof(uint32_t));
+                }
+
+                // Write skeleton bone indices
+                for (uint32_t i = 0; i < totalBoneRefs; i++)
+                {
+                    std::memcpy(extra_ptr + (boneGroupCount + i) * 4, &skel_bone_indices[i], sizeof(uint32_t));
+                }
             }
 
             sprintf_s(debug_msg, "ParseSubmeshAtOffset: Parsed BB8 bone data: %u groups, %u bone refs\n",
