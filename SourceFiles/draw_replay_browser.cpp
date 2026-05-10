@@ -3030,25 +3030,25 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 }
                 else
                 {
-                    // Board (main rectangle, rounded)
-                    float boardTop = cy + ch * 0.12f;
-                    dl->AddRect(ImVec2(cx, boardTop), ImVec2(cx + cw, cy + ch), iconCol, 2.0f, 0, t);
+                    // Two overlapping rounded rectangles (copy icon)
+                    float r = std::max(2.0f, cw * 0.12f); // corner radius
+                    float rectW = cw * 0.65f;
+                    float rectH = ch * 0.65f;
+                    float off = cw * 0.22f; // offset between front and back rect
 
-                    // Clip (tab at top center)
-                    float clipW = cw * 0.4f;
-                    float clipH = ch * 0.18f;
-                    float clipX = cx + (cw - clipW) * 0.5f;
-                    dl->AddRect(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + clipH + t), iconCol, 1.5f, 0, t);
+                    // Back rectangle (top-right)
+                    float bx1 = cx + off;
+                    float by1 = cy;
+                    float bx2 = cx + off + rectW;
+                    float by2 = cy + rectH;
+                    dl->AddRect(ImVec2(bx1, by1), ImVec2(bx2, by2), iconCol, r, 0, t);
 
-                    // Text lines inside board
-                    float lineL = cx + cw * 0.2f;
-                    float lineR = cx + cw * 0.8f;
-                    float lineY1 = boardTop + ch * 0.35f;
-                    float lineY2 = boardTop + ch * 0.55f;
-                    float lineY3 = boardTop + ch * 0.75f;
-                    dl->AddLine(ImVec2(lineL, lineY1), ImVec2(lineR, lineY1), iconCol, t);
-                    dl->AddLine(ImVec2(lineL, lineY2), ImVec2(lineR, lineY2), iconCol, t);
-                    dl->AddLine(ImVec2(lineL, lineY3), ImVec2(cx + cw * 0.65f, lineY3), iconCol, t);
+                    // Front rectangle (bottom-left)
+                    float fx1 = cx;
+                    float fy1 = cy + off;
+                    float fx2 = cx + rectW;
+                    float fy2 = cy + off + rectH;
+                    dl->AddRect(ImVec2(fx1, fy1), ImVec2(fx2, fy2), iconCol, r, 0, t);
                 }
 
                 if (hovered)
