@@ -1133,7 +1133,7 @@ struct FlagAnnounceEvent
     float time = 0.f;
     int   action = 0;      // 0=RETURN, 1=STICK
     int   template_id = 0;
-    int   team = 0;        // 0=unknown, 1=blue, 2=red
+    int   team = 0;        // 0=unknown, 1=red, 2=blue
     std::string raw_line;
 };
 

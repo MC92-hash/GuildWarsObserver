@@ -59,12 +59,12 @@ StandOwner StandTimeline::ownerAtTime(float t) const
 static constexpr uint32_t kBlueExtraId = 59808;
 static constexpr uint32_t kRedExtraId  = 57400;
 
-static constexpr int kTeamCodeBlue = 20;
-static constexpr int kTeamCodeRed  = 21;
+static constexpr int kTeamCodeRed  = 20;
+static constexpr int kTeamCodeBlue = 21;
 
 static FlagTeam TeamFromExtraId(uint32_t extraId)
 {
-    return (extraId == kRedExtraId) ? FlagTeam::Red : FlagTeam::Blue;
+    return (extraId == kRedExtraId) ? FlagTeam::Blue : FlagTeam::Red;
 }
 
 static int TeamIndex(FlagTeam t) { return static_cast<int>(t); }
@@ -88,8 +88,8 @@ static int ResolveTeamFromPlayer(int playerAgentId, const std::unordered_map<int
 
 static int ResolveTeamFromCode(int teamCode)
 {
-    if (teamCode == kTeamCodeBlue) return 0;
-    if (teamCode == kTeamCodeRed)  return 1;
+    if (teamCode == kTeamCodeRed)  return 0;
+    if (teamCode == kTeamCodeBlue) return 1;
     return -1;
 }
 
@@ -544,7 +544,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
 
                 StandControlEvent sc;
                 sc.time          = e.time;
-                sc.owner         = (ti == 0) ? StandOwner::Blue : StandOwner::Red;
+                sc.owner         = (ti == 0) ? StandOwner::Red : StandOwner::Blue;
                 sc.standAgentId  = result.stand.standAgentId;
                 sc.moraleExpiry  = e.time + 120.f;
                 result.stand.events.push_back(sc);
@@ -718,7 +718,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
 
             StandControlEvent sc;
             sc.time         = e.time;
-            sc.owner        = (ti == 0) ? StandOwner::Blue : StandOwner::Red;
+            sc.owner        = (ti == 0) ? StandOwner::Red : StandOwner::Blue;
             sc.standAgentId = obeliskStandId;
             sc.moraleExpiry = 0.f;
             result.obelisk.events.push_back(sc);

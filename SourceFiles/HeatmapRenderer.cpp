@@ -98,16 +98,16 @@ void HeatmapRenderer::CreateAllLUTs(ID3D11Device* device)
         { 0.72f,  94, 201,  98 }, { 0.87f, 180, 222,  44 },
         { 1.00f, 253, 231,  37 },
     };
-    static const ColorStop sTeamBlue[] = {
-        { 0.00f,   0,   0,   0 }, { 0.15f,   5,  20,  80 },
-        { 0.35f,  13,  71, 161 }, { 0.55f,  25, 118, 210 },
-        { 0.72f,  66, 165, 245 }, { 0.87f, 144, 202, 249 },
-        { 1.00f, 255, 255, 255 },
-    };
     static const ColorStop sTeamRed[] = {
         { 0.00f,   0,   0,   0 }, { 0.15f,  80,   5,   5 },
         { 0.35f, 161,  13,  13 }, { 0.55f, 211,  47,  47 },
         { 0.72f, 239, 116,  94 }, { 0.87f, 248, 187, 181 },
+        { 1.00f, 255, 255, 255 },
+    };
+    static const ColorStop sTeamBlue[] = {
+        { 0.00f,   0,   0,   0 }, { 0.15f,   5,  20,  80 },
+        { 0.35f,  13,  71, 161 }, { 0.55f,  25, 118, 210 },
+        { 0.72f,  66, 165, 245 }, { 0.87f, 144, 202, 249 },
         { 1.00f, 255, 255, 255 },
     };
     static const ColorStop sDominance[] = {
@@ -145,8 +145,8 @@ void HeatmapRenderer::CreateAllLUTs(ID3D11Device* device)
         { sThermal,   _countof(sThermal)   },
         { sInferno,   _countof(sInferno)   },
         { sViridis,   _countof(sViridis)   },
-        { sTeamBlue,  _countof(sTeamBlue)  },
         { sTeamRed,   _countof(sTeamRed)   },
+        { sTeamBlue,  _countof(sTeamBlue)  },
         { sDominance, _countof(sDominance) },
         { sLava,      _countof(sLava)      },
         { sSunset,    _countof(sSunset)    },

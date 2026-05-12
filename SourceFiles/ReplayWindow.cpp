@@ -272,6 +272,7 @@ void ReplayWindow::SaveUILayout()
     j["moRedY"]       = m_uiLayout.moRedY;
     j["timerX"]       = m_uiLayout.timerX;
     j["timerY"]       = m_uiLayout.timerY;
+    j["teamColorSwapped"] = true;
     j["lodEnabled"]   = m_uiLayout.lodEnabled;
     j["lodDotDist"]   = m_uiLayout.lodDotDist;
     j["lodPillarDist"] = m_uiLayout.lodPillarDist;
@@ -361,6 +362,12 @@ void ReplayWindow::LoadUILayout()
         if (j.contains("moRedY"))    m_uiLayout.moRedY   = j["moRedY"].get<float>();
         if (j.contains("timerX"))    m_uiLayout.timerX   = j["timerX"].get<float>();
         if (j.contains("timerY"))    m_uiLayout.timerY   = j["timerY"].get<float>();
+
+        if (!j.contains("teamColorSwapped"))
+        {
+            std::swap(m_uiLayout.moBlueX, m_uiLayout.moRedX);
+            std::swap(m_uiLayout.moBlueY, m_uiLayout.moRedY);
+        }
         if (j.contains("lodEnabled"))    m_uiLayout.lodEnabled    = j["lodEnabled"].get<bool>();
         if (j.contains("lodDotDist"))    m_uiLayout.lodDotDist    = j["lodDotDist"].get<float>();
         if (j.contains("lodPillarDist")) m_uiLayout.lodPillarDist = j["lodPillarDist"].get<float>();
@@ -391,6 +398,11 @@ void ReplayWindow::LoadUILayout()
             }
             bv("ringShowBlue", m_ringShowBlue);
             bv("ringShowRed",  m_ringShowRed);
+
+            if (!j.contains("teamColorSwapped"))
+            {
+                std::swap(m_ringShowBlue, m_ringShowRed);
+            }
 
             // Combat Log filters
             bv("clFilterDamage",    m_clFilterDamage);
@@ -5400,7 +5412,9 @@ namespace
     static void LsDrawTextCrispShadow(ImDrawList* dl, ImFont* font, float fontSize,
                                        ImVec2 pos, ImU32 col, const char* text)
     {
-        ImU32 shadow = IM_COL32(0, 0, 0, 230);
+        int srcAlpha = static_cast<int>((col >> IM_COL32_A_SHIFT) & 0xFF);
+        int shadowA  = (std::min)(230, srcAlpha);
+        ImU32 shadow = IM_COL32(0, 0, 0, shadowA);
         dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1.f), shadow, text);
         dl->AddText(font, fontSize, ImVec2(pos.x + 1.f, pos.y + 1.f), shadow, text);
         dl->AddText(font, fontSize, pos, col, text);
@@ -5687,346 +5701,7 @@ void ReplayWindow::RenderLoadingScreen()
 
     // --- Team info cards + header pill (computed together for vertical alignment) ---
     if (screenAlpha > 0.01f)
-    {
-        ImFont* font = ImGui::GetFont();
-
-        // --- Resolve gradient textures (once, via the loading-screen texture cache) ---
-        auto resolveOthersUITex = [&](const char* filename) -> ImTextureID {
-            wchar_t exePath[MAX_PATH];
-            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return nullptr;
-            auto dir = std::filesystem::path(exePath).parent_path();
-            for (int i = 0; i < 6; i++)
-            {
-                auto p = dir / "Textures" / "Others_UI" / filename;
-                if (std::filesystem::exists(p))
-                    return m_lsTexCache.GetTexture(p.string());
-                if (!dir.has_parent_path() || dir == dir.parent_path()) break;
-                dir = dir.parent_path();
-            }
-            return nullptr;
-        };
-        ImTextureID blueGradTex = resolveOthersUITex("texture_265588.dds");
-        ImTextureID redGradTex  = resolveOthersUITex("texture_265590.dds");
-
-        // --- Guild data ---
-        std::string name1, tag1, name2, tag2;
-        int rank1 = 0, rating1 = 0, rank2 = 0, rating2 = 0;
-        GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1);
-        GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2);
-
-        float capeW = 96.0f;
-        float capeH = 192.0f;
-
-        if (display.y < capeH + 280.f)
-        {
-            float sc = (display.y - 280.f) / capeH;
-            sc = std::clamp(sc, 0.25f, 1.0f);
-            capeW *= sc;
-            capeH *= sc;
-        }
-
-        float nameFontSize  = 22.f;
-        float tagFontSize   = 18.f;
-        float statNumSize   = 18.f;
-        float statLabelSize = 13.f;
-        float vsFontSize    = 20.f;
-
-        float cardPadX = 20.f;
-        float cardPadY = 16.f;
-        float textGap  = 6.f;
-
-        std::string nameTag1 = name1 + (tag1.empty() ? "" : "  [" + tag1 + "]");
-        std::string nameTag2 = name2 + (tag2.empty() ? "" : "  [" + tag2 + "]");
-        ImVec2 nameTagSz1 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag1.c_str());
-        ImVec2 nameTagSz2 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag2.c_str());
-
-        char rankLine1[64], rankLine2[64];
-        snprintf(rankLine1, sizeof(rankLine1), "#%d", rank1);
-        snprintf(rankLine2, sizeof(rankLine2), "#%d", rank2);
-        std::string rankLabelStr = "RANK";
-        ImVec2 rankLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, rankLabelStr.c_str());
-        ImVec2 rankNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine1);
-        ImVec2 rankNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine2);
-
-        char ratingLine1[64], ratingLine2[64];
-        snprintf(ratingLine1, sizeof(ratingLine1), "%d", rating1);
-        snprintf(ratingLine2, sizeof(ratingLine2), "%d", rating2);
-        std::string ratingLabelStr = "RATING";
-        ImVec2 ratingLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, ratingLabelStr.c_str());
-        ImVec2 ratingNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine1);
-        ImVec2 ratingNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine2);
-
-        float statRowH = (std::max)(statNumSize, statLabelSize) + 2.f;
-        float profIconSize = 22.f;
-        float profIconGap = 12.f;
-        float textBlockH = nameTagSz1.y + textGap + statRowH + textGap + statRowH + profIconGap + profIconSize;
-
-        auto resolveProfBasePath = [&]() -> std::string {
-            wchar_t exePath[MAX_PATH];
-            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return "";
-            auto dir = std::filesystem::path(exePath).parent_path();
-            for (int i = 0; i < 6; i++)
-            {
-                auto p = dir / "Textures" / "professions";
-                if (std::filesystem::exists(p))
-                    return p.string();
-                if (!dir.has_parent_path() || dir == dir.parent_path()) break;
-                dir = dir.parent_path();
-            }
-            return "";
-        };
-        std::string profBasePath = resolveProfBasePath();
-
-        auto getSortedPlayers = [](const MatchMeta& meta, const std::string& partyId) {
-            std::vector<PlayerMeta> sorted;
-            auto pit = meta.parties.find(partyId);
-            if (pit != meta.parties.end())
-                sorted = pit->second.players;
-            std::sort(sorted.begin(), sorted.end(),
-                      [](const PlayerMeta& a, const PlayerMeta& b) { return a.player_number < b.player_number; });
-            return sorted;
-        };
-
-        float cardContentH = (std::max)(capeH, textBlockH);
-        float cardH = cardContentH + cardPadY * 2.f;
-
-        float statLineW1 = (std::max)(rankLabelSz.x + 8.f + rankNumSz1.x,
-                                       ratingLabelSz.x + 8.f + ratingNumSz1.x);
-        float statLineW2 = (std::max)(rankLabelSz.x + 8.f + rankNumSz2.x,
-                                       ratingLabelSz.x + 8.f + ratingNumSz2.x);
-        float maxTextW1 = (std::max)(nameTagSz1.x, statLineW1);
-        float maxTextW2 = (std::max)(nameTagSz2.x, statLineW2);
-        float maxTextW  = (std::max)(maxTextW1, maxTextW2);
-
-        float innerGap = 16.f;
-        float cardW = cardPadX + capeW + innerGap + maxTextW + cardPadX;
-
-        float vsGap = 48.f;
-        float totalW = cardW + vsGap + cardW;
-        float startX = (display.x - totalW) * 0.5f;
-
-        // --- Header pill (Date - Occasion - Map) measured first, positioned above cards ---
-        const char* mapName = GetMapNameForLoading(m_matchMeta.map_id);
-        char dateLine[128];
-        snprintf(dateLine, sizeof(dateLine), "%04d/%02d/%02d",
-                 m_matchMeta.year, m_matchMeta.month, m_matchMeta.day);
-
-        std::string headerStr = std::string(dateLine);
-        if (!m_matchMeta.occasion.empty())
-            headerStr += "  \xC2\xB7  " + m_matchMeta.occasion;
-        headerStr += "  \xC2\xB7  " + std::string(mapName ? mapName : "Unknown Map");
-
-        float headerFontSize = 22.f;
-        ImVec2 headerSz = font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.f, headerStr.c_str());
-
-        float hPadL = 36.f, hPadR = 36.f, hPadT = 14.f, hPadB = 16.f;
-        float hPillW = headerSz.x + hPadL + hPadR;
-        float hPillH = headerSz.y + hPadT + hPadB;
-        float headerGap = 14.f;
-
-        float combinedH = hPillH + headerGap + cardH;
-        float groupTopY = (display.y - combinedH) * 0.5f;
-
-        float hPillX = (display.x - hPillW) * 0.5f;
-        float hPillY = groupTopY;
-        float cardY  = hPillY + hPillH + headerGap;
-
-        // --- Draw header pill ---
-        ImU32 hPillCol    = IM_COL32(10, 14, 20, static_cast<int>(230 * screenAlpha));
-        ImU32 hPillBorder = IM_COL32(212, 160, 32, static_cast<int>(60 * screenAlpha));
-        dl->AddRectFilled(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillCol, 10.f);
-        dl->AddRect(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillBorder, 10.f);
-
-        float hTextX = hPillX + (hPillW - headerSz.x) * 0.5f;
-        float hTextY = hPillY + hPadT;
-        ImU32 headerCol = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
-        LsDrawTextCrispShadow(dl, font, headerFontSize, ImVec2(hTextX, hTextY), headerCol, headerStr.c_str());
-
-        float cardR = 12.f;
-        ImU32 capeCol = IM_COL32(255, 255, 255, static_cast<int>(255 * screenAlpha));
-        ImU32 gradCol = IM_COL32(255, 255, 255, static_cast<int>(200 * screenAlpha));
-
-        // --- Team 1 card (left): black bg + gradient + [cape | text] ---
-        {
-            float cx = startX;
-            ImU32 cardBg = IM_COL32(8, 10, 14, static_cast<int>(180 * screenAlpha));
-            dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg, cardR);
-
-            if (blueGradTex)
-            {
-                dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
-                dl->AddImage(blueGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
-                             ImVec2(0,0), ImVec2(1,1), gradCol);
-                dl->PopClipRect();
-            }
-
-            float capePosX = cx + cardPadX;
-            float capePosY = cardY + (cardH - capeH) * 0.5f;
-            if (m_capeTexTeam1)
-                dl->AddImage(m_capeTexTeam1, ImVec2(capePosX, capePosY),
-                             ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
-
-            float textX = capePosX + capeW + innerGap;
-            float textY = cardY + (cardH - textBlockH) * 0.5f;
-
-            ImU32 nameCol = IM_COL32(120, 180, 255, static_cast<int>(255 * screenAlpha));
-            ImU32 tagCol  = IM_COL32(120, 180, 255, static_cast<int>(180 * screenAlpha));
-            ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
-            ImU32 lblCol  = IM_COL32(180, 190, 210, static_cast<int>(200 * screenAlpha));
-
-            LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textX, textY), nameCol, name1.c_str());
-            if (!tag1.empty())
-            {
-                float tagOffX = textX + font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name1.c_str()).x;
-                std::string tagPart = "  [" + tag1 + "]";
-                LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagOffX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
-            }
-            textY += nameTagSz1.y + textGap;
-
-            if (rank1 > 0)
-            {
-                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, rankLabelStr.c_str());
-                float afterLabel = textX + rankLabelSz.x + 8.f;
-                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, rankLine1);
-            }
-            textY += statRowH + textGap;
-
-            if (rating1 > 0)
-            {
-                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
-                float afterLabel = textX + ratingLabelSz.x + 8.f;
-                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, ratingLine1);
-            }
-            textY += statRowH + profIconGap;
-
-            if (!profBasePath.empty())
-            {
-                auto players1 = getSortedPlayers(m_matchMeta, "1");
-                int n1 = static_cast<int>(players1.size());
-                if (n1 > 0)
-                {
-                    float iconSpacing = 3.f;
-                    float iconX = textX;
-                    ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * screenAlpha));
-                    for (const auto& p : players1)
-                    {
-                        if (p.primary >= 1 && p.primary <= 10)
-                        {
-                            char fn[16];
-                            snprintf(fn, sizeof(fn), "%d.png", p.primary);
-                            auto iconPath = profBasePath + "\\" + fn;
-                            ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
-                            if (tex)
-                                dl->AddImage(tex, ImVec2(iconX, textY),
-                                             ImVec2(iconX + profIconSize, textY + profIconSize),
-                                             ImVec2(0,0), ImVec2(1,1), iconCol);
-                        }
-                        iconX += profIconSize + iconSpacing;
-                    }
-                }
-            }
-        }
-
-        // --- "V S" divider (centered between cards) ---
-        {
-            std::string vsText = "V S";
-            ImVec2 vsSz = font->CalcTextSizeA(vsFontSize, FLT_MAX, 0.f, vsText.c_str());
-            float vsX = startX + cardW + (vsGap - vsSz.x) * 0.5f;
-            float vsY = cardY + (cardH - vsSz.y) * 0.5f;
-            ImU32 vsCol = IM_COL32(200, 200, 200, static_cast<int>(180 * screenAlpha));
-            LsDrawTextCrispShadow(dl, font, vsFontSize, ImVec2(vsX, vsY), vsCol, vsText.c_str());
-        }
-
-        // --- Team 2 card (right): black bg + gradient + [cape | text right-aligned] ---
-        {
-            float cx = startX + cardW + vsGap;
-            ImU32 cardBg2 = IM_COL32(8, 10, 14, static_cast<int>(180 * screenAlpha));
-            dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg2, cardR);
-
-            if (redGradTex)
-            {
-                dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
-                dl->AddImage(redGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
-                             ImVec2(0,0), ImVec2(1,1), gradCol);
-                dl->PopClipRect();
-            }
-
-            float capePosX = cx + cardW - cardPadX - capeW;
-            float capePosY = cardY + (cardH - capeH) * 0.5f;
-            if (m_capeTexTeam2)
-                dl->AddImage(m_capeTexTeam2, ImVec2(capePosX, capePosY),
-                             ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
-
-            float textRightEdge = capePosX - innerGap;
-            float textY = cardY + (cardH - textBlockH) * 0.5f;
-
-            ImU32 nameCol = IM_COL32(255, 120, 140, static_cast<int>(255 * screenAlpha));
-            ImU32 tagCol  = IM_COL32(255, 120, 140, static_cast<int>(180 * screenAlpha));
-            ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
-            ImU32 lblCol  = IM_COL32(210, 180, 180, static_cast<int>(200 * screenAlpha));
-
-            float ntW2 = nameTagSz2.x;
-            LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textRightEdge - ntW2, textY), nameCol, name2.c_str());
-            if (!tag2.empty())
-            {
-                ImVec2 nameSz2Only = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name2.c_str());
-                std::string tagPart = "  [" + tag2 + "]";
-                float tagPartX = textRightEdge - ntW2 + nameSz2Only.x;
-                LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagPartX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
-            }
-            textY += nameTagSz2.y + textGap;
-
-            if (rank2 > 0)
-            {
-                float lineW = rankLabelSz.x + 8.f + rankNumSz2.x;
-                float lineX = textRightEdge - lineW;
-                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, rankLabelStr.c_str());
-                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + rankLabelSz.x + 8.f, textY), numCol, rankLine2);
-            }
-            textY += statRowH + textGap;
-
-            if (rating2 > 0)
-            {
-                float lineW = ratingLabelSz.x + 8.f + ratingNumSz2.x;
-                float lineX = textRightEdge - lineW;
-                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
-                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + ratingLabelSz.x + 8.f, textY), numCol, ratingLine2);
-            }
-            textY += statRowH + profIconGap;
-
-            if (!profBasePath.empty())
-            {
-                auto players2 = getSortedPlayers(m_matchMeta, "2");
-                int n2 = static_cast<int>(players2.size());
-                if (n2 > 0)
-                {
-                    float iconSpacing = 3.f;
-                    float totalIconsW = n2 * profIconSize + (n2 - 1) * iconSpacing;
-                    float iconX = textRightEdge - totalIconsW;
-                    ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * screenAlpha));
-                    for (const auto& p : players2)
-                    {
-                        if (p.primary >= 1 && p.primary <= 10)
-                        {
-                            char fn[16];
-                            snprintf(fn, sizeof(fn), "%d.png", p.primary);
-                            auto iconPath = profBasePath + "\\" + fn;
-                            ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
-                            if (tex)
-                                dl->AddImage(tex, ImVec2(iconX, textY),
-                                             ImVec2(iconX + profIconSize, textY + profIconSize),
-                                             ImVec2(0,0), ImVec2(1,1), iconCol);
-                        }
-                        iconX += profIconSize + iconSpacing;
-                    }
-                }
-            }
-        }
-    }
+        DrawMatchInfoOverlay(dl, display, screenAlpha);
 
     // --- Progress bar geometry ---
     float barW = (std::min)(800.f, display.x - 120.f);
@@ -6192,6 +5867,8 @@ void ReplayWindow::RenderLoadingScreen()
     // Transition to Ready phase after all fades complete
     if (shouldTransition) {
         m_loadingPhase = LoadingPhase::Ready;
+        m_matchOverlayStartTime = m_debugTimeline;
+        m_matchOverlayActive = true;
         InitAudioEngine();
         m_replayCtx.isPlaying = true;
     }
@@ -6264,6 +5941,352 @@ void ReplayWindow::ResolveCapeTextures()
 
     m_capeTexTeam1 = getTeamCape("1");
     m_capeTexTeam2 = getTeamCape("2");
+}
+
+// ---------------------------------------------------------------------------
+// Match info overlay: header pill + team cards (shared by loading & replay)
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float alpha)
+{
+    if (alpha < 0.01f) return;
+
+    ImFont* font = ImGui::GetFont();
+
+    auto resolveOthersUITex = [&](const char* filename) -> ImTextureID {
+        wchar_t exePath[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return nullptr;
+        auto dir = std::filesystem::path(exePath).parent_path();
+        for (int i = 0; i < 6; i++)
+        {
+            auto p = dir / "Textures" / "Others_UI" / filename;
+            if (std::filesystem::exists(p))
+                return m_lsTexCache.GetTexture(p.string());
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+        return nullptr;
+    };
+    ImTextureID blueGradTex = resolveOthersUITex("texture_265588.dds");
+    ImTextureID redGradTex  = resolveOthersUITex("texture_265590.dds");
+
+    std::string name1, tag1, name2, tag2;
+    int rank1 = 0, rating1 = 0, rank2 = 0, rating2 = 0;
+    GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1);
+    GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2);
+
+    float capeW = 96.0f;
+    float capeH = 192.0f;
+
+    if (display.y < capeH + 280.f)
+    {
+        float sc = (display.y - 280.f) / capeH;
+        sc = std::clamp(sc, 0.25f, 1.0f);
+        capeW *= sc;
+        capeH *= sc;
+    }
+
+    float nameFontSize  = 22.f;
+    float tagFontSize   = 18.f;
+    float statNumSize   = 18.f;
+    float statLabelSize = 13.f;
+    float vsFontSize    = 20.f;
+
+    float cardPadX = 20.f;
+    float cardPadY = 16.f;
+    float textGap  = 6.f;
+
+    std::string nameTag1 = name1 + (tag1.empty() ? "" : "  [" + tag1 + "]");
+    std::string nameTag2 = name2 + (tag2.empty() ? "" : "  [" + tag2 + "]");
+    ImVec2 nameTagSz1 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag1.c_str());
+    ImVec2 nameTagSz2 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag2.c_str());
+
+    char rankLine1[64], rankLine2[64];
+    snprintf(rankLine1, sizeof(rankLine1), "#%d", rank1);
+    snprintf(rankLine2, sizeof(rankLine2), "#%d", rank2);
+    std::string rankLabelStr = "RANK";
+    ImVec2 rankLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, rankLabelStr.c_str());
+    ImVec2 rankNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine1);
+    ImVec2 rankNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine2);
+
+    char ratingLine1[64], ratingLine2[64];
+    snprintf(ratingLine1, sizeof(ratingLine1), "%d", rating1);
+    snprintf(ratingLine2, sizeof(ratingLine2), "%d", rating2);
+    std::string ratingLabelStr = "RATING";
+    ImVec2 ratingLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, ratingLabelStr.c_str());
+    ImVec2 ratingNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine1);
+    ImVec2 ratingNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine2);
+
+    float statRowH = (std::max)(statNumSize, statLabelSize) + 2.f;
+    float profIconSize = 22.f;
+    float profIconGap = 12.f;
+    float textBlockH = nameTagSz1.y + textGap + statRowH + textGap + statRowH + profIconGap + profIconSize;
+
+    auto resolveProfBasePath = [&]() -> std::string {
+        wchar_t exePath[MAX_PATH];
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return "";
+        auto dir = std::filesystem::path(exePath).parent_path();
+        for (int i = 0; i < 6; i++)
+        {
+            auto p = dir / "Textures" / "professions";
+            if (std::filesystem::exists(p))
+                return p.string();
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+        return "";
+    };
+    std::string profBasePath = resolveProfBasePath();
+
+    auto getSortedPlayers = [](const MatchMeta& meta, const std::string& partyId) {
+        std::vector<PlayerMeta> sorted;
+        auto pit = meta.parties.find(partyId);
+        if (pit != meta.parties.end())
+            sorted = pit->second.players;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const PlayerMeta& a, const PlayerMeta& b) { return a.player_number < b.player_number; });
+        return sorted;
+    };
+
+    float cardContentH = (std::max)(capeH, textBlockH);
+    float cardH = cardContentH + cardPadY * 2.f;
+
+    float statLineW1 = (std::max)(rankLabelSz.x + 8.f + rankNumSz1.x,
+                                   ratingLabelSz.x + 8.f + ratingNumSz1.x);
+    float statLineW2 = (std::max)(rankLabelSz.x + 8.f + rankNumSz2.x,
+                                   ratingLabelSz.x + 8.f + ratingNumSz2.x);
+    float maxTextW1 = (std::max)(nameTagSz1.x, statLineW1);
+    float maxTextW2 = (std::max)(nameTagSz2.x, statLineW2);
+    float maxTextW  = (std::max)(maxTextW1, maxTextW2);
+
+    float innerGap = 16.f;
+    float minIconRowW = 8 * profIconSize + 7 * 3.f;
+    float minTextW = (std::max)(maxTextW, minIconRowW);
+    float cardW = cardPadX + capeW + innerGap + minTextW + cardPadX;
+
+    float vsGap = 80.f;
+    float totalW = cardW + vsGap + cardW;
+    float startX = (display.x - totalW) * 0.5f;
+
+    const char* mapName = GetMapNameForLoading(m_matchMeta.map_id);
+    char dateLine[128];
+    snprintf(dateLine, sizeof(dateLine), "%04d/%02d/%02d",
+             m_matchMeta.year, m_matchMeta.month, m_matchMeta.day);
+
+    std::string headerStr = std::string(dateLine);
+    if (!m_matchMeta.occasion.empty())
+        headerStr += "  \xC2\xB7  " + m_matchMeta.occasion;
+    headerStr += "  \xC2\xB7  " + std::string(mapName ? mapName : "Unknown Map");
+
+    float headerFontSize = 22.f;
+    ImVec2 headerSz = font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.f, headerStr.c_str());
+
+    float hPadL = 36.f, hPadR = 36.f, hPadT = 14.f, hPadB = 16.f;
+    float hPillW = headerSz.x + hPadL + hPadR;
+    float hPillH = headerSz.y + hPadT + hPadB;
+    float headerGap = 14.f;
+
+    float combinedH = hPillH + headerGap + cardH;
+    float groupTopY = (display.y - combinedH) * 0.5f;
+
+    float hPillX = (display.x - hPillW) * 0.5f;
+    float hPillY = groupTopY;
+    float cardY  = hPillY + hPillH + headerGap;
+
+    // --- Draw header pill ---
+    ImU32 hPillCol    = IM_COL32(10, 14, 20, static_cast<int>(230 * alpha));
+    ImU32 hPillBorder = IM_COL32(212, 160, 32, static_cast<int>(60 * alpha));
+    dl->AddRectFilled(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillCol, 10.f);
+    dl->AddRect(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillBorder, 10.f);
+
+    float hTextX = hPillX + (hPillW - headerSz.x) * 0.5f;
+    float hTextY = hPillY + hPadT;
+    ImU32 headerCol = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
+    LsDrawTextCrispShadow(dl, font, headerFontSize, ImVec2(hTextX, hTextY), headerCol, headerStr.c_str());
+
+    float cardR = 12.f;
+    ImU32 capeCol = IM_COL32(255, 255, 255, static_cast<int>(255 * alpha));
+    ImU32 gradCol = IM_COL32(255, 255, 255, static_cast<int>(200 * alpha));
+
+    // --- Team 1 card (left) ---
+    {
+        float cx = startX;
+        ImU32 cardBg = IM_COL32(8, 10, 14, static_cast<int>(180 * alpha));
+        dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg, cardR);
+
+        if (redGradTex)
+        {
+            dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
+            dl->AddImage(redGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+                         ImVec2(0,0), ImVec2(1,1), gradCol);
+            dl->PopClipRect();
+        }
+
+        float capePosX = cx + cardPadX;
+        float capePosY = cardY + (cardH - capeH) * 0.5f;
+        if (m_capeTexTeam1)
+            dl->AddImage(m_capeTexTeam1, ImVec2(capePosX, capePosY),
+                         ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
+
+        float textX = capePosX + capeW + innerGap;
+        float textY = cardY + (cardH - textBlockH) * 0.5f;
+
+        ImU32 nameCol = IM_COL32(255, 120, 140, static_cast<int>(255 * alpha));
+        ImU32 tagCol  = IM_COL32(255, 120, 140, static_cast<int>(180 * alpha));
+        ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
+        ImU32 lblCol  = IM_COL32(210, 180, 180, static_cast<int>(200 * alpha));
+
+        LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textX, textY), nameCol, name1.c_str());
+        if (!tag1.empty())
+        {
+            float tagOffX = textX + font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name1.c_str()).x;
+            std::string tagPart = "  [" + tag1 + "]";
+            LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagOffX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
+        }
+        textY += nameTagSz1.y + textGap;
+
+        if (rank1 > 0)
+        {
+            float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, rankLabelStr.c_str());
+            float afterLabel = textX + rankLabelSz.x + 8.f;
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, rankLine1);
+        }
+        textY += statRowH + textGap;
+
+        if (rating1 > 0)
+        {
+            float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
+            float afterLabel = textX + ratingLabelSz.x + 8.f;
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, ratingLine1);
+        }
+        textY += statRowH + profIconGap;
+
+        if (!profBasePath.empty())
+        {
+            auto players1 = getSortedPlayers(m_matchMeta, "1");
+            int n1 = static_cast<int>(players1.size());
+            if (n1 > 0)
+            {
+                float iconSpacing = 3.f;
+                float iconX = textX;
+                ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * alpha));
+                for (const auto& p : players1)
+                {
+                    if (p.primary >= 1 && p.primary <= 10)
+                    {
+                        char fn[16];
+                        snprintf(fn, sizeof(fn), "%d.png", p.primary);
+                        auto iconPath = profBasePath + "\\" + fn;
+                        ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
+                        if (tex)
+                            dl->AddImage(tex, ImVec2(iconX, textY),
+                                         ImVec2(iconX + profIconSize, textY + profIconSize),
+                                         ImVec2(0,0), ImVec2(1,1), iconCol);
+                    }
+                    iconX += profIconSize + iconSpacing;
+                }
+            }
+        }
+    }
+
+    // --- "V S" divider ---
+    {
+        std::string vsText = "V S";
+        ImVec2 vsSz = font->CalcTextSizeA(vsFontSize, FLT_MAX, 0.f, vsText.c_str());
+        float vsX = startX + cardW + (vsGap - vsSz.x) * 0.5f;
+        float vsY = cardY + (cardH - vsSz.y) * 0.5f;
+        ImU32 vsCol = IM_COL32(200, 200, 200, static_cast<int>(180 * alpha));
+        LsDrawTextCrispShadow(dl, font, vsFontSize, ImVec2(vsX, vsY), vsCol, vsText.c_str());
+    }
+
+    // --- Team 2 card (right) ---
+    {
+        float cx = startX + cardW + vsGap;
+        ImU32 cardBg2 = IM_COL32(8, 10, 14, static_cast<int>(180 * alpha));
+        dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg2, cardR);
+
+        if (blueGradTex)
+        {
+            dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
+            dl->AddImage(blueGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+                         ImVec2(0,0), ImVec2(1,1), gradCol);
+            dl->PopClipRect();
+        }
+
+        float capePosX = cx + cardW - cardPadX - capeW;
+        float capePosY = cardY + (cardH - capeH) * 0.5f;
+        if (m_capeTexTeam2)
+            dl->AddImage(m_capeTexTeam2, ImVec2(capePosX, capePosY),
+                         ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
+
+        float textRightEdge = capePosX - innerGap;
+        float textY = cardY + (cardH - textBlockH) * 0.5f;
+
+        ImU32 nameCol = IM_COL32(120, 180, 255, static_cast<int>(255 * alpha));
+        ImU32 tagCol  = IM_COL32(120, 180, 255, static_cast<int>(180 * alpha));
+        ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
+        ImU32 lblCol  = IM_COL32(180, 190, 210, static_cast<int>(200 * alpha));
+
+        float ntW2 = nameTagSz2.x;
+        LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textRightEdge - ntW2, textY), nameCol, name2.c_str());
+        if (!tag2.empty())
+        {
+            ImVec2 nameSz2Only = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name2.c_str());
+            std::string tagPart = "  [" + tag2 + "]";
+            float tagPartX = textRightEdge - ntW2 + nameSz2Only.x;
+            LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagPartX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
+        }
+        textY += nameTagSz2.y + textGap;
+
+        if (rank2 > 0)
+        {
+            float lineW = rankLabelSz.x + 8.f + rankNumSz2.x;
+            float lineX = textRightEdge - lineW;
+            float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, rankLabelStr.c_str());
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + rankLabelSz.x + 8.f, textY), numCol, rankLine2);
+        }
+        textY += statRowH + textGap;
+
+        if (rating2 > 0)
+        {
+            float lineW = ratingLabelSz.x + 8.f + ratingNumSz2.x;
+            float lineX = textRightEdge - lineW;
+            float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + ratingLabelSz.x + 8.f, textY), numCol, ratingLine2);
+        }
+        textY += statRowH + profIconGap;
+
+        if (!profBasePath.empty())
+        {
+            auto players2 = getSortedPlayers(m_matchMeta, "2");
+            int n2 = static_cast<int>(players2.size());
+            if (n2 > 0)
+            {
+                float iconSpacing = 3.f;
+                float iconX = textRightEdge - profIconSize;
+                ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * alpha));
+                for (const auto& p : players2)
+                {
+                    if (p.primary >= 1 && p.primary <= 10)
+                    {
+                        char fn[16];
+                        snprintf(fn, sizeof(fn), "%d.png", p.primary);
+                        auto iconPath = profBasePath + "\\" + fn;
+                        ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
+                        if (tex)
+                            dl->AddImage(tex, ImVec2(iconX, textY),
+                                         ImVec2(iconX + profIconSize, textY + profIconSize),
+                                         ImVec2(0,0), ImVec2(1,1), iconCol);
+                    }
+                    iconX -= profIconSize + iconSpacing;
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6860,6 +6883,26 @@ void ReplayWindow::DrawImGuiOverlay()
     // Cache for next Update() — suppresses WASD camera polling while a text widget is active
     m_imguiWantTextInput = ImGui::GetIO().WantTextInput;
 
+    // Draw post-loading match info overlay (synced to replay timeline)
+    if (m_matchOverlayActive)
+    {
+        constexpr float kOverlayVisibleSec = 2.0f;
+        constexpr float kOverlayFadeSec    = 2.0f;
+        constexpr float kOverlayTotalSec   = kOverlayVisibleSec + kOverlayFadeSec;
+        float overlayElapsed = m_debugTimeline - m_matchOverlayStartTime;
+        if (overlayElapsed < 0.f)
+            overlayElapsed = 0.f;
+        if (overlayElapsed < kOverlayTotalSec)
+        {
+            float fadeT = (overlayElapsed <= kOverlayVisibleSec)
+                ? 1.f
+                : 1.f - std::clamp((overlayElapsed - kOverlayVisibleSec) / kOverlayFadeSec, 0.f, 1.f);
+            ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+            ImVec2 disp = ImGui::GetIO().DisplaySize;
+            DrawMatchInfoOverlay(fgDl, disp, fadeT);
+        }
+    }
+
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
@@ -6944,8 +6987,8 @@ static MapTransform LoadMapTransform(int mapId, bool* found)
 static ImU32 GetAgentTeamColor(uint8_t teamId)
 {
     switch (teamId) {
-    case 1:  return IM_COL32(0x2A, 0x8C, 0xFF, 0xFF);
-    case 2:  return IM_COL32(0xFF, 0x4A, 0x4A, 0xFF);
+    case 1:  return IM_COL32(0xFF, 0x4A, 0x4A, 0xFF);
+    case 2:  return IM_COL32(0x2A, 0x8C, 0xFF, 0xFF);
     default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
     }
 }
@@ -9437,8 +9480,8 @@ void ReplayWindow::DrawAgentCylinders()
         {
             color = { 0.4f, 0.4f, 0.4f, 0.30f };
         }
-        else if (ard.teamId == 1)  color = { 0.290f, 0.565f, 0.847f, 1.f };
-        else if (ard.teamId == 2)  color = { 0.816f, 0.282f, 0.282f, 1.f };
+        else if (ard.teamId == 1)  color = { 0.816f, 0.282f, 0.282f, 1.f };
+        else if (ard.teamId == 2)  color = { 0.290f, 0.565f, 0.847f, 1.f };
         else                       color = { 0.7f, 0.7f, 0.7f, 1.f };
 
         if (dead)
@@ -10172,8 +10215,8 @@ void ReplayWindow::DrawAgentOverlay()
                                   ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
                                   IM_COL32(0, 0, 0, 25), 3.f);
                 ImU32 labelCol;
-                if (ard.teamId == 1)      labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                else if (ard.teamId == 2) labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                if (ard.teamId == 1)      labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                else if (ard.teamId == 2) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
                 else                      labelCol = IM_COL32(255, 255, 255, 230);
                 dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
                 dl->AddText(ImVec2(lx, ly), labelCol, label.c_str());
@@ -10280,8 +10323,8 @@ void ReplayWindow::DrawFlags()
 
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-    ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
     ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
+    ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
     const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);
 
     auto DrawFlagAt = [&](float worldX, float worldY, float worldZ,
@@ -10292,8 +10335,8 @@ void ReplayWindow::DrawFlags()
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) return;
 
         constexpr float kFlagDotRadius = 5.f;
-        ImU32 dotColor = (teamIdx == 0) ? IM_COL32(100, 160, 255, 200)
-                                        : IM_COL32(255, 100, 90, 200);
+        ImU32 dotColor = (teamIdx == 0) ? IM_COL32(255, 100, 90, 200)
+                                        : IM_COL32(100, 160, 255, 200);
         dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius, dotColor);
         dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
 
@@ -10322,8 +10365,8 @@ void ReplayWindow::DrawFlags()
     StandOwner standOwner = m_flagTimeline.stand.ownerAtTime(m_debugTimeline);
     if (standOwner != StandOwner::Neutral)
     {
-        int standTi = (standOwner == StandOwner::Blue) ? 0 : 1;
-        ImTextureID standTex = (standTi == 0) ? texBlue : texRed;
+        int standTi = (standOwner == StandOwner::Red) ? 0 : 1;
+        ImTextureID standTex = (standTi == 0) ? texRed : texBlue;
         float sx = m_flagTimeline.stand.standX;
         float sy = m_flagTimeline.stand.standY;
         float sz = m_flagTimeline.stand.standZ;
@@ -10340,8 +10383,8 @@ void ReplayWindow::DrawFlags()
             float glowRadius = iconSz * 0.75f;
             float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
             ImU32 glowCol = (standTi == 0)
-                ? IM_COL32(60, 130, 255, (int)(50 * pulse))
-                : IM_COL32(255, 60, 50,  (int)(50 * pulse));
+                ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
+                : IM_COL32(60, 130, 255, (int)(50 * pulse));
             dl->AddCircleFilled(center, glowRadius, glowCol, 32);
             dl->AddImage(standTex, iconTL, iconBR);
         }
@@ -10353,8 +10396,8 @@ void ReplayWindow::DrawFlags()
         StandOwner obeliskOwner = m_flagTimeline.obelisk.ownerAtTime(m_debugTimeline);
         if (obeliskOwner != StandOwner::Neutral)
         {
-            int obTi = (obeliskOwner == StandOwner::Blue) ? 0 : 1;
-            ImTextureID obTex = (obTi == 0) ? texBlue : texRed;
+            int obTi = (obeliskOwner == StandOwner::Red) ? 0 : 1;
+            ImTextureID obTex = (obTi == 0) ? texRed : texBlue;
             float ox = m_flagTimeline.obelisk.standX;
             float oy = m_flagTimeline.obelisk.standY;
             float oz = m_flagTimeline.obelisk.standZ;
@@ -10371,8 +10414,8 @@ void ReplayWindow::DrawFlags()
                 float glowRadius = iconSz * 0.75f;
                 float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 2.2f);
                 ImU32 glowCol = (obTi == 0)
-                    ? IM_COL32(80, 160, 255, (int)(45 * pulse))
-                    : IM_COL32(255, 80, 70,  (int)(45 * pulse));
+                    ? IM_COL32(255, 80, 70,  (int)(45 * pulse))
+                    : IM_COL32(80, 160, 255, (int)(45 * pulse));
                 dl->AddCircleFilled(center, glowRadius, glowCol, 32);
                 dl->AddImage(obTex, iconTL, iconBR);
             }
@@ -10385,7 +10428,7 @@ void ReplayWindow::DrawFlags()
         auto& ft = m_flagTimeline.teams[ti];
         if (ft.events.empty()) continue;
 
-        ImTextureID tex = (ti == 0) ? texBlue : texRed;
+        ImTextureID tex = (ti == 0) ? texRed : texBlue;
         FlagLocation loc = ft.locationAtTime(m_debugTimeline);
 
         if (loc == FlagLocation::Stand) continue;
@@ -10458,8 +10501,8 @@ static const char* StandOwnerName(StandOwner o)
 {
     switch (o) {
     case StandOwner::Neutral: return "Neutral";
-    case StandOwner::Blue:    return "Blue";
-    case StandOwner::Red:     return "Red";
+    case StandOwner::Red:    return "Red";
+    case StandOwner::Blue:     return "Blue";
     }
     return "?";
 }
@@ -10499,7 +10542,7 @@ void ReplayWindow::DrawFlagDebugWindow()
 
     for (int ti = 0; ti < 2; ti++)
     {
-        const char* teamLabel = (ti == 0) ? "Blue" : "Red";
+        const char* teamLabel = (ti == 0) ? "Red" : "Blue";
         auto& ft = m_flagTimeline.teams[ti];
         if (ft.events.empty()) {
             ImGui::Text("%s Flag: [no data]", teamLabel);
@@ -10566,7 +10609,7 @@ void ReplayWindow::DrawFlagDebugWindow()
                                           false, ImGuiSelectableFlags_SpanAllColumns))
                         m_debugTimeline = ev.time;
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(ev.flagTeam == FlagTeam::Blue ? "Blue" : "Red");
+                    ImGui::TextUnformatted(ev.flagTeam == FlagTeam::Red ? "Red" : "Blue");
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(FlagEventTypeName(ev.eventType));
                     ImGui::TableNextColumn();
@@ -11679,14 +11722,14 @@ void ReplayWindow::DrawRangeRings()
         {
             if (hasSelection)
             {
-                bool teamEnabled = (ard.teamId == 1 && m_ringShowBlue)
-                                || (ard.teamId == 2 && m_ringShowRed);
+                bool teamEnabled = (ard.teamId == 1 && m_ringShowRed)
+                                || (ard.teamId == 2 && m_ringShowBlue);
                 if (!teamEnabled) continue;
             }
             else
             {
-                if (ard.teamId == 1 && !m_ringShowBlue) continue;
-                if (ard.teamId == 2 && !m_ringShowRed)  continue;
+                if (ard.teamId == 1 && !m_ringShowRed) continue;
+                if (ard.teamId == 2 && !m_ringShowBlue)  continue;
             }
         }
 
@@ -12427,17 +12470,17 @@ void ReplayWindow::DrawShrineBeam(uint8_t ownerTeam, float sx, float sy, float s
     };
 
     BeamLayerDef layers[3];
-    if (ownerTeam == 1) // Blue
-    {
-        layers[0] = { 1.00f, IM_COL32(0x20, 0x60, 0xC0, 166), IM_COL32(0x40, 0x90, 0xF0, 166) };
-        layers[1] = { 0.75f, IM_COL32(0x6A, 0xB8, 0xFF, 230), IM_COL32(0x88, 0xCC, 0xFF, 230) };
-        layers[2] = { 0.35f, IM_COL32(0xDD, 0xF0, 0xFF, 255), IM_COL32(0xFF, 0xFF, 0xFF, 255) };
-    }
-    else // Red
+    if (ownerTeam == 1) // Red
     {
         layers[0] = { 1.00f, IM_COL32(0xB0, 0x20, 0x20, 166), IM_COL32(0xE0, 0x30, 0x30, 166) };
         layers[1] = { 0.75f, IM_COL32(0xF0, 0x60, 0x40, 230), IM_COL32(0xFF, 0x80, 0x60, 230) };
         layers[2] = { 0.35f, IM_COL32(0xFF, 0xDD, 0xD0, 255), IM_COL32(0xFF, 0xFF, 0xFF, 255) };
+    }
+    else // Blue
+    {
+        layers[0] = { 1.00f, IM_COL32(0x20, 0x60, 0xC0, 166), IM_COL32(0x40, 0x90, 0xF0, 166) };
+        layers[1] = { 0.75f, IM_COL32(0x6A, 0xB8, 0xFF, 230), IM_COL32(0x88, 0xCC, 0xFF, 230) };
+        layers[2] = { 0.35f, IM_COL32(0xDD, 0xF0, 0xFF, 255), IM_COL32(0xFF, 0xFF, 0xFF, 255) };
     }
 
     // ---- Switch to additive blending ----
@@ -12636,15 +12679,15 @@ void ReplayWindow::DrawRangeRingToolbar()
             ImVec4 bg, tx, hov, bdr;
             if (active) {
                 if (team == 1) {
-                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
-                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
-                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
-                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
-                } else if (team == 2) {
                     bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
                     tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
                     hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
                     bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
+                } else if (team == 2) {
+                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
+                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
+                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
                 } else {
                     bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
                     tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
@@ -12728,11 +12771,11 @@ void ReplayWindow::DrawRangeRingToolbar()
         ImGui::Separator();
 
         // Team filter (independent toggles)
-        if (TeamPill("Blue", m_ringShowBlue, 1))
-            m_ringShowBlue = !m_ringShowBlue;
-        ImGui::SameLine();
-        if (TeamPill("Red", m_ringShowRed, 2))
+        if (TeamPill("Red", m_ringShowRed, 1))
             m_ringShowRed = !m_ringShowRed;
+        ImGui::SameLine();
+        if (TeamPill("Blue", m_ringShowBlue, 2))
+            m_ringShowBlue = !m_ringShowBlue;
 
         if (m_ringAgentFilter >= 0)
         {
@@ -12740,8 +12783,8 @@ void ReplayWindow::DrawRangeRingToolbar()
             auto it = m_replayCtx.agents.find(m_ringAgentFilter);
             ImVec4 agentCol(1.f, 0.91f, 0.69f, 1.f);
             if (it != m_replayCtx.agents.end()) {
-                if (it->second.teamId == 1) agentCol = ImVec4(0.29f, 0.78f, 1.f, 1.f);
-                else if (it->second.teamId == 2) agentCol = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                if (it->second.teamId == 1) agentCol = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                else if (it->second.teamId == 2) agentCol = ImVec4(0.29f, 0.78f, 1.f, 1.f);
             }
             ImGui::PushStyleColor(ImGuiCol_Text, agentCol);
             std::string lbl = (it != m_replayCtx.agents.end())
@@ -12805,8 +12848,8 @@ void ReplayWindow::DrawRangeRingToolbar()
             if (!teamEnabled) ImGui::EndDisabled();
         };
 
-        DrawTeamRings("Blue Team", m_team1PlayerIds, m_ringShowBlue);
-        DrawTeamRings("Red Team", m_team2PlayerIds, m_ringShowRed);
+        DrawTeamRings("Red Team", m_team1PlayerIds, m_ringShowRed);
+        DrawTeamRings("Blue Team", m_team2PlayerIds, m_ringShowBlue);
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
@@ -12853,15 +12896,15 @@ void ReplayWindow::DrawFogOfWarToolbar()
             ImVec4 bg, tx, hov, bdr;
             if (active) {
                 if (team == 1) {
-                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
-                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
-                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
-                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
-                } else if (team == 2) {
                     bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
                     tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
                     hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
                     bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
+                } else if (team == 2) {
+                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
+                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
+                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
                 } else {
                     bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
                     tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
@@ -12894,10 +12937,10 @@ void ReplayWindow::DrawFogOfWarToolbar()
         if (FogPill("Off", m_fogPerspective == 0 && m_fogPlayerAgent < 0, 0))
         { m_fogPerspective = 0; m_fogPlayerAgent = -1; }
         ImGui::SameLine();
-        if (FogPill("Blue", m_fogPerspective == 1 && m_fogPlayerAgent < 0, 1))
+        if (FogPill("Red", m_fogPerspective == 1 && m_fogPlayerAgent < 0, 1))
         { m_fogPerspective = (m_fogPerspective == 1 && m_fogPlayerAgent < 0) ? 0 : 1; m_fogPlayerAgent = -1; }
         ImGui::SameLine();
-        if (FogPill("Red", m_fogPerspective == 2 && m_fogPlayerAgent < 0, 2))
+        if (FogPill("Blue", m_fogPerspective == 2 && m_fogPlayerAgent < 0, 2))
         { m_fogPerspective = (m_fogPerspective == 2 && m_fogPlayerAgent < 0) ? 0 : 2; m_fogPlayerAgent = -1; }
 
         if (m_fogPlayerAgent >= 0)
@@ -13139,7 +13182,7 @@ void ReplayWindow::DrawMoralePanel()
         bool   dead = false;
     };
 
-    std::vector<PlayerMorale> blueTeam, redTeam;
+    std::vector<PlayerMorale> redTeam, blueTeam;
 
     auto buildTeam = [&](const std::vector<int>& ids) {
         std::vector<PlayerMorale> result;
@@ -13161,8 +13204,8 @@ void ReplayWindow::DrawMoralePanel()
         return result;
     };
 
-    blueTeam = buildTeam(m_team1PlayerIds);
-    redTeam  = buildTeam(m_team2PlayerIds);
+    redTeam  = buildTeam(m_team1PlayerIds);
+    blueTeam = buildTeam(m_team2PlayerIds);
 
     auto getGuildLabel = [&](const std::string& partyId) -> std::string {
         auto pit = m_matchMeta.parties.find(partyId);
@@ -13180,8 +13223,8 @@ void ReplayWindow::DrawMoralePanel()
         return "?";
     };
 
-    std::string blueLabel = getGuildLabel("1");
-    std::string redLabel  = getGuildLabel("2");
+    std::string redLabel  = getGuildLabel("1");
+    std::string blueLabel = getGuildLabel("2");
 
     constexpr float kPanelW = 520.f;
     constexpr float kRowH = 22.f;
@@ -13264,8 +13307,8 @@ void ReplayWindow::DrawMoralePanel()
     // Column headers: guild name [tag] in team color, standard font
     {
         ImVec2 p(startX, startY);
-        dl->AddText(ImVec2(p.x + 2.f, p.y), kBlueTeam, blueLabel.c_str());
-        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), kRedTeam, redLabel.c_str());
+        dl->AddText(ImVec2(p.x + 2.f, p.y), kRedTeam, redLabel.c_str());
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), kBlueTeam, blueLabel.c_str());
         ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
     }
 
@@ -13345,10 +13388,10 @@ void ReplayWindow::DrawMoralePanel()
 
     for (size_t i = 0; i < maxRows; ++i) {
         float rowY = rowStartY + i * kRowH;
-        if (i < blueTeam.size())
-            drawPlayerRow(blueTeam[i], startX, rowY);
         if (i < redTeam.size())
-            drawPlayerRow(redTeam[i], startX + colW + 1.f, rowY);
+            drawPlayerRow(redTeam[i], startX, rowY);
+        if (i < blueTeam.size())
+            drawPlayerRow(blueTeam[i], startX + colW + 1.f, rowY);
     }
 
     float divX = startX + colW;
@@ -13382,11 +13425,11 @@ void ReplayWindow::DrawMoralePanel()
         ImVec2 p = ImGui::GetCursorScreenPos();
         char buf[32];
 
-        snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
-        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(blueAvg), buf);
-
         snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
-        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(redAvg), buf);
+        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(redAvg), buf);
+
+        snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(blueAvg), buf);
 
         ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
     }
@@ -13401,20 +13444,20 @@ void ReplayWindow::DrawMoralePanel()
         dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + barW, p.y + barH),
                           IM_COL32(255, 255, 255, 15), 3.f);
 
-        float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
-        if (blueLen > 1.f) {
-            dl->AddRectFilled(
-                ImVec2(p.x + halfW - blueLen, p.y),
-                ImVec2(p.x + halfW, p.y + barH),
-                IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
-        }
-
         float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
         if (redLen > 1.f) {
             dl->AddRectFilled(
-                ImVec2(p.x + halfW, p.y),
-                ImVec2(p.x + halfW + redLen, p.y + barH),
+                ImVec2(p.x + halfW - redLen, p.y),
+                ImVec2(p.x + halfW, p.y + barH),
                 IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
+        }
+
+        float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
+        if (blueLen > 1.f) {
+            dl->AddRectFilled(
+                ImVec2(p.x + halfW, p.y),
+                ImVec2(p.x + halfW + blueLen, p.y + barH),
+                IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
         }
 
         dl->AddLine(ImVec2(p.x + halfW, p.y), ImVec2(p.x + halfW, p.y + barH),
@@ -13460,7 +13503,7 @@ static int JumboPartyToTeam(int partyValue)
 
 static const char* JumboMessageDisplayText(const std::string& msgType, int team)
 {
-    const char* side = (team == 1) ? "Blue" : "Red";
+    const char* side = (team == 1) ? "Red" : "Blue";
     static char buf[128];
     if      (msgType == "BASE_UNDER_ATTACK")       snprintf(buf, sizeof(buf), "%s Base Under Attack",       side);
     else if (msgType == "GUILD_LORD_UNDER_ATTACK")  snprintf(buf, sizeof(buf), "%s Guild Lord Under Attack",  side);
@@ -13616,10 +13659,10 @@ void ReplayWindow::DrawLordDamagePanel()
     // ---- PART 1: Lord header (icon, name, HP bar, stats) per column ----
     auto DrawLordHeader = [&](int idx, float startX) {
         auto& ld = m_lordDmg[idx];
-        bool isRed = (idx == 1);
+        bool isRed = (idx == 0);
         const char* teamLabel = isRed ? "Red" : "Blue";
         const char* iconFile = isRed ? "redguildlord.png" : "blueguildlord.png";
-        const std::string& guildHeader = isRed ? m_team2GuildHeader : m_team1GuildHeader;
+        const std::string& guildHeader = isRed ? m_team1GuildHeader : m_team2GuildHeader;
 
         ImGui::SetCursorPosX(startX);
         float cursorY = ImGui::GetCursorPosY();
@@ -13657,7 +13700,7 @@ void ReplayWindow::DrawLordDamagePanel()
         const AgentSnapshot* snap = nullptr;
         float hpPct = 1.f;
         bool isDead = false;
-        uint8_t teamId = isRed ? 2 : 1;
+        uint8_t teamId = isRed ? 1 : 2;
         auto lordIt = m_replayCtx.agents.find(ld.lordAgentId);
         if (lordIt != m_replayCtx.agents.end())
         {
@@ -13681,7 +13724,7 @@ void ReplayWindow::DrawLordDamagePanel()
 
             const LordGrad5* fillGrad = nullptr;
             if (isDead)
-                fillGrad = (teamId == 1) ? &gDeadBlue : &gDeadRed;
+                fillGrad = (teamId == 1) ? &gDeadRed : &gDeadBlue;
             else if (snap && snap->has_degen_hex)
                 fillGrad = &gDegenHex;
             else if (snap && snap->has_poison)
@@ -13689,7 +13732,7 @@ void ReplayWindow::DrawLordDamagePanel()
             else if (snap && snap->has_bleeding)
                 fillGrad = &gBleeding;
             else
-                fillGrad = (teamId == 1) ? &gAliveBlue : &gAliveRed;
+                fillGrad = (teamId == 1) ? &gAliveRed : &gAliveBlue;
 
             if (isDead)
             {
@@ -13697,7 +13740,7 @@ void ReplayWindow::DrawLordDamagePanel()
             }
             else
             {
-                const LordGrad5* deadGrad = (teamId == 1) ? &gDeadBlue : &gDeadRed;
+                const LordGrad5* deadGrad = (teamId == 1) ? &gDeadRed : &gDeadBlue;
                 DrawLordGradRect(dl, innerTL, innerBR, *deadGrad);
                 bool hasDeepWound = snap && snap->has_deep_wound && !isDead;
                 float fillPct = hasDeepWound ? std::min(hpPct, 0.80f) : hpPct;
@@ -13853,8 +13896,8 @@ void ReplayWindow::DrawLordDamagePanel()
             float barW = std::max(0.f, colW - (iconSz + 4 + nameW + 4 + 32));
             ImU32 barBg = IM_COL32(255, 255, 255, 15);
             ImU32 barFg = (atk.teamId == 2)
-                ? IM_COL32(208, 72, 72, 178)
-                : IM_COL32(74, 144, 216, 178);
+                ? IM_COL32(74, 144, 216, 178)
+                : IM_COL32(208, 72, 72, 178);
             dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
                 ImVec2(barX + barW, rowP.y + rowH - 3), barBg, 2.f);
             dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
@@ -13919,7 +13962,7 @@ void ReplayWindow::DrawLordDamagePanel()
             ImVec2 bMin(stripP.x + b * bw, stripP.y);
             ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 12.f);
             ImU32 col = m_lordDmg[1].damageBuckets[b]
-                ? IM_COL32(74, 144, 216, 204)
+                ? IM_COL32(208, 72, 72, 204)
                 : IM_COL32(255, 255, 255, 10);
             dl->AddRectFilled(bMin, bMax, col);
         }
@@ -13929,7 +13972,7 @@ void ReplayWindow::DrawLordDamagePanel()
             ImVec2 bMin(stripP.x + b * bw, stripP.y + 12.f);
             ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 24.f);
             ImU32 col = m_lordDmg[0].damageBuckets[b]
-                ? IM_COL32(208, 72, 72, 204)
+                ? IM_COL32(74, 144, 216, 204)
                 : IM_COL32(255, 255, 255, 10);
             dl->AddRectFilled(bMin, bMax, col);
         }
@@ -14077,8 +14120,8 @@ void ReplayWindow::BuildTimelineData()
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     int totalSec = static_cast<int>(std::ceil(maxT));
 
-    m_timeline.blueHealth.resize(totalSec + 1, 100.f);
     m_timeline.redHealth.resize(totalSec + 1, 100.f);
+    m_timeline.blueHealth.resize(totalSec + 1, 100.f);
 
     auto sampleTeamHealth = [&](const std::vector<int>& ids, std::vector<float>& out) {
         for (int s = 0; s <= totalSec; ++s)
@@ -14104,8 +14147,8 @@ void ReplayWindow::BuildTimelineData()
         }
     };
 
-    sampleTeamHealth(m_team1PlayerIds, m_timeline.blueHealth);
-    sampleTeamHealth(m_team2PlayerIds, m_timeline.redHealth);
+    sampleTeamHealth(m_team1PlayerIds, m_timeline.redHealth);
+    sampleTeamHealth(m_team2PlayerIds, m_timeline.blueHealth);
 
     auto teamForAgent = [&](int agentId) -> int {
         for (int id : m_team1PlayerIds) if (id == agentId) return 1;
@@ -14160,29 +14203,29 @@ void ReplayWindow::BuildTimelineData()
 
         if (ev.message == "CAPTURED_TOWER") {
             te.type = TimelineEventType::FlagCapture;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" captured tower");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured tower");
         }
         else if (ev.message == "MORALE_BOOST") {
             te.type = TimelineEventType::MoraleBoost;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" morale boost");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" morale boost");
         }
         else if (ev.message == "GUILD_LORD_UNDER_ATTACK" || ev.message == "BASE_UNDER_ATTACK") {
             te.type = TimelineEventType::LordAttacked;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" lord under attack");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" lord under attack");
         }
         else if (ev.message == "VICTORY" || ev.message == "FLAWLESS_VICTORY") {
             te.type = TimelineEventType::Victory;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" victory!");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" victory!");
         }
         else if (ev.message == "CAPTURED_SHRINE") {
             te.type = TimelineEventType::ShrineCaptured;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" captured shrine");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured shrine");
         }
         else if (ev.message == "NEUTRALIZED_SHRINE") {
             // party_value identifies the losing team — invert for display
             if (te.teamId > 0) te.teamId = (te.teamId == 1) ? 2 : 1;
             te.type = TimelineEventType::ShrineNeutralized;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" neutralized shrine");
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" neutralized shrine");
         }
         else continue;
 
@@ -14196,7 +14239,7 @@ void ReplayWindow::BuildTimelineData()
             TimelineEvent te;
             te.time = ev.time;
             te.type = TimelineEventType::FlagReturn;
-            te.teamId = (ev.flagTeam == FlagTeam::Blue) ? 1 : 2;
+            te.teamId = (ev.flagTeam == FlagTeam::Red) ? 1 : 2;
             te.label = "Flag returned";
             m_timeline.events.push_back(std::move(te));
         }
@@ -14207,8 +14250,8 @@ void ReplayWindow::BuildTimelineData()
             TimelineEvent te;
             te.time = sc.time;
             te.type = TimelineEventType::ObeliskCapture;
-            te.teamId = (sc.owner == StandOwner::Blue) ? 1 : 2;
-            te.label = (te.teamId == 1 ? "Blue" : "Red") + std::string(" captured obelisk");
+            te.teamId = (sc.owner == StandOwner::Red) ? 1 : 2;
+            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured obelisk");
             m_timeline.events.push_back(std::move(te));
         }
     }
@@ -14678,8 +14721,8 @@ void ReplayWindow::DrawEventTimeline()
         }
     };
 
-    drawCurve(m_timeline.blueHealth, cBlue, cBlueFill);
-    drawCurve(m_timeline.redHealth,  cRed,  cRedFill);
+    drawCurve(m_timeline.redHealth, cRed, cRedFill);
+    drawCurve(m_timeline.blueHealth,  cBlue,  cBlueFill);
 
     // ── Event markers ───────────────────────────────────────────────────
     auto isEventVisible = [&](const TimelineEvent& e) -> bool {
@@ -14741,8 +14784,8 @@ void ReplayWindow::DrawEventTimeline()
         else
         {
             int sec = std::clamp(static_cast<int>(e.time), 0,
-                static_cast<int>(m_timeline.blueHealth.size()) - 1);
-            const auto& curve = (e.teamId == 2) ? m_timeline.redHealth : m_timeline.blueHealth;
+                static_cast<int>(m_timeline.redHealth.size()) - 1);
+            const auto& curve = (e.teamId == 2) ? m_timeline.blueHealth : m_timeline.redHealth;
             float healthPct = (sec < static_cast<int>(curve.size())) ? curve[sec] : 50.f;
             ey = chartY1 - (healthPct / 100.f) * chartH;
             float minY = chartY0 + iconSz * 0.5f + 1.f;
@@ -14806,8 +14849,8 @@ void ReplayWindow::DrawEventTimeline()
         }
 
         ImU32 teamBorderCol = (e.teamId == 2)
-            ? IM_COL32(208, 72, 72, 255)   // #d04848
-            : IM_COL32( 74,144,216, 255);   // #4a90d8
+            ? IM_COL32( 74,144,216, 255)   // #4a90d8
+            : IM_COL32(208, 72, 72, 255);   // #d04848
 
         switch (e.type) {
         case TimelineEventType::Death: {
@@ -14834,7 +14877,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::FlagCapture: {
-            const char* flagFile = (e.teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+            const char* flagFile = (e.teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
             ImTextureID tex = LoadFlagIcon(dev, flagFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -14846,7 +14889,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::FlagReturn: {
-            const char* flagFile = (e.teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+            const char* flagFile = (e.teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
             ImTextureID tex = LoadFlagIcon(dev, flagFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -14869,7 +14912,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::MoraleBoost: {
-            const char* moraleFile = (e.teamId == 2) ? "redmorale.png" : "bluemorale.png";
+            const char* moraleFile = (e.teamId == 2) ? "bluemorale.png" : "redmorale.png";
             ImTextureID tex = LoadFlagIcon(dev, moraleFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -14881,7 +14924,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::LordAttacked: {
-            const char* lordFile = (e.teamId == 2) ? "redguildlord.png" : "blueguildlord.png";
+            const char* lordFile = (e.teamId == 2) ? "blueguildlord.png" : "redguildlord.png";
             ImTextureID tex = LoadFlagIcon(dev, lordFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -14895,8 +14938,8 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::ShrineCaptured: {
             ImTextureID tex = LoadFlagIcon(dev, "Health_Shrine_Bonus.jpg");
             ImU32 borderCol = (e.teamId == 2)
-                ? IM_COL32(208, 72, 72, 255)
-                : IM_COL32(74, 144, 216, 255);
+                ? IM_COL32(74, 144, 216, 255)
+                : IM_COL32(208, 72, 72, 255);
             dl->AddRectFilled(iconMin, iconMax, IM_COL32(10, 10, 10, 200), 2.f);
             dl->AddRect(iconMin, iconMax, borderCol, 2.f, 0, 2.f);
             if (tex)
@@ -14925,8 +14968,8 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::ObeliskCapture: {
             ImTextureID tex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
             ImU32 borderCol = (e.teamId == 2)
-                ? IM_COL32(255, 80, 70, 255)
-                : IM_COL32(80, 160, 255, 255);
+                ? IM_COL32(80, 160, 255, 255)
+                : IM_COL32(255, 80, 70, 255);
             constexpr float bw = 2.f;
             dl->AddRectFilled(iconMin, iconMax, borderCol, 2.f);
             ImVec2 imgMin(iconMin.x + bw, iconMin.y + bw);
@@ -14963,9 +15006,9 @@ void ReplayWindow::DrawEventTimeline()
 
         float hoverT = ((mousePos.x - chartX0) / chartW) * maxT;
         int sec = std::clamp(static_cast<int>(hoverT), 0,
-            static_cast<int>(m_timeline.blueHealth.size()) - 1);
-        float bh = m_timeline.blueHealth[sec];
+            static_cast<int>(m_timeline.redHealth.size()) - 1);
         float rh = m_timeline.redHealth[sec];
+        float bh = m_timeline.blueHealth[sec];
         float dispHT = hoverT - m_displayTimeOffset;
         int absHT = static_cast<int>(std::abs(dispHT));
         int mins = absHT / 60;
@@ -14975,9 +15018,9 @@ void ReplayWindow::DrawEventTimeline()
 
         char ttBuf[128];
         if (dispHT < 0.f)
-            snprintf(ttBuf, sizeof(ttBuf), "-%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
+            snprintf(ttBuf, sizeof(ttBuf), "-%d:%02d  Red: %.0f%%  Blue: %.0f%%", mins, secs, rh, bh);
         else
-            snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Blue: %.0f%%  Red: %.0f%%", mins, secs, bh, rh);
+            snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Red: %.0f%%  Blue: %.0f%%", mins, secs, rh, bh);
         ImVec2 ttSz = font->CalcTextSizeA(fs * 0.78f, FLT_MAX, 0.f, ttBuf);
         float ttX = std::clamp(mousePos.x - ttSz.x * 0.5f, chartX0, chartX1 - ttSz.x - 8.f);
         float ttY = mousePos.y - ttSz.y - 10.f;
@@ -15058,7 +15101,7 @@ void ReplayWindow::DrawEventTimeline()
 
     // Mini health curves in scrubber (smooth)
     {
-        int n = static_cast<int>(m_timeline.blueHealth.size());
+        int n = static_cast<int>(m_timeline.redHealth.size());
         for (int i = 0; i < n - 1; ++i)
         {
             float t0 = static_cast<float>(i);
@@ -15066,13 +15109,13 @@ void ReplayWindow::DrawEventTimeline()
             float x0 = chartX0 + (t0 / maxT) * chartW;
             float x1 = chartX0 + (t1 / maxT) * chartW;
 
-            float by0 = scrubY1 - (m_timeline.blueHealth[i] / 100.f) * scrubH;
-            float by1 = scrubY1 - (m_timeline.blueHealth[i + 1] / 100.f) * scrubH;
-            dl->AddLine(ImVec2(x0, by0), ImVec2(x1, by1), IM_COL32(74, 200, 255, 100), 1.f);
-
             float ry0 = scrubY1 - (m_timeline.redHealth[i] / 100.f) * scrubH;
             float ry1 = scrubY1 - (m_timeline.redHealth[i + 1] / 100.f) * scrubH;
             dl->AddLine(ImVec2(x0, ry0), ImVec2(x1, ry1), IM_COL32(255, 107, 107, 100), 1.f);
+
+            float by0 = scrubY1 - (m_timeline.blueHealth[i] / 100.f) * scrubH;
+            float by1 = scrubY1 - (m_timeline.blueHealth[i + 1] / 100.f) * scrubH;
+            dl->AddLine(ImVec2(x0, by0), ImVec2(x1, by1), IM_COL32(74, 200, 255, 100), 1.f);
         }
     }
 
@@ -15260,9 +15303,9 @@ void ReplayWindow::DrawFlagEventMessages()
         ImU32 blueCol  = IM_COL32(0x99, 0xCB, 0xFD, 255);
         ImU32 redCol   = IM_COL32(0xFF, 0x99, 0x9A, 255);
 
-        ImU32 playerCol = (active->playerTeam == 0) ? blueCol : redCol;
-        ImU32 flagCol   = (active->flagTeam == 0)   ? blueCol : redCol;
-        const char* flagTeamName = (active->flagTeam == 0) ? "blue" : "red";
+        ImU32 playerCol = (active->playerTeam == 0) ? redCol : blueCol;
+        ImU32 flagCol   = (active->flagTeam == 0)   ? redCol : blueCol;
+        const char* flagTeamName = (active->flagTeam == 0) ? "red" : "blue";
 
         std::vector<Segment> line1, line2;
 
@@ -15285,8 +15328,8 @@ void ReplayWindow::DrawFlagEventMessages()
                 line1.push_back({ active->playerName, playerCol });
                 line1.push_back({ " has returned ", whiteCol });
             } else {
-                const char* returnTeamName = (active->flagTeam == 0) ? "Red" : "Blue";
-                ImU32 returnTeamCol = (active->flagTeam == 0) ? redCol : blueCol;
+                const char* returnTeamName = (active->flagTeam == 0) ? "Blue" : "Red";
+                ImU32 returnTeamCol = (active->flagTeam == 0) ? blueCol : redCol;
                 line1.push_back({ returnTeamName, returnTeamCol });
                 line1.push_back({ " team has returned ", whiteCol });
             }
@@ -15301,7 +15344,7 @@ void ReplayWindow::DrawFlagEventMessages()
             if (isObelisk) {
                 line1.push_back({ " has taken control of the obelisk!", whiteCol });
             } else {
-                const char* teamName = (active->flagTeam == 0) ? "Blue" : "Red";
+                const char* teamName = (active->flagTeam == 0) ? "Red" : "Blue";
                 line1.push_back({ " has taken control of the watchtower!", whiteCol });
                 line2.push_back({ teamName, flagCol });
                 line2.push_back({ " team will earn a morale boost every two minutes they hold the watchtower.", whiteCol });
@@ -15333,7 +15376,7 @@ void ReplayWindow::DrawJumboMessages()
     {
         ImFont* font = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
         float fontSize = font->FontSize;
-        const char* preview = "Blue Captured Tower";
+        const char* preview = "Red Captured Tower";
         ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, preview);
 
         float cx = vp->Pos.x + vp->Size.x * posX;
@@ -15342,7 +15385,7 @@ void ReplayWindow::DrawJumboMessages()
 
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         dl->AddText(font, fontSize, ImVec2(tx, ty + 1), IM_COL32(0, 0, 0, 150), preview);
-        dl->AddText(font, fontSize, ImVec2(tx, ty), IM_COL32(0x99, 0xCB, 0xFD, 180), preview);
+        dl->AddText(font, fontSize, ImVec2(tx, ty), IM_COL32(0xFF, 0x99, 0x9A, 180), preview);
 
         ImVec2 boxTL(tx - 4, ty - 4);
         ImVec2 boxBR(tx + textSize.x + 4, ty + textSize.y + 4);
@@ -15387,8 +15430,8 @@ void ReplayWindow::DrawJumboMessages()
     int a = static_cast<int>(alpha * 255);
     ImU32 teamCol;
     if (isNeutralizedShrine)    teamCol = IM_COL32(0xBB, 0xBB, 0xBB, a);
-    else if (team == 1)         teamCol = IM_COL32(0x99, 0xCB, 0xFD, a);
-    else if (team == 2)         teamCol = IM_COL32(0xFF, 0x99, 0x9A, a);
+    else if (team == 1)         teamCol = IM_COL32(0xFF, 0x99, 0x9A, a);
+    else if (team == 2)         teamCol = IM_COL32(0x99, 0xCB, 0xFD, a);
     else                        teamCol = IM_COL32(0xFF, 0xFF, 0xFF, a);
 
     ImFont* font = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
@@ -15421,8 +15464,8 @@ void ReplayWindow::DrawMoraleBoostTimers()
     for (auto& sc : standEvents)
     {
         if (sc.time > curTime) break;
-        if (sc.owner == StandOwner::Blue)        { lastCapTime[0] = sc.time; lastCapTeam = 0; }
-        else if (sc.owner == StandOwner::Red)     { lastCapTime[1] = sc.time; lastCapTeam = 1; }
+        if (sc.owner == StandOwner::Red)        { lastCapTime[0] = sc.time; lastCapTeam = 0; }
+        else if (sc.owner == StandOwner::Blue)     { lastCapTime[1] = sc.time; lastCapTeam = 1; }
         else if (sc.owner == StandOwner::Neutral) { lastCapTeam = -1; }
     }
 
@@ -15453,7 +15496,7 @@ void ReplayWindow::DrawMoraleBoostTimers()
         if (!hasCap && m_draggingUIElement != dragIdx)
             return;
 
-        const char* teamLabel = (team == 1) ? "Blue Morale Boost" : "Red Morale Boost";
+        const char* teamLabel = (team == 1) ? "Red Morale Boost" : "Blue Morale Boost";
         char buf[32] = "02:00";
 
         if (hasCap)
@@ -15474,8 +15517,8 @@ void ReplayWindow::DrawMoraleBoostTimers()
         float anchorY = vp->Pos.y + vp->Size.y * py;
         float x = anchorX - blockW * 0.5f;
 
-        ImU32 teamCol = (team == 1) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
-                                    : IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+        ImU32 teamCol = (team == 1) ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
+                                    : IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
         ImU32 goldCol = IM_COL32(0xF5, 0xE4, 0xB4, 0xFF);
 
         float labelX = x + (blockW - labelSize.x) * 0.5f;
@@ -15489,8 +15532,8 @@ void ReplayWindow::DrawMoraleBoostTimers()
         HandleOverlayDrag(dragIdx, fracX, fracY, boxTL, boxBR);
     };
 
-    DrawOneMorale(0, 1, &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 0.65f, 0.22f);
-    DrawOneMorale(1, 2, &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  0.35f, 0.22f);
+    DrawOneMorale(0, 1, &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  0.35f, 0.22f);
+    DrawOneMorale(1, 2, &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 0.65f, 0.22f);
 }
 
 // ---------------------------------------------------------------------------
@@ -17090,8 +17133,8 @@ void ReplayWindow::DrawInterfacePreferences()
 
         PositionRow("Match Timer",      &m_uiLayout.timerX,  &m_uiLayout.timerY,  3);
         PositionRow("Jumbo Message",    &m_uiLayout.jumboX,  &m_uiLayout.jumboY,  0);
-        PositionRow("Morale (Blue)",    &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 1);
-        PositionRow("Morale (Red)",     &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  2);
+        PositionRow("Morale (Red)",     &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  1);
+        PositionRow("Morale (Blue)",    &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 2);
 
         if (!m_uiLayout.useCustom)
             ImGui::EndDisabled();
@@ -17981,8 +18024,8 @@ static const char* GetTeamName(uint8_t tid)
 {
     switch (tid) {
     case 0: return "None";
-    case 1: return "Blue";
-    case 2: return "Red";
+    case 1: return "Red";
+    case 2: return "Blue";
     case 3: return "Yellow";
     default: return "?";
     }
@@ -18151,7 +18194,7 @@ static ImTextureID LoadWeaponTexture(ID3D11Device* device, const char* filename)
 //   46  = two-handed weapon, staff, or single weapon
 //         (bow, hammer, daggers, scythe, staff, flag)
 //   Any other value: treat as 46 (single/two-handed), log warning if unexpected
-// teamId: 1=blue, 2=red (for flag textures)
+// teamId: 1=red, 2=blue (for flag textures)
 struct WeaponTextureResult {
     const char* mainTex    = nullptr;  // filename in Textures/Weapons/ (or nullptr)
     const char* offTex     = nullptr;
@@ -18194,7 +18237,7 @@ static WeaponTextureResult ResolveWeaponTextures(uint16_t weapType, uint8_t weap
                 r.mainTex = "Vine Seed.png";
             } else {
                 r.isFlag = true;
-                r.mainTex = (teamId == 2) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
+                r.mainTex = (teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
             }
         }
         break;
@@ -18677,7 +18720,7 @@ static ImTextureID LoadProfStylized(ID3D11Device* device, int profId,
 {
     if (profId < 1 || profId > 10) return nullptr;
 
-    const char* teamStr = (teamId == 2) ? "red" : "blue";
+    const char* teamStr = (teamId == 2) ? "blue" : "red";
     const char* suffix  = "";
     if (state == AgentIconState::Dead)      suffix = "_dead";
     else if (state == AgentIconState::Knockdown) suffix = "_KD";
@@ -19185,7 +19228,7 @@ static void DrawPartyHealthBar(
     // Choose gradient by priority
     const Gradient5* fillGrad = nullptr;
     if (isDead)
-        fillGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+        fillGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
     else if (snap->has_degen_hex)
         fillGrad = &kDegenHex;
     else if (snap->has_poison)
@@ -19193,7 +19236,7 @@ static void DrawPartyHealthBar(
     else if (snap->has_bleeding)
         fillGrad = &kBleeding;
     else
-        fillGrad = (teamId == 1) ? &kAliveBlue : &kAliveRed;
+        fillGrad = (teamId == 1) ? &kAliveRed : &kAliveBlue;
 
     // Dead background fills full width
     if (isDead)
@@ -19203,7 +19246,7 @@ static void DrawPartyHealthBar(
     else
     {
         // Background: dark fill for empty portion
-        const Gradient5* deadGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+        const Gradient5* deadGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
         DrawGradientRect(dl, innerTL, innerBR, *deadGrad);
 
         // Health fill
@@ -19473,8 +19516,8 @@ void ReplayWindow::DrawCombatLog()
     auto teamColorU32 = [&](int agentId) -> ImU32 {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return uGray;
-        if (it->second.teamId == 1) return uBlue;
-        if (it->second.teamId == 2) return uRed;
+        if (it->second.teamId == 1) return uRed;
+        if (it->second.teamId == 2) return uBlue;
         return uGray;
     };
 
@@ -19889,16 +19932,16 @@ void ReplayWindow::DrawCombatLog()
                 ImU32 jbBg = isNeutShrine
                     ? IM_COL32(180, 180, 180, 18)
                     : (row.jumboTeam == 1)
-                        ? IM_COL32(74, 200, 255, 20)
+                        ? IM_COL32(255, 107, 107, 20)
                         : (row.jumboTeam == 2)
-                            ? IM_COL32(255, 107, 107, 20)
+                            ? IM_COL32(74, 200, 255, 20)
                             : IM_COL32(255, 215, 100, 20);
                 ImU32 jbBdr = isNeutShrine
                     ? IM_COL32(180, 180, 180, 140)
                     : (row.jumboTeam == 1)
-                        ? IM_COL32(74, 200, 255, 160)
+                        ? IM_COL32(255, 107, 107, 160)
                         : (row.jumboTeam == 2)
-                            ? IM_COL32(255, 107, 107, 160)
+                            ? IM_COL32(74, 200, 255, 160)
                             : IM_COL32(255, 215, 100, 160);
                 dl->AddRectFilled(
                     ImVec2(startX, startY),
@@ -20001,8 +20044,8 @@ void ReplayWindow::DrawCombatLog()
                 else if (row.eventType == "NEUTRALIZED_SHRINE")
                     jIcon = "Health_Shrine_Bonus.jpg";
                 else if (row.eventType == "CAPTURED_TOWER")
-                    jIcon = (row.jumboTeam == 1) ? "Blue_flag_waving.svg.png"
-                                                 : "Red_flag_waving.svg.png";
+                    jIcon = (row.jumboTeam == 1) ? "Red_flag_waving.svg.png"
+                                                 : "Blue_flag_waving.svg.png";
                 else if (row.eventType == "PARTY_DEFEATED")
                     jIcon = "death2.png";
                 else if (row.eventType == "MORALE_BOOST")
@@ -20025,8 +20068,8 @@ void ReplayWindow::DrawCombatLog()
 
                 const bool isNeutShrine = (row.eventType == "NEUTRALIZED_SHRINE");
                 ImU32 jCol = isNeutShrine ? IM_COL32(0xBB, 0xBB, 0xBB, 0xFF)
-                           : (row.jumboTeam == 1) ? uBlue
-                           : (row.jumboTeam == 2) ? uRed
+                           : (row.jumboTeam == 1) ? uRed
+                           : (row.jumboTeam == 2) ? uBlue
                            : uTsCol;
                 const char* jText = JumboMessageDisplayText(row.eventType, row.jumboTeam);
 
@@ -20517,7 +20560,7 @@ void ReplayWindow::DrawPartyWindows()
                 for (int fti = 0; fti < 2; fti++) {
                     if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == agentId) {
                         carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
-                            ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png");
+                            ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png");
                         break;
                     }
                 }
@@ -20802,13 +20845,13 @@ void ReplayWindow::DrawPartyWindows()
 
     DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PlayerIds,
                   m_team1NpcIds,
-                  ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), true,
+                  ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), true,
                   &s_alliesOpenTeam1, "team1_party",
                   m_meterTotalDmgTeam1, m_meterTotalHealTeam1);
 
     DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PlayerIds,
                   m_team2NpcIds,
-                  ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), false,
+                  ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), false,
                   &s_alliesOpenTeam2, "team2_party",
                   m_meterTotalDmgTeam2, m_meterTotalHealTeam2);
 
@@ -20872,8 +20915,8 @@ void ReplayWindow::DrawAgentDataWindow()
     auto DrawAgentEntry = [&](int agentId, const AgentReplayData& ard)
     {
         ImVec4 color(1, 1, 1, 1);
-        if (ard.teamId == 1) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
-        else if (ard.teamId == 2) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+        if (ard.teamId == 1) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+        else if (ard.teamId == 2) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
         else if (ard.teamId == 3) color = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
 
         ImGui::PushStyleColor(ImGuiCol_Text, color);
@@ -20898,20 +20941,20 @@ void ReplayWindow::DrawAgentDataWindow()
     // --- PLAYERS section (grouped by team) ---
     if (!m_playerIds.empty() && ImGui::TreeNodeEx("Players", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        bool anyBlue = false;
+        bool anyRed = false;
         for (int id : m_playerIds)
-            if (m_replayCtx.agents[id].teamId == 1) { anyBlue = true; break; }
-        if (anyBlue && ImGui::TreeNodeEx("Blue Team", ImGuiTreeNodeFlags_DefaultOpen))
+            if (m_replayCtx.agents[id].teamId == 1) { anyRed = true; break; }
+        if (anyRed && ImGui::TreeNodeEx("Red Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
                 if (m_replayCtx.agents[id].teamId == 1) DrawAgentEntry(id, m_replayCtx.agents[id]);
             ImGui::TreePop();
         }
 
-        bool anyRed = false;
+        bool anyBlue = false;
         for (int id : m_playerIds)
-            if (m_replayCtx.agents[id].teamId == 2) { anyRed = true; break; }
-        if (anyRed && ImGui::TreeNodeEx("Red Team", ImGuiTreeNodeFlags_DefaultOpen))
+            if (m_replayCtx.agents[id].teamId == 2) { anyBlue = true; break; }
+        if (anyBlue && ImGui::TreeNodeEx("Blue Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
                 if (m_replayCtx.agents[id].teamId == 2) DrawAgentEntry(id, m_replayCtx.agents[id]);
@@ -23366,7 +23409,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
         for (int fti = 0; fti < 2; fti++) {
             if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == focused) {
                 carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
-                    ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png");
+                    ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png");
                 break;
             }
         }
@@ -23376,8 +23419,8 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ImVec2 panelBR(panelX + panelW, panelY + panelH);
 
     ImU32 panelBg = (teamId == 1)
-        ? IM_COL32(0x0A, 0x12, 0x28, 0xA0)   // dark blue, more transparent
-        : IM_COL32(0x28, 0x0A, 0x0A, 0xA0);   // dark red, more transparent
+        ? IM_COL32(0x28, 0x0A, 0x0A, 0xA0)   // dark red, more transparent
+        : IM_COL32(0x0A, 0x12, 0x28, 0xA0);   // dark blue, more transparent
     dl->AddRectFilled(panelTL, panelBR, panelBg, PANEL_R);
     dl->AddRect(panelTL, panelBR, IM_COL32(0xA0, 0xA0, 0xA0, 0x90), PANEL_R, 0, 1.0f);
 
@@ -23393,7 +23436,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     constexpr float CAST_GAP   = 5.f;
     constexpr float CAST_BAR_H = 18.f;
 
-    const Gradient5* deadGrad = (teamId == 1) ? &kDeadBlue : &kDeadRed;
+    const Gradient5* deadGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
     const Gradient5* fillGrad = nullptr;
     if (isDead)
         fillGrad = deadGrad;
@@ -23404,7 +23447,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     else if (snap->has_bleeding)
         fillGrad = &kBleeding;
     else
-        fillGrad = (teamId == 1) ? &kAliveBlue : &kAliveRed;
+        fillGrad = (teamId == 1) ? &kAliveRed : &kAliveBlue;
 
     ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
     ImVec2 innerBR(barBR.x - 1, barBR.y - 1);
@@ -23966,13 +24009,13 @@ void ReplayWindow::DrawPianoRollPanel()
     constexpr float kLegendH    = 28.f;
     constexpr float kIconSz     = 18.f;
 
-    const int nBlue = (int)m_team1PlayerIds.size();
-    const int nRed  = (int)m_team2PlayerIds.size();
-    const int nBlueRows = m_pianoRollTeam1Open ? nBlue : 0;
-    const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
+    const int nRed  = (int)m_team1PlayerIds.size();
+    const int nBlue = (int)m_team2PlayerIds.size();
+    const int nRedRows  = m_pianoRollTeam1Open ? nRed  : 0;
+    const int nBlueRows = m_pianoRollTeam2Open ? nBlue : 0;
     const float bodyH = kTimeAxisH
-                      + kTeamLabelH + nBlueRows * kRowH
                       + kTeamLabelH + nRedRows  * kRowH
+                      + kTeamLabelH + nBlueRows * kRowH
                       + kLegendH;
     const float totalH = kHeaderH + bodyH;
 
@@ -24322,21 +24365,21 @@ void ReplayWindow::DrawPianoRollPanel()
         }
     };
 
-    // ── Blue team ──────────────────────────────────────────────────────
+    // ── Red team ──────────────────────────────────────────────────────
     drawTeamBlock(m_team1PlayerIds, 1,
-                  m_team1GuildHeader.empty() ? "Blue Team" : m_team1GuildHeader.c_str(),
+                  m_team1GuildHeader.empty() ? "Red Team" : m_team1GuildHeader.c_str(),
                   m_pianoRollTeam1Open,
-                  IM_COL32(0x4A,0x90,0xD8,0xFF),
-                  IM_COL32(0x4A,0x90,0xD8,0x14),
-                  IM_COL32(0x4A,0x90,0xD8,0x26));
-
-    // ── Red team ───────────────────────────────────────────────────────
-    drawTeamBlock(m_team2PlayerIds, 2,
-                  m_team2GuildHeader.empty() ? "Red Team" : m_team2GuildHeader.c_str(),
-                  m_pianoRollTeam2Open,
                   IM_COL32(0xD0,0x48,0x48,0xFF),
                   IM_COL32(0xD0,0x48,0x48,0x14),
                   IM_COL32(0xD0,0x48,0x48,0x26));
+
+    // ── Blue team ───────────────────────────────────────────────────────
+    drawTeamBlock(m_team2PlayerIds, 2,
+                  m_team2GuildHeader.empty() ? "Blue Team" : m_team2GuildHeader.c_str(),
+                  m_pianoRollTeam2Open,
+                  IM_COL32(0x4A,0x90,0xD8,0xFF),
+                  IM_COL32(0x4A,0x90,0xD8,0x14),
+                  IM_COL32(0x4A,0x90,0xD8,0x26));
 
     float nowLineBot = curY;
 
@@ -25001,20 +25044,20 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
 
     auto TeamColor = [](uint8_t teamId) -> ImU32 {
         switch (teamId) {
-        case 1:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
-        case 2:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        case 1:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        case 2:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
         default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
         }
     };
 
     // --- Filter bar: team checkboxes + profession icon toggles ---
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, kBlueTeam);
-        ImGui::Checkbox("Blue", &m_analyticsShowTeam[0]);
+        ImGui::PushStyleColor(ImGuiCol_Text, kRedTeam);
+        ImGui::Checkbox("Red", &m_analyticsShowTeam[0]);
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, kRedTeam);
-        ImGui::Checkbox("Red", &m_analyticsShowTeam[1]);
+        ImGui::PushStyleColor(ImGuiCol_Text, kBlueTeam);
+        ImGui::Checkbox("Blue", &m_analyticsShowTeam[1]);
         ImGui::PopStyleColor();
         ImGui::SameLine();
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
@@ -25245,11 +25288,11 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
             return "Team";
         };
 
-        std::string blueLabel = getGuildLabel("1");
-        std::string redLabel  = getGuildLabel("2");
+        std::string redLabel  = getGuildLabel("1");
+        std::string blueLabel = getGuildLabel("2");
 
-        dl->AddText(ImVec2(hPos.x + 2.f, hPos.y), kBlueTeam, blueLabel.c_str());
-        dl->AddText(ImVec2(hPos.x + colW + kColGap + 2.f, hPos.y), kRedTeam, redLabel.c_str());
+        dl->AddText(ImVec2(hPos.x + 2.f, hPos.y), kRedTeam, redLabel.c_str());
+        dl->AddText(ImVec2(hPos.x + colW + kColGap + 2.f, hPos.y), kBlueTeam, blueLabel.c_str());
         ImGui::Dummy(ImVec2(0.f, ImGui::GetTextLineHeight() + 4.f));
 
         // Left column (Team 1)
@@ -25326,8 +25369,8 @@ void ReplayWindow::DrawSkillAnalyticsPlayerPopups()
 
     auto TeamColor = [](uint8_t teamId) -> ImU32 {
         switch (teamId) {
-        case 1:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
-        case 2:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        case 1:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        case 2:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
         default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
         }
     };
@@ -25744,7 +25787,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
 
         // Right side: team dot + close
         float rx = headerTL.x + contentW - kPadX;
-        ImU32 dotCol = (ard.teamId == 1) ? kBlueTeam : kRedTeam;
+        ImU32 dotCol = (ard.teamId == 1) ? kRedTeam : kBlueTeam;
 
         ImGui::SetCursorScreenPos(ImVec2(rx - 16.f, headerTL.y + (headerH - 16.f) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f));
@@ -27010,8 +27053,8 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     if (tt.isSelf) dispName += " (self)";
                     ImU32 nameCol;
                     if (tt.isSelf) nameCol = kGold;
-                    else if (tt.teamId == 1) nameCol = kBlueTeam;
-                    else nameCol = kRedTeam;
+                    else if (tt.teamId == 1) nameCol = kRedTeam;
+                    else nameCol = kBlueTeam;
 
                     // Percentage text (right-aligned, 32px reserved)
                     constexpr float kPctReservedW = 32.f;
@@ -28537,9 +28580,9 @@ void ReplayWindow::DrawPiPPanel()
             };
 
             ImGui::TableNextColumn();
-            DrawTeamColumn(m_team1PlayerIds, kBlueTeam, "Team 1");
+            DrawTeamColumn(m_team1PlayerIds, kRedTeam, "Team 1");
             ImGui::TableNextColumn();
-            DrawTeamColumn(m_team2PlayerIds, kRedTeam, "Team 2");
+            DrawTeamColumn(m_team2PlayerIds, kBlueTeam, "Team 2");
 
             ImGui::EndTable();
         }
@@ -28661,8 +28704,8 @@ void ReplayWindow::DrawPiPPanel()
                                           ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
                                           IM_COL32(0, 0, 0, 25), 3.f);
                         ImU32 labelCol;
-                        if (ard.teamId == 1)      labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                        else if (ard.teamId == 2) labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                        if (ard.teamId == 1)      labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                        else if (ard.teamId == 2) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
                         else                      labelCol = IM_COL32(255, 255, 255, 230);
                         dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
                                     IM_COL32(0, 0, 0, 200), label.c_str());
@@ -28760,8 +28803,8 @@ void ReplayWindow::DrawPiPPanel()
                         if (!InBounds(fScrX, fScrY)) return;
 
                         constexpr float kDotR = 4.f;
-                        ImU32 dotCol = (teamIdx == 0) ? IM_COL32(100, 160, 255, 200)
-                                                      : IM_COL32(255, 100, 90, 200);
+                        ImU32 dotCol = (teamIdx == 0) ? IM_COL32(255, 100, 90, 200)
+                                                      : IM_COL32(100, 160, 255, 200);
                         dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
                         dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
 
@@ -28787,8 +28830,8 @@ void ReplayWindow::DrawPiPPanel()
                     StandOwner pipStandOwner = m_flagTimeline.stand.ownerAtTime(now);
                     if (pipStandOwner != StandOwner::Neutral)
                     {
-                        int sti = (pipStandOwner == StandOwner::Blue) ? 0 : 1;
-                        ImTextureID stTex = (sti == 0) ? texBlue : texRed;
+                        int sti = (pipStandOwner == StandOwner::Red) ? 0 : 1;
+                        ImTextureID stTex = (sti == 0) ? texRed : texBlue;
                         float stx = m_flagTimeline.stand.standX;
                         float sty = m_flagTimeline.stand.standY;
                         float stz = m_flagTimeline.stand.standZ;
@@ -28805,8 +28848,8 @@ void ReplayWindow::DrawPiPPanel()
                             float glowR = flagIconSz * 0.75f;
                             float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
                             ImU32 glowCol = (sti == 0)
-                                ? IM_COL32(60, 130, 255, (int)(50 * pulse))
-                                : IM_COL32(255, 60, 50,  (int)(50 * pulse));
+                                ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
+                                : IM_COL32(60, 130, 255, (int)(50 * pulse));
                             dl->AddCircleFilled(ctr, glowR, glowCol, 32);
                             dl->AddImage(stTex, iTL, iBR);
                         }
@@ -28817,7 +28860,7 @@ void ReplayWindow::DrawPiPPanel()
                         auto& ft = m_flagTimeline.teams[ti];
                         if (ft.events.empty()) continue;
 
-                        ImTextureID tex = (ti == 0) ? texBlue : texRed;
+                        ImTextureID tex = (ti == 0) ? texRed : texBlue;
                         FlagLocation loc = ft.locationAtTime(now);
                         if (loc == FlagLocation::Stand) continue;
 

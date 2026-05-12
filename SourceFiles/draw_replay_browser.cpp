@@ -2802,7 +2802,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
     float statsNeeded = 0.0f;
     for (int si = 0; si < numStats; si++) statsNeeded += statCols[si].w + 6.0f;
-    float copyBtnW = skillIconSize + 8.0f;
+    float copyBtnW = skillIconSize * 0.45f + 4.0f;
     float fixedNeeded = iconSize + (iconSize + 2) + nameColW + copyBtnW + skillsNeeded;
     bool statsOverflow = (fixedNeeded + statsNeeded) > availW;
 
@@ -2981,11 +2981,15 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 bool showFeedback = (feedbackIt != s_copyFeedbackTimes.end())
                                  && (now - feedbackIt->second < 1.5f);
 
-                float btnSize = skillIconSize;
-                ImVec2 cursor = ImGui::GetCursorScreenPos();
+                float btnSize = std::round(skillIconSize * 0.45f);
+                float rowH = std::max(skillIconSize, std::max(sz.profIcon, ImGui::GetTextLineHeight()));
+                float vertOff = (rowH - btnSize) * 0.5f;
 
-                // Invisible button for click + hover
+                ImVec2 startCursor = ImGui::GetCursorScreenPos();
+                ImVec2 cursor = ImVec2(startCursor.x, startCursor.y + vertOff);
+
                 std::string btnId = "###cpytmpl_" + tmplKey;
+                ImGui::SetCursorScreenPos(cursor);
                 if (ImGui::InvisibleButton(btnId.c_str(), ImVec2(btnSize, btnSize)))
                 {
                     std::string code = p.skill_template_code;
@@ -2997,58 +3001,53 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 }
                 bool hovered = ImGui::IsItemHovered();
 
-                // Draw clipboard icon
                 ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImU32 iconCol;
+
+                float feedbackAge = showFeedback ? (now - feedbackIt->second) : 99.0f;
+                float goldBlend = 0.0f;
                 if (showFeedback)
-                    iconCol = IM_COL32(102, 204, 102, 255);
-                else if (hovered)
-                    iconCol = IM_COL32(255, 210, 100, 255);
-                else
-                    iconCol = IM_COL32(200, 155, 60, 255); // kColorAccent
+                    goldBlend = (feedbackAge < 0.3f)
+                        ? 1.0f
+                        : std::max(0.0f, 1.0f - (feedbackAge - 0.3f) / 1.2f);
 
-                // Background on hover
-                if (hovered && !showFeedback)
-                    dl->AddRectFilled(cursor, ImVec2(cursor.x + btnSize, cursor.y + btnSize),
-                        IM_COL32(77, 64, 38, 180), 3.0f);
+                auto lerpCol = [](ImU32 a, ImU32 b, float t) -> ImU32 {
+                    float r = ((a >> 0) & 0xFF) * (1 - t) + ((b >> 0) & 0xFF) * t;
+                    float g = ((a >> 8) & 0xFF) * (1 - t) + ((b >> 8) & 0xFF) * t;
+                    float bl = ((a >> 16) & 0xFF) * (1 - t) + ((b >> 16) & 0xFF) * t;
+                    float al = ((a >> 24) & 0xFF) * (1 - t) + ((b >> 24) & 0xFF) * t;
+                    return IM_COL32((int)r, (int)g, (int)bl, (int)al);
+                };
 
-                float m = btnSize * 0.15f; // margin
+                ImU32 baseCol = hovered
+                    ? IM_COL32(190, 190, 190, 230)
+                    : IM_COL32(130, 130, 130, 160);
+                ImU32 goldCol = IM_COL32(225, 190, 80, 255);
+                ImU32 iconCol = lerpCol(baseCol, goldCol, goldBlend);
+
+                float m = btnSize * 0.12f;
                 float cx = cursor.x + m;
                 float cy = cursor.y + m;
                 float cw = btnSize - 2 * m;
                 float ch = btnSize - 2 * m;
-                float t = std::max(1.0f, btnSize * 0.07f); // line thickness
+                float t = std::max(1.0f, btnSize * 0.08f);
 
-                if (showFeedback)
+                if (showFeedback && feedbackAge < 0.4f)
                 {
-                    // Checkmark
                     float mx = cursor.x + btnSize * 0.5f;
                     float my = cursor.y + btnSize * 0.5f;
-                    float s = btnSize * 0.25f;
-                    dl->AddLine(ImVec2(mx - s, my),          ImVec2(mx - s * 0.3f, my + s * 0.7f), iconCol, t * 1.5f);
+                    float s = btnSize * 0.22f;
+                    dl->AddLine(ImVec2(mx - s, my), ImVec2(mx - s * 0.3f, my + s * 0.7f), iconCol, t * 1.5f);
                     dl->AddLine(ImVec2(mx - s * 0.3f, my + s * 0.7f), ImVec2(mx + s, my - s * 0.5f), iconCol, t * 1.5f);
                 }
                 else
                 {
-                    // Board (main rectangle, rounded)
-                    float boardTop = cy + ch * 0.12f;
-                    dl->AddRect(ImVec2(cx, boardTop), ImVec2(cx + cw, cy + ch), iconCol, 2.0f, 0, t);
-
-                    // Clip (tab at top center)
-                    float clipW = cw * 0.4f;
-                    float clipH = ch * 0.18f;
-                    float clipX = cx + (cw - clipW) * 0.5f;
-                    dl->AddRect(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + clipH + t), iconCol, 1.5f, 0, t);
-
-                    // Text lines inside board
-                    float lineL = cx + cw * 0.2f;
-                    float lineR = cx + cw * 0.8f;
-                    float lineY1 = boardTop + ch * 0.35f;
-                    float lineY2 = boardTop + ch * 0.55f;
-                    float lineY3 = boardTop + ch * 0.75f;
-                    dl->AddLine(ImVec2(lineL, lineY1), ImVec2(lineR, lineY1), iconCol, t);
-                    dl->AddLine(ImVec2(lineL, lineY2), ImVec2(lineR, lineY2), iconCol, t);
-                    dl->AddLine(ImVec2(lineL, lineY3), ImVec2(cx + cw * 0.65f, lineY3), iconCol, t);
+                    float off = cw * 0.2f;
+                    float rw = cw - off;
+                    float rh = ch - off;
+                    float r = 1.5f;
+                    dl->AddRect(ImVec2(cx + off, cy), ImVec2(cx + off + rw, cy + rh), iconCol, r, 0, t);
+                    dl->AddRectFilled(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), IM_COL32(30, 30, 30, 200), r);
+                    dl->AddRect(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), iconCol, r, 0, t);
                 }
 
                 if (hovered)
@@ -3374,11 +3373,11 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
                 const ImVec4 colBlue(0.40f, 0.65f, 1.00f, 1.00f);
                 const ImVec4 colRed(1.00f, 0.40f, 0.40f, 1.00f);
 
-                std::string labelBlue = g1.tag.empty() ? "Team 1" : "[" + g1.tag + "]";
-                std::string labelRed  = g2.tag.empty() ? "Team 2" : "[" + g2.tag + "]";
+                std::string labelRed  = g1.tag.empty() ? "Team 1" : "[" + g1.tag + "]";
+                std::string labelBlue = g2.tag.empty() ? "Team 2" : "[" + g2.tag + "]";
 
-                float labelW1 = ImGui::CalcTextSize(labelBlue.c_str()).x;
-                float labelW2 = ImGui::CalcTextSize(labelRed.c_str()).x;
+                float labelW1 = ImGui::CalcTextSize(labelRed.c_str()).x;
+                float labelW2 = ImGui::CalcTextSize(labelBlue.c_str()).x;
                 float labelColW = (std::max)(labelW1, labelW2) + 6.0f;
 
                 char valBuf1[32], valBuf2[32];
@@ -3427,8 +3426,8 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
                     ImGui::SetCursorScreenPos(ImVec2(rowStart.x, y0 + rowH));
                 };
 
-                DrawDmgRow(labelBlue, ld.total_lord_damage_blue, valBuf1, colBlue);
-                DrawDmgRow(labelRed, ld.total_lord_damage_red, valBuf2, colRed);
+                DrawDmgRow(labelRed, ld.total_lord_damage_blue, valBuf1, colRed);
+                DrawDmgRow(labelBlue, ld.total_lord_damage_red, valBuf2, colBlue);
             }
         }
     }

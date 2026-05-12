@@ -362,7 +362,7 @@ private:
     };
     UILayoutConfig m_uiLayout;
     bool m_showInterfacePrefs = false;
-    int  m_draggingUIElement  = -1;   // -1=none, 0=jumbo, 1=moBlue, 2=moRed, 3=timer
+    int  m_draggingUIElement  = -1;   // -1=none, 0=jumbo, 1=moRed, 2=moBlue, 3=timer
 
     ReplayPanelLayout m_panelLayout;
     bool m_panelLayoutRegistered = false;
@@ -432,7 +432,7 @@ private:
 
 public:
     // --- Fog of War ---
-    int   m_fogPerspective  = 0;     // 0=Off, 1=Blue, 2=Red
+    int   m_fogPerspective  = 0;     // 0=Off, 1=Red, 2=Blue
     bool  m_fogGhostMode    = false;
     int   m_fogLastActive   = 1;
     int   m_fogPlayerAgent  = -1;    // -1=team mode, else single-player agent id
@@ -509,8 +509,8 @@ public:
         std::string label;
     };
     struct TimelineData {
-        std::vector<float> blueHealth;
         std::vector<float> redHealth;
+        std::vector<float> blueHealth;
         std::vector<TimelineEvent> events;
         bool computed = false;
     };
@@ -561,7 +561,7 @@ public:
     };
     struct ShrineSample {
         ShrineState state       = ShrineState::Neutral;
-        uint8_t ownerTeam       = 0; // 0=neutral, 1=blue, 2=red
+        uint8_t ownerTeam       = 0; // 0=neutral, 1=red, 2=blue
         uint8_t progressTeam    = 0; // team whose color to render in the fill
         int     bluePips        = 0;
         int     redPips         = 0;
@@ -806,6 +806,11 @@ private:
     bool  m_capeTexturesResolved = false;
     void  InitCapeCache();
     void  ResolveCapeTextures();
+    void  DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float alpha);
+
+    // Post-loading overlay fade (guild cards persist into replay, synced to replay time)
+    float m_matchOverlayStartTime = 0.f;
+    bool  m_matchOverlayActive = false;
 
     std::string GetMatchLoadingBgPath() const;
     static const char* GetMapScreenshotFile(int mapId);

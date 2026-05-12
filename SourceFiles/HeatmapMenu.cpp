@@ -102,14 +102,14 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
     float halfW = (fullW - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 
     // Team buttons row
-    ImGui::PushStyleColor(ImGuiCol_Button, kBlueBtnBg);
-    if (ImGui::Button("+ Team Blue", ImVec2(halfW, 0)))
+    ImGui::PushStyleColor(ImGuiCol_Button, kRedBtnBg);
+    if (ImGui::Button("+ Team Red", ImVec2(halfW, 0)))
     {
         HeatmapLayerDef def;
         def.subjectType = HeatmapSubjectType::TEAM;
         def.subjectId   = 1;
-        def.subjectName = "Team Blue";
-        def.palette     = HeatmapPalette::TEAM_BLUE;
+        def.subjectName = "Team Red";
+        def.palette     = HeatmapPalette::TEAM_RED;
         settings.layers.push_back(std::move(def));
         changed = true;
     }
@@ -117,14 +117,14 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
 
     ImGui::SameLine();
 
-    ImGui::PushStyleColor(ImGuiCol_Button, kRedBtnBg);
-    if (ImGui::Button("+ Team Red", ImVec2(halfW, 0)))
+    ImGui::PushStyleColor(ImGuiCol_Button, kBlueBtnBg);
+    if (ImGui::Button("+ Team Blue", ImVec2(halfW, 0)))
     {
         HeatmapLayerDef def;
         def.subjectType = HeatmapSubjectType::TEAM;
         def.subjectId   = 2;
-        def.subjectName = "Team Red";
-        def.palette     = HeatmapPalette::TEAM_RED;
+        def.subjectName = "Team Blue";
+        def.palette     = HeatmapPalette::TEAM_BLUE;
         settings.layers.push_back(std::move(def));
         changed = true;
     }
@@ -155,31 +155,31 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
     // Two-column player lists using side-by-side child regions
     if (!agents.empty())
     {
-        std::vector<const AgentMenuEntry*> blue, red;
+        std::vector<const AgentMenuEntry*> red, blue;
         for (auto& a : agents)
         {
-            if (a.teamId == 1) blue.push_back(&a);
-            else if (a.teamId == 2) red.push_back(&a);
+            if (a.teamId == 1) red.push_back(&a);
+            else if (a.teamId == 2) blue.push_back(&a);
         }
         auto byNumber = [](const AgentMenuEntry* a, const AgentMenuEntry* b)
         { return ParseTrailingNumber(a->name) < ParseTrailingNumber(b->name); };
-        std::sort(blue.begin(), blue.end(), byNumber);
         std::sort(red.begin(), red.end(), byNumber);
+        std::sort(blue.begin(), blue.end(), byNumber);
 
-        size_t maxRows = std::max(blue.size(), red.size());
+        size_t maxRows = std::max(red.size(), blue.size());
         float iconSz = ImGui::GetTextLineHeight();
         float rowH = ImGui::GetTextLineHeightWithSpacing() + 2.f;
         float listH = std::min((float)maxRows + 1.2f, 9.f) * rowH + 4.f;
 
         float colW = halfW - 2.f;
 
-        // Blue column
-        ImGui::BeginChild("##blue_col", ImVec2(colW, listH), true);
-        ImGui::PushStyleColor(ImGuiCol_Text, kBlueText);
-        ImGui::TextUnformatted("Blue Team");
+        // Red column
+        ImGui::BeginChild("##red_col", ImVec2(colW, listH), true);
+        ImGui::PushStyleColor(ImGuiCol_Text, kRedText);
+        ImGui::TextUnformatted("Red Team");
         ImGui::PopStyleColor();
         ImGui::Separator();
-        for (auto* a : blue)
+        for (auto* a : red)
         {
             ImGui::PushID(a->agentId);
             if (ImGui::SmallButton("+"))
@@ -198,7 +198,7 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
                 ImGui::Image(a->profIcon, ImVec2(iconSz, iconSz));
                 ImGui::SameLine();
             }
-            ImGui::PushStyleColor(ImGuiCol_Text, kBlueText);
+            ImGui::PushStyleColor(ImGuiCol_Text, kRedText);
             ImGui::TextUnformatted(a->name.c_str());
             ImGui::PopStyleColor();
             ImGui::PopID();
@@ -207,13 +207,13 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
 
         ImGui::SameLine();
 
-        // Red column
-        ImGui::BeginChild("##red_col", ImVec2(colW, listH), true);
-        ImGui::PushStyleColor(ImGuiCol_Text, kRedText);
-        ImGui::TextUnformatted("Red Team");
+        // Blue column
+        ImGui::BeginChild("##blue_col", ImVec2(colW, listH), true);
+        ImGui::PushStyleColor(ImGuiCol_Text, kBlueText);
+        ImGui::TextUnformatted("Blue Team");
         ImGui::PopStyleColor();
         ImGui::Separator();
-        for (auto* a : red)
+        for (auto* a : blue)
         {
             ImGui::PushID(a->agentId + 10000);
             if (ImGui::SmallButton("+"))
@@ -232,7 +232,7 @@ bool DrawHeatmapPanel(HeatmapSettings& settings,
                 ImGui::Image(a->profIcon, ImVec2(iconSz, iconSz));
                 ImGui::SameLine();
             }
-            ImGui::PushStyleColor(ImGuiCol_Text, kRedText);
+            ImGui::PushStyleColor(ImGuiCol_Text, kBlueText);
             ImGui::TextUnformatted(a->name.c_str());
             ImGui::PopStyleColor();
             ImGui::PopID();
