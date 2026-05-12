@@ -357,6 +357,15 @@
     <ClInclude Include="SourceFiles\TextureCache.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SourceFiles\GuildBannerComposer.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SourceFiles\GuildCapeCache.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\FontConfig.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -795,6 +804,15 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\TextureCache.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\GuildBannerComposer.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\GuildCapeCache.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\SkillDatabase.cpp">

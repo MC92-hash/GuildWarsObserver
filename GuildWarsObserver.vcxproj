@@ -304,6 +304,9 @@
     <ClInclude Include="SourceFiles\miniz.h" />
     <ClInclude Include="SourceFiles\StoCParser.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
+    <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
+    <ClInclude Include="SourceFiles\GuildBannerComposer.h" />
+    <ClInclude Include="SourceFiles\GuildCapeCache.h" />
     <ClInclude Include="SourceFiles\FontConfig.h" />
     <ClInclude Include="SourceFiles\FolderWatcher.h" />
     <ClInclude Include="SourceFiles\SkillDatabase.h" />
@@ -523,6 +526,9 @@
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp" />
     <ClCompile Include="SourceFiles\StoCParser.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
+    <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp" />
+    <ClCompile Include="SourceFiles\GuildBannerComposer.cpp" />
+    <ClCompile Include="SourceFiles\GuildCapeCache.cpp" />
     <ClCompile Include="SourceFiles\SkillDatabase.cpp" />
     <ClCompile Include="SourceFiles\SpatialAudioEngine.cpp" />
     <ClCompile Include="SourceFiles\SoundCache.cpp" />

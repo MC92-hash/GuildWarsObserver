@@ -8,6 +8,7 @@
 #include "Terrain.h"
 #include "ReplayMapData.h"
 #include "ReplayLibrary.h"
+#include "GuildCapeCache.h"
 #include "FFNA_MapFile.h"
 #include "FFNA_ModelFile.h"
 #include "AMAT_file.h"
@@ -796,6 +797,15 @@ private:
     bool  m_lsStartTimeSet = false;
     bool  m_lsHitReady     = false;
     LsClock::time_point m_lsReadyTime;
+
+    // Guild cape display on loading screen
+    GuildCapeCache m_capeCache;
+    bool  m_capeCacheInitialized = false;
+    ImTextureID m_capeTexTeam1 = nullptr;
+    ImTextureID m_capeTexTeam2 = nullptr;
+    bool  m_capeTexturesResolved = false;
+    void  InitCapeCache();
+    void  ResolveCapeTextures();
 
     std::string GetMatchLoadingBgPath() const;
     static const char* GetMapScreenshotFile(int mapId);

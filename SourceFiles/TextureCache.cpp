@@ -50,7 +50,12 @@ ID3D11ShaderResourceView* TextureCache::LoadFromFile(const std::wstring& wpath)
     if (!std::filesystem::exists(wpath)) return nullptr;
 
     DirectX::ScratchImage image;
-    HRESULT hr = DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, image);
+    auto ext = std::filesystem::path(wpath).extension();
+    HRESULT hr;
+    if (ext == L".dds" || ext == L".DDS")
+        hr = DirectX::LoadFromDDSFile(wpath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+    else
+        hr = DirectX::LoadFromWICFile(wpath.c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, image);
     if (FAILED(hr)) return nullptr;
 
     const auto& meta = image.GetMetadata();

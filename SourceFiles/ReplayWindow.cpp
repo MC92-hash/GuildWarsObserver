@@ -5460,7 +5460,70 @@ namespace
         outTag = "";
         return outName;
     }
+
+    static void GetPartyGuildInfo(const MatchMeta& m, const std::string& partyId,
+                                  std::string& outName, std::string& outTag,
+                                  int& outRank, int& outRating)
+    {
+        outRank = 0;
+        outRating = 0;
+
+        auto findGuild = [&](const GuildMeta& gm) {
+            outName = gm.name;
+            outTag = gm.tag;
+            outRank = gm.rank;
+            outRating = gm.rating;
+        };
+
+        auto pit = m.parties.find(partyId);
+        if (pit == m.parties.end() || pit->second.players.empty())
+        {
+            auto git = m.guilds.find(partyId);
+            if (git != m.guilds.end() && !git->second.name.empty())
+            {
+                findGuild(git->second);
+                return;
+            }
+            outName = "?";
+            outTag = "";
+            return;
+        }
+
+        std::map<int, int> guildCounts;
+        for (const auto& p : pit->second.players)
+            if (p.guild_id > 0) guildCounts[p.guild_id]++;
+
+        int bestGuildId = 0, bestCount = 0;
+        for (const auto& [gid, cnt] : guildCounts)
+            if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
+
+        if (bestGuildId == 0)
+        {
+            auto git = m.guilds.find(partyId);
+            if (git != m.guilds.end() && !git->second.name.empty())
+            {
+                findGuild(git->second);
+                return;
+            }
+            outName = "Unknown";
+            outTag = "";
+            return;
+        }
+
+        auto guildIdStr = std::to_string(bestGuildId);
+        auto git = m.guilds.find(guildIdStr);
+        if (git != m.guilds.end())
+        {
+            findGuild(git->second);
+            return;
+        }
+        outName = "Guild #" + guildIdStr;
+        outTag = "";
+    }
 }
+
+static const char* ProfIconFileName(int profId);
+static std::filesystem::path GetProfIconsBasePath();
 
 void ReplayWindow::RenderLoadingScreen()
 {
@@ -5613,94 +5676,356 @@ void ReplayWindow::RenderLoadingScreen()
         dl->AddRectFilled(ImVec2(0, 0), display, overlayCol);
     }
 
-    // --- Match info header (top center, with dark pill) ---
+    // --- Ensure cape textures are ready ---
+    if (screenAlpha > 0.01f)
+    {
+        if (!m_capeCacheInitialized)
+            InitCapeCache();
+        if (!m_capeTexturesResolved)
+            ResolveCapeTextures();
+    }
+
+    // --- Team info cards + header pill (computed together for vertical alignment) ---
     if (screenAlpha > 0.01f)
     {
         ImFont* font = ImGui::GetFont();
 
-        // --- Build strings ---
+        // --- Resolve gradient textures (once, via the loading-screen texture cache) ---
+        auto resolveOthersUITex = [&](const char* filename) -> ImTextureID {
+            wchar_t exePath[MAX_PATH];
+            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return nullptr;
+            auto dir = std::filesystem::path(exePath).parent_path();
+            for (int i = 0; i < 6; i++)
+            {
+                auto p = dir / "Textures" / "Others_UI" / filename;
+                if (std::filesystem::exists(p))
+                    return m_lsTexCache.GetTexture(p.string());
+                if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+                dir = dir.parent_path();
+            }
+            return nullptr;
+        };
+        ImTextureID blueGradTex = resolveOthersUITex("texture_265588.dds");
+        ImTextureID redGradTex  = resolveOthersUITex("texture_265590.dds");
+
+        // --- Guild data ---
+        std::string name1, tag1, name2, tag2;
+        int rank1 = 0, rating1 = 0, rank2 = 0, rating2 = 0;
+        GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1);
+        GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2);
+
+        float capeW = 96.0f;
+        float capeH = 192.0f;
+
+        if (display.y < capeH + 280.f)
+        {
+            float sc = (display.y - 280.f) / capeH;
+            sc = std::clamp(sc, 0.25f, 1.0f);
+            capeW *= sc;
+            capeH *= sc;
+        }
+
+        float nameFontSize  = 22.f;
+        float tagFontSize   = 18.f;
+        float statNumSize   = 18.f;
+        float statLabelSize = 13.f;
+        float vsFontSize    = 20.f;
+
+        float cardPadX = 20.f;
+        float cardPadY = 16.f;
+        float textGap  = 6.f;
+
+        std::string nameTag1 = name1 + (tag1.empty() ? "" : "  [" + tag1 + "]");
+        std::string nameTag2 = name2 + (tag2.empty() ? "" : "  [" + tag2 + "]");
+        ImVec2 nameTagSz1 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag1.c_str());
+        ImVec2 nameTagSz2 = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, nameTag2.c_str());
+
+        char rankLine1[64], rankLine2[64];
+        snprintf(rankLine1, sizeof(rankLine1), "#%d", rank1);
+        snprintf(rankLine2, sizeof(rankLine2), "#%d", rank2);
+        std::string rankLabelStr = "RANK";
+        ImVec2 rankLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, rankLabelStr.c_str());
+        ImVec2 rankNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine1);
+        ImVec2 rankNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, rankLine2);
+
+        char ratingLine1[64], ratingLine2[64];
+        snprintf(ratingLine1, sizeof(ratingLine1), "%d", rating1);
+        snprintf(ratingLine2, sizeof(ratingLine2), "%d", rating2);
+        std::string ratingLabelStr = "RATING";
+        ImVec2 ratingLabelSz = font->CalcTextSizeA(statLabelSize, FLT_MAX, 0.f, ratingLabelStr.c_str());
+        ImVec2 ratingNumSz1  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine1);
+        ImVec2 ratingNumSz2  = font->CalcTextSizeA(statNumSize, FLT_MAX, 0.f, ratingLine2);
+
+        float statRowH = (std::max)(statNumSize, statLabelSize) + 2.f;
+        float profIconSize = 22.f;
+        float profIconGap = 12.f;
+        float textBlockH = nameTagSz1.y + textGap + statRowH + textGap + statRowH + profIconGap + profIconSize;
+
+        auto resolveProfBasePath = [&]() -> std::string {
+            wchar_t exePath[MAX_PATH];
+            if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return "";
+            auto dir = std::filesystem::path(exePath).parent_path();
+            for (int i = 0; i < 6; i++)
+            {
+                auto p = dir / "Textures" / "professions";
+                if (std::filesystem::exists(p))
+                    return p.string();
+                if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+                dir = dir.parent_path();
+            }
+            return "";
+        };
+        std::string profBasePath = resolveProfBasePath();
+
+        auto getSortedPlayers = [](const MatchMeta& meta, const std::string& partyId) {
+            std::vector<PlayerMeta> sorted;
+            auto pit = meta.parties.find(partyId);
+            if (pit != meta.parties.end())
+                sorted = pit->second.players;
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const PlayerMeta& a, const PlayerMeta& b) { return a.player_number < b.player_number; });
+            return sorted;
+        };
+
+        float cardContentH = (std::max)(capeH, textBlockH);
+        float cardH = cardContentH + cardPadY * 2.f;
+
+        float statLineW1 = (std::max)(rankLabelSz.x + 8.f + rankNumSz1.x,
+                                       ratingLabelSz.x + 8.f + ratingNumSz1.x);
+        float statLineW2 = (std::max)(rankLabelSz.x + 8.f + rankNumSz2.x,
+                                       ratingLabelSz.x + 8.f + ratingNumSz2.x);
+        float maxTextW1 = (std::max)(nameTagSz1.x, statLineW1);
+        float maxTextW2 = (std::max)(nameTagSz2.x, statLineW2);
+        float maxTextW  = (std::max)(maxTextW1, maxTextW2);
+
+        float innerGap = 16.f;
+        float cardW = cardPadX + capeW + innerGap + maxTextW + cardPadX;
+
+        float vsGap = 48.f;
+        float totalW = cardW + vsGap + cardW;
+        float startX = (display.x - totalW) * 0.5f;
+
+        // --- Header pill (Date - Occasion - Map) measured first, positioned above cards ---
         const char* mapName = GetMapNameForLoading(m_matchMeta.map_id);
         char dateLine[128];
         snprintf(dateLine, sizeof(dateLine), "%04d/%02d/%02d",
                  m_matchMeta.year, m_matchMeta.month, m_matchMeta.day);
-        std::string line1 = std::string(dateLine) + "  \xC2\xB7  " + (mapName ? mapName : "Unknown Map");
 
-        std::string name1, tag1, name2, tag2;
-        GetPartyGuildDisplay(m_matchMeta, "1", name1, tag1);
-        GetPartyGuildDisplay(m_matchMeta, "2", name2, tag2);
+        std::string headerStr = std::string(dateLine);
+        if (!m_matchMeta.occasion.empty())
+            headerStr += "  \xC2\xB7  " + m_matchMeta.occasion;
+        headerStr += "  \xC2\xB7  " + std::string(mapName ? mapName : "Unknown Map");
 
-        std::string team1Name = name1;
-        std::string team1Tag  = tag1.empty() ? "" : " [" + tag1 + "]";
-        std::string team2Name = name2;
-        std::string team2Tag  = tag2.empty() ? "" : " [" + tag2 + "]";
+        float headerFontSize = 22.f;
+        ImVec2 headerSz = font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.f, headerStr.c_str());
 
-        // --- Sizes ---
-        float line1Size = 16.f;
-        float line2Size = 26.f;
-        float vsSize    = 18.f;
-        float tagSize   = 26.f;
+        float hPadL = 36.f, hPadR = 36.f, hPadT = 14.f, hPadB = 16.f;
+        float hPillW = headerSz.x + hPadL + hPadR;
+        float hPillH = headerSz.y + hPadT + hPadB;
+        float headerGap = 14.f;
 
-        // --- Measure line 1 ---
-        ImVec2 line1Sz = font->CalcTextSizeA(line1Size, FLT_MAX, 0.f, line1.c_str());
+        float combinedH = hPillH + headerGap + cardH;
+        float groupTopY = (display.y - combinedH) * 0.5f;
 
-        // --- Measure line 2 components ---
-        ImVec2 t1NameSz = font->CalcTextSizeA(line2Size, FLT_MAX, 0.f, team1Name.c_str());
-        ImVec2 t1TagSz  = team1Tag.empty() ? ImVec2(0,0) : font->CalcTextSizeA(tagSize, FLT_MAX, 0.f, team1Tag.c_str());
-        std::string vsPad = "  vs  ";
-        ImVec2 vsSz = font->CalcTextSizeA(vsSize, FLT_MAX, 0.f, vsPad.c_str());
-        ImVec2 t2NameSz = font->CalcTextSizeA(line2Size, FLT_MAX, 0.f, team2Name.c_str());
-        ImVec2 t2TagSz  = team2Tag.empty() ? ImVec2(0,0) : font->CalcTextSizeA(tagSize, FLT_MAX, 0.f, team2Tag.c_str());
+        float hPillX = (display.x - hPillW) * 0.5f;
+        float hPillY = groupTopY;
+        float cardY  = hPillY + hPillH + headerGap;
 
-        float line2TotalW = t1NameSz.x + t1TagSz.x + vsSz.x + t2NameSz.x + t2TagSz.x;
-        float line2H = (std::max)(t1NameSz.y, vsSz.y);
+        // --- Draw header pill ---
+        ImU32 hPillCol    = IM_COL32(10, 14, 20, static_cast<int>(230 * screenAlpha));
+        ImU32 hPillBorder = IM_COL32(212, 160, 32, static_cast<int>(60 * screenAlpha));
+        dl->AddRectFilled(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillCol, 10.f);
+        dl->AddRect(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillBorder, 10.f);
 
-        // --- Dark pill background (opaque, no blur) ---
-        float pillPadL = 28.f, pillPadR = 28.f, pillPadT = 10.f, pillPadB = 14.f;
-        float pillContentW = (std::max)(line1Sz.x, line2TotalW);
-        float spacing = 6.f;
-        float pillContentH = line1Sz.y + spacing + line2H;
-        float pillW = pillContentW + pillPadL + pillPadR;
-        float pillH = pillContentH + pillPadT + pillPadB;
-        float pillX = (display.x - pillW) * 0.5f;
-        float pillY = 48.f;
-        float pillR = 10.f;
+        float hTextX = hPillX + (hPillW - headerSz.x) * 0.5f;
+        float hTextY = hPillY + hPadT;
+        ImU32 headerCol = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
+        LsDrawTextCrispShadow(dl, font, headerFontSize, ImVec2(hTextX, hTextY), headerCol, headerStr.c_str());
 
-        ImU32 pillCol    = IM_COL32(8, 12, 16, static_cast<int>(209 * screenAlpha));
-        ImU32 pillBorder = IM_COL32(255, 255, 255, static_cast<int>(20 * screenAlpha));
-        dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH), pillCol, pillR);
-        dl->AddRect(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH), pillBorder, pillR);
+        float cardR = 12.f;
+        ImU32 capeCol = IM_COL32(255, 255, 255, static_cast<int>(255 * screenAlpha));
+        ImU32 gradCol = IM_COL32(255, 255, 255, static_cast<int>(200 * screenAlpha));
 
-        // --- Line 1 position (centered within pill) ---
-        float line1X = pillX + (pillW - line1Sz.x) * 0.5f;
-        float line1Y = pillY + pillPadT;
-        ImU32 line1Col = IM_COL32(212, 160, 32, static_cast<int>(255 * screenAlpha));
-        LsDrawTextCrispShadow(dl, font, line1Size, ImVec2(line1X, line1Y), line1Col, line1.c_str());
-
-        // --- Line 2 position (centered within pill) ---
-        float line2Y = line1Y + line1Sz.y + spacing;
-        float line2X = pillX + (pillW - line2TotalW) * 0.5f;
-        float vsYOff = (line2Size - vsSize) * 0.5f;
-        float tagYOff = 0.f;
-
-        // Team names
-        ImU32 teamCol = IM_COL32(240, 192, 64, static_cast<int>(255 * screenAlpha));
-        ImU32 tagCol  = IM_COL32(240, 192, 64, static_cast<int>(191 * screenAlpha));
-        ImU32 vsCol   = IM_COL32(212, 160, 32, static_cast<int>(191 * screenAlpha));
-
-        float cx = line2X;
-        LsDrawTextCrispShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team1Name.c_str());
-        cx += t1NameSz.x;
-        if (!team1Tag.empty())
+        // --- Team 1 card (left): black bg + gradient + [cape | text] ---
         {
-            LsDrawTextCrispShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team1Tag.c_str());
-            cx += t1TagSz.x;
+            float cx = startX;
+            ImU32 cardBg = IM_COL32(8, 10, 14, static_cast<int>(180 * screenAlpha));
+            dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg, cardR);
+
+            if (blueGradTex)
+            {
+                dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
+                dl->AddImage(blueGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+                             ImVec2(0,0), ImVec2(1,1), gradCol);
+                dl->PopClipRect();
+            }
+
+            float capePosX = cx + cardPadX;
+            float capePosY = cardY + (cardH - capeH) * 0.5f;
+            if (m_capeTexTeam1)
+                dl->AddImage(m_capeTexTeam1, ImVec2(capePosX, capePosY),
+                             ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
+
+            float textX = capePosX + capeW + innerGap;
+            float textY = cardY + (cardH - textBlockH) * 0.5f;
+
+            ImU32 nameCol = IM_COL32(120, 180, 255, static_cast<int>(255 * screenAlpha));
+            ImU32 tagCol  = IM_COL32(120, 180, 255, static_cast<int>(180 * screenAlpha));
+            ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
+            ImU32 lblCol  = IM_COL32(180, 190, 210, static_cast<int>(200 * screenAlpha));
+
+            LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textX, textY), nameCol, name1.c_str());
+            if (!tag1.empty())
+            {
+                float tagOffX = textX + font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name1.c_str()).x;
+                std::string tagPart = "  [" + tag1 + "]";
+                LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagOffX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
+            }
+            textY += nameTagSz1.y + textGap;
+
+            if (rank1 > 0)
+            {
+                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, rankLabelStr.c_str());
+                float afterLabel = textX + rankLabelSz.x + 8.f;
+                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, rankLine1);
+            }
+            textY += statRowH + textGap;
+
+            if (rating1 > 0)
+            {
+                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(textX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
+                float afterLabel = textX + ratingLabelSz.x + 8.f;
+                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(afterLabel, textY), numCol, ratingLine1);
+            }
+            textY += statRowH + profIconGap;
+
+            if (!profBasePath.empty())
+            {
+                auto players1 = getSortedPlayers(m_matchMeta, "1");
+                int n1 = static_cast<int>(players1.size());
+                if (n1 > 0)
+                {
+                    float iconSpacing = 3.f;
+                    float iconX = textX;
+                    ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * screenAlpha));
+                    for (const auto& p : players1)
+                    {
+                        if (p.primary >= 1 && p.primary <= 10)
+                        {
+                            char fn[16];
+                            snprintf(fn, sizeof(fn), "%d.png", p.primary);
+                            auto iconPath = profBasePath + "\\" + fn;
+                            ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
+                            if (tex)
+                                dl->AddImage(tex, ImVec2(iconX, textY),
+                                             ImVec2(iconX + profIconSize, textY + profIconSize),
+                                             ImVec2(0,0), ImVec2(1,1), iconCol);
+                        }
+                        iconX += profIconSize + iconSpacing;
+                    }
+                }
+            }
         }
-        LsDrawTextCrispShadow(dl, font, vsSize, ImVec2(cx, line2Y + vsYOff), vsCol, vsPad.c_str());
-        cx += vsSz.x;
-        LsDrawTextCrispShadow(dl, font, line2Size, ImVec2(cx, line2Y), teamCol, team2Name.c_str());
-        cx += t2NameSz.x;
-        if (!team2Tag.empty())
-            LsDrawTextCrispShadow(dl, font, tagSize, ImVec2(cx, line2Y + tagYOff), tagCol, team2Tag.c_str());
+
+        // --- "V S" divider (centered between cards) ---
+        {
+            std::string vsText = "V S";
+            ImVec2 vsSz = font->CalcTextSizeA(vsFontSize, FLT_MAX, 0.f, vsText.c_str());
+            float vsX = startX + cardW + (vsGap - vsSz.x) * 0.5f;
+            float vsY = cardY + (cardH - vsSz.y) * 0.5f;
+            ImU32 vsCol = IM_COL32(200, 200, 200, static_cast<int>(180 * screenAlpha));
+            LsDrawTextCrispShadow(dl, font, vsFontSize, ImVec2(vsX, vsY), vsCol, vsText.c_str());
+        }
+
+        // --- Team 2 card (right): black bg + gradient + [cape | text right-aligned] ---
+        {
+            float cx = startX + cardW + vsGap;
+            ImU32 cardBg2 = IM_COL32(8, 10, 14, static_cast<int>(180 * screenAlpha));
+            dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg2, cardR);
+
+            if (redGradTex)
+            {
+                dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
+                dl->AddImage(redGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+                             ImVec2(0,0), ImVec2(1,1), gradCol);
+                dl->PopClipRect();
+            }
+
+            float capePosX = cx + cardW - cardPadX - capeW;
+            float capePosY = cardY + (cardH - capeH) * 0.5f;
+            if (m_capeTexTeam2)
+                dl->AddImage(m_capeTexTeam2, ImVec2(capePosX, capePosY),
+                             ImVec2(capePosX + capeW, capePosY + capeH), ImVec2(0,0), ImVec2(1,1), capeCol);
+
+            float textRightEdge = capePosX - innerGap;
+            float textY = cardY + (cardH - textBlockH) * 0.5f;
+
+            ImU32 nameCol = IM_COL32(255, 120, 140, static_cast<int>(255 * screenAlpha));
+            ImU32 tagCol  = IM_COL32(255, 120, 140, static_cast<int>(180 * screenAlpha));
+            ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * screenAlpha));
+            ImU32 lblCol  = IM_COL32(210, 180, 180, static_cast<int>(200 * screenAlpha));
+
+            float ntW2 = nameTagSz2.x;
+            LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textRightEdge - ntW2, textY), nameCol, name2.c_str());
+            if (!tag2.empty())
+            {
+                ImVec2 nameSz2Only = font->CalcTextSizeA(nameFontSize, FLT_MAX, 0.f, name2.c_str());
+                std::string tagPart = "  [" + tag2 + "]";
+                float tagPartX = textRightEdge - ntW2 + nameSz2Only.x;
+                LsDrawTextCrispShadow(dl, font, tagFontSize, ImVec2(tagPartX, textY + (nameFontSize - tagFontSize) * 0.5f), tagCol, tagPart.c_str());
+            }
+            textY += nameTagSz2.y + textGap;
+
+            if (rank2 > 0)
+            {
+                float lineW = rankLabelSz.x + 8.f + rankNumSz2.x;
+                float lineX = textRightEdge - lineW;
+                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, rankLabelStr.c_str());
+                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + rankLabelSz.x + 8.f, textY), numCol, rankLine2);
+            }
+            textY += statRowH + textGap;
+
+            if (rating2 > 0)
+            {
+                float lineW = ratingLabelSz.x + 8.f + ratingNumSz2.x;
+                float lineX = textRightEdge - lineW;
+                float labelYOff = (statNumSize - statLabelSize) * 0.5f;
+                LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
+                LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + ratingLabelSz.x + 8.f, textY), numCol, ratingLine2);
+            }
+            textY += statRowH + profIconGap;
+
+            if (!profBasePath.empty())
+            {
+                auto players2 = getSortedPlayers(m_matchMeta, "2");
+                int n2 = static_cast<int>(players2.size());
+                if (n2 > 0)
+                {
+                    float iconSpacing = 3.f;
+                    float totalIconsW = n2 * profIconSize + (n2 - 1) * iconSpacing;
+                    float iconX = textRightEdge - totalIconsW;
+                    ImU32 iconCol = IM_COL32(255, 255, 255, static_cast<int>(240 * screenAlpha));
+                    for (const auto& p : players2)
+                    {
+                        if (p.primary >= 1 && p.primary <= 10)
+                        {
+                            char fn[16];
+                            snprintf(fn, sizeof(fn), "%d.png", p.primary);
+                            auto iconPath = profBasePath + "\\" + fn;
+                            ImTextureID tex = m_lsTexCache.GetTexture(iconPath);
+                            if (tex)
+                                dl->AddImage(tex, ImVec2(iconX, textY),
+                                             ImVec2(iconX + profIconSize, textY + profIconSize),
+                                             ImVec2(0,0), ImVec2(1,1), iconCol);
+                        }
+                        iconX += profIconSize + iconSpacing;
+                    }
+                }
+            }
+        }
     }
 
     // --- Progress bar geometry ---
@@ -5870,6 +6195,75 @@ void ReplayWindow::RenderLoadingScreen()
         InitAudioEngine();
         m_replayCtx.isPlaying = true;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Guild cape loading screen helpers
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::InitCapeCache()
+{
+    if (m_capeCacheInitialized) return;
+    m_capeCacheInitialized = true;
+
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto dir = std::filesystem::path(exePath).parent_path();
+
+    std::filesystem::path assetRoot;
+    for (int i = 0; i < 6; i++)
+    {
+        auto candidate = dir / "Textures" / "CapeAssets";
+        if (std::filesystem::exists(candidate))
+        {
+            assetRoot = candidate;
+            break;
+        }
+        if (!dir.has_parent_path() || dir == dir.parent_path())
+            break;
+        dir = dir.parent_path();
+    }
+
+    if (!assetRoot.empty())
+        m_capeCache.Init(m_deviceResources->GetD3DDevice(), assetRoot);
+}
+
+void ReplayWindow::ResolveCapeTextures()
+{
+    if (m_capeTexturesResolved) return;
+    if (!m_capeCache.IsReady()) return;
+    m_capeTexturesResolved = true;
+
+    auto getTeamCape = [&](const std::string& partyId) -> ImTextureID
+    {
+        // Find the dominant guild for this party
+        auto pit = m_matchMeta.parties.find(partyId);
+        if (pit == m_matchMeta.parties.end() || pit->second.players.empty())
+        {
+            auto git = m_matchMeta.guilds.find(partyId);
+            if (git != m_matchMeta.guilds.end() && !git->second.tag.empty())
+                return m_capeCache.GetOrCreate(git->second.tag, git->second.cape);
+            return nullptr;
+        }
+
+        std::map<int, int> guildCounts;
+        for (const auto& p : pit->second.players)
+            if (p.guild_id > 0) guildCounts[p.guild_id]++;
+
+        if (guildCounts.empty()) return nullptr;
+
+        int bestGuildId = 0, bestCount = 0;
+        for (const auto& [gid, cnt] : guildCounts)
+            if (cnt > bestCount) { bestGuildId = gid; bestCount = cnt; }
+
+        auto git = m_matchMeta.guilds.find(std::to_string(bestGuildId));
+        if (git == m_matchMeta.guilds.end()) return nullptr;
+
+        return m_capeCache.GetOrCreate(git->second.tag, git->second.cape);
+    };
+
+    m_capeTexTeam1 = getTeamCape("1");
+    m_capeTexTeam2 = getTeamCape("2");
 }
 
 // ---------------------------------------------------------------------------
