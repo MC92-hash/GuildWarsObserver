@@ -5975,8 +5975,8 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
     GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1);
     GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2);
 
-    float capeW = 96.0f;
-    float capeH = 192.0f;
+    float capeW = 72.0f;
+    float capeH = 144.0f;
 
     if (display.y < capeH + 280.f)
     {
@@ -6066,7 +6066,6 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
 
     float vsGap = 80.f;
     float totalW = cardW + vsGap + cardW;
-    float startX = (display.x - totalW) * 0.5f;
 
     const char* mapName = GetMapNameForLoading(m_matchMeta.map_id);
     char dateLine[128];
@@ -6078,31 +6077,26 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
         headerStr += "  \xC2\xB7  " + m_matchMeta.occasion;
     headerStr += "  \xC2\xB7  " + std::string(mapName ? mapName : "Unknown Map");
 
-    float headerFontSize = 22.f;
-    ImVec2 headerSz = font->CalcTextSizeA(headerFontSize, FLT_MAX, 0.f, headerStr.c_str());
+    // --- Header: same font / size / shadow / placement as jumbo messages, custom color ---
+    ImFont* jumboFont = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
+    const float jumboFontSize = jumboFont->FontSize;
+    ImVec2 headerSz = jumboFont->CalcTextSizeA(jumboFontSize, FLT_MAX, 0.f, headerStr.c_str());
 
-    float hPadL = 36.f, hPadR = 36.f, hPadT = 14.f, hPadB = 16.f;
-    float hPillW = headerSz.x + hPadL + hPadR;
-    float hPillH = headerSz.y + hPadT + hPadB;
-    float headerGap = 14.f;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    float posX = m_uiLayout.useCustom ? m_uiLayout.jumboX : 0.50f;
+    float posY = m_uiLayout.useCustom ? m_uiLayout.jumboY : 0.30f;
+    float cx = vp->Pos.x + vp->Size.x * posX;
+    float topY = vp->Pos.y + vp->Size.y * posY;
+    float tx = cx - headerSz.x * 0.5f;
+    float ty = topY;
 
-    float combinedH = hPillH + headerGap + cardH;
-    float groupTopY = (display.y - combinedH) * 0.5f;
+    ImU32 jumboShadow = IM_COL32(0, 0, 0, static_cast<int>(alpha * 230));
+    ImU32 headerCol = IM_COL32(255, 238, 187, static_cast<int>(255 * alpha));
+    dl->AddText(jumboFont, jumboFontSize, ImVec2(tx, ty + 1.f), jumboShadow, headerStr.c_str());
+    dl->AddText(jumboFont, jumboFontSize, ImVec2(tx, ty), headerCol, headerStr.c_str());
 
-    float hPillX = (display.x - hPillW) * 0.5f;
-    float hPillY = groupTopY;
-    float cardY  = hPillY + hPillH + headerGap;
-
-    // --- Draw header pill ---
-    ImU32 hPillCol    = IM_COL32(10, 14, 20, static_cast<int>(230 * alpha));
-    ImU32 hPillBorder = IM_COL32(212, 160, 32, static_cast<int>(60 * alpha));
-    dl->AddRectFilled(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillCol, 10.f);
-    dl->AddRect(ImVec2(hPillX, hPillY), ImVec2(hPillX + hPillW, hPillY + hPillH), hPillBorder, 10.f);
-
-    float hTextX = hPillX + (hPillW - headerSz.x) * 0.5f;
-    float hTextY = hPillY + hPadT;
-    ImU32 headerCol = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
-    LsDrawTextCrispShadow(dl, font, headerFontSize, ImVec2(hTextX, hTextY), headerCol, headerStr.c_str());
+    float cardY = vp->Pos.y + (vp->Size.y - cardH) * 0.5f;
+    float startX = vp->Pos.x + (vp->Size.x - totalW) * 0.5f;
 
     float cardR = 12.f;
     ImU32 capeCol = IM_COL32(255, 255, 255, static_cast<int>(255 * alpha));
@@ -6242,21 +6236,21 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
 
         if (rank2 > 0)
         {
-            float lineW = rankLabelSz.x + 8.f + rankNumSz2.x;
+            float lineW = rankNumSz2.x + 8.f + rankLabelSz.x;
             float lineX = textRightEdge - lineW;
             float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, rankLabelStr.c_str());
-            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + rankLabelSz.x + 8.f, textY), numCol, rankLine2);
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX, textY), numCol, rankLine2);
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX + rankNumSz2.x + 8.f, textY + labelYOff), lblCol, rankLabelStr.c_str());
         }
         textY += statRowH + textGap;
 
         if (rating2 > 0)
         {
-            float lineW = ratingLabelSz.x + 8.f + ratingNumSz2.x;
+            float lineW = ratingNumSz2.x + 8.f + ratingLabelSz.x;
             float lineX = textRightEdge - lineW;
             float labelYOff = (statNumSize - statLabelSize) * 0.5f;
-            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX, textY + labelYOff), lblCol, ratingLabelStr.c_str());
-            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX + ratingLabelSz.x + 8.f, textY), numCol, ratingLine2);
+            LsDrawTextCrispShadow(dl, font, statNumSize, ImVec2(lineX, textY), numCol, ratingLine2);
+            LsDrawTextCrispShadow(dl, font, statLabelSize, ImVec2(lineX + ratingNumSz2.x + 8.f, textY + labelYOff), lblCol, ratingLabelStr.c_str());
         }
         textY += statRowH + profIconGap;
 
