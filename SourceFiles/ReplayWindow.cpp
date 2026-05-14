@@ -503,8 +503,32 @@ bool ReplayWindow::RegisterWindowClass(HINSTANCE hInstance)
 
 static std::wstring BuildWindowTitle(const MatchMeta& match)
 {
-    auto getGuildLabel = [&](const std::string& partyId) -> std::pair<std::string, std::string>
+    // Parse authoritative guild tags from folder name
+    std::string ft1, ft2;
     {
+        auto vs = match.folder_name.find("]vs[");
+        if (vs != std::string::npos) {
+            auto open1 = match.folder_name.rfind('[', vs);
+            auto close2 = match.folder_name.find(']', vs + 4);
+            if (open1 != std::string::npos && close2 != std::string::npos) {
+                ft1 = match.folder_name.substr(open1 + 1, vs - open1 - 1);
+                ft2 = match.folder_name.substr(vs + 4, close2 - (vs + 4));
+            }
+        }
+    }
+
+    auto findGuildByTag = [&](const std::string& tag) -> const GuildMeta* {
+        if (tag.empty()) return nullptr;
+        for (const auto& [id, gm] : match.guilds)
+            if (gm.tag == tag) return &gm;
+        return nullptr;
+    };
+
+    auto getGuildLabel = [&](const std::string& partyId, const std::string& folderTag) -> std::pair<std::string, std::string>
+    {
+        auto* fg = findGuildByTag(folderTag);
+        if (fg) return { fg->name, fg->tag };
+
         auto pit = match.parties.find(partyId);
         if (pit == match.parties.end()) return { "Unknown", "?" };
 
@@ -525,8 +549,8 @@ static std::wstring BuildWindowTitle(const MatchMeta& match)
         return { "Guild #" + std::to_string(bestGuildId), "?" };
     };
 
-    auto [name1, tag1] = getGuildLabel("1");
-    auto [name2, tag2] = getGuildLabel("2");
+    auto [name1, tag1] = getGuildLabel("1", ft1);
+    auto [name2, tag2] = getGuildLabel("2", ft2);
 
     std::string title = std::format("Guild Wars Observer - {:04d}/{:02d}/{:02d} {} [{}] vs {} [{}]",
         match.year, match.month, match.day,
@@ -742,6 +766,21 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
     rw->m_matchMeta   = match;
     rw->m_datManager   = sharedDatManager;
     rw->m_hashIndex    = &hashIndex;
+
+    // Parse authoritative guild tags from folder name early,
+    // before the loading screen tries to resolve capes/headers.
+    {
+        const auto& fn = match.folder_name;
+        auto vs = fn.find("]vs[");
+        if (vs != std::string::npos) {
+            auto open1 = fn.rfind('[', vs);
+            auto close2 = fn.find(']', vs + 4);
+            if (open1 != std::string::npos && close2 != std::string::npos) {
+                rw->m_folderTag1 = fn.substr(open1 + 1, vs - open1 - 1);
+                rw->m_folderTag2 = fn.substr(vs + 4, close2 - (vs + 4));
+            }
+        }
+    }
 
     rw->m_replayCtx.mapId       = match.map_id;
     rw->m_replayCtx.datMapId    = GetDatMapId(match.map_id);
@@ -4344,8 +4383,38 @@ void ReplayWindow::Tick()
         sortByPlayerNum(m_team1PlayerIds);
         sortByPlayerNum(m_team2PlayerIds);
 
+        // Parse guild tags from folder name: "..._[tag1]vs[tag2]"
+        {
+            const auto& fn = m_matchMeta.folder_name;
+            auto vs = fn.find("]vs[");
+            if (vs != std::string::npos) {
+                auto open1 = fn.rfind('[', vs);
+                auto close2 = fn.find(']', vs + 4);
+                if (open1 != std::string::npos && close2 != std::string::npos) {
+                    m_folderTag1 = fn.substr(open1 + 1, vs - open1 - 1);
+                    m_folderTag2 = fn.substr(vs + 4, close2 - (vs + 4));
+                }
+            }
+        }
+
+        // Find guild by tag (from folder name)
+        auto FindGuildByTag = [&](const std::string& tag) -> const GuildMeta* {
+            if (tag.empty()) return nullptr;
+            for (const auto& [id, gm] : m_matchMeta.guilds)
+                if (gm.tag == tag) return &gm;
+            return nullptr;
+        };
+
         // Build guild header strings
-        auto BuildGuildHeader = [&](const std::string& partyId) -> std::string {
+        // Prefer folder-name tags (authoritative from GW match list) over
+        // the majority-of-players heuristic which fails when guests outnumber
+        // the home guild's own members.
+        auto BuildGuildHeader = [&](const std::string& partyId, const std::string& folderTag) -> std::string {
+            // Try folder-name tag first
+            auto* fg = FindGuildByTag(folderTag);
+            if (fg) return fg->name + " [" + fg->tag + "]";
+
+            // Fallback: majority heuristic
             auto pit = m_matchMeta.parties.find(partyId);
             if (pit == m_matchMeta.parties.end()) return "Unknown";
             std::map<int, int> guildCounts;
@@ -4360,8 +4429,8 @@ void ReplayWindow::Tick()
                 return git->second.name + " [" + git->second.tag + "]";
             return "Unknown";
         };
-        m_team1GuildHeader = BuildGuildHeader("1");
-        m_team2GuildHeader = BuildGuildHeader("2");
+        m_team1GuildHeader = BuildGuildHeader("1", m_folderTag1);
+        m_team2GuildHeader = BuildGuildHeader("2", m_folderTag2);
 
         // Build NPC + Spirit team lists for Allies section
         auto NpcSortOrder = [](const std::string& cat) -> int {
@@ -5420,9 +5489,25 @@ namespace
         dl->AddText(font, fontSize, pos, col, text);
     }
 
-    static std::string GetPartyGuildDisplay(const MatchMeta& m, const std::string& partyId,
-                                            std::string& outName, std::string& outTag)
+    static const GuildMeta* FindGuildByTagStatic(const MatchMeta& m, const std::string& tag)
     {
+        if (tag.empty()) return nullptr;
+        for (const auto& [id, gm] : m.guilds)
+            if (gm.tag == tag) return &gm;
+        return nullptr;
+    }
+
+    static std::string GetPartyGuildDisplay(const MatchMeta& m, const std::string& partyId,
+                                            std::string& outName, std::string& outTag,
+                                            const std::string& folderTag = "")
+    {
+        auto* fg = FindGuildByTagStatic(m, folderTag);
+        if (fg) {
+            outName = fg->name;
+            outTag = fg->tag;
+            return outName + " [" + outTag + "]";
+        }
+
         auto pit = m.parties.find(partyId);
         if (pit == m.parties.end() || pit->second.players.empty())
         {
@@ -5449,7 +5534,6 @@ namespace
 
         if (bestGuildId == 0)
         {
-            // Players exist but no guild_id (cloud-only metadata) — fall back to party ID lookup
             auto git = m.guilds.find(partyId);
             if (git != m.guilds.end() && !git->second.name.empty())
             {
@@ -5477,7 +5561,8 @@ namespace
 
     static void GetPartyGuildInfo(const MatchMeta& m, const std::string& partyId,
                                   std::string& outName, std::string& outTag,
-                                  int& outRank, int& outRating)
+                                  int& outRank, int& outRating,
+                                  const std::string& folderTag = "")
     {
         outRank = 0;
         outRating = 0;
@@ -5488,6 +5573,9 @@ namespace
             outRank = gm.rank;
             outRating = gm.rating;
         };
+
+        auto* fg = FindGuildByTagStatic(m, folderTag);
+        if (fg) { findGuild(*fg); return; }
 
         auto pit = m.parties.find(partyId);
         if (pit == m.parties.end() || pit->second.players.empty())
@@ -5911,9 +5999,35 @@ void ReplayWindow::ResolveCapeTextures()
     if (!m_capeCache.IsReady()) return;
     m_capeTexturesResolved = true;
 
-    auto getTeamCape = [&](const std::string& partyId) -> ImTextureID
+    // Ensure folder tags are parsed (may run before Tick processes agent data)
+    if (m_folderTag1.empty() && m_folderTag2.empty()) {
+        const auto& fn = m_matchMeta.folder_name;
+        auto vs = fn.find("]vs[");
+        if (vs != std::string::npos) {
+            auto open1 = fn.rfind('[', vs);
+            auto close2 = fn.find(']', vs + 4);
+            if (open1 != std::string::npos && close2 != std::string::npos) {
+                m_folderTag1 = fn.substr(open1 + 1, vs - open1 - 1);
+                m_folderTag2 = fn.substr(vs + 4, close2 - (vs + 4));
+            }
+        }
+    }
+
+    auto FindGuildByTag = [&](const std::string& tag) -> const GuildMeta* {
+        if (tag.empty()) return nullptr;
+        for (const auto& [id, gm] : m_matchMeta.guilds)
+            if (gm.tag == tag) return &gm;
+        return nullptr;
+    };
+
+    auto getTeamCape = [&](const std::string& partyId, const std::string& folderTag) -> ImTextureID
     {
-        // Find the dominant guild for this party
+        // Prefer folder-name tag (authoritative from GW match list)
+        auto* fg = FindGuildByTag(folderTag);
+        if (fg && !fg->tag.empty())
+            return m_capeCache.GetOrCreate(fg->tag, fg->cape);
+
+        // Fallback: find the dominant guild for this party
         auto pit = m_matchMeta.parties.find(partyId);
         if (pit == m_matchMeta.parties.end() || pit->second.players.empty())
         {
@@ -5939,8 +6053,8 @@ void ReplayWindow::ResolveCapeTextures()
         return m_capeCache.GetOrCreate(git->second.tag, git->second.cape);
     };
 
-    m_capeTexTeam1 = getTeamCape("1");
-    m_capeTexTeam2 = getTeamCape("2");
+    m_capeTexTeam1 = getTeamCape("1", m_folderTag1);
+    m_capeTexTeam2 = getTeamCape("2", m_folderTag2);
 }
 
 // ---------------------------------------------------------------------------
@@ -5972,8 +6086,8 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
 
     std::string name1, tag1, name2, tag2;
     int rank1 = 0, rating1 = 0, rank2 = 0, rating2 = 0;
-    GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1);
-    GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2);
+    GetPartyGuildInfo(m_matchMeta, "1", name1, tag1, rank1, rating1, m_folderTag1);
+    GetPartyGuildInfo(m_matchMeta, "2", name2, tag2, rank2, rating2, m_folderTag2);
 
     float capeW = 72.0f;
     float capeH = 144.0f;
@@ -13201,7 +13315,10 @@ void ReplayWindow::DrawMoralePanel()
     redTeam  = buildTeam(m_team1PlayerIds);
     blueTeam = buildTeam(m_team2PlayerIds);
 
-    auto getGuildLabel = [&](const std::string& partyId) -> std::string {
+    auto getGuildLabel = [&](const std::string& partyId, const std::string& folderTag) -> std::string {
+        auto* fg = FindGuildByTagStatic(m_matchMeta, folderTag);
+        if (fg) return fg->name + " [" + fg->tag + "]";
+
         auto pit = m_matchMeta.parties.find(partyId);
         if (pit == m_matchMeta.parties.end()) return "?";
         std::map<int, int> guildCounts;
@@ -13217,8 +13334,8 @@ void ReplayWindow::DrawMoralePanel()
         return "?";
     };
 
-    std::string redLabel  = getGuildLabel("1");
-    std::string blueLabel = getGuildLabel("2");
+    std::string redLabel  = getGuildLabel("1", m_folderTag1);
+    std::string blueLabel = getGuildLabel("2", m_folderTag2);
 
     constexpr float kPanelW = 520.f;
     constexpr float kRowH = 22.f;
@@ -25266,7 +25383,10 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
         ImVec2 hPos = ImGui::GetCursorScreenPos();
 
         // Find guild names for headers
-        auto getGuildLabel = [&](const char* partyKey) -> std::string {
+        auto getGuildLabel = [&](const char* partyKey, const std::string& folderTag) -> std::string {
+            auto* fg = FindGuildByTagStatic(m_matchMeta, folderTag);
+            if (fg) return fg->name + " [" + fg->tag + "]";
+
             auto pit = m_matchMeta.parties.find(partyKey);
             if (pit == m_matchMeta.parties.end()) return "?";
             std::map<int,int> guildCounts;
@@ -25282,8 +25402,8 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
             return "Team";
         };
 
-        std::string redLabel  = getGuildLabel("1");
-        std::string blueLabel = getGuildLabel("2");
+        std::string redLabel  = getGuildLabel("1", m_folderTag1);
+        std::string blueLabel = getGuildLabel("2", m_folderTag2);
 
         dl->AddText(ImVec2(hPos.x + 2.f, hPos.y), kRedTeam, redLabel.c_str());
         dl->AddText(ImVec2(hPos.x + colW + kColGap + 2.f, hPos.y), kBlueTeam, blueLabel.c_str());

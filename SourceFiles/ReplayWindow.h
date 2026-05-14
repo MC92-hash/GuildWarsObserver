@@ -390,6 +390,8 @@ private:
     std::vector<int> m_team2NpcIds;
     std::string m_team1GuildHeader;
     std::string m_team2GuildHeader;
+    std::string m_folderTag1;
+    std::string m_folderTag2;
 
     // --- Damage / Heal meter (party window bars) ---
     bool m_showDamageMeter = false;

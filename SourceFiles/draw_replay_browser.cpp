@@ -430,9 +430,37 @@ struct GuildLabel
     int rank = 0;
 };
 
-static GuildLabel GetPartyGuild(const MatchMeta& m, const std::string& partyId)
+static void ParseFolderTags(const std::string& folderName, std::string& tag1, std::string& tag2)
+{
+    auto vs = folderName.find("]vs[");
+    if (vs != std::string::npos) {
+        auto open1 = folderName.rfind('[', vs);
+        auto close2 = folderName.find(']', vs + 4);
+        if (open1 != std::string::npos && close2 != std::string::npos) {
+            tag1 = folderName.substr(open1 + 1, vs - open1 - 1);
+            tag2 = folderName.substr(vs + 4, close2 - (vs + 4));
+        }
+    }
+}
+
+static GuildLabel GetPartyGuild(const MatchMeta& m, const std::string& partyId,
+                                const std::string& folderTag = "")
 {
     GuildLabel result;
+
+    // Prefer folder-name tag (authoritative from GW match list)
+    if (!folderTag.empty()) {
+        for (const auto& [id, gm] : m.guilds) {
+            if (gm.tag == folderTag) {
+                result.name = gm.name;
+                result.tag = gm.tag;
+                result.rank = gm.rank;
+                result.display = result.name + " [" + result.tag + "]";
+                return result;
+            }
+        }
+    }
+
     auto pit = m.parties.find(partyId);
     if (pit == m.parties.end() || pit->second.players.empty())
     {
@@ -1853,8 +1881,10 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 continue;
         }
 
-        GuildLabel g1 = GetPartyGuild(m, "1");
-        GuildLabel g2 = GetPartyGuild(m, "2");
+        std::string ft1, ft2;
+        ParseFolderTags(m.folder_name, ft1, ft2);
+        GuildLabel g1 = GetPartyGuild(m, "1", ft1);
+        GuildLabel g2 = GetPartyGuild(m, "2", ft2);
 
         // Search filter — chip-based (OR logic) or text-based fallback
         if (!s_state.selectedSearchTerms.empty())
@@ -3258,8 +3288,10 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining = false)
     ImGui::Separator();
     ImGui::Spacing();
 
-    GuildLabel g1 = GetPartyGuild(m, "1");
-    GuildLabel g2 = GetPartyGuild(m, "2");
+    std::string ft1, ft2;
+    ParseFolderTags(m.folder_name, ft1, ft2);
+    GuildLabel g1 = GetPartyGuild(m, "1", ft1);
+    GuildLabel g2 = GetPartyGuild(m, "2", ft2);
 
     float availWidth = ImGui::GetContentRegionAvail().x;
     const float icoH = 16.0f;
