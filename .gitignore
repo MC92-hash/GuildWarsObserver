@@ -380,6 +380,10 @@ FodyWeavers.xsd
 /scripts/r2_config.env
 /scripts/contributor_keys.env
 /scripts/contributor_key_hashes.txt
+
+# Local backups produced by purge_leaked_scrims.py before any R2 mutation.
+# These snapshots contain full guild metadata — never commit.
+/scripts/purge_backups/
 /scripts/upload_manager.env
 /scripts/upload_status.json
 /scripts/logs/

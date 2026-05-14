@@ -160,6 +160,26 @@ def extract_archives(source_dir: Path) -> int:
     return count
 
 
+def is_scrim_recording(infos: dict | None) -> bool:
+    """True if this recording is a private scrim that must never reach the
+    public R2 bucket / index.json.
+
+    Detection is via ``infos.json["occasion"]`` — the GWToolbox plugin
+    writes "General Scrimmage" or "Scrimmage" for the My-Guild's-GvG
+    flow used by the scrim booking system. AT matches use "Automated
+    Tournament", "mAT ...", "A AT", "B AT", "C AT", etc.
+
+    Scrim recordings flow through the orchestrator's private
+    ``scrim_upload`` pipeline (different R2 prefix, presigned URL only).
+    This function exists so a stray scrim folder in MatchDirectory or
+    GwReplayRecorder cannot leak to the public feed.
+    """
+    if not infos:
+        return False
+    occasion = (infos.get("occasion") or "").lower()
+    return "scrimmage" in occasion
+
+
 def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
     """Move completed recordings from GWToolbox output to the upload staging directory.
 
@@ -167,6 +187,9 @@ def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
     - Contain infos.json (recording finished writing metadata)
     - Have no files modified in the last 5 minutes (not still being recorded)
     - Don't already exist in the staging directory
+    - Are NOT private scrim recordings (those are handled by the
+      orchestrator's scrim_upload pipeline; never let them into the
+      public AT staging area).
     """
     STALENESS_SECONDS = 300  # 5 minutes
     now = time.time()
@@ -175,7 +198,8 @@ def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
     for entry in sorted(recording_dir.iterdir()):
         if not entry.is_dir() or entry.name in ("processed", "rejected"):
             continue
-        if not (entry / "infos.json").exists():
+        infos_path = entry / "infos.json"
+        if not infos_path.exists():
             continue
 
         # Check if any file was modified recently (recording may be in progress)
@@ -186,6 +210,16 @@ def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
         except ValueError:
             continue  # empty directory
         if now - newest_mtime < STALENESS_SECONDS:
+            continue
+
+        # Defense in depth: never collect a scrim recording into the public
+        # AT staging area, even if the orchestrator failed to move it first.
+        try:
+            scrim_infos = read_infos_json(entry)
+        except Exception:
+            scrim_infos = None
+        if is_scrim_recording(scrim_infos):
+            print(f"  Skipping (private scrim, occasion={scrim_infos.get('occasion','?')!r}): {entry.name}")
             continue
 
         dest = staging_dir / entry.name
@@ -565,6 +599,12 @@ def cmd_upload(args, config: dict) -> dict:
             continue
         # Content-based dedup: read infos.json and check fingerprint
         infos = read_infos_json(m)
+        # Hard skip for private scrim recordings, even if a stray one
+        # made it into MatchDirectory (the orchestrator's scrim_upload
+        # pipeline is the only path private scrims should take).
+        if is_scrim_recording(infos):
+            print(f"  Skipping (private scrim, occasion={(infos.get('occasion') or '?')!r}): {m.name}")
+            continue
         if infos:
             fp = match_fingerprint(infos)
             if fp in remote_fingerprints:
