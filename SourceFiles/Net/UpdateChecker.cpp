@@ -127,7 +127,8 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
                 << currentExe.string() << "\"\r\n";
         }
 
-        bat << "start \"\" \"" << currentExe.string() << "\"\r\n";
+        // Use explorer.exe to relaunch — 'start' fails silently from CREATE_NO_WINDOW
+        bat << "explorer.exe \"" << currentExe.string() << "\"\r\n";
         bat << "del \"%~f0\"\r\n";
     }
 
