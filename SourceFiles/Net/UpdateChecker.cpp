@@ -79,9 +79,8 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
     auto currentExe = GetCurrentExePath();
     auto exeDir = currentExe.parent_path();
     auto batPath = exeDir / "_gwobs_update.bat";
-    auto updateExe = exeDir / "GWObserver_update.exe";
 
-    if (!std::filesystem::exists(updateExe))
+    if (!std::filesystem::exists(m_downloadedPath))
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_lastError = "Downloaded update file not found";
@@ -108,8 +107,23 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
         bat << "    timeout /t 1 /nobreak >NUL\r\n";
         bat << "    goto wait\r\n";
         bat << ")\r\n";
-        bat << "del \"" << currentExe.string() << "\"\r\n";
-        bat << "move \"" << updateExe.string() << "\" \"" << currentExe.string() << "\"\r\n";
+
+        if (m_isZipUpdate)
+        {
+            // Extract zip over the install directory, overwriting all files
+            bat << "powershell -NoProfile -Command \"Expand-Archive -Path '"
+                << m_downloadedPath.string() << "' -DestinationPath '"
+                << exeDir.string() << "' -Force\"\r\n";
+            bat << "del \"" << m_downloadedPath.string() << "\"\r\n";
+        }
+        else
+        {
+            // Legacy exe-only swap
+            bat << "del \"" << currentExe.string() << "\"\r\n";
+            bat << "move \"" << m_downloadedPath.string() << "\" \""
+                << currentExe.string() << "\"\r\n";
+        }
+
         bat << "start \"\" \"" << currentExe.string() << "\"\r\n";
         bat << "del \"%~f0\"\r\n";
     }
@@ -207,7 +221,7 @@ bool UpdateChecker::DebugFullTest()
         return false;
     }
 
-    m_downloadedExePath = updateExe;
+    m_downloadedPath = updateExe;
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -334,19 +348,30 @@ void UpdateChecker::CheckThread()
         std::string tagName = j.value("tag_name", "");
         std::string htmlUrl = j.value("html_url", "");
         std::string releaseBody = j.value("body", "");
-        std::string exeDownloadUrl;
+        std::string downloadUrl;
+        bool isZip = false;
 
-        // Find the .exe asset
+        // Find the best update asset: prefer .zip (full update), fall back to .exe
         if (j.contains("assets") && j["assets"].is_array())
         {
+            std::string zipUrl, exeUrl;
             for (auto& asset : j["assets"])
             {
                 std::string name = asset.value("name", "");
-                if (name.size() >= 4 && name.substr(name.size() - 4) == ".exe")
-                {
-                    exeDownloadUrl = asset.value("browser_download_url", "");
-                    break;
-                }
+                if (name.size() >= 4 && name.substr(name.size() - 4) == ".zip")
+                    zipUrl = asset.value("browser_download_url", "");
+                else if (name.size() >= 4 && name.substr(name.size() - 4) == ".exe")
+                    exeUrl = asset.value("browser_download_url", "");
+            }
+
+            if (!zipUrl.empty())
+            {
+                downloadUrl = zipUrl;
+                isZip = true;
+            }
+            else
+            {
+                downloadUrl = exeUrl;
             }
         }
 
@@ -360,7 +385,8 @@ void UpdateChecker::CheckThread()
             m_latestVersion = tagName;
             m_releaseUrl = htmlUrl;
             m_releaseNotes = releaseBody;
-            m_downloadUrl = exeDownloadUrl;
+            m_downloadUrl = downloadUrl;
+            m_isZipUpdate = isZip;
 
             if (IsNewer(tagName, m_currentVersion))
             {
@@ -458,7 +484,7 @@ void UpdateChecker::DownloadThread()
     }
 
     auto exeDir = GuiGlobalConstants::GetExeDir();
-    m_downloadedExePath = exeDir / "GWObserver_update.exe";
+    m_downloadedPath = exeDir / (m_isZipUpdate ? "GWObserver_update.zip" : "GWObserver_update.exe");
 
     // GitHub's browser_download_url redirects (302) to objects.githubusercontent.com.
     // WinHTTP doesn't follow cross-host redirects, so we handle it manually.
@@ -479,7 +505,7 @@ void UpdateChecker::DownloadThread()
 
         auto dlResp = dlHttp.DownloadToFile(
             parsed.path,
-            m_downloadedExePath,
+            m_downloadedPath,
             [this](uint64_t received, uint64_t total)
             {
                 m_bytesReceived.store(received);
@@ -491,7 +517,7 @@ void UpdateChecker::DownloadThread()
         if (m_cancelRequested.load())
         {
             std::error_code ec;
-            std::filesystem::remove(m_downloadedExePath, ec);
+            std::filesystem::remove(m_downloadedPath, ec);
             m_state.store(State::Idle);
             return;
         }
@@ -594,7 +620,7 @@ void UpdateChecker::DownloadThread()
 
         auto finalResp = finalHttp.DownloadToFile(
             finalUrl.path,
-            m_downloadedExePath,
+            m_downloadedPath,
             [this](uint64_t received, uint64_t total)
             {
                 m_bytesReceived.store(received);
@@ -606,7 +632,7 @@ void UpdateChecker::DownloadThread()
         if (m_cancelRequested.load())
         {
             std::error_code ec;
-            std::filesystem::remove(m_downloadedExePath, ec);
+            std::filesystem::remove(m_downloadedPath, ec);
             m_state.store(State::Idle);
             return;
         }

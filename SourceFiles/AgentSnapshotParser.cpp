@@ -567,6 +567,13 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
                 ard.playerName   = it->second->encoded_name;
                 ard.teamId       = static_cast<uint8_t>(it->second->team_id);
                 ard.categoryName = it->second->encoded_name;
+
+                // Look up guild tag
+                if (it->second->guild_id > 0) {
+                    auto git = meta.guilds.find(std::to_string(it->second->guild_id));
+                    if (git != meta.guilds.end() && !git->second.tag.empty())
+                        ard.guildTag = git->second.tag;
+                }
                 continue;
             }
         }

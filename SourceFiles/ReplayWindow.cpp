@@ -7319,7 +7319,10 @@ static void InterpolateAgentPosition(const AgentReplayData& ard, float t,
 static std::string GetAgentLabel(const AgentReplayData& ard)
 {
     switch (ard.type) {
-    case AgentType::Player:            return ard.playerName;
+    case AgentType::Player:
+        if (!ard.guildTag.empty())
+            return ard.playerName + " [" + ard.guildTag + "]";
+        return ard.playerName;
     case AgentType::NPC:               return ard.categoryName;
     case AgentType::Gadget:            return ard.categoryName;
     case AgentType::ObeliskFlagStand:  return ard.categoryName;

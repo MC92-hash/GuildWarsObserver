@@ -1,6 +1,6 @@
 #pragma once
 
-#define GWO_VERSION "1.1.0"
+#define GWO_VERSION "1.2.0"
 
 // Local override — included first so it can selectively override defaults.
 // Found via gwobserver-private/ (adjacent repo) or a local gitignored copy.

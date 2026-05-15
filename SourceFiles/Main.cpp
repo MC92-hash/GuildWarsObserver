@@ -181,6 +181,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         auto exeDir = std::filesystem::current_path();
         std::filesystem::remove(exeDir / "_gwobs_update.bat", ec);
         std::filesystem::remove(exeDir / "GWObserver_update.exe", ec);
+        std::filesystem::remove(exeDir / "GWObserver_update.zip", ec);
     }
 
     // Register class and create window

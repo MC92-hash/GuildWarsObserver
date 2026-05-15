@@ -602,6 +602,7 @@ struct AgentReplayData
     AgentType type = AgentType::Unknown;
     std::string categoryName;
     std::string playerName;
+    std::string guildTag;
     uint8_t  teamId = 0;
     uint32_t modelId = 0;
     uint16_t agentModelType = 0;

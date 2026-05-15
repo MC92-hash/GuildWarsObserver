@@ -81,9 +81,10 @@ private:
     std::string m_latestVersion;
     std::string m_releaseUrl;
     std::string m_releaseNotes;
-    std::string m_downloadUrl;   // browser_download_url for .exe asset
+    std::string m_downloadUrl;   // browser_download_url for .zip or .exe asset
     std::string m_lastError;
     mutable std::mutex m_mutex;
 
-    std::filesystem::path m_downloadedExePath;
+    std::filesystem::path m_downloadedPath;
+    bool m_isZipUpdate = false;
 };
