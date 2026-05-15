@@ -863,6 +863,16 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 				s_licenceModalOpen = true;
 			ImGui::EndMenu();
 		}
+		// Version label — right-aligned in menu bar
+		{
+			const char* ver = "v" GWO_VERSION;
+			float verW = ImGui::CalcTextSize(ver).x;
+			float barW = ImGui::GetWindowSize().x;
+			float pad = 12.0f;
+			ImGui::SameLine(barW - verW - pad);
+			ImGui::TextColored(ImVec4(0.784f, 0.608f, 0.235f, 1.0f), "%s", ver);
+		}
+
 		ImGui::EndMainMenuBar();
 	}
 

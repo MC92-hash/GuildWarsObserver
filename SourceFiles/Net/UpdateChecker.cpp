@@ -110,11 +110,14 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
 
         if (m_isZipUpdate)
         {
-            // Extract zip over the install directory, overwriting all files
-            bat << "powershell -NoProfile -Command \"Expand-Archive -Path '"
-                << m_downloadedPath.string() << "' -DestinationPath '"
-                << exeDir.string() << "' -Force\"\r\n";
-            bat << "del \"" << m_downloadedPath.string() << "\"\r\n";
+            // Extract zip over the install directory using tar (fast, built into Win10+)
+            bat << "tar -xf \"" << m_downloadedPath.string()
+                << "\" -C \"" << exeDir.string() << "\"\r\n";
+            // Retry delete — tar releases the handle immediately, but guard against AV locks
+            bat << "del \"" << m_downloadedPath.string() << "\" >NUL 2>&1\r\n";
+            bat << "if exist \"" << m_downloadedPath.string()
+                << "\" (timeout /t 2 /nobreak >NUL & del \""
+                << m_downloadedPath.string() << "\" >NUL 2>&1)\r\n";
         }
         else
         {
