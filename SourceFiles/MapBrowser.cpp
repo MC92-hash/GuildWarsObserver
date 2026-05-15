@@ -997,8 +997,10 @@ void MapBrowser::Render()
                     dlState == PlayDownloadState::Error, m_playDl.errorMsg);
         }
 
-        // Update notification overlay
-        draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow(), !g_loadingScreenDone);
+        // Update overlay — only for user-initiated checks (Help > Check for Updates).
+        // Automatic updates are handled by the sticky loading screen card.
+        if (m_updateChecker.IsUserInitiated())
+            draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow(), !g_loadingScreenDone);
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active

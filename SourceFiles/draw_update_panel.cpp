@@ -86,13 +86,6 @@ void draw_update_notification(UpdateChecker* checker, HWND appWindow, bool suppr
                 checker->StartDownload();
 
             ImGui::SameLine();
-            if (ImGui::Button("Release Notes"))
-            {
-                s_releaseNotesText = checker->GetReleaseNotes();
-                s_releaseNotesOpen = true;
-            }
-
-            ImGui::SameLine();
             float availW = ImGui::GetContentRegionAvail().x;
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + availW - ImGui::CalcTextSize("X").x);
             if (ImGui::SmallButton("X"))
