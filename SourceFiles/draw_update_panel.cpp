@@ -125,6 +125,13 @@ void draw_update_notification(UpdateChecker* checker, HWND appWindow, bool suppr
 
         case UpdateChecker::State::ReadyToInstall:
         {
+            // Auto-install if requested by the loading screen's "Download & Install"
+            if (checker->ShouldAutoInstall())
+            {
+                checker->SetAutoInstall(false);
+                checker->ApplyAndRestart(appWindow);
+            }
+
             ImGui::TextColored(ImVec4(0.25f, 0.75f, 0.37f, 1.f), "Update ready!");
             ImGui::Dummy(ImVec2(0, 2.f));
 

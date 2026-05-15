@@ -72,7 +72,7 @@ namespace
 
 static bool s_updatePopupShown = false;
 static bool s_updateDismissed = false;
-static bool s_autoInstallAfterDownload = false;
+// s_autoInstallAfterDownload removed — now lives on UpdateChecker::SetAutoInstall()
 
 static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
 {
@@ -174,7 +174,7 @@ static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
             if (ImGui::Button("Download & Install", ImVec2(dlBtnW, 0)))
             {
                 update.checker->StartDownload();
-                s_autoInstallAfterDownload = true;
+                update.checker->SetAutoInstall(true);
             }
 
             ImGui::PopStyleVar(2);
@@ -210,9 +210,9 @@ static void DrawUpdateCard(ImVec2 display, const UpdateInfo& update)
 
         case UpdateChecker::State::ReadyToInstall:
         {
-            if (s_autoInstallAfterDownload)
+            if (update.checker->ShouldAutoInstall())
             {
-                s_autoInstallAfterDownload = false;
+                update.checker->SetAutoInstall(false);
                 update.checker->ApplyAndRestart(update.appWindow);
             }
 

@@ -48,6 +48,8 @@ public:
     bool HasUpdate() const;
     bool IsUserInitiated() const { return m_userInitiated.load(); }
     bool IsDismissed() const { return m_dismissed.load(); }
+    void SetAutoInstall(bool v) { m_autoInstall.store(v); }
+    bool ShouldAutoInstall() const { return m_autoInstall.load(); }
 
     float GetDownloadProgress() const { return m_progress.load(); }
     uint64_t GetDownloadedBytes() const { return m_bytesReceived.load(); }
@@ -74,6 +76,7 @@ private:
     std::atomic<bool> m_cancelRequested{false};
     std::atomic<bool> m_userInitiated{false};
     std::atomic<bool> m_dismissed{false};
+    std::atomic<bool> m_autoInstall{false};  // auto-apply when download completes
 
     // Protected by m_mutex
     std::string m_currentVersion;
