@@ -1034,7 +1034,7 @@ void draw_licence_modal(bool* open)
     }
 
     // Heading
-    ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "GW Observer");
+    ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "GW Observer v" GWO_VERSION);
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.5f), " -  Licence & Credits");
 
