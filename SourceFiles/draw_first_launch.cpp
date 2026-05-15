@@ -320,11 +320,17 @@ bool draw_first_launch(const LoadingProgress& progress, const UpdateInfo* update
         s_hitFullTime = Clock::now();
     }
 
+    // Block loading screen exit while an update notification is showing
+    bool updatePending = update && update->available && update->checker &&
+        !s_updateDismissed &&
+        update->checker->GetState() != UpdateChecker::State::Idle &&
+        update->checker->GetState() != UpdateChecker::State::Checking;
+
     float fadeElapsed = 0.f;
     if (s_hitFull)
     {
         fadeElapsed = std::chrono::duration<float>(Clock::now() - s_hitFullTime).count();
-        if (fadeElapsed >= kHoldAtFullSec)
+        if (fadeElapsed >= kHoldAtFullSec && !updatePending)
             return true;
     }
 
