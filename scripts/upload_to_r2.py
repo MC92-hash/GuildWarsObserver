@@ -304,6 +304,40 @@ def scan_local_matches(source_dir: Path) -> list[Path]:
     return matches
 
 
+def count_recorded_players(match_dir: Path, infos: dict) -> int:
+    """Cheap count of how many roster players actually have a position file.
+
+    Used for dedup so we prefer the most-complete recording when several
+    observer instances captured the same match. GWToolbox can drop the
+    per-agent position file entirely for players whose first position
+    event was missed (network hiccup at match start, late instance
+    join, etc.) — the infos.json roster is unaffected because it comes
+    from a single packet at match end.
+
+    The 1 KiB size floor filters header-only files that exist but never
+    received a position event.
+    """
+    agents_dir = match_dir / "Agents"
+    if not agents_dir.is_dir():
+        return 0
+    player_ids: set[int] = set()
+    for party in (infos.get("parties") or {}).values():
+        if not isinstance(party, dict):
+            continue
+        for p in (party.get("PLAYER") or []):
+            pid = p.get("id") if isinstance(p, dict) else None
+            if isinstance(pid, int) and pid > 0:
+                player_ids.add(pid)
+    count = 0
+    for pid in player_ids:
+        for ext in (".txt.gz", ".txt"):
+            f = agents_dir / f"{pid}{ext}"
+            if f.is_file() and f.stat().st_size > 1024:
+                count += 1
+                break
+    return count
+
+
 def sanitize_json(raw: str) -> str:
     """Clean up infos.json quirks (standalone comma lines) to match C++ SanitizeJson."""
     lines = raw.splitlines()
@@ -332,7 +366,12 @@ def read_infos_json(match_dir: Path) -> dict | None:
         return None
 
 
-def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
+def build_index_entry(
+    folder_name: str,
+    infos: dict,
+    archive_size: int,
+    recorded_players: int = 0,
+) -> dict:
     """Build an index.json entry from a match's infos.json data."""
     year = infos.get("year", 0)
     month = infos.get("month", 0)
@@ -348,6 +387,7 @@ def build_index_entry(folder_name: str, infos: dict, archive_size: int) -> dict:
         "duration": infos.get("match_duration", ""),
         "winner": infos.get("winner_party_id", 0),
         "size_bytes": archive_size,
+        "recorded_players": recorded_players,
         "guilds": {},
     }
 
@@ -582,9 +622,9 @@ def cmd_upload(args, config: dict) -> dict:
     remote_entries = fetch_remote_index(s3, bucket)
     remote_folders = {e["folder"] for e in remote_entries}
     # Build content-based fingerprints from remote entries for robust dedup
-    remote_fingerprints: set[str] = set()
+    remote_by_fp: dict[str, dict] = {}
     for e in remote_entries:
-        remote_fingerprints.add(index_entry_fingerprint(e))
+        remote_by_fp[index_entry_fingerprint(e)] = e
     print(f"  {len(remote_entries)} matches currently in index.")
 
     # Scan local matches
@@ -592,25 +632,55 @@ def cmd_upload(args, config: dict) -> dict:
     print(f"  {len(local_matches)} match folders found locally.")
     report["matched_local"] = len(local_matches)
 
-    # Find new matches: check folder name, sanitized name, AND content fingerprint
-    new_matches = []
+    # First pass: inspect each local match, group by content fingerprint.
+    # When multiple observer instances captured the same match, GWToolbox
+    # produces near-identical folders (e.g. _24.53_ and _24.54_); we pick
+    # the one with the most player position files, not the first by name.
+    from collections import defaultdict
+    local_by_fp: dict[str, list[tuple[Path, dict, int]]] = defaultdict(list)
     for m in local_matches:
         if m.name in remote_folders or sanitize_folder_name(m.name) in remote_folders:
             continue
-        # Content-based dedup: read infos.json and check fingerprint
         infos = read_infos_json(m)
-        # Hard skip for private scrim recordings, even if a stray one
-        # made it into MatchDirectory (the orchestrator's scrim_upload
-        # pipeline is the only path private scrims should take).
         if is_scrim_recording(infos):
             print(f"  Skipping (private scrim, occasion={(infos.get('occasion') or '?')!r}): {m.name}")
             continue
-        if infos:
-            fp = match_fingerprint(infos)
-            if fp in remote_fingerprints:
-                print(f"  Skipping duplicate (content match): {m.name}")
+        if not infos:
+            continue
+        fp = match_fingerprint(infos)
+        rp = count_recorded_players(m, infos)
+        local_by_fp[fp].append((m, infos, rp))
+
+    # Second pass: for each fingerprint, pick the best local copy and
+    # decide whether it beats whatever is already in R2.
+    new_matches: list[Path] = []
+    match_recorded_players: dict[str, int] = {}  # folder -> recorded_players
+    folders_to_replace: set[str] = set()  # remote folders to delete and supersede
+    for fp, group in local_by_fp.items():
+        # Best = most recorded players, tie-break by name for determinism
+        group.sort(key=lambda x: (-x[2], x[0].name))
+        best_path, best_infos, best_rp = group[0]
+        for loser_path, _, loser_rp in group[1:]:
+            print(f"  Skipping (local duplicate, {loser_rp} players vs "
+                  f"{best_rp} in {best_path.name}): {loser_path.name}")
+
+        remote_entry = remote_by_fp.get(fp)
+        if remote_entry is not None:
+            remote_rp = remote_entry.get("recorded_players")
+            if remote_rp is None:
+                # Legacy entry without completeness data: trust it, skip.
+                print(f"  Skipping duplicate (content match): {best_path.name}")
                 continue
-        new_matches.append(m)
+            if best_rp <= remote_rp:
+                print(f"  Skipping duplicate (remote has {remote_rp} players, "
+                      f"local {best_rp}): {best_path.name}")
+                continue
+            print(f"  Replacing remote (local has {best_rp} players vs remote "
+                  f"{remote_rp}): {best_path.name} supersedes {remote_entry['folder']}")
+            folders_to_replace.add(remote_entry["folder"])
+
+        new_matches.append(best_path)
+        match_recorded_players[best_path.name] = best_rp
     report["already_remote"] = len(local_matches) - len(new_matches)
 
     if not new_matches:
@@ -628,6 +698,17 @@ def cmd_upload(args, config: dict) -> dict:
         report["duration_seconds"] = round(time.monotonic() - t0, 1)
         return report
 
+    # Delete obsolete R2 archives that the local copies will supersede.
+    # The corresponding index entries are removed when we rebuild the index below.
+    for folder in sorted(folders_to_replace):
+        r2_key = f"matches/{folder}.tar.gz"
+        try:
+            s3.delete_object(Bucket=bucket, Key=r2_key)
+            print(f"  Deleted obsolete archive: {r2_key}")
+        except Exception as e:
+            print(f"  Warning: failed to delete obsolete {r2_key}: {e}")
+            report["warnings"].append({"match": folder, "warning": f"Failed to delete obsolete archive: {e}"})
+
     # Upload each new match
     new_entries = []
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -635,6 +716,7 @@ def cmd_upload(args, config: dict) -> dict:
             folder_name = match_dir.name
             safe_name = sanitize_folder_name(folder_name)
             renamed = safe_name != folder_name
+            recorded_players = match_recorded_players.get(folder_name, 0)
 
             print(f"\n[{i}/{len(new_matches)}] Uploading: {folder_name}")
             if renamed:
@@ -685,7 +767,7 @@ def cmd_upload(args, config: dict) -> dict:
             if object_exists(s3, bucket, r2_key):
                 print(f"  Already in R2, skipping upload.")
                 report["skipped"] += 1
-                entry = build_index_entry(safe_name, infos, 0)
+                entry = build_index_entry(safe_name, infos, 0, recorded_players)
                 new_entries.append(entry)
                 continue
 
@@ -709,7 +791,7 @@ def cmd_upload(args, config: dict) -> dict:
                 continue
 
             # Build index entry with safe folder name but real guild data from infos.json
-            entry = build_index_entry(safe_name, infos, archive_size)
+            entry = build_index_entry(safe_name, infos, archive_size, recorded_players)
             new_entries.append(entry)
             report["uploaded"] += 1
 
@@ -734,15 +816,19 @@ def cmd_upload(args, config: dict) -> dict:
             else:
                 print(f"  Done.")
 
-    # Update index (deduplicate by folder name, new entries take precedence)
-    if new_entries:
+    # Update index (deduplicate by folder name, new entries take precedence,
+    # and drop any remote entries that the new uploads superseded).
+    if new_entries or folders_to_replace:
+        kept_remote = [e for e in remote_entries if e["folder"] not in folders_to_replace]
         seen: dict[str, dict] = {}
-        for entry in remote_entries + new_entries:
+        for entry in kept_remote + new_entries:
             seen[entry["folder"]] = entry
         all_entries = list(seen.values())
-        deduped = len(remote_entries) + len(new_entries) - len(all_entries)
+        deduped = len(kept_remote) + len(new_entries) - len(all_entries)
         if deduped:
             print(f"\n  Removed {deduped} duplicate index entry(ies).")
+        if folders_to_replace:
+            print(f"  Superseded {len(folders_to_replace)} previous upload(s).")
         print(f"\nUpdating index.json ({len(all_entries)} total matches)...")
         try:
             upload_index(s3, bucket, all_entries)
