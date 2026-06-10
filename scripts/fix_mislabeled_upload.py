@@ -27,6 +27,7 @@ from upload_to_r2 import (  # noqa: E402
     read_infos_json,
     build_index_entry,
     create_tar_gz,
+    count_recorded_players,
     sanitize_folder_name,
     upload_file,
     upload_index,
@@ -139,7 +140,8 @@ def main() -> int:
         print(f"  archive size: {size_mb:.1f} MB")
         print()
 
-        new_entry = build_index_entry(safe_name, infos, archive_size)
+        recorded_players = count_recorded_players(match_dir, infos)
+        new_entry = build_index_entry(safe_name, infos, archive_size, recorded_players)
 
         print("New index entry preview:")
         preview = {k: new_entry[k] for k in ("folder", "date", "occasion", "duration", "winner", "size_bytes")}
