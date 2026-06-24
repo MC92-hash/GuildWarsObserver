@@ -15,11 +15,11 @@ Visual Studio 2022 solution, Platform Toolset v143, C++20 (`/std:c++20`), Warnin
 **Solution path:** `GuildWarsObserver-1.0.2-sourcecode/GuildWarsObserver-1.0.2/GuildWarsObserver.sln`
 **Source files:** `SourceFiles/` (~275 files)
 
-**Build from command line:**
+**Build from command line (bash):**
+```bash
+MSBUILDER='/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/MSBuild/Current/Bin/MSBuild.exe' && "$MSBUILDER" GuildWarsObserver.sln '-p:Configuration=Release' '-p:Platform=x64' '-v:minimal'
 ```
-cd GuildWarsObserver-1.0.2-sourcecode/GuildWarsObserver-1.0.2
-msbuild GuildWarsObserver.sln /p:Configuration=Release /p:Platform=x64
-```
+Use `-p:` instead of `/p:` to avoid bash flag issues. MSBuild path: `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe`.
 
 **Configurations:** Debug/Release × Win32/x64. Release uses `/O2`, whole-program optimization, and fast floating-point model. SSE2 is enabled in all configs.
 
@@ -93,6 +93,18 @@ HLSL shaders are compiled to C++ headers. Multiple pixel/vertex shaders: NewMode
 
 `fix/description` or `feat/description`
 
+## Release Workflow
+
+No CI/CD - releases are manual build-and-publish.
+
+1. Bump `GWO_VERSION` in `SourceFiles/build_config.h`
+2. Build Release x64 via msbuild
+3. Commit, tag `vX.Y.Z`, push tag
+4. Create a GitHub Release on `MC92-hash/GuildWarsObserver` from the tag
+5. Attach a `.zip` asset (preferred by the updater) or `.exe` fallback
+
+The in-app `UpdateChecker` polls the GitHub Releases API (`/releases/latest`), compares `tag_name` against `GWO_VERSION` via semver, and offers download + swap-and-restart. The updater prefers `.zip` assets over `.exe`. Ensure the version string, tag, and release asset are all consistent.
+
 ## Cloud Storage & Upload Pipeline
 
 Matches are distributed via Cloudflare R2 cloud storage. The app fetches an index and compressed match archives from the configured cloud host.
@@ -107,3 +119,5 @@ Matches are distributed via Cloudflare R2 cloud storage. The app fetches an inde
 - Do not integrate unauthorised data sources without prior discussion
 - Do not remove or alter licence/attribution notices
 - Do not expose API credentials
+- Do not add Co-Authored-By lines to git commit messages
+- Do not use em-dashes (-) in written text - use regular hyphens (-) instead
