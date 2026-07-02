@@ -41,7 +41,7 @@ void ReplayWindow::DrawPianoRollPanel()
     if (m_team1PlayerIds.empty() && m_team2PlayerIds.empty()) return;
 
     auto* dev = m_deviceResources->GetD3DDevice();
-    auto& db  = GetSkillDatabase();
+    const auto& db  = m_skillView;
     const float now = m_debugTimeline;
     ImGuiIO& io = ImGui::GetIO();
     ImFont* font = ImGui::GetFont();

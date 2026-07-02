@@ -1,0 +1,495 @@
+{
+  "date": "2026-06-24",
+  "description": "June 2026 balance update",
+  "skills": {
+    "799": {
+      "energy": 15
+    },
+    "1636": {
+      "recharge": 12
+    },
+    "1990": {
+      "recharge": 12
+    },
+    "782": {
+      "recharge": 1
+    },
+    "1021": {
+      "recharge": 10
+    },
+    "1030": {
+      "activation": 1
+    },
+    "1034": {
+      "energy": 15,
+      "recharge": 12
+    },
+    "949": {
+      "recharge": 45
+    },
+    "1514": {
+      "recharge": 10,
+      "description": "For 2...6 seconds, you cannot be knocked down and move 25% faster. This enchantment ends prematurely if it prevents a knockdown.",
+      "concise": "(2...6 seconds.) You cannot be knocked down and move 25% faster. Ends if knockdown prevented."
+    },
+    "1500": {
+      "recharge": 10,
+      "description": "For 1...7 seconds, you have a 40...80% chance to block incoming attacks. When you cast this enchantment, all nearby foes are struck for 10...40 earth damage.",
+      "concise": "(1...7 seconds.) You have 40...80% chance to block. Initial Effect: deals 10...40 earth damage to nearby foes."
+    },
+    "1516": {
+      "energy": 10
+    },
+    "1491": {
+      "activation": 1
+    },
+    "1765": {
+      "recharge": 6
+    },
+    "1544": {
+      "energy": 10,
+      "recharge": 6,
+      "description": "For 1...6 seconds, you move 33% faster than normal. The next time you strike a foe, all other nearby foes take 10...60 cold damage and this enchantment ends.",
+      "concise": "(1...6 seconds.) You move 33% faster. Deal 10...60 cold damage to all other nearby foes the next time you hit a foe and this enchantment ends."
+    },
+    "1085": {
+      "recharge": 15
+    },
+    "1091": {
+      "recharge": 20,
+      "description": "Invoke the power of the Dragon. For 8 seconds, you and target ally are enchanted with Double Dragon. Adjacent foes are dealt 5...30 fire damage each second. Additionally, when you or your ally use skills that target a foe, that foe is set on fire for 0...3 seconds.",
+      "concise": "(8 seconds.) Enchants you and target ally. Adjacent foes take 5...30 fire damage each second. Skills that target a foe also inflict Burning (0...3 seconds)."
+    },
+    "843": {
+      "recharge": 10,
+      "description": "For 5...11 seconds, both you and target ally move 33% faster. When you cast this spell, all nearby foes take 15...70 cold damage. Foes struck by Gust while attacking or moving are knocked down.",
+      "concise": "(5...11 seconds.) You and target ally move 33% faster. Initial effect: Nearby foes are struck for 15...70 cold damage. Attacking or moving foes are knocked down."
+    },
+    "166": {
+      "recharge": 60,
+      "description": "For 8 seconds, you gain +20...80 armor. Whenever you cast a spell, Kinetic Armor is renewed for 8 seconds.",
+      "concise": "(8 seconds.) You have +20...80 armor. Renewal bonus: cast a spell."
+    },
+    "205": {
+      "energy": 10
+    },
+    "1372": {
+      "recharge": 25,
+      "description": "Create a Sandstorm at target foe's location. For 10 seconds, nearby foes are struck for 10...30 earth damage each second and attacking foes are struck for an additional 20...40 earth damage each second.",
+      "concise": "Deals 10...30 earth damage each second (10 seconds). Hits foes near target foe's initial location. Hits attacking foes for 20...40 more earth damage each second."
+    },
+    "1081": {
+      "energy": 5
+    },
+    "36": {
+      "recharge": 20
+    },
+    "930": {
+      "recharge": 25
+    },
+    "43": {
+      "recharge": 8,
+      "description": "For 4 seconds, target and adjacent foes are hexed with Clumsiness. The next time each foe attacks, the attack is interrupted and that foe suffers 10...92 damage.",
+      "concise": "(4 seconds.) Also hexes adjacent foes. Interrupts next attack. Interruption effect: deals 10...92 damage."
+    },
+    "3152": {
+      "energy": 15,
+      "description": "For 5...20 seconds, target moves 50% slower and suffers -1...5 Health degeneration.",
+      "concise": "(5...20 seconds.) Target foe moves 50% slower and has -1...5 Health degeneration."
+    },
+    "57": {
+      "recharge": 15,
+      "description": "If target foe is using a skill, that foe and all foes in the area are interrupted. Target foe suffers 15...75 damage; foes in the area take the same damage.",
+      "concise": "If target foe is using a skill, that foe and all foes in the area are interrupted. Target foe takes 15...75 damage; foes in the area take the same damage."
+    },
+    "79": {
+      "recharge": 30
+    },
+    "33": {
+      "recharge": 25,
+      "description": "For 30 seconds, your melee attacks neither hit nor fail to hit. Instead, Illusionary Weaponry deals 8...40 damage to your targets for each melee attack. You have +5 armor for each equipped Illusion Magic skill.",
+      "concise": "(30 seconds.) Deals 8...40 damage to foes in place of other damage or effects from melee attacks. You have +5 armor for each equipped Illusion Magic skill. Your melee attacks neither hit nor fail to hit. "
+    },
+    "899": {
+      "activation": 2
+    },
+    "953": {
+      "recharge": 10
+    },
+    "1994": {
+      "recharge": 12
+    },
+    "1057": {
+      "recharge": 12
+    },
+    "1342": {
+      "recharge": 15
+    },
+    "1335": {
+      "recharge": 3
+    },
+    "50": {
+      "recharge": 1,
+      "description": "After 3 seconds, target foe takes 20...100 damage; all adjacent foes take the same damage. If that foe successfully uses a skill, Wastrel's Worry ends prematurely and does no damage.",
+      "concise": "(3 seconds). End effect: causes 20...100 damage to target; adjacent foes take the same damage. No effect and ends early if target foe uses a skill. "
+    },
+    "272": {
+      "energy": 25,
+      "activation": 2,
+      "recharge": 25,
+      "description": "For 8 seconds, foes adjacent to target ally take 10...25 holy damage each second.",
+      "concise": "(8 seconds.) Deals 10...25 holy damage each second to foes adjacent to target ally."
+    },
+    "1692": {
+      "recharge": 5,
+      "activation": 1
+    },
+    "258": {
+      "recharge": 4
+    },
+    "1118": {
+      "recharge": 4,
+      "description": "Target ally is healed for 10...160. All party members in earshot of your target gain Health equal to the Divine Favor bonus from this spell. Your Smiting Prayers are disabled for 20 seconds.",
+      "concise": "Heals for 10...160. Party members in earshot of your target gain Health equal to the Divine Favor bonus. Disables your Smiting Prayers (20 seconds). "
+    },
+    "285": {
+      "recharge": 25
+    },
+    "830": {
+      "activation": 2,
+      "recharge": 20,
+      "description": "Invoke a Ray of Judgment at target foe's location. For 5 seconds, target foe and all foes adjacent to this location take 5...45 holy damage each second and begin Burning for 1...3 seconds.",
+      "concise": "Deals 5...45 holy damage and inflicts Burning (1...3 seconds) every second (5 seconds). Hits foes adjacent to target's initial location."
+    },
+    "259": {
+      "recharge": 10
+    },
+    "261": {
+      "energy": 15,
+      "description": "For 5...13 seconds, target ally gains +3...10 Health regeneration and 40 armor.",
+      "concise": "(5...13 seconds.) +3...10 Health regeneration and +40 armor."
+    },
+    "247": {
+      "activation": 2,
+      "recharge": 30,
+      "description": "For 5 seconds, foes adjacent to the location in which the spell was cast take 8...32 holy damage each second.",
+      "concise": "Deals 8...32 holy damage each second (5 seconds). Hits foes adjacent to your initial location."
+    },
+    "84": {
+      "energy": 25,
+      "activation": 3
+    },
+    "83": {
+      "energy": 10,
+      "activation": 3
+    },
+    "85": {
+      "energy": 15,
+      "activation": 3
+    },
+    "832": {
+      "activation": 3
+    },
+    "1351": {
+      "energy": 15,
+      "activation": 3
+    },
+    "805": {
+      "energy": 15,
+      "activation": 3
+    },
+    "157": {
+      "activation": 2
+    },
+    "98": {
+      "energy": 10
+    },
+    "151": {
+      "recharge": 20
+    },
+    "819": {
+      "activation": 2,
+      "description": "Steal up to 5...50 Health from target foe. For 10 seconds, you have +5...10 Health regeneration.",
+      "concise": "Steal 5...50 Health from target foe. You have +5...10 Health regeneration (10 seconds)."
+    },
+    "159": {
+      "activation": 1
+    },
+    "1774": {
+      "energy": 25,
+      "activation": 2
+    },
+    "1566": {
+      "recharge": 20
+    },
+    "1562": {
+      "energy": 10,
+      "activation": 2,
+      "recharge": 20
+    },
+    "1564": {
+      "recharge": 20
+    },
+    "2877": {
+      "recharge": 30
+    },
+    "1548": {
+      "adrenaline": 7,
+      "description": "If this attack hits, you deal +1...31 damage. If it hits a non-moving target, you inflict a Deep Wound for 5...20 seconds.",
+      "concise": "Deals +1...31 damage. Inflicts Deep Wound condition (5...20 seconds) if target is not moving."
+    },
+    "2207": {
+      "recharge": 20
+    },
+    "1772": {
+      "recharge": 20
+    },
+    "1547": {
+      "activation": 3
+    },
+    "1771": {
+      "recharge": 20
+    },
+    "2878": {
+      "recharge": 30
+    },
+    "1602": {
+      "adrenaline": 10,
+      "description": "If this attack hits, you deal +5...30 damage. If it hits a foe suffering from a condition, that foe is also Dazed for 4...10 seconds.",
+      "concise": "Deals +5...30 damage. Inflicts Dazed condition (4...10 seconds) if target has a condition."
+    },
+    "1550": {
+      "activation": 3,
+      "adrenaline": 7
+    },
+    "1561": {
+      "recharge": 20
+    },
+    "458": {
+      "energy": 15
+    },
+    "1203": {
+      "recharge": 20
+    },
+    "1198": {
+      "energy": 15,
+      "recharge": 15
+    },
+    "445": {
+      "recharge": 20
+    },
+    "853": {
+      "recharge": 8
+    },
+    "1206": {
+      "recharge": 20
+    },
+    "462": {
+      "activation": 3
+    },
+    "465": {
+      "activation": 3
+    },
+    "961": {
+      "activation": 3
+    },
+    "997": {
+      "activation": 3
+    },
+    "1212": {
+      "activation": 3
+    },
+    "1730": {
+      "activation": 3
+    },
+    "3023": {
+      "activation": 3,
+      "recharge": 45
+    },
+    "3019": {
+      "activation": 3
+    },
+    "3014": {
+      "activation": 5,
+      "recharge": 45
+    },
+    "3007": {
+      "activation": 3
+    },
+    "1219": {
+      "recharge": 25
+    },
+    "3006": {
+      "activation": 5,
+      "recharge": 45
+    },
+    "1736": {
+      "recharge": 30
+    },
+    "913": {
+      "energy": 10,
+      "recharge": 20
+    },
+    "790": {
+      "recharge": 20,
+      "description": "Hold Khanhei's ashes for 5...11 seconds. Whenever a foe strikes you in combat while you are holding Khanhei's ashes, you steal 5...35 Health from that foe.",
+      "concise": "(5...11 seconds.) You steal 5...35 Health from every foe that hits you with an attack."
+    },
+    "1268": {
+      "energy": 10
+    },
+    "370": {
+      "energy": 5,
+      "recharge": 20,
+      "description": "For 5...11 seconds, you attack 33% faster and gain 50% more adrenaline. Berserker Stance ends if you use a skill.",
+      "concise": "(5...11 seconds.) You attack 33% faster and gain 50% more adrenaline. Ends if you use a skill. "
+    },
+    "340": {
+      "recharge": 0
+    },
+    "907": {
+      "adrenaline": 10
+    },
+    "366": {
+      "recharge": 6,
+      "description": "All nearby foes lose 1...4 Energy. For 1...15 seconds, your melee attacks gain +5...30% chance of a critical hit against stationary foes.",
+      "concise": "(1...15 seconds.) You have +5...30% chance of a critical hit with melee attacks against stationary foes. Initial effect: nearby foes lose 1...4 Energy."
+    },
+    "372": {
+      "recharge": 30
+    },
+    "320": {
+      "energy": 10,
+      "recharge": 15
+    },
+    "1406": {
+      "recharge": 20,
+      "energy": 15,
+      "description": "Target touched foe takes 40...100 damage. You are Dazed for 5...20 seconds.",
+      "concise": "Deals 40...100 damage. You are Dazed (5...20 seconds). "
+    },
+    "381": {
+      "recharge": 25,
+      "description": "For 15 seconds, whenever you attack with a sword, all adjacent foes take 10...25 slashing damage.",
+      "concise": "(15 seconds.) Deals 10...25 slashing damage to all adjacent foes whenever you attack with a sword."
+    },
+    "390": {
+      "recharge": 15
+    },
+    "316": {
+      "recharge": 15
+    },
+    "39": {
+      "description": "Target foe loses 1...10 Energy. For each point of Energy lost, that foe takes 9 damage and nearby foes take the same damage.",
+      "concise": "Causes 1...10 Energy loss. Deals 9 damage to target for each point of Energy lost; nearby foes take the same damage."
+    },
+    "979": {
+      "description": "For 6 seconds, the next spell that target foe casts on one of your allies fails and deals 10...100 damage to that foe; nearby foes take the same damage.",
+      "concise": "(6 seconds.) The next spell that target foe casts on one of your allies fails and deals 10...100 damage to target; nearby foes take the same damage."
+    },
+    "3191": {
+      "description": "For 6 seconds, the next spell that target foe casts on one of your allies fails and deals 10...75 damage to that foe; nearby foes take the same damage.",
+      "concise": "(6 seconds.) The next spell that target foe casts on one of your allies fails and deals 10...75 damage to target; nearby foes take the same damage."
+    },
+    "898": {
+      "description": "For 5 seconds, target foe suffers -1...3 Health degeneration. If target foe is using a skill, then Overload deals 15...75 damage to that foe; adjacent foes take the same damage.",
+      "concise": "(5 seconds.) Causes -1...3 Health degeneration. If target foe is using a skill, that foe takes 15...75 damage; adjacent foes take the same damage."
+    },
+    "27": {
+      "description": "Remove one Mesmer hex from target foe. If a hex was removed, that foe takes 15...75 damage; all adjacent foes take the same damage.",
+      "concise": "Removes a Mesmer hex from target foe. Removal effect: 15...75 damage to target; adjacent foes take the same damage."
+    },
+    "1345": {
+      "description": "For 10 seconds, target foe casts enchantments 100...200% slower. If target foe is not under the effects of an enchantment when this hex is applied, that foe takes 10...100 damage; all adjacent foes take the same damage.",
+      "concise": "Causes 100...200% slower enchantment casting (10 seconds). Initial effect: deals 10...100 damage to target; adjacent foes take the same damage if target foe is not enchanted."
+    },
+    "31": {
+      "description": "For 2...16 seconds, target foe experiences -5 Health degeneration.",
+      "concise": "(2...16 seconds.) Causes -5 Health degeneration."
+    },
+    "3183": {
+      "description": "For 3...12 seconds, target foe suffers -1...8 Health degeneration and takes 100% longer to activate skills.",
+      "concise": "(3...12 seconds.) Causes -1...8 Health degeneration and doubles skill activation time."
+    },
+    "1346": {
+      "description": "Your next 1...3 spells use their normal attribute rank instead of your Illusion Magic attribute rank.",
+      "concise": "Your next 1...3 spells use their normal attribute rank instead of your Illusion Magic attribute rank."
+    },
+    "62": {
+      "description": "Target foe's elite skill is disabled for 1...16 seconds. Your non-Mesmer skills are disabled for 10 seconds.",
+      "concise": "Disables elite skill (1...16 seconds). Disables your non-Mesmer skills (10 seconds). "
+    },
+    "570": {
+      "description": "For 5...25 seconds, target foe suffers from -1...3 Health degeneration, and enchantments and stances on target foe expire 30...80% faster. All of your non-Assassin skills are disabled for 10 seconds.",
+      "concise": "(5...25 seconds.) Causes -1...3 Health degeneration. Enchantments and stances expire 30...80% faster on target foe. Disables your non-Assassin skills (10 seconds). "
+    },
+    "987": {
+      "description": "For 5...20 seconds, off-hand and dual attacks cost no Energy.",
+      "concise": "(5...20 seconds.) Your off-hand and dual attacks cost no Energy."
+    },
+    "1490": {
+      "description": "If it hits, this attack deals +10...20 damage and removes 1 Dervish enchantment. If a Dervish enchantment was removed, this skill recharges 75% faster and adjacent foes take 10...30 damage.",
+      "concise": "Deals +10...20 damage. Removes 1 of your Dervish enchantments. Removal Effect: this skill recharges 75% faster and adjacent foes take 10...30 damage."
+    },
+    "186": {
+      "description": "Send out a ball of fire that strikes target foe and all adjacent foes for 7...112 fire damage.",
+      "concise": "Projectile: deals 7...112 fire damage to target and adjacent foes."
+    },
+    "222": {
+      "description": "Strike target foe for 5...50 lightning damage. This spell has 25% armor penetration. If you are Overcast, that foe is hexed with Lightning Strike for 3 seconds. When this hex ends, that foe is struck again for 5...50 lightning damage.",
+      "concise": "Deals 5...50 lightning damage. 25% armor penetration. Hex for 3 seconds if Overcast. End effect: deals 5...50 lightning damage."
+    },
+    "228": {
+      "description": "Create a massive shockwave at target foe's location. Deals 10...50 lightning damage to target and all adjacent foes. Struck foes are interrupted and suffer from Cracked Armor and Weakness for 5...20 seconds. This spell has 25% armor penetration.",
+      "concise": "Deals 10...50 lightning damage. Also strikes adjacent foes. Inflicts Cracked Armor and Weakness (5...20 seconds). Causes interrupt. 25% armor penetration."
+    },
+    "2003": {
+      "description": "Remove one Hex from target ally. If a Hex was removed, that ally is healed for 30...120 Health.",
+      "concise": "Removes a Hex. Removal effect: Heals for 30...120."
+    },
+    "142": {
+      "description": "For 6...30 seconds, target foe and all nearby foes suffer -0...3 Health degeneration, and gain 20% less benefit from healing.",
+      "concise": "(6...30 seconds.) Target and nearby foes have -0...3 Health degeneration and receive 20% less benefit from healing."
+    },
+    "862": {
+      "description": "Deal 15...30 damage and steal 20...40 Health from target foe and all nearby foes.",
+      "concise": "Deals 15...30 damage and steals 20...40 Health from target and nearby foes."
+    },
+    "121": {
+      "description": "For 8...20 seconds, whenever target foe attacks or uses a skill, Spiteful Spirit deals 5...35 shadow damage to that foe and all adjacent allies of that foe.",
+      "concise": "(8...20 seconds.) Deals 5...35 damage to target and adjacent foes whenever this foe attacks or uses a skill."
+    },
+    "87": {
+      "description": "If target hostile animated undead has a master, its bond to its master is broken, making it hostile to all other creatures. If it had no master, you become its master. (50% failure chance with Death Magic 4 or less.)",
+      "concise": "Make target undead servant masterless. If it is already masterless, you become its master. 50% failure chance unless Death Magic 5 or more. "
+    },
+    "764": {
+      "description": "For 1...4 seconds, all of target foe's attributes are set to 0.",
+      "concise": "(1...4 seconds.) Target foe's attributes are 0."
+    },
+    "438": {
+      "description": "Your animal companion attempts a Maiming Strike that deals +5...20 damage. If that attack hits a foe suffering from a condition, that foe becomes Crippled for 3...15 seconds.",
+      "concise": "Deals +5...20 damage. Inflicts Crippled condition (3...15 seconds) if target has a condition."
+    },
+    "1228": {
+      "description": "The spirit nearest you loses all Energy. You gain 15...50% of that Energy.",
+      "concise": "The spirit nearest you loses all Energy. You gain 15...50% of that Energy."
+    },
+    "1257": {
+      "description": "For 10 seconds, target ally gains 1...15 Health per second and an additional 1...15 Health per second if that ally is within earshot of a spirit.",
+      "concise": "(10 seconds.) Target ally gains 1...15 Health each second. 1...15 more healing per second while within earshot of a spirit."
+    },
+    "335": {
+      "description": "If this attack hits, you strike for +10...30 damage.",
+      "concise": "Deals +10...30 damage."
+    },
+    "338": {
+      "description": "If Eviscerate hits, you strike for +1...31 damage and inflict a Deep Wound, lowering your target's maximum Health by 20% for 5...20 seconds.",
+      "concise": "Deals +1...31 damage. Inflicts Deep Wound condition (5...20 seconds)."
+    },
+    "1782": {
+      "description": "For 3 seconds, all allies within earshot gain 0...1 Energy regeneration.",
+      "concise": "(3 seconds.) Allies within earshot gain 0...1 Energy regeneration."
+    }
+  }
+}

@@ -581,6 +581,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 {
     auto* rw = new ReplayWindow();
     rw->m_matchMeta   = match;
+    rw->m_skillView   = GetSkillDatabase().GetView(match.year, match.month, match.day);
     rw->m_datManager   = sharedDatManager;
     rw->m_hashIndex    = &hashIndex;
 
@@ -2482,7 +2483,7 @@ void ReplayWindow::Tick()
         }
 
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             auto implicitClose = [&](int casterId) {
                 auto oc = openCasts.find(casterId);
                 if (oc == openCasts.end()) return;
@@ -2568,7 +2569,7 @@ void ReplayWindow::Tick()
         // 2) Process StoC attack skill events
         openCasts.clear();
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             auto implicitCloseSkillUse = [&](int casterId) {
                 auto oc = openCasts.find(casterId);
                 if (oc == openCasts.end()) return;
@@ -2685,7 +2686,7 @@ void ReplayWindow::Tick()
         // skills are active (e.g. Quickening Zephyr). In standard GvG this is rare.
         // Known limitation — no fix planned.
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             for (auto& [id, ard] : m_replayCtx.agents)
             {
                 // Group events by skill ID

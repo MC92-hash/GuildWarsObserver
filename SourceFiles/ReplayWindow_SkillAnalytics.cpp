@@ -43,7 +43,7 @@ std::vector<ReplayWindow::PlayerAnalytics> ReplayWindow::BuildAllPlayerAnalytics
     std::vector<PlayerAnalytics> out;
     if (!m_agentsClassified || !m_combatLogBuilt) return out;
 
-    const auto& sdb = GetSkillDatabase();
+    const auto& sdb = m_skillView;
 
     // Pre-index combat log rows by caster for O(N) total scan
     std::unordered_map<int, std::vector<size_t>> combatByCaster;

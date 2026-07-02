@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <memory>
 
 struct SkillInfo
 {
@@ -29,6 +30,31 @@ struct SkillInfo
     int  split_id = 0;
 };
 
+class SkillDatabaseView
+{
+public:
+    SkillDatabaseView() = default;
+    explicit SkillDatabaseView(std::shared_ptr<const std::unordered_map<int, SkillInfo>> data)
+        : m_data(std::move(data)) {}
+
+    const SkillInfo* Get(int skillId) const;
+    bool IsLoaded() const { return m_data && !m_data->empty(); }
+
+    template<typename Fn>
+    void ForEachSkill(Fn&& fn) const {
+        if (!m_data) return;
+        for (const auto& [id, info] : *m_data)
+            fn(info);
+    }
+
+    std::vector<int> SortSkillsForDisplay(const std::vector<int>& skillIds,
+                                           int primaryProf, int secondaryProf) const;
+    int ResolvePvpSkillId(int skillId) const;
+
+private:
+    std::shared_ptr<const std::unordered_map<int, SkillInfo>> m_data;
+};
+
 class SkillDatabase
 {
 public:
@@ -54,9 +80,22 @@ public:
 
     int ResolvePvpSkillId(int skillId) const;
 
+    void LoadPatches(const std::string& dataDir);
+    SkillDatabaseView GetView(int year, int month, int day);
+    SkillDatabaseView GetBaseView() const;
+
 private:
     std::unordered_map<int, SkillInfo> m_skills;
     bool m_loaded = false;
+
+    struct SkillPatch {
+        int dateKey = 0; // YYYYMMDD
+        std::unordered_map<int, SkillInfo> overrides; // skill ID -> old SkillInfo values
+        std::unordered_map<int, std::pair<std::string, std::string>> descOverrides; // skill ID -> {old description, old concise}
+    };
+    std::vector<SkillPatch> m_patches; // sorted by dateKey ascending
+    std::unordered_map<int, std::shared_ptr<const std::unordered_map<int, SkillInfo>>> m_viewCache;
+    std::shared_ptr<const std::unordered_map<int, SkillInfo>> m_baseView;
 };
 
 SkillDatabase& GetSkillDatabase();

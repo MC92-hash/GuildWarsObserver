@@ -28,6 +28,7 @@
 #include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
 #include "BitmapFont.h"
+#include "SkillDatabase.h"
 #include <string>
 #include <memory>
 #include <utility>
@@ -127,6 +128,7 @@ private:
 
     ReplayContext m_replayCtx;
     MatchMeta m_matchMeta;
+    SkillDatabaseView m_skillView;
     std::unique_ptr<Terrain> m_terrain;
 
     std::string m_errorMsg;

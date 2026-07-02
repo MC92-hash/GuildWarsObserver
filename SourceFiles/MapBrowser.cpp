@@ -314,6 +314,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
             if (std::filesystem::exists(dir / "Data" / "skilldata.json"))
             {
                 GetSkillDatabase().Load((dir / "Data").string());
+                GetSkillDatabase().LoadPatches((dir / "Data").string());
                 break;
             }
             if (!dir.has_parent_path() || dir == dir.parent_path()) break;
