@@ -493,56 +493,32 @@ void MapBrowser::Tick()
         if (IsIconic(m_deviceResources->GetWindow())) {
             return;
         }
-        if (GetForegroundWindow() != m_deviceResources->GetWindow()) {
-            // Still tick if a replay window is in the foreground
+        HWND foreground = GetForegroundWindow();
+        if (foreground != m_deviceResources->GetWindow()) {
+            // Check if a replay window has focus
             bool replayHasFocus = false;
             for (auto& rw : m_replay_windows)
-                if (rw && rw->IsAlive() && GetForegroundWindow() == rw->GetHWND())
+                if (rw && rw->IsAlive() && foreground == rw->GetHWND())
                     replayHasFocus = true;
             if (!replayHasFocus)
                 return;
+            // Replay window is focused - skip MapBrowser's own heavy rendering
+            // (shadow, reflection, full scene) to give all frame budget to replays
+            last_frame_time = high_resolution_clock::now();
+            return;
         }
     }
 
 
-    // Calculate the desired frame duration
-    milliseconds frame_duration(1000 / m_FPS_target);
-
-    // Get the current time
+    // Calculate elapsed time since last frame
     auto now = high_resolution_clock::now();
-
-    // Calculate the duration since the last frame
     duration<double, std::milli> elapsed = now - last_frame_time;
-
-    // Check if the elapsed time is less than the frame duration (unless extracting)
-    if (elapsed < frame_duration && !is_extracting) {
-        // Sleep for a short duration if not extracting to yield CPU time
-        std::this_thread::sleep_for(milliseconds(1));
-        return;
-    }
-
-    // Update the last frame time
-    last_frame_time = high_resolution_clock::now();
-
-    // #region agent log
-    auto _dbg_work_start = high_resolution_clock::now();
-    // #endregion
+    last_frame_time = now;
 
     m_timer.Tick([&]() {
         Update(elapsed);
         Render();
         });
-
-    // #region agent log
-    {
-        static int _dbg_fc = 0; if (++_dbg_fc % 60 == 0) {
-            double _w = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_work_start).count();
-            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
-            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"C\",\"location\":\"MapBrowser.cpp:Tick\",\"message\":\"frame\",\"data\":{\"elapsed_ms\":" << elapsed.count() << ",\"work_ms\":" << _w << "},\"timestamp\":" << _ts << "}\n";
-        }
-    }
-    // #endregion
 }
 
 // Updates the world.
@@ -632,10 +608,6 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
 
     m_map_renderer->Update(elapsed.count() / 1000.0);
 
-    // #region agent log
-    auto _dbg_ovl_start = high_resolution_clock::now();
-    // #endregion
-
     if (m_match_replay.IsLoaded())
     {
         float dt = static_cast<float>(elapsed.count() / 1000.0);
@@ -661,16 +633,6 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
     if (m_agent_overlay)
         m_agent_overlay->Update();
 
-    // #region agent log
-    {
-        static int _dbg_uc = 0; if (++_dbg_uc % 60 == 0) {
-            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_ovl_start).count();
-            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
-            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"A\",\"location\":\"MapBrowser.cpp:Update\",\"message\":\"overlay_update_time\",\"data\":{\"ms\":" << _ms << "},\"timestamp\":" << _ts << "}\n";
-        }
-    }
-    // #endregion
 }
 #pragma endregion
 
@@ -886,10 +848,6 @@ void MapBrowser::Render()
         m_map_renderer->RemoveBoneVisualization(boneLineIds);
     }
 
-    // #region agent log
-    auto _dbg_ovlr_start = high_resolution_clock::now();
-    // #endregion
-
     // --- Render Agent Overlay ---
     if (m_agent_overlay && m_agent_overlay->IsEnabled())
     {
@@ -903,40 +861,38 @@ void MapBrowser::Render()
         m_deviceResources->PIXEndEvent();
     }
 
-    // #region agent log
-    {
-        static int _dbg_rc = 0; if (++_dbg_rc % 60 == 0) {
-            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_ovlr_start).count();
-            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
-            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"B\",\"location\":\"MapBrowser.cpp:Render\",\"message\":\"overlay_render_time\",\"data\":{\"ms\":" << _ms << ",\"markers\":" << (m_agent_overlay ? (int)m_agent_overlay->GetMarkers().size() : -1) << "},\"timestamp\":" << _ts << "}\n";
-        }
-    }
-    // #endregion
 
     // --- Process Picking ---
-    // Resolve multisampled picking texture if necessary
-    if (m_deviceResources->GetMsaaLevelIndex() > 0) {
-        m_deviceResources->GetD3DDeviceContext()->ResolveSubresource(
-            m_deviceResources->GetPickingNonMsaaTexture(),
-            0,
-            m_deviceResources->GetPickingRenderTarget(),
-            0,
-            m_deviceResources->GetBackBufferFormat());
+    // Only perform expensive GPU->CPU readback on click
+    if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+        // Resolve multisampled picking texture if necessary
+        if (m_deviceResources->GetMsaaLevelIndex() > 0) {
+            m_deviceResources->GetD3DDeviceContext()->ResolveSubresource(
+                m_deviceResources->GetPickingNonMsaaTexture(),
+                0,
+                m_deviceResources->GetPickingRenderTarget(),
+                0,
+                m_deviceResources->GetBackBufferFormat());
 
-        // Copy picking texture to staging texture for CPU access
-        m_deviceResources->GetD3DDeviceContext()->CopyResource(
+            // Copy picking texture to staging texture for CPU access
+            m_deviceResources->GetD3DDeviceContext()->CopyResource(
+                m_deviceResources->GetPickingStagingTexture(),
+                m_deviceResources->GetPickingNonMsaaTexture());
+        }
+        else {
+            m_deviceResources->GetD3DDeviceContext()->CopyResource(
+                m_deviceResources->GetPickingStagingTexture(),
+                m_deviceResources->GetPickingRenderTarget());
+        }
+
+        m_cachedPickingObjectId = m_map_renderer->GetObjectId(
             m_deviceResources->GetPickingStagingTexture(),
-            m_deviceResources->GetPickingNonMsaaTexture());
-    }
-    else {
-        m_deviceResources->GetD3DDeviceContext()->CopyResource(
-            m_deviceResources->GetPickingStagingTexture(),
-            m_deviceResources->GetPickingRenderTarget());
+            m_input_manager->GetClientCoords(m_deviceResources->GetWindow()).x,
+            m_input_manager->GetClientCoords(m_deviceResources->GetWindow()).y);
     }
 
     auto mouse_client_coords = m_input_manager->GetClientCoords(m_deviceResources->GetWindow());
-    int hovered_object_id = m_map_renderer->GetObjectId(m_deviceResources->GetPickingStagingTexture(), mouse_client_coords.x, mouse_client_coords.y);
+    int hovered_object_id = m_cachedPickingObjectId;
 
     // Get prop_index id
     int prop_index = -1;
@@ -1038,23 +994,8 @@ void MapBrowser::Render()
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_deviceResources->PIXEndEvent();
 
-    // #region agent log
-    auto _dbg_present_start = high_resolution_clock::now();
-    // #endregion
-
     // --- Present Frame ---
     m_deviceResources->Present();
-
-    // #region agent log
-    {
-        static int _dbg_pc = 0; if (++_dbg_pc % 60 == 0) {
-            double _ms = std::chrono::duration<double, std::milli>(high_resolution_clock::now() - _dbg_present_start).count();
-            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
-            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"C\",\"location\":\"MapBrowser.cpp:Render\",\"message\":\"present_time\",\"data\":{\"ms\":" << _ms << "},\"timestamp\":" << _ts << "}\n";
-        }
-    }
-    // #endregion
 
     // --- Post-Present Logic (Safe to do non-UI work here) ---
     if (msaa_changed) {
@@ -1384,11 +1325,11 @@ void MapBrowser::RenderWaterReflection()
         m_map_renderer->GetCamera()->Update(0);
 
 #ifdef _DEBUG
-        constexpr float reflection_width = 16384 / 20;
-        constexpr float reflection_height = 16384 / 20;
+        constexpr float reflection_width = 819;
+        constexpr float reflection_height = 819;
 #else
-        constexpr float reflection_width = 16384 / 10;
-        constexpr float reflection_height = 16384 / 10;
+        constexpr float reflection_width = 1638;
+        constexpr float reflection_height = 1638;
 #endif
 
         // Update Camera Constant Buffer with light view projection matrix
@@ -1511,8 +1452,8 @@ void MapBrowser::RenderShadows()
         constexpr float shadowmap_width = 16384 / 2;
         constexpr float shadowmap_height = 16384 / 2;
 #else
-        constexpr float shadowmap_width = 16384;
-        constexpr float shadowmap_height = 16384;
+        constexpr float shadowmap_width = 8192;
+        constexpr float shadowmap_height = 8192;
 #endif
 
         // Update Camera Constant Buffer with light view projection matrix

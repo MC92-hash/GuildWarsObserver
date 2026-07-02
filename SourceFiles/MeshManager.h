@@ -141,7 +141,10 @@ public:
 	int AddCustomMesh(const Mesh& mesh, PixelShaderType pixel_shader_type = PixelShaderType::OldModel)
 	{
 		int meshID = m_nextMeshID++;
-		auto mesh_instance = std::make_shared<MeshInstance>(m_device, mesh, meshID);
+		Mesh mesh_with_bounds = mesh;
+		if (mesh_with_bounds.bounding_radius <= 0.0f)
+			mesh_with_bounds.bounding_radius = ComputeBoundingRadius(mesh_with_bounds);
+		auto mesh_instance = std::make_shared<MeshInstance>(m_device, mesh_with_bounds, meshID);
 		add_to_triangle_meshes(mesh_instance, pixel_shader_type);
 		m_needsUpdate = true;
 		return meshID;
@@ -150,7 +153,10 @@ public:
 	int AddCustomMesh(const Mesh* mesh, PixelShaderType pixel_shader_type = PixelShaderType::OldModel)
 	{
 		int meshID = m_nextMeshID++;
-		auto mesh_instance = std::make_shared<MeshInstance>(m_device, *mesh, meshID);
+		Mesh mesh_with_bounds = *mesh;
+		if (mesh_with_bounds.bounding_radius <= 0.0f)
+			mesh_with_bounds.bounding_radius = ComputeBoundingRadius(mesh_with_bounds);
+		auto mesh_instance = std::make_shared<MeshInstance>(m_device, mesh_with_bounds, meshID);
 		add_to_triangle_meshes(mesh_instance, pixel_shader_type);
 		m_needsUpdate = true;
 		return meshID;
@@ -491,7 +497,12 @@ public:
 			command->meshInstance->Draw(m_deviceContext, lod_quality);
 		}
 	}
-		
+
+	void SetViewProjMatrix(XMMATRIX vp)
+	{
+		XMStoreFloat4x4(&m_viewProj, vp);
+		m_hasViewProj = true;
+	}
 
 	void Render(std::unordered_map<PixelShaderType, std::unique_ptr<PixelShader>>& pixel_shaders,
 	            BlendStateManager* blend_state_manager, RasterizerStateManager* rasterizer_state_manager,
@@ -503,11 +514,38 @@ public:
 		)
 	{
 		static D3D11_PRIMITIVE_TOPOLOGY currentTopology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-		
-		static XMFLOAT3 prev_camera_position{ 0,0,0 };
+		static PixelShaderType lastSamplerShaderType = static_cast<PixelShaderType>(-1);
 
 		m_renderBatch.SortCommands(camera_position);
 		blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+
+		// Extract the 4 side frustum planes from the stored view-projection matrix.
+		// Near/far planes are skipped because the camera uses reverse-Z, which would
+		// require swapping them and risks incorrect culling of nearby geometry.
+		// The 4 side planes alone eliminate most off-screen geometry (half or more
+		// of props are behind or beside the camera at any given moment).
+		bool hasFrustumPlanes = false;
+		XMVECTOR frustumPlanes[4]; // left, right, bottom, top (normalised, w = -d)
+		if (m_hasViewProj)
+		{
+			XMMATRIX vp  = XMLoadFloat4x4(&m_viewProj);
+			XMMATRIX vpT = XMMatrixTranspose(vp);
+			// Gribb/Hartmann plane extraction (row-vector / DirectXMath convention).
+			// After transposing, vpT.r[i] corresponds to column i of the original VP.
+			// A world-space point P (homogeneous) is inside the frustum if
+			//   dot(P, plane) >= 0  for every plane.
+			frustumPlanes[0] = XMVectorAdd     (vpT.r[3], vpT.r[0]); // left
+			frustumPlanes[1] = XMVectorSubtract(vpT.r[3], vpT.r[0]); // right
+			frustumPlanes[2] = XMVectorAdd     (vpT.r[3], vpT.r[1]); // bottom
+			frustumPlanes[3] = XMVectorSubtract(vpT.r[3], vpT.r[1]); // top
+			// Normalise so the w component is a signed distance in world units.
+			for (int i = 0; i < 4; ++i)
+			{
+				XMVECTOR len = XMVector3Length(frustumPlanes[i]);
+				frustumPlanes[i] = XMVectorDivide(frustumPlanes[i], len);
+			}
+			hasFrustumPlanes = true;
+		}
 
 		for (const RenderCommand& command : m_renderBatch.GetCommands())
 		{
@@ -519,6 +557,41 @@ public:
 				}
 				if (command.blend_state == BlendState::AlphaBlend && render_select_state != RenderSelectionState::TransparentOnly) {
 					continue;
+				}
+			}
+
+			// Frustum cull using a bounding sphere in world space.
+			// The local-space center is added to the world translation to get the
+			// world-space sphere centre.  Only meshes with a computed radius are tested;
+			// meshes with radius == 0 (e.g. agent overlay primitives) are always drawn.
+			if (hasFrustumPlanes)
+			{
+				const float radius = command.meshInstance->GetMesh().bounding_radius;
+				if (radius > 0.0f)
+				{
+					const XMFLOAT3& localCenter  = command.meshInstance->GetMesh().center;
+					const XMFLOAT4X4& world      = command.meshInstance->GetPerObjectData().world;
+					const XMFLOAT3 worldTranslation = GetPositionFromMatrix(world);
+					// World-space sphere centre = local centre + world translation.
+					// (Assumes no rotation/scale applied to center for this conservative test.)
+					XMVECTOR sphereCenter = XMVectorSet(
+						localCenter.x + worldTranslation.x,
+						localCenter.y + worldTranslation.y,
+						localCenter.z + worldTranslation.z,
+						1.0f);
+
+					bool outside = false;
+					for (int i = 0; i < 4; ++i)
+					{
+						float dist = XMVectorGetX(XMVector4Dot(sphereCenter, frustumPlanes[i]));
+						if (dist < -radius)
+						{
+							outside = true;
+							break;
+						}
+					}
+					if (outside)
+						continue;
 				}
 			}
 
@@ -537,10 +610,14 @@ public:
 			else if (should_set_ps) {
 				m_deviceContext->PSSetShader(pixel_shaders[command.pixelShaderType]->GetShader(), nullptr, 0);
 			}
-			m_deviceContext->PSSetSamplers(0, 1, pixel_shaders[command.pixelShaderType]->GetSamplerState());
-			m_deviceContext->PSSetSamplers(1, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateShadow());
-			m_deviceContext->PSSetSamplers(2, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateClampLinear());
-			m_deviceContext->PSSetSamplers(3, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateWrapLinear());
+			// Only rebind samplers when the shader type changes
+			if (command.pixelShaderType != lastSamplerShaderType) {
+				m_deviceContext->PSSetSamplers(0, 1, pixel_shaders[command.pixelShaderType]->GetSamplerState());
+				m_deviceContext->PSSetSamplers(1, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateShadow());
+				m_deviceContext->PSSetSamplers(2, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateClampLinear());
+				m_deviceContext->PSSetSamplers(3, 1, pixel_shaders[command.pixelShaderType]->GetSamplerStateWrapLinear());
+				lastSamplerShaderType = command.pixelShaderType;
+			}
 
 
 			if (wireframe) {
@@ -575,7 +652,28 @@ private:
 	std::unordered_map<int, std::shared_ptr<MeshInstance>> m_lineMeshes;
 	RenderBatch m_renderBatch;
 
+	XMFLOAT4X4 m_viewProj;
+	bool m_hasViewProj = false;
+
 	Microsoft::WRL::ComPtr<ID3D11Buffer> m_perObjectCB;
+
+	static float ComputeBoundingRadius(const Mesh& mesh)
+	{
+		if (mesh.vertices.empty())
+			return 0.0f;
+		const XMFLOAT3& c = mesh.center;
+		float maxDistSq = 0.0f;
+		for (const GWVertex& v : mesh.vertices)
+		{
+			float dx = v.position.x - c.x;
+			float dy = v.position.y - c.y;
+			float dz = v.position.z - c.z;
+			float distSq = dx * dx + dy * dy + dz * dz;
+			if (distSq > maxDistSq)
+				maxDistSq = distSq;
+		}
+		return sqrtf(maxDistSq);
+	}
 
 	void add_to_triangle_meshes(std::shared_ptr<MeshInstance> mesh_instance,
 	                            PixelShaderType pixel_shader_type)

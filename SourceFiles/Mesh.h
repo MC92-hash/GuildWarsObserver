@@ -27,4 +27,5 @@ struct Mesh
 	int num_textures;
 
 	XMFLOAT3 center;
+	float bounding_radius = 0.0f;
 };

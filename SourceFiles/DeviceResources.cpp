@@ -265,7 +265,7 @@ void DeviceResources::UpdateOffscreenResources(int width, int height, float aspe
 
     // Only use MSAA if not disabled (for high-quality static exports, MSAA is not needed)
     if (!disableMsaa) {
-        std::vector<UINT> sampleCounts = { 16, 8, 4, 2, 1 };
+        std::vector<UINT> sampleCounts = { 2, 1 };
         // Find the best supported MSAA level
         for (auto& count : sampleCounts) {
             UINT qualityLevels;
@@ -610,10 +610,8 @@ void DeviceResources::Present()
     }
     else
     {
-        // The first argument instructs DXGI to block until VSync, putting the application
-        // to sleep until the next VSync. This ensures we don't waste any cycles rendering
-        // frames that will never be displayed to the screen.
-        hr = m_swapChain->Present(1, 0);
+        // VSync: sync interval 1 blocks until next VSync; 0 presents immediately.
+        hr = m_swapChain->Present(m_vsyncEnabled ? 1 : 0, 0);
     }
 
     // Discard the contents of the render target.
@@ -654,6 +652,10 @@ void DeviceResources::Present()
 
 void DX::DeviceResources::CreateReflectionResources(UINT width, UINT height)
 {
+    // Skip recreation if dimensions haven't changed and resources exist
+    if (width == m_reflectionWidth && height == m_reflectionHeight && m_reflectionRTV)
+        return;
+
     // Reset existing resources
     m_reflectionRTV.Reset();
     m_reflectionSRV.Reset();
@@ -661,6 +663,9 @@ void DX::DeviceResources::CreateReflectionResources(UINT width, UINT height)
     m_reflectionDepthStencil.Reset();
     m_reflectionDepthStencilView.Reset();
     m_d3dContext->Flush();
+
+    m_reflectionWidth = width;
+    m_reflectionHeight = height;
 
     // Setup the texture description for the reflection render target
     D3D11_TEXTURE2D_DESC reflectionDesc = {};
@@ -727,10 +732,17 @@ void DX::DeviceResources::CreateReflectionResources(UINT width, UINT height)
 
 void DeviceResources::CreateShadowResources(UINT shadowMapWidth, UINT shadowMapHeight)
 {
+    // Skip recreation if dimensions haven't changed and resources exist
+    if (shadowMapWidth == m_shadowWidth && shadowMapHeight == m_shadowHeight && m_shadowMap)
+        return;
+
     m_shadowMap.Reset();
     m_shadowMapSRV.Reset();
     m_shadowMapDSV.Reset();
     m_d3dContext->Flush();
+
+    m_shadowWidth = shadowMapWidth;
+    m_shadowHeight = shadowMapHeight;
 
     // Shadow map texture description
     D3D11_TEXTURE2D_DESC texDesc = {};

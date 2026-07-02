@@ -66,6 +66,8 @@ public:
     void GetDefaultSize(int& width, int& height) const noexcept;
 
 private:
+    int m_cachedPickingObjectId = -1;
+
     void Update(duration<double, std::milli> elapsed);
     void Render();
 
