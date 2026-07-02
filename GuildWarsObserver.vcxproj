@@ -101,7 +101,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:__cplusplus /bigobj %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
@@ -125,7 +125,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <FloatingPointModel>Fast</FloatingPointModel>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:__cplusplus /bigobj %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
@@ -151,7 +151,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:__cplusplus /bigobj %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
@@ -181,7 +181,7 @@
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <FloatingPointModel>Fast</FloatingPointModel>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:__cplusplus /bigobj %(AdditionalOptions)</AdditionalOptions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <OmitFramePointers>false</OmitFramePointers>
@@ -518,6 +518,33 @@
     <ClCompile Include="SourceFiles\draw_debug_match_metadata.cpp" />
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Notepad.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_FogOfWar.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_LordDamage.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_CombatLog.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Morale.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PianoRoll.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_SkillAnalytics.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_DebugWindows.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_EventTimeline.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PartyWindows.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_BundleCarry.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Flags.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_AssetInspector.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_TimelineController.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_AutoCamera.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Heatmap.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Audio.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Shrine.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_RangeRings.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Props.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PiP.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Effects.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PlayerInfo.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_AgentOverlay.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_LoadingScreen.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_AgentModels.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Preferences.cpp" />
     <ClCompile Include="SourceFiles\CatapultLeverState.cpp" />
     <ClCompile Include="SourceFiles\HeatmapData.cpp" />
     <ClCompile Include="SourceFiles\HeatmapRenderer.cpp" />
