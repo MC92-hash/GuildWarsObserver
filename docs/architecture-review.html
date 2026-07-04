@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GW Observer — Architecture Review</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d222b; --ink:#e6e9ef; --mut:#9aa4b2;
+    --line:#2a303b; --accent:#6ea8fe; --code:#e3b341;
+    --p1:#ff6b6b; --p2:#ffb454; --p3:#ffd866; --good:#5ad19b;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--sans);}
+  .wrap{max-width:960px;margin:0 auto;padding:48px 24px 96px;}
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:36px;}
+  .kicker{color:var(--accent);font-weight:600;letter-spacing:.08em;text-transform:uppercase;font-size:12px;}
+  h1{font-size:34px;line-height:1.15;margin:.35em 0 .25em;letter-spacing:-.01em;}
+  .sub{color:var(--mut);font-size:16px;max-width:70ch;}
+  .meta{color:var(--mut);font-size:13px;margin-top:14px;display:flex;gap:18px;flex-wrap:wrap;}
+  .meta b{color:var(--ink);font-weight:600;}
+  h2{font-size:24px;margin:52px 0 14px;letter-spacing:-.01em;scroll-margin-top:20px;}
+  h3{font-size:18px;margin:30px 0 10px;color:#cfd6e2;}
+  p{margin:.6em 0;}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  code{font-family:var(--mono);font-size:.86em;color:var(--code);background:#12151b;padding:.12em .38em;border-radius:4px;border:1px solid #232a34;}
+  pre{background:#0c0e13;border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.5;color:#c9d2df;}
+  ul,ol{padding-left:22px;}
+  li{margin:.3em 0;}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:8px 0 12px;}
+  .toc h4{margin:0 0 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);}
+  .toc ol{margin:0;columns:2;column-gap:32px;}
+  .toc a{color:#cfd6e2;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px 22px 18px;margin:18px 0;}
+  .callout{border-left:3px solid var(--accent);background:var(--panel2);padding:12px 18px;border-radius:0 8px 8px 0;margin:16px 0;color:#d7dde7;}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14.5px;}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;}
+  th{color:var(--mut);font-weight:600;font-size:12px;letter-spacing:.04em;text-transform:uppercase;}
+  tbody tr:hover{background:#161a21;}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.03em;white-space:nowrap;}
+  .b-p1{background:rgba(255,107,107,.15);color:var(--p1);border:1px solid rgba(255,107,107,.35);}
+  .b-p2{background:rgba(255,180,84,.14);color:var(--p2);border:1px solid rgba(255,180,84,.35);}
+  .b-p3{background:rgba(255,216,102,.12);color:var(--p3);border:1px solid rgba(255,216,102,.32);}
+  .b-good{background:rgba(90,209,155,.13);color:var(--good);border:1px solid rgba(90,209,155,.32);}
+  .b-eff{background:#232a34;color:#c9d2df;border:1px solid #313a47;}
+  .risk{border:1px solid var(--line);border-radius:12px;padding:2px 20px 14px;margin:14px 0;background:var(--panel);}
+  .risk h3{display:flex;align-items:center;gap:10px;}
+  .risk .n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;background:#232a34;color:var(--accent);font-weight:700;font-size:14px;flex:none;}
+  details{border:1px solid var(--line);border-radius:12px;margin:14px 0;background:var(--panel);overflow:hidden;}
+  details[open]{background:var(--panel);}
+  summary{cursor:pointer;padding:16px 20px;font-weight:600;font-size:16.5px;list-style:none;display:flex;align-items:center;gap:12px;}
+  summary::-webkit-details-marker{display:none;}
+  summary .chev{transition:transform .18s;color:var(--mut);}
+  details[open] summary .chev{transform:rotate(90deg);}
+  summary .tag{font-size:11px;font-weight:700;color:var(--accent);background:#1c2431;border:1px solid #2a3646;padding:2px 8px;border-radius:6px;}
+  .details-body{padding:2px 24px 22px;border-top:1px solid var(--line);}
+  .details-body h4{font-size:15px;color:#cfd6e2;margin:22px 0 6px;}
+  .strengths li::marker{color:var(--good);}
+  hr{border:none;border-top:1px solid var(--line);margin:40px 0;}
+  .foot{color:var(--mut);font-size:13px;margin-top:48px;border-top:1px solid var(--line);padding-top:20px;}
+  .fileline{color:var(--code);font-family:var(--mono);font-size:.85em;}
+  @media (max-width:640px){.toc ol{columns:1;}h1{font-size:27px;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">Architecture Review</div>
+  <h1>GW Observer</h1>
+  <p class="sub">A Windows-native <b>C++20 / DirectX&nbsp;11</b> replay viewer for Guild Wars&nbsp;1 GvG matches. Single VS2022 project, all dependencies vendored in-tree, secrets injected at compile time from a private sibling repo. ~275 source files — but the architectural mass is concentrated in a handful of places.</p>
+  <div class="meta">
+    <span><b>Repos:</b> GWObserver-git · gwobserver-private</span>
+    <span><b>Date:</b> 2026-07-02</span>
+    <span><b>Method:</b> 4 parallel subsystem reviews</span>
+    <span><b>Scope:</b> read-only</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#shape">System shape</a></li>
+    <li><a href="#strengths">What's done well</a></li>
+    <li><a href="#risks">Cross-cutting risks</a></li>
+    <li><a href="#priorities">Consolidated priorities</a></li>
+    <li><a href="#verdict">Overall verdict</a></li>
+    <li><a href="#deep">Full subsystem reports</a></li>
+  </ol>
+</nav>
+
+<h2 id="shape">System shape</h2>
+<p>Three genuinely independent pillars (cloud distribution, GW asset decoding, replay ingestion) feed one heavily-centralized presentation layer.</p>
+<pre>Main.cpp (WinMain, msg pump, crash dumps, BASS load)
+  └─ MapBrowser  ── the app singleton: DeviceResources, MapRenderer, DATManager,
+     │              cloud stack (HttpClient/S3Auth/MatchIndex/SyncEngine/UpdateChecker),
+     │              ~30 modular draw_*.cpp ImGui panels
+     └─ ReplayWindow[]  ── one per open match; OWN D3D device + ImGui context + renderer
+                          + the entire analytics/overlay/audio/camera feature set
+
+Data plane:   Gw.dat → GWUnpacker/DATManager → FFNA/BB8/BB9/ATEX parsers → caches → renderer
+Replay plane: R2 bucket → tar.gz → infos.json + Agents/*.txt.gz + StoC/*.txt.gz → ReplayContext
+Render plane: shadow → water-reflection → scene (sky/terrain/props/water) → overlays → ImGui → Present</pre>
+
+<h2 id="strengths">What's done well</h2>
+<div class="card">
+<ul class="strengths">
+  <li><b>Phased, time-budgeted loading</b> (<code>Validate→…→Ready</code>, 30 ms/frame budget) keeps windows interactive during multi-second map loads — applied consistently across props, agent models, and derivations.</li>
+  <li><b>Disciplined async/GPU split</b>: DAT reads + parsing happen off-thread with an explicit "no D3D calls" contract; all GPU resource creation is confined to the render thread. Multi-context ImGui is handled correctly (save/restore at every entry point — the hard part).</li>
+  <li><b>The newer parser generation is genuinely defensive</b> (<code>BB9AnimationParser</code>, <code>VLEDecoder</code>, <code>BB8Geometry</code>, <code>FileReference</code>) — bounds-checked, <code>std::optional</code>, catches decoder throws. Reverse-engineering provenance preserved in comments.</li>
+  <li><b>Clean secret layering</b>: safe-by-default public repo, <code>__has_include</code> compile-time override, gitignore discipline verified end-to-end, only hashes (never plaintext keys) in the private repo, <code>constexpr</code> dev-mode dead-strips debug UI.</li>
+  <li><b>AgentOverlay</b> is a model DX11 sub-pass: single instanced draw, reserved CB slot <code>b4</code>, documented state-restoration contract.</li>
+  <li><b>Robust field ops</b>: symbolized minidump handler, R2 pipeline with dry-run/validation/status tracking, atomic download hygiene (tmp+rename, retry/backoff, offline fallback), zip-slip + decompression-bomb guards.</li>
+</ul>
+</div>
+
+<h2 id="risks">Cross-cutting risks</h2>
+<p class="sub">These recurred across subsystems — the number of agents that independently flagged each is noted.</p>
+
+<div class="risk">
+  <h3><span class="n">1</span> The <code>ReplayWindow</code> monolith <span class="badge b-p1">all 4 agents</span></h3>
+  <p>29,161 lines / 1.24 MB in one translation unit (docs claim ~17K — stale by 70%), ~140 methods, several hundred fields spanning rendering, data derivation, every analytics panel, audio, cameras, and per-map hacks. The main window already proves the fix — its 30 panels live in separate <code>draw_*.cpp</code> files; the replay window never got that treatment. Compounded by an <b>implicit ~21-boolean-flag derivation DAG</b> in <code>Tick()</code> whose ordering lives only in comment prose.</p>
+</div>
+
+<div class="risk">
+  <h3><span class="n">2</span> Shipping-quality defects in hot paths <span class="badge b-p1">3 agents</span></h3>
+  <ul>
+    <li>Hardcoded <code>D:\Guild Wars OBS\...\debug-dddcee.log</code> writes opened <b>every 60 frames</b> at ~6 sites in <code>MapBrowser.cpp</code> + <code>AgentOverlay.cpp</code> — machine-generated <code>#region agent log</code> blocks left in release.</li>
+    <li>Null-deref UB on the <b>fresh-install path</b>: <span class="fileline">Main.cpp:216</span> calls <code>g_map_browser-&gt;GetDefaultSize()</code> before the object is constructed at <span class="fileline">:231</span> (works only because the method ignores <code>this</code>).</li>
+  </ul>
+</div>
+
+<div class="risk">
+  <h3><span class="n">3</span> Parsing safety on untrusted / corrupt input <span class="badge b-p1">2 agents</span></h3>
+  <ul>
+    <li><code>FFNA_MapFile.h</code> parses the game <code>.dat</code> with <b>almost no bounds checking</b> — struct-at-offset <code>memcpy</code>s with file-controlled sizes, unchecked <code>uint32×uint32</code> multiplies, signed chunk-offset arithmetic that can overflow. A truncated/modded DAT (or wrong file from the setup wizard) → memory corruption instead of a load error. <code>FFNA_ModelFile</code> already demonstrates the fix pattern.</li>
+    <li>ATEX decoder: a confirmed <b><code>&amp;&amp;</code> vs <code>&amp;</code> bug</b> (<span class="fileline">AtexDecompress.cpp:21</span> — <code>AlphaDataSize2</code> is always 0, corrupting alpha-format block size), plus <code>exit(0)</code> on malformed texture data (one bad asset kills the app) and a type-punned <code>delete[]</code>.</li>
+    <li><b>Unguarded exceptions on background threads</b>: <code>MatchIndex::ParseJson</code>'s throwing <code>.get&lt;int&gt;()</code> accessors run on <code>SyncEngine</code>'s thread with no try/catch → <code>std::terminate</code> on a malformed <i>remote</i> file. Same risk in <code>UpdateChecker</code>.</li>
+  </ul>
+</div>
+
+<div class="risk">
+  <h3><span class="n">4</span> Resilience gaps <span class="badge b-p2">2 agents</span></h3>
+  <ul>
+    <li><b>Device-lost is effectively unimplemented</b> — <code>ReplayWindow::OnDeviceLost/Restored</code> are empty, <code>MapBrowser</code>'s are TODO stubs; nothing recreates renderer resources / textures / meshes or re-inits the ImGui backend. A driver update leaves every open window on dangling COM pointers.</li>
+    <li><b>Self-update trusts transport only</b> — downloads and installs an exe/zip with no signature/hash check (HTTPS + GitHub account control is the entire trust boundary), even though <code>index.json</code> already carries a <code>size_bytes</code> that's never verified.</li>
+  </ul>
+</div>
+
+<div class="risk">
+  <h3><span class="n">5</span> Credentials &amp; config <span class="badge b-p2">2 agents</span></h3>
+  <ul>
+    <li><b>R2 read credentials compiled into the shipped exe</b> (extractable via <code>strings</code>), <i>and</i> the working-tree vs private-repo <code>build_config.local.h</code> carry <b>two different key IDs</b> with no marker of which is live or whether the stale pair was revoked. Bucket-wide read scope matters if private prefixes (scrims) ever share the bucket.</li>
+    <li>Contributor key stored <b>plaintext</b> in <code>gui_settings.ini</code> and passed on the <code>push_builds.py</code> command line.</li>
+    <li>Config duplicated across <code>SetupConfig</code> (<code>%APPDATA%</code>) and <code>GuiGlobalConstants</code> (<code>gui_settings.ini</code>) — drift hazard.</li>
+  </ul>
+</div>
+
+<div class="risk">
+  <h3><span class="n">6</span> Performance &amp; memory <span class="badge b-p2">rendering + data</span></h3>
+  <p>Per-frame <b>blocking picking readback</b> (CPU/GPU stall, no latency ring); <b>no frustum culling</b> anywhere; <b>~1 GiB 16384² shadow map</b> in release; water-reflection RTs recreated every frame with a pipeline <code>Flush()</code>; unbounded texture caches holding a redundant full RGBA CPU copy per texture; stale transparency sort (never re-sorts on camera move); N devices × serial vsync <code>Present</code> (FPS drops ~linearly per open window). On the data side, every <code>AgentSnapshot</code>/StoC event retains its full <code>raw_line</code> string, 2–3×-ing replay memory.</p>
+</div>
+
+<div class="risk">
+  <h3><span class="n">7</span> Coupling via global mutable state <span class="badge b-p3">core + UI</span></h3>
+  <p>Panel↔core communication runs through <code>inline</code> header globals (<code>g_pendingReplay</code>, <code>g_refresh*</code>, <code>g_modelViewerState</code>) and a 500-line all-public <code>GuiGlobalConstants</code> static blob; pervasive function-local <code>static</code> state makes UI single-instance and untestable. <code>ReplayMapData.h</code> is a ~1.2K-line god-header dragging the render data model into the parse layer.</p>
+</div>
+
+<div class="risk">
+  <h3><span class="n">8</span> Documentation drift <span class="badge b-p3">all 4 agents</span></h3>
+  <p>CLAUDE.md misattributes spatial audio to BASS (it's XAudio2), understates <code>ReplayWindow</code> size by 70%, points at a solution path that doesn't exist, and names an animation file that isn't there; <code>OVERLAY_DESIGN.md</code> predates the instanced overlay.</p>
+</div>
+
+<h2 id="priorities">Consolidated priorities</h2>
+<table>
+  <thead>
+    <tr><th style="width:34px">#</th><th>Action</th><th style="width:90px">Effort</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Delete/gate the <code>debug-dddcee.log</code> blocks; fix the <code>g_map_browser</code> pre-construction call</td>
+      <td><span class="badge b-eff">Trivial</span></td>
+      <td>Real defects in the hottest, most-traveled paths, on every user's machine</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Fix the ATEX bugs (<code>&amp;&amp;</code>→<code>&amp;</code>, remove <code>exit(0)</code>, harden size checks); verify RGBA/BGRA order</td>
+      <td><span class="badge b-eff">Low</span></td>
+      <td>Load-bearing RE path; a bad texture currently crashes the app</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Harden <code>FFNA_MapFile.h</code> to the <code>FFNA_ModelFile</code> standard; wrap sync/update threads in try/catch</td>
+      <td><span class="badge b-eff">Med</span></td>
+      <td>Turns memory corruption / <code>std::terminate</code> into graceful load errors</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Reconcile &amp; rotate the two R2 key pairs; document the authoritative source; move toward presigned URLs</td>
+      <td><span class="badge b-eff">Low–Med</span></td>
+      <td>Live security / rotation ambiguity</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Implement real device-lost recovery (or graceful teardown with a user message)</td>
+      <td><span class="badge b-eff">Med</span></td>
+      <td>Currently silent corruption on any GPU reset</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Stop recreating shadow/reflection RTs per frame; make picking non-blocking; add frustum culling; drop shadow map to 4–8K</td>
+      <td><span class="badge b-eff">Med</span></td>
+      <td>Biggest frame-time wins, especially with multiple windows</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Extract 6–8 feature clusters out of <code>ReplayWindow.cpp</code> (follow the <code>draw_*.cpp</code> pattern); replace the boolean-flag chain with a declarative build pipeline</td>
+      <td><span class="badge b-eff">High</span></td>
+      <td>The structural root cause behind most maintainability pain</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>Move <code>builds.json</code> fetch off the UI thread; debounce settings writes; unify path config; update the docs</td>
+      <td><span class="badge b-eff">Low</span></td>
+      <td>Removes first-paint hitches and per-frame file writes</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="verdict">Overall verdict</h2>
+<div class="callout">
+A capable, pragmatically-engineered tool with real strengths — phased loading, async discipline, secret layering, rigorous reverse-engineering — whose main liabilities are <b>concentrated and addressable</b>: a monolithic god object, a few leftover-debug / parsing-safety defects, absent device-lost handling, and credential-rotation hygiene. None of the top risks require architectural upheaval; priorities&nbsp;#1–#5 are largely bounded fixes.
+</div>
+
+<hr>
+
+<h2 id="deep">Full subsystem reports</h2>
+<p class="sub">The four parallel reviews, verbatim, with complete <span class="fileline">file:line</span> citations. Click to expand.</p>
+
+<details>
+  <summary><span class="chev">▸</span> <span class="tag">1</span> Application core, control flow &amp; build structure</summary>
+  <div class="details-body">
+    <h4>Purpose &amp; role</h4>
+    <p>The skeleton of GW Observer: the process entry point and Win32 message pump (<code>SourceFiles\Main.cpp</code>), the main-application singleton <code>MapBrowser</code> (browser UI, DAT management, cloud sync, update checking, lifecycle owner of replay windows), and <code>ReplayWindow</code> — a per-match top-level window that owns its own D3D11 device, ImGui context, renderer, replay data pipeline, and every analytical feature. Build structure is a single VS2022 project with all third-party code vendored in-tree and feature/credential configuration injected at compile time via <code>build_config.h</code>.</p>
+
+    <h4>Structure</h4>
+    <ul>
+      <li><code>Main.cpp</code> (688 lines) — <code>wWinMain</code>, crash-dump handler with symbolized stack walk (<span class="fileline">15–104</span>), window class + creation, BASS/BASS_FX runtime loading via <code>GetProcAddress</code> (<span class="fileline">249–304</span>), main <code>PeekMessage</code> loop (<span class="fileline">309–322</span>), <code>WndProc</code> (<span class="fileline">356–685</span>) which also embeds model-viewer mouse handling.</li>
+      <li><code>MapBrowser.h/.cpp</code> (2,215 lines) — main app object (<code>DX::IDeviceNotify</code>). Owns <code>DeviceResources</code>, <code>MapRenderer</code>, <code>AgentOverlay</code>, <code>DATManager</code> map, <code>ReplayLibrary</code>, <code>FolderWatcher</code>, the cloud stack, <code>UpdateChecker</code>, and <code>std::vector&lt;std::unique_ptr&lt;ReplayWindow&gt;&gt;</code> (<span class="fileline">MapBrowser.h:96–160</span>).</li>
+      <li><code>ReplayWindow.h/.cpp</code> — 1,133-line header; <b>29,161-line / 1.24 MB implementation</b> — the per-match god object. (CLAUDE.md:56 says "~17K lines" — stale by ~70%.)</li>
+      <li><code>pch.h</code> — precompiled header; also a grab-bag of app-wide helpers (<code>DX::ThrowIfFailed</code>, BASS typedefs at <span class="fileline">85–103</span>, file dialogs, <code>LODQuality</code>).</li>
+      <li><code>GuiGlobalConstants.h/.cpp</code> — settings "singleton" as <code>inline static</code> public fields (517-line header), persisted via <code>LoadSettings()/SaveSettings()</code>, seeded from <code>build_config.h</code>.</li>
+      <li><code>build_config.h</code> + <code>build_config.local.h(.example)</code> — version, cloud enable/host, developer mode, R2 credentials as preprocessor defines; local override discovered via <code>__has_include</code> or the adjacent private repo (<code>$(ProjectDir)\..\gwobserver-private</code> on the include path, <span class="fileline">vcxproj:95</span>).</li>
+      <li><code>draw_*.cpp/h</code> (30 files) — modular ImGui panels for the <i>main</i> window, driven from <code>draw_ui()</code> inside <code>MapBrowser::Render()</code> (<span class="fileline">MapBrowser.cpp:985</span>).</li>
+      <li>Build: single project, Debug/Release × Win32/x64; 145 <code>ClCompile</code> entries; ImGui/DirectXTex compiled directly into the exe with PCH disabled per-file (<span class="fileline">vcxproj:377–380</span>). Vendored: DearImGui 1.90.1-WIP, DirectXTex, ImGuiFileDialog, peglib, tinytiff (prebuilt libs), miniz, nanosvg; BASS DLLs extracted from exe resources at runtime. No package manager, no submodules.</li>
+    </ul>
+
+    <h4>Control flow</h4>
+    <p><b>Startup</b> (<span class="fileline">Main.cpp:163–307</span>): <code>SetUnhandledExceptionFilter</code> → <code>XMVerifyCPUSupport</code> → <code>CoInitializeEx(MULTITHREADED)</code> → self-updater cleanup → register class → <code>LoadSettings()</code> → create window → <code>InputManager</code> + <code>MapBrowser</code> → BASS bind → <code>MapBrowser::Initialize()</code>.</p>
+    <p><b>Main loop</b> (<span class="fileline">Main.cpp:311–322</span>): <code>PeekMessage</code>/<code>Tick</code>. <code>MapBrowser::Tick()</code> services replay-window plumbing first, then sync/update flags, then gates rendering (skip when minimized/unfocused) with a soft 60 FPS limiter (<span class="fileline">MapBrowser.cpp:492–522</span>).</p>
+    <p><b>Replay windows</b>: opening a match is requested via inline global <code>g_pendingReplay</code>, consumed in <code>ProcessPendingReplayRequest()</code>; cloud matches spawn a download thread polled in <code>ProcessCloudDownloadResult()</code>. Each <code>ReplayWindow::Create</code> builds its own HWND, <b>its own D3D11 device</b>, InputManager, MapRenderer, and ImGui context, sharing only the <code>DATManager*</code> and parent hash index by pointer.</p>
+    <p><b>Per-window tick</b> (<span class="fileline">ReplayWindow.cpp:4204–5280</span>): polls async parse completion, runs a chain of one-shot derivations guarded by ~21 boolean <code>*Built/*Loaded/*Initialized</code> flags, advances the clock, then dispatches the <b>loading state machine</b> <code>Validate → Init → PropModels → PlaceProps → FadingOut → Ready/Error</code> with time-budgeted batching (<code>kLoadFrameBudgetMs = 30</code>).</p>
+    <p><b>Threading</b>: single UI/render thread; background workers communicate almost exclusively by <code>std::atomic</code> flags polled each frame (SyncEngine, cloud download, FolderWatcher, DATManager scan pool, per-window agent-model IO). Notably <b>no <code>std::mutex</code> anywhere in ReplayWindow.cpp</b> — correctness rests on polling flags and phase ordering.</p>
+
+    <h4>Concerns / risks</h4>
+    <ul>
+      <li><b>ReplayWindow monolith</b> — 29,161 lines in one TU; every feature a private member; any touch recompiles the world.</li>
+      <li><b>Implicit flag-driven state machine</b> — ordering constraints encoded in comment prose ("before BuildTimelineData so…", <span class="fileline">:5176</span>); a missed flag means silent recomputation or a stage that never runs.</li>
+      <li><b>Null-deref UB at first launch</b> — <span class="fileline">Main.cpp:216</span> calls <code>g_map_browser-&gt;GetDefaultSize()</code>; object constructed at <span class="fileline">:231</span>. UB on the exact path every fresh install takes.</li>
+      <li><b>Leftover debug instrumentation</b> — <code>#region agent log</code> blocks synchronously append JSON to hardcoded <code>D:\Guild Wars OBS\...\debug-dddcee.log</code> in the frame loop (<span class="fileline">MapBrowser.cpp:541, 669, 911, 1053</span>).</li>
+      <li><b>Dangling shared index hazard</b> — replay windows hold a raw pointer to <code>MapBrowser::m_hash_index</code>, which <code>Update</code> clears/rebuilds on DAT switch (<span class="fileline">:567</span>) while background threads may still read it.</li>
+      <li><b>Device-lost is a stub in replay windows</b> — <code>OnDeviceLost/Restored</code> empty (<span class="fileline">:22308–22309</span>) despite registering for notifications.</li>
+      <li><b>Global-flag message bus</b> + input handling split three ways (WndProc model-viewer logic, InputManager, <code>GetAsyncKeyState</code> hotkeys).</li>
+      <li><b>Secrets baked into the binary</b>; <b>stale docs</b> (solution path, line counts).</li>
+    </ul>
+
+    <h4>Recommendations (prioritized)</h4>
+    <ol>
+      <li>Delete the debug logging blocks and fix the pre-construction call (make <code>GetDefaultSize</code> static or hoist construction).</li>
+      <li>Extract per-feature classes from ReplayWindow following the <code>draw_*.cpp</code> pattern (CombatLog, EventTimeline, LordDamage, PianoRoll, SkillAnalytics, PlayerInfo, AutoCamera, FogOfWar, PiP).</li>
+      <li>Replace the boolean-flag derivation chain with an explicit <code>{name, deps, built, buildFn}</code> build pipeline.</li>
+      <li>Implement device-lost recovery (or graceful teardown) in ReplayWindow.</li>
+      <li>Formalize shared-state ownership: <code>shared_ptr&lt;const HashIndex&gt;</code>, replace inline-global request flags with an event/request queue.</li>
+    </ol>
+  </div>
+</details>
+
+<details>
+  <summary><span class="chev">▸</span> <span class="tag">2</span> Rendering &amp; graphics</summary>
+  <div class="details-body">
+    <h4>Purpose &amp; role</h4>
+    <p>Turns recorded matches into an interactive 3D replay: loads local GW <code>.dat</code> assets, decodes ATEX/FFNA into GPU resources, renders a full scene (sky, clouds, terrain with splatting/shadows, static and skinned props, water with planar reflection, shore waves) via DX11 with a reverse-Z camera reconstructed from the retail client, then composites tactical overlays and a full ImGui UI. Not a standalone module — nearly all orchestration lives inside <code>ReplayWindow</code> and <code>MapBrowser</code>, with <code>MapRenderer</code> (a 1,741-line header-only class) as the scene renderer.</p>
+
+    <h4>Rendering pipeline</h4>
+    <p><b>Device/context</b> (<code>DeviceResources.cpp</code>): each surface owns a full device + swapchain. Feature levels 11_1→9_1 (min 10_0), backbuffer <code>R8G8B8A8_UNORM</code>, depth <code>D32_FLOAT</code>, <code>BufferCount=2</code>, <code>SWAP_EFFECT_DISCARD</code>. MSAA applied directly on the swapchain backbuffer (so the flip/tearing plumbing at <span class="fileline">:603–617</span> is effectively dead). <code>Present(1,0)</code> blocks on vsync. Discrete-GPU selection via <code>HIGH_PERFORMANCE</code> + Nvidia/AMD export symbols.</p>
+    <p><b>Passes</b> — (1) Shadow map, depth-only ortho, dirty-flag cached, <b>RT 16384×16384 R32 in release</b> (<span class="fileline">MapBrowser.cpp:1510–1516</span>); (2) Water reflection, mirrored camera, <b>re-rendered every frame, no dirty flag</b>; (3) Clear depth to <code>0.0f</code> for reverse-Z; (4) Scene: sky → clouds → terrain → opaque props → skinned props → water → shore → pathfinding → transparent props, with object-id picking written as MRT slot 1; (5) Overlays (heatmap, fog, agent models, cylinders), each wrapping ~14 pipeline-state items in manual save/restore; (6) Picking readback → ImGui → Present.</p>
+    <p><b>Camera</b> (<code>Camera.h/.cpp</code>): left-handed look-to, <b>reverse-Z</b> (swap near/far, <code>GREATER_EQUAL</code> depth, clear to 0). Defaults fov 50°, near 10, far 200000. Reconstructed from the retail client.</p>
+
+    <h4>Asset &amp; texture pipeline</h4>
+    <p>ATEX decode is four CPU stages then GPU upload: (A) DAT read + LZ decompress; (B) ATEX bitstream → BCn via <code>AtexDecompress</code> (reverse-engineered Huffman-like); (C) <b>software BCn → RGBA on the CPU</b> (GW textures are never uploaded as BCn); (D) upload as <code>B8G8R8A8_UNORM</code> with GPU <code>GenerateMips</code>. <code>AtexAsm.cpp</code> contains no inline asm — a hand-ported 64-bit-safe C++ decoder. Materials (AMAT) inform texture ordering + a blend hint only; the app uses its own HLSL shader set. Meshes: FFNA geometry → 3 LOD index buffers as <code>IMMUTABLE</code>.</p>
+
+    <h4>Concerns / risks</h4>
+    <ul>
+      <li><b>Logical-vs-bitwise AND bug (confirmed)</b>: <code>((ImageFormat &amp;&amp; 21) - 1) &amp; 2</code> at <span class="fileline">AtexDecompress.cpp:21</span> — always 0, corrupting <code>BlockSize</code> for alpha formats. Almost certainly meant <code>&amp; 21</code>.</li>
+      <li><b><code>exit(0)</code> on malformed texture data</b> (<span class="fileline">:9–11</span>) kills the app; size checks only <code>printf</code> and continue. Type-punned <code>delete[]</code> (<span class="fileline">:48,162</span>). Possible R/B channel-swap worth verifying.</li>
+      <li><b>~1 GiB shadow map</b>; reflection RTs recreated every frame with a full <code>Flush()</code>; unbounded texture caches with a redundant full RGBA CPU copy per texture built one <code>push_back</code> at a time.</li>
+      <li><b>Per-frame blocking picking readback</b> (<code>CopyResource</code> + <code>Map(READ)</code>, no latency ring); <b>no frustum culling</b>; per-draw CB <code>Map/Unmap</code>; command list copied by value; <b>stale transparency sort</b> (camera move never sets <code>m_needsSorting</code>); 4× sampler binds + forced AlphaBlend on every draw; frame-rate-dependent camera <code>Walk/Strafe</code> (ignores <code>dt</code>).</li>
+      <li><b>4 of 6 blend modes are dead code</b>; shader CB layout drift across sky/clouds/vertex shaders; <code>static</code> locals in <code>MeshManager::Render</code> shared across windows.</li>
+      <li><b>N devices, N serial vsync Presents</b> — FPS drops ~linearly per open window, VRAM/driver overhead multiplies.</li>
+      <li><b>Device-lost recovery absent</b>; hardcoded dev-path debug logging in the frame loop; sRGB inconsistency (everything <code>_UNORM</code>).</li>
+    </ul>
+
+    <h4>Recommendations (prioritized)</h4>
+    <ol>
+      <li>Fix the ATEX correctness bugs (<code>&amp;&amp;</code>→<code>&amp;</code>, drop <code>exit(0)</code>, harden size checks, fix <code>delete[]</code>, verify RGBA/BGRA).</li>
+      <li>Stop recreating shadow/reflection RTs; remove per-frame <code>Flush()</code>; consider 4–8K shadow map; add reflection dirty flag.</li>
+      <li>Make picking non-blocking (double/triple-buffer or click-only) and add AABB-vs-frustum culling.</li>
+      <li>Fix draw-submission overhead + stale transparency sort; opaque geometry should use Opaque blend; multiply camera movement by <code>dt</code>.</li>
+      <li>Implement real device-lost recovery; remove dev-only instrumentation; cap/evict texture caches and drop the redundant CPU RGBA copy.</li>
+    </ol>
+  </div>
+</details>
+
+<details>
+  <summary><span class="chev">▸</span> <span class="tag">3</span> Data, file formats &amp; networking / replay stream</summary>
+  <div class="details-body">
+    <h4>Purpose &amp; role</h4>
+    <p>Everything between bytes-on-disk/on-wire and the structures the renderer consumes. Three independent pillars: (a) <b>cloud match distribution</b> — <code>Net\</code> fetches <code>index.json</code> + per-match <code>.tar.gz</code> from an R2/S3 bucket over WinHTTP (optional SigV4), extracts into a cache with LRU/time eviction, and self-updates via GitHub Releases; (b) <b>replay ingestion</b> — <code>AgentSnapshotParser</code> and <code>StoCParser</code> parse the recorder's gzipped, <code>[MM:SS.ms]</code>-stamped, semicolon-delimited text event logs into <code>ReplayContext</code>; (c) <b>GW asset decoding</b> — <code>GWUnpacker</code>/<code>DATManager</code> read <code>Gw.dat</code>, and the FFNA/BB8/BB9/FA0/FA1/ATEX parsers produce terrain, meshes, skeletal animation, and textures, fronted by the <code>Cache\</code> layer.</p>
+    <p><b>Note:</b> the "StoC protocol" is already decoded to text by the recorder, not raw binary packets. Python <code>csv_to_header.py</code> converts <code>data.csv</code> (735 map rows) into <code>header_file.h</code> — a manual offline codegen step.</p>
+
+    <h4>File formats &amp; parsers — validation quality</h4>
+    <ul>
+      <li><b>index.json / infos.json</b> — good (non-throwing parse, <code>.value()</code> defaults) but <code>v.get&lt;int&gt;()</code> at <span class="fileline">MatchIndex.cpp:213,218,243</span> can throw with no try/catch on the sync thread.</li>
+      <li><b>Agent snapshots</b> (46 positional <code>;</code> fields) — good tokenizer, but schema is <b>purely positional, no version/header</b>.</li>
+      <li><b>StoC event logs</b> (12 named files) — good per-type guards; field order differs per event type, documented only in comments.</li>
+      <li><b>tar.gz</b> — decent: gzip walk, 512 MB decompress cap, zip-slip guard via <code>weakly_canonical</code>; whole archive held in RAM twice.</li>
+      <li><b>FFNA type 3 (maps)</b> — <b>weak</b>: struct-at-offset <code>memcpy</code> with essentially no bounds checks (see risks).</li>
+      <li><b>FFNA type 2 (models)</b> — mixed-to-good: <code>data_size_bytes</code> + <code>parsed_correctly</code> threaded through, sanity caps.</li>
+      <li><b>BB9/FA1 animation, BB8/FA0 geometry, file references, sound bytecode</b> — the newer, well-guarded parser generation (offsets checked vs <code>dataSize</code>, <code>optional</code> returns, throws caught).</li>
+    </ul>
+
+    <h4>Caching</h4>
+    <ul>
+      <li><code>FileCache</code> — thread-safe 512 MB LRU keyed by MFT index. <i>Bug</i>: hit/miss counters declared and reported but never incremented.</li>
+      <li><code>AnimationClipCache</code> — binary sidecar keyed <code>{mftIndex, fileHash}</code>, invalidated by stored DAT size (size-only → a same-size swap serves stale clips).</li>
+      <li><code>CloudReplayProvider</code> — 2 GB LRU (recomputes whole tree size per download) + 30-day retention via <code>.last_played</code>. <b>LRU access times are in-memory only</b>, so eviction order among untouched folders is effectively map-iteration order after restart.</li>
+      <li><b>Dead code</b>: <code>ModelCache.h</code>'s <code>CacheManager::Initialize</code> copies a mutex-owning class — couldn't compile if included; confirms it's unreferenced.</li>
+      <li><b>Memory</b>: every <code>AgentSnapshot</code> retains its full <code>raw_line</code>; roughly 2–3×'s replay footprint and fragments the heap.</li>
+    </ul>
+
+    <h4>Concerns / risks</h4>
+    <ul>
+      <li><b>P1 — <code>FFNA_MapFile.h</code> parses with almost no bounds checking.</b> Unvalidated <code>terrain_x*terrain_y</code> multiply (<span class="fileline">:630–632</span>), signed <code>chunk_data_size</code> that can go negative then <code>resize()</code> huge (<span class="fileline">:699</span>), chunk-scan adds <code>8+chunk_size</code> to a signed <code>int</code> with no validation (<span class="fileline">:1865–1875</span>) — corruption on a truncated/modded DAT rather than a load error.</li>
+      <li><b>P2 — Unhandled exceptions on background threads.</b> <code>MatchIndex::ParseJson</code> throwing accessors + no try/catch in <code>SyncEngine::SyncThread</code> → <code>std::terminate</code> on a malformed remote file. Same risk in <code>UpdateChecker</code>.</li>
+      <li><b>P3 — Format versioning implicit everywhere.</b> No recorder-version stamp; schema drift silently degrades. Archives carry no integrity check — <code>size_bytes</code> exists but is never compared, no hash.</li>
+      <li><b>P4 — Memory footprint</b>: <code>raw_line</code> retention, per-download full-tree re-walk, double-buffered archives.</li>
+      <li><b>P5 — Self-update trusts transport only</b>; installs via a batch script with no signature/hash validation.</li>
+      <li><b>P6/P7 — Nits &amp; coupling</b>: dead <code>CacheManager</code>, uncounted cache stats, <code>ReplayMapData.h</code> ~1.2K-line god-header dragging the render model into the parse layer.</li>
+    </ul>
+
+    <h4>Recommendations (prioritized)</h4>
+    <ol>
+      <li>Harden <code>FFNA_MapFile.h</code> to the <code>FFNA_ModelFile</code> standard (bounded reader, checked arithmetic).</li>
+      <li>Add try/catch (or non-throwing JSON access) around the sync and update threads.</li>
+      <li>Version and verify the pipeline: stamp <code>format_version</code> in <code>infos.json</code>; compare downloaded size vs index; add per-match SHA-256 (also gives the updater a hash-verify template).</li>
+      <li>Drop or gate <code>raw_line</code> retention; persist cloud LRU access times so eviction survives restarts.</li>
+      <li>Delete dead cache code; wire up or remove <code>FileCache</code> stats; <code>#pragma pack</code> the structs whose <code>sizeof</code> participates in offset math.</li>
+    </ol>
+  </div>
+</details>
+
+<details>
+  <summary><span class="chev">▸</span> <span class="tag">4</span> UI, animation/audio, overlay/annotations, tooling, config &amp; secrets</summary>
+  <div class="details-body">
+    <h4>UI architecture</h4>
+    <p><code>draw_ui.cpp:716–930</code> is the per-frame entry point, gating everything behind the first-launch wizard and loading screen, then menu bar (Debug menu compile-time gated by <code>IsDeveloperMode()</code>), DAT warnings, the always-visible replay browser, Settings, and modals. It takes ~14 reference parameters — wide, tightly coupled. Each panel is a free function in its own <code>draw_*.cpp</code>; visibility is a static bool on <code>GuiGlobalConstants</code>, persisted to <code>gui_settings.ini</code> — but save/restore/hide-all/reset are <b>four parallel lists</b> that must be kept in sync by hand.</p>
+    <p><b>Replay browser</b> (<code>draw_replay_browser.cpp</code>, 3,788 lines) is the flagship: responsive layout, "glass" theme, fuzzy search, calendar picker, team-composition rendering — but also substantial non-UI logic: build detection, skill-template base-64 encoding, <b>synchronous cloud fetch of <code>builds.json</code></b>, and a contributor push that shells out to <code>python push_builds.py</code> via <code>std::system</code>. <b>DAT browser</b> (3,718 lines) similarly mixes UI with DDS export and mesh generation. <b>Two coexisting file-dialog systems</b>: the vendored <code>ImGuiFileDialog</code> survives for only two legacy call sites alongside the hand-rolled <code>CustomFileBrowser</code>.</p>
+
+    <h4>Animation &amp; audio</h4>
+    <p>Header-only animation stack: <code>AnimationClip</code> (parsed BB9 data), <code>AnimationController</code> (per-instance playback state machine, <code>Update(dt)</code>), <code>AnimationEvaluator</code> (samples to per-bone SRT, produces GPU skinning palette via <code>Skeleton</code> inverse-bind matrices, with several fallback strategies from incremental RE). <b>Two audio engines</b>: BASS (runtime-loaded, non-spatial DAT playback + animation sound events) and <b>XAudio2/X3DAudio</b> (<code>SpatialAudioEngine</code>) — the actual spatial engine used during replay: 32-voice pool, per-frame listener from camera, skill→sound map from <code>settings/skill_sounds.json</code>, robust scrub/seek cursor reset. <b>Doc drift:</b> CLAUDE.md:61 calls audio "BASS-based spatial" — spatialization is XAudio2.</p>
+
+    <h4>Overlay &amp; annotations</h4>
+    <p><b>AgentOverlay</b> — clean post-scene DX11 pass, instanced unit sphere, CB at slot <code>b4</code>, explicit state-restoration contract; dual-mode input (hot-reloaded <code>agents.json</code> polled every 150 ms, or programmatic <code>SetMarkers()</code>). <b>AnnotationManager</b> (1,635 lines) — arrow/circle/freehand/eraser tools anchored in <b>world space</b> (mouse ray × terrain) then projected to ImGui draw lists each frame, undo stack (50), distance fade, bookmarks. <b>Persistence is asymmetric:</b> bookmarks persist per match (<code>bookmarks.json</code>); drawings are session-only and lost on window close.</p>
+
+    <h4>Configuration &amp; secrets</h4>
+    <p><b>Three stores:</b> <code>gui_settings.ini</code> (hand-rolled INI; panel visibility, geometry, camera, and the <b>contributor key in plaintext</b>); <code>%APPDATA%\GWObserver\config.ini</code> (first-launch, EULA, paths, storage mode); <code>settings/</code> (builds, skill_sounds, bookmarks, hotkeys, notes, ratings). DAT/match paths are <b>duplicated</b> across the first two.</p>
+    <p><b>Private-repo integration (clean design):</b> <code>build_config.h</code> defines safe public defaults and pulls overrides via <code>#if __has_include("build_config.local.h")</code>; contributor keys via conditional include of <code>contributor_key_hashes.h</code> (<code>GWO_VALID_KEY_HASHES</code>), validated with BCrypt SHA-256. <b>Hygiene verified:</b> <code>git ls-files</code> shows only <code>.example</code> variants tracked; <code>.gitignore</code> covers all secret files; packaged <code>gui_settings.ini</code> has no key.</p>
+    <p><b>Secret-handling assessment (no values):</b></p>
+    <ul>
+      <li>Read credentials are <b>compiled into the shipped exe</b> — extractable with <code>strings</code>; bucket-wide read scope matters if private prefixes ever share the bucket.</li>
+      <li><b>Two divergent credential copies</b> (working-tree vs private-repo <code>build_config.local.h</code>) with different access-key IDs — rotation-discipline gap.</li>
+      <li>Contributor key exposed plaintext in <code>gui_settings.ini</code> and on the <code>push_builds.py</code> command line (charset-sanitized, but <code>std::system</code> + concat is fragile).</li>
+      <li>Validation is advisory — the real boundary is possession of the R2 <b>write</b> credentials in <code>r2_config.env</code>, which never ship. That's the right place for it.</li>
+      <li>Private repo history includes credential-file uploads; if its visibility ever changes, rotation is mandatory.</li>
+    </ul>
+
+    <h4>Auxiliary tooling</h4>
+    <p><code>scripts/</code> — the R2 distribution pipeline (<code>upload_to_r2.py</code> with dry-run/validation, <code>Upload-Manager.ps1</code> with scheduled task + webhook, <code>push_builds.py</code>), plus dated one-off maintenance scripts and ~17 FFNA RE analyzers. <code>python_scripts/</code> — CSV→header codegen. <code>blender_addons/</code> — import add-ons for inspecting FFNA assets. <code>dist/</code> — unpacked release image + zip (gitignored).</p>
+
+    <h4>Concerns / risks</h4>
+    <ul>
+      <li><b>Leftover <code>#region agent log</code> blocks ship in production</b> — hardcoded <code>D:\Guild Wars OBS\...\debug-dddcee.log</code> written every 60 frames / every 150 ms overlay reload (<span class="fileline">AgentOverlay.cpp:305–316</span>, ~5 blocks in <code>MapBrowser.cpp</code>).</li>
+      <li><b>Compiled-in cloud read credentials + rotation ambiguity.</b></li>
+      <li><b>Contributor key handled as plaintext</b> (masked in the UI, not in storage).</li>
+      <li><b>UI-thread blocking network I/O</b> — <code>LoadBuildDefs</code> does a synchronous <code>HttpClient::Get</code> inside the draw path; a slow host freezes first paint.</li>
+      <li><b>Monolithic panels with embedded domain logic</b>; pervasive <code>static</code> state → single-instance, untestable.</li>
+      <li><b>Settings write amplification</b> — full INI rewrite inside slider <code>if(changed)</code> handlers (a write per frame while dragging).</li>
+      <li><b>Duplicate config + duplicate file-dialog stacks</b>; <b>documentation drift</b>; <b><code>PushBuildsToCloud</code> environment fragility</b> (<code>python</code> on PATH, fire-and-forget <code>std::system</code>); <b>annotation drawings not persisted</b> while bookmarks are.</li>
+    </ul>
+
+    <h4>Recommendations (prioritized)</h4>
+    <ol>
+      <li>Strip (or dev-gate) the <code>#region agent log</code> blocks.</li>
+      <li>Reconcile and rotate the R2 read credentials; document the single source of truth; prefer presigned URLs / a public read domain over compiled-in keys.</li>
+      <li>Move <code>builds.json</code> fetch off the UI thread (reuse the <code>SyncEngine</code> pattern).</li>
+      <li>Extract domain logic out of <code>draw_replay_browser.cpp</code> (<code>BuildDefs</code> module, cloud push into <code>Net/</code> with an authenticated PUT instead of <code>std::system</code> — also fixes command-line key exposure).</li>
+      <li>Debounce settings persistence (save on release/close); unify path config under <code>SetupConfig</code>; update docs; persist annotation drawings.</li>
+    </ol>
+  </div>
+</details>
+
+<div class="foot">
+  Generated from four parallel subsystem reviews of <code>GWObserver-git</code> and <code>gwobserver-private</code> · 2026-07-02.
+  Findings cite <span class="fileline">file:line</span> as observed at review time; verify against the current tree before acting.
+</div>
+
+</div>
+</body>
+</html>
