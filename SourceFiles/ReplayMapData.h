@@ -612,6 +612,7 @@ struct AgentReplayData
     int      playerLevel  = 0;
     bool     isFemale     = false;
     std::string partyBarLabel;
+    std::string cachedLabel; // pre-computed once after agent classification
 
     // Spirit-specific metadata
     int      spiritSkillId = 0;
@@ -676,37 +677,48 @@ struct AgentReplayData
 
     bool isCastingAtTime(float t) const
     {
-        for (auto& ci : castHistory)
-            if (t >= ci.start && t <= ci.end) return true;
-        return false;
+        // Binary search: find last interval with start <= t, then check if it covers t.
+        auto it = std::upper_bound(castHistory.begin(), castHistory.end(), t,
+            [](float v, const CastInterval& ci) { return v < ci.start; });
+        if (it == castHistory.begin()) return false;
+        --it;
+        return t <= it->end;
     }
 
     int castingSkillAtTime(float t) const
     {
-        for (auto& ci : castHistory)
-            if (t >= ci.start && t <= ci.end) return ci.skillId;
-        return 0;
+        auto it = std::upper_bound(castHistory.begin(), castHistory.end(), t,
+            [](float v, const CastInterval& ci) { return v < ci.start; });
+        if (it == castHistory.begin()) return 0;
+        --it;
+        return (t <= it->end) ? it->skillId : 0;
     }
 
     bool isKnockedDownAtTime(float t) const
     {
-        for (auto& kd : knockdownIntervals)
-            if (t >= kd.start && t <= kd.end) return true;
-        return false;
+        auto it = std::upper_bound(knockdownIntervals.begin(), knockdownIntervals.end(), t,
+            [](float v, const KnockdownInterval& kd) { return v < kd.start; });
+        if (it == knockdownIntervals.begin()) return false;
+        --it;
+        return t <= it->end;
     }
 
     const KnockdownInterval* knockdownIntervalAtTime(float t) const
     {
-        for (auto& kd : knockdownIntervals)
-            if (t >= kd.start && t <= kd.end) return &kd;
-        return nullptr;
+        auto it = std::upper_bound(knockdownIntervals.begin(), knockdownIntervals.end(), t,
+            [](float v, const KnockdownInterval& kd) { return v < kd.start; });
+        if (it == knockdownIntervals.begin()) return nullptr;
+        --it;
+        return (t <= it->end) ? &*it : nullptr;
     }
 
     const CastInterval* castIntervalAtTime(float t) const
     {
-        for (auto& ci : castHistory)
-            if (t >= ci.start && t <= ci.end) return &ci;
-        return nullptr;
+        auto it = std::upper_bound(castHistory.begin(), castHistory.end(), t,
+            [](float v, const CastInterval& ci) { return v < ci.start; });
+        if (it == castHistory.begin()) return nullptr;
+        --it;
+        return (t <= it->end) ? &*it : nullptr;
     }
 
     // Combined visual state for skill icon + cast bar (always in sync).

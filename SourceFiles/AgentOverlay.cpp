@@ -302,18 +302,7 @@ void AgentOverlay::Update()
     if (elapsed >= m_reloadIntervalMs)
     {
         m_lastReloadTime = now;
-        // #region agent log
-        auto _t0 = std::chrono::high_resolution_clock::now();
-        // #endregion
         LoadMarkersFromJson();
-        // #region agent log
-        {
-            double _ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _t0).count();
-            auto _ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            std::ofstream _lf("D:\\Guild Wars OBS\\GuildWarsObserver\\debug-dddcee.log", std::ios::app);
-            _lf << "{\"sessionId\":\"dddcee\",\"hypothesisId\":\"A\",\"location\":\"AgentOverlay.cpp:Update\",\"message\":\"file_reload\",\"data\":{\"ms\":" << _ms << ",\"markers\":" << m_markers.size() << "},\"timestamp\":" << _ts << "}\n";
-        }
-        // #endregion
     }
 }
 

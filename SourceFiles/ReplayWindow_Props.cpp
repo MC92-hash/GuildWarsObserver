@@ -753,13 +753,23 @@ void ReplayWindow::UpdateObeliskFlagStand()
 
     StandOwner owner = m_flagTimeline.obelisk.ownerAtTime(m_debugTimeline);
 
-    bool visible = (owner == StandOwner::Neutral);
-
     if (!ap.controller->IsPlaying())
     {
         ap.controller->SetLooping(true);
         ap.controller->Play();
     }
+
+    // Only apply mesh visibility changes when the owner state has actually changed.
+    // Calling SetMeshShouldRender every frame unconditionally would set
+    // m_should_rerender_shadows = true each frame, forcing a full shadow-map rebuild
+    // even though nothing visually changed.
+    if (m_obeliskOwnerInitialized && owner == m_obeliskLastOwner)
+        return;
+
+    m_obeliskLastOwner        = owner;
+    m_obeliskOwnerInitialized = true;
+
+    bool visible = (owner == StandOwner::Neutral);
 
     // Submesh 0: visible when captured (flag)
     if (ap.submeshVisibility.size() > 0) ap.submeshVisibility[0] = !visible;
@@ -1221,13 +1231,23 @@ void ReplayWindow::UpdateTowerFlagStand()
 
     StandOwner owner = m_flagTimeline.stand.ownerAtTime(m_debugTimeline);
 
-    bool neutral = (owner == StandOwner::Neutral);
-
     if (!ap.controller->IsPlaying())
     {
         ap.controller->SetLooping(true);
         ap.controller->Play();
     }
+
+    // Only apply mesh visibility changes when the owner state has actually changed.
+    // Calling SetMeshShouldRender every frame unconditionally would set
+    // m_should_rerender_shadows = true each frame, forcing a full shadow-map rebuild
+    // even though nothing visually changed.
+    if (m_towerOwnerInitialized && owner == m_towerLastOwner)
+        return;
+
+    m_towerLastOwner        = owner;
+    m_towerOwnerInitialized = true;
+
+    bool neutral = (owner == StandOwner::Neutral);
 
     // Submesh 0 (pole): show when capped
     if (ap.submeshVisibility.size() > 0) ap.submeshVisibility[0] = !neutral;

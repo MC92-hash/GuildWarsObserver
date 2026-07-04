@@ -20,7 +20,16 @@ public:
 
 	void SortCommands(XMFLOAT3& camera_pos)
 	{
+		// Re-sort when camera moves (transparent object draw order depends on distance)
+		if (!m_needsSorting) {
+			float dx = camera_pos.x - m_lastSortCameraPos.x;
+			float dy = camera_pos.y - m_lastSortCameraPos.y;
+			float dz = camera_pos.z - m_lastSortCameraPos.z;
+			if (dx * dx + dy * dy + dz * dz > 100.f)
+				m_needsSorting = true;
+		}
 		if (!m_needsSorting) { return; }
+		m_lastSortCameraPos = camera_pos;
 
 		m_sortedCommands.clear();
 		m_sortedCommands.reserve(m_commands.size());
@@ -91,7 +100,7 @@ public:
 		m_sortedCommands.clear();
 	}
 
-	std::vector<RenderCommand> GetCommands() { return m_sortedCommands; }
+	const std::vector<RenderCommand>& GetCommands() const { return m_sortedCommands; }
 
 	const std::optional<RenderCommand> const GetCommand(int mesh_id)
 	{
@@ -118,4 +127,5 @@ private:
 	std::unordered_map<int, RenderCommand> m_commands;
 	std::vector<RenderCommand> m_sortedCommands;
 	bool m_needsSorting = false;
+	XMFLOAT3 m_lastSortCameraPos{0, 0, 0};
 };

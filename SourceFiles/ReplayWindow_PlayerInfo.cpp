@@ -624,7 +624,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     if (ev.endTime < m_debugTimeline) continue;
                     if (ev.targetId == m_playerInfoAgentId && !ev.wasCancelled)
                     {
-                        auto& db = GetSkillDatabase();
+                        const auto& db = m_skillView;
                         const SkillInfo* sinfo = db.IsLoaded() ? db.Get(ev.skillId) : nullptr;
                         if (sinfo && sinfo->type == 22)
                             beingRezzed = true;
@@ -646,7 +646,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
 
     // Shared tooltip lambda for skill icons (used by Sections 3 and 5)
     auto DrawPipSkillTooltip = [&](int skillId, ImTextureID skillTex, const char* modTooltip = nullptr) {
-        auto& db = GetSkillDatabase();
+        const auto& db = m_skillView;
         const SkillInfo* si = db.IsLoaded() ? db.Get(skillId) : nullptr;
         if (!si) return;
 
@@ -788,7 +788,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
         };
         std::vector<SkillSlot> slots;
         {
-            const auto& sdb = GetSkillDatabase();
+            const auto& sdb = m_skillView;
 
             // Count casts per skill from history, resolving PvE skills to their PvP variant
             std::unordered_map<int, SkillSlot> slotMap;
@@ -851,7 +851,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 ids.reserve(slots.size());
                 for (auto& s : slots) ids.push_back(s.skillId);
 
-                auto sorted = GetSkillDatabase().SortSkillsForDisplay(
+                auto sorted = m_skillView.SortSkillsForDisplay(
                     ids, playerMeta->primary, playerMeta->secondary);
 
                 std::unordered_map<int, SkillSlot> slotById;
@@ -909,7 +909,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
         bool qzActive = false;
 
         // ── Build active modifiers from skill cast history (recomputed every frame for scrub) ──
-        auto& skDb = GetSkillDatabase();
+        const auto& skDb = m_skillView;
         {
             float curTime = m_debugTimeline;
 
@@ -1839,7 +1839,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             }
 
             // Green = success/casting, Yellow = cancelled, Purple = interrupted
-            auto& db = GetSkillDatabase();
+            const auto& db = m_skillView;
             const SkillInfo* castSi = db.IsLoaded() ? db.Get(sv.skillId) : nullptr;
 
             static const GradStop sGreenH[] = {
@@ -2170,7 +2170,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
         if (agentIt2 != m_replayCtx.agents.end())
         {
             const auto& skillHist = agentIt2->second.skillUseHistory;
-            auto& db = GetSkillDatabase();
+            const auto& db = m_skillView;
             for (const auto& ev : skillHist)
             {
                 if (ev.endTime < windowStart) continue;

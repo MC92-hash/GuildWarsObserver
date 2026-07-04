@@ -1148,6 +1148,8 @@ public:
                 m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, m_terrain_mesh_id);
         }
 
+        m_mesh_manager->SetViewProjMatrix(m_user_camera->GetView() * m_user_camera->GetProj());
+
         if (m_should_use_picking_shader_for_models) {
             m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
 

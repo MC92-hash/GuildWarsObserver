@@ -237,8 +237,8 @@ void draw_right_panel(MapRenderer* map_renderer, int& FPS_target, DX::StepTimer&
         XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(position), camera->GetPosition());
         ImGui::SliderFloat3("##position", position, -100000, 100000);
         camera->SetPosition(position[0], position[1], position[2]);
-        ImGui::SliderFloat("Walk speed", &camera->m_walk_speed, 0.0f, 1000.0f);
-        ImGui::SliderFloat("Strafe speed", &camera->m_strafe_speed, 0.0f, 1000.0f);
+        ImGui::SliderFloat("Walk speed", &camera->m_walk_speed, 0.0f, 60000.0f);
+        ImGui::SliderFloat("Strafe speed", &camera->m_strafe_speed, 0.0f, 60000.0f);
 
         float yaw = camera->GetYaw() * 180 / XM_PI;
         float pitch = camera->GetPitch() * 180 / XM_PI;

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <tuple>
+#include <filesystem>
 
 using json = nlohmann::json;
 
@@ -73,6 +74,8 @@ bool SkillDatabase::Load(const std::string& dataDir)
     }
 
     m_loaded = !m_skills.empty();
+    if (m_loaded)
+        m_baseView = std::make_shared<const std::unordered_map<int, SkillInfo>>(m_skills);
     return m_loaded;
 }
 
@@ -361,4 +364,233 @@ int SkillDatabase::ResolvePvpSkillId(int skillId) const
     if (si.pvp_split && si.split_id > 0)
         return si.split_id;
     return skillId;
+}
+
+// ---------------------------------------------------------------------------
+// SkillDatabaseView
+// ---------------------------------------------------------------------------
+
+const SkillInfo* SkillDatabaseView::Get(int skillId) const
+{
+    if (!m_data) return nullptr;
+    auto it = m_data->find(skillId);
+    if (it == m_data->end()) return nullptr;
+    return &it->second;
+}
+
+std::vector<int> SkillDatabaseView::SortSkillsForDisplay(
+    const std::vector<int>& skillIds, int primaryProf, int secondaryProf) const
+{
+    if (skillIds.size() <= 1) return skillIds;
+
+    bool martial = SkillDatabase::IsMartialProfession(primaryProf);
+
+    struct SortKey {
+        int bucket       = 99;
+        int typeOrder    = 0;
+        int attrGroup    = 999;
+        int skillId      = 0;
+        std::string name;
+    };
+
+    std::vector<std::pair<int, SortKey>> keyed;
+    keyed.reserve(skillIds.size());
+
+    for (int sid : skillIds)
+    {
+        SortKey k;
+        k.skillId = sid;
+
+        const SkillInfo* si = Get(sid);
+        if (!si) { keyed.push_back({ sid, k }); continue; }
+
+        k.name = si->name;
+        int attrProf = SkillDatabase::GetProfessionForAttribute(si->attribute);
+        bool isPrimary   = (attrProf == primaryProf) || (si->profession == primaryProf);
+        bool isSecondary = (attrProf == secondaryProf) || (si->profession == secondaryProf);
+        k.attrGroup = si->attribute;
+
+        if (SkillDatabase::IsResurrectionSkill(sid))
+        {
+            k.bucket = martial ? 7 : 5;
+        }
+        else if (si->is_elite)
+        {
+            k.bucket = 0;
+        }
+        else if (si->type == 29)
+        {
+            k.bucket = martial ? 3 : 4;
+        }
+        else if (isSecondary && !isPrimary)
+        {
+            k.bucket = martial ? 6 : 3;
+        }
+        else if (martial)
+        {
+            if (SkillDatabase::IsWeaponAttack(si->type))
+            {
+                k.bucket = 1;
+                k.typeOrder = si->type;
+            }
+            else if (isPrimary)
+                k.bucket = 2;
+            else if (SkillDatabase::IsSpellType(si->type))
+                k.bucket = 4;
+            else
+                k.bucket = 5;
+        }
+        else
+        {
+            if (isPrimary)
+                k.bucket = 1;
+            else
+                k.bucket = 2;
+        }
+
+        keyed.push_back({ sid, k });
+    }
+
+    std::stable_sort(keyed.begin(), keyed.end(),
+        [](const auto& a, const auto& b)
+        {
+            if (a.second.bucket != b.second.bucket)
+                return a.second.bucket < b.second.bucket;
+            if (a.second.typeOrder != b.second.typeOrder)
+                return a.second.typeOrder < b.second.typeOrder;
+            if (a.second.attrGroup != b.second.attrGroup)
+                return a.second.attrGroup < b.second.attrGroup;
+            if (a.second.skillId != b.second.skillId)
+                return a.second.skillId < b.second.skillId;
+            return a.second.name < b.second.name;
+        });
+
+    std::vector<int> result;
+    result.reserve(keyed.size());
+    for (auto& [sid, k] : keyed)
+        result.push_back(sid);
+    return result;
+}
+
+int SkillDatabaseView::ResolvePvpSkillId(int skillId) const
+{
+    if (!m_data) return skillId;
+    auto it = m_data->find(skillId);
+    if (it == m_data->end()) return skillId;
+    const SkillInfo& si = it->second;
+    if (si.pvp_split && si.split_id > 0)
+        return si.split_id;
+    return skillId;
+}
+
+// ---------------------------------------------------------------------------
+// SkillDatabase patch loading and versioned views
+// ---------------------------------------------------------------------------
+
+void SkillDatabase::LoadPatches(const std::string& dataDir)
+{
+    namespace fs = std::filesystem;
+
+    m_patches.clear();
+    m_viewCache.clear();
+
+    fs::path patchDir = fs::path(dataDir) / "skillpatches";
+    if (!fs::exists(patchDir) || !fs::is_directory(patchDir))
+        return;
+
+    for (const auto& entry : fs::directory_iterator(patchDir))
+    {
+        if (!entry.is_regular_file()) continue;
+        auto path = entry.path();
+        if (path.extension() != ".json") continue;
+
+        // Expect filename YYYY-MM-DD.json
+        std::string stem = path.stem().string();
+        if (stem.size() != 10 || stem[4] != '-' || stem[7] != '-') continue;
+
+        int y = 0, m = 0, d = 0;
+        try {
+            y = std::stoi(stem.substr(0, 4));
+            m = std::stoi(stem.substr(5, 2));
+            d = std::stoi(stem.substr(8, 2));
+        } catch (...) { continue; }
+
+        if (y <= 0 || m < 1 || m > 12 || d < 1 || d > 31) continue;
+
+        std::ifstream f(path);
+        if (!f.is_open()) continue;
+
+        json j = json::parse(f, nullptr, false, true);
+        if (j.is_discarded()) continue;
+        if (!j.contains("skills")) continue;
+
+        SkillPatch patch;
+        patch.dateKey = y * 10000 + m * 100 + d;
+
+        for (auto& [key, val] : j["skills"].items())
+        {
+            int skillId = 0;
+            try { skillId = std::stoi(key); } catch (...) { continue; }
+
+            // Look up the current (latest) SkillInfo as the base to copy from
+            auto baseIt = m_skills.find(skillId);
+            SkillInfo old = (baseIt != m_skills.end()) ? baseIt->second : SkillInfo{};
+            old.id = skillId;
+
+            // Override with the old values stored in the patch
+            if (val.contains("energy"))      old.energy      = val["energy"].get<int>();
+            if (val.contains("activation"))  old.activation  = val["activation"].get<float>();
+            if (val.contains("recharge"))    old.recharge    = val["recharge"].get<float>();
+            if (val.contains("adrenaline"))  old.adrenaline  = val["adrenaline"].get<int>();
+            if (val.contains("sacrifice"))   old.sacrifice   = val["sacrifice"].get<int>();
+            if (val.contains("upkeep"))      old.upkeep      = val["upkeep"].get<int>();
+            if (val.contains("overcast"))    old.overcast    = val["overcast"].get<int>();
+            if (val.contains("is_elite"))    old.is_elite    = val["is_elite"].get<bool>();
+            if (val.contains("type"))        old.type        = val["type"].get<int>();
+            if (val.contains("profession"))  old.profession  = val["profession"].get<int>();
+            if (val.contains("attribute"))   old.attribute   = val["attribute"].get<int>();
+            if (val.contains("name"))        old.name        = val["name"].get<std::string>();
+            if (val.contains("description")) old.description = val["description"].get<std::string>();
+            if (val.contains("concise"))     old.concise     = val["concise"].get<std::string>();
+
+            patch.overrides[skillId] = std::move(old);
+        }
+
+        m_patches.push_back(std::move(patch));
+    }
+
+    std::sort(m_patches.begin(), m_patches.end(),
+        [](const SkillPatch& a, const SkillPatch& b) { return a.dateKey < b.dateKey; });
+}
+
+SkillDatabaseView SkillDatabase::GetView(int year, int month, int day)
+{
+    int dateKey = year * 10000 + month * 100 + day;
+
+    auto cacheIt = m_viewCache.find(dateKey);
+    if (cacheIt != m_viewCache.end())
+        return SkillDatabaseView(cacheIt->second);
+
+    // Start with a copy of the latest data
+    auto data = std::make_shared<std::unordered_map<int, SkillInfo>>(m_skills);
+
+    // Apply patches dated AFTER the replay date in reverse (newest first so
+    // multiple patches to the same skill accumulate correctly)
+    for (int i = static_cast<int>(m_patches.size()) - 1; i >= 0; --i)
+    {
+        const SkillPatch& patch = m_patches[i];
+        if (patch.dateKey <= dateKey) continue; // patch is not after replay date
+
+        for (const auto& [skillId, oldInfo] : patch.overrides)
+            (*data)[skillId] = oldInfo;
+    }
+
+    auto constData = std::shared_ptr<const std::unordered_map<int, SkillInfo>>(std::move(data));
+    m_viewCache[dateKey] = constData;
+    return SkillDatabaseView(std::move(constData));
+}
+
+SkillDatabaseView SkillDatabase::GetBaseView() const
+{
+    return SkillDatabaseView(m_baseView);
 }

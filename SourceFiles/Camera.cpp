@@ -132,7 +132,7 @@ void Camera::SetOrientation(float pitch, float yaw)
 
 void Camera::Strafe(StrafeDirection strafe_direction, double dt, float speed_scale)
 {
-    float velocity = m_strafe_speed * speed_scale;
+    float velocity = m_strafe_speed * speed_scale * static_cast<float>(dt);
     if (strafe_direction == StrafeDirection::Left)
     {
         velocity = -velocity;
@@ -145,7 +145,7 @@ void Camera::Strafe(StrafeDirection strafe_direction, double dt, float speed_sca
 
 void Camera::Walk(WalkDirection walk_direction, double dt, float speed_scale)
 {
-    float velocity = m_walk_speed * speed_scale;
+    float velocity = m_walk_speed * speed_scale * static_cast<float>(dt);
     if (walk_direction == WalkDirection::Backward)
     {
         velocity = -velocity;

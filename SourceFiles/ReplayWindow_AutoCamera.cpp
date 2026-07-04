@@ -404,12 +404,19 @@ bool ReplayWindow::WillAgentDie(const AgentReplayData& ard, float time, float lo
 
 bool ReplayWindow::IsAgentTakingDamage(int agentId, float time, float window) const
 {
-    for (const auto& ce : m_replayCtx.stocData.combat)
+    const auto& combat = m_replayCtx.stocData.combat;
+    if (combat.empty()) return false;
+
+    // Binary search to the start of the [time - window, time] interval
+    float windowStart = time - window;
+    auto it = std::lower_bound(combat.begin(), combat.end(), windowStart,
+        [](const CombatEvent& ce, float t) { return ce.time < t; });
+
+    for (; it != combat.end() && it->time <= time; ++it)
     {
-        if (ce.target_id != agentId) continue;
-        if (ce.type != "DAMAGE") continue;
-        if (ce.time <= time && ce.time >= time - window)
-            return true;
+        if (it->target_id != agentId) continue;
+        if (it->type != "DAMAGE") continue;
+        return true;
     }
     return false;
 }
@@ -468,7 +475,8 @@ void ReplayWindow::UpdateAutoCamera(float dt)
 
     float now = m_debugTimeline;
 
-    m_autoCamDebug.clear();
+    if (m_autoCamShowDebug)
+        m_autoCamDebug.clear();
 
     int bestAgent = -1;
     int bestScore = 0;
@@ -480,25 +488,29 @@ void ReplayWindow::UpdateAutoCamera(float dt)
     auto scoreAgent = [&](int pid, const AgentReplayData& ard) {
         const AgentSnapshot* snap = FindSnapshotAtTime(ard, now);
 
-        AutoCamDebugEntry dbg;
-        dbg.agentId = pid;
-        dbg.name = ard.partyBarLabel.empty() ? std::to_string(pid) : ard.partyBarLabel;
-
         if (!snap) {
-            dbg.disqualified = true;
-            dbg.disqualReason = "No snapshot";
-            m_autoCamDebug.push_back(std::move(dbg));
+            if (m_autoCamShowDebug) {
+                AutoCamDebugEntry dbg;
+                dbg.agentId = pid;
+                dbg.name = ard.partyBarLabel.empty() ? std::to_string(pid) : ard.partyBarLabel;
+                dbg.disqualified = true;
+                dbg.disqualReason = "No snapshot";
+                m_autoCamDebug.push_back(std::move(dbg));
+            }
             return;
         }
         if (snap->is_dead) {
-            dbg.hpPct = 0.f;
-            dbg.disqualified = true;
-            dbg.disqualReason = "Dead";
-            m_autoCamDebug.push_back(std::move(dbg));
+            if (m_autoCamShowDebug) {
+                AutoCamDebugEntry dbg;
+                dbg.agentId = pid;
+                dbg.name = ard.partyBarLabel.empty() ? std::to_string(pid) : ard.partyBarLabel;
+                dbg.hpPct = 0.f;
+                dbg.disqualified = true;
+                dbg.disqualReason = "Dead";
+                m_autoCamDebug.push_back(std::move(dbg));
+            }
             return;
         }
-
-        dbg.hpPct = snap->health_pct;
 
         int score = 0;
         std::string reason;
@@ -506,10 +518,6 @@ void ReplayWindow::UpdateAutoCamera(float dt)
         // Use actual future snapshot for projected HP
         const AgentSnapshot* futureSnap = FindSnapshotAtTime(ard, now + cfg.lookaheadSec);
         float futureHp = futureSnap ? futureSnap->health_pct : snap->health_pct;
-        dbg.projectedHp = futureHp;
-        dbg.dmgRate = (futureSnap && futureSnap->time > snap->time)
-            ? std::max(0.f, snap->health_pct - futureHp) / (futureSnap->time - snap->time)
-            : 0.f;
 
         // Death imminent: check actual future snapshots for a real death
         if (cfg.focusDeath && WillAgentDie(ard, now, cfg.lookaheadSec))
@@ -548,9 +556,19 @@ void ReplayWindow::UpdateAutoCamera(float dt)
             }
         }
 
-        dbg.score = score;
-        dbg.reason = reason;
-        m_autoCamDebug.push_back(std::move(dbg));
+        if (m_autoCamShowDebug) {
+            AutoCamDebugEntry dbg;
+            dbg.agentId = pid;
+            dbg.name = ard.partyBarLabel.empty() ? std::to_string(pid) : ard.partyBarLabel;
+            dbg.hpPct = snap->health_pct;
+            dbg.projectedHp = futureHp;
+            dbg.dmgRate = (futureSnap && futureSnap->time > snap->time)
+                ? std::max(0.f, snap->health_pct - futureHp) / (futureSnap->time - snap->time)
+                : 0.f;
+            dbg.score = score;
+            dbg.reason = reason;
+            m_autoCamDebug.push_back(std::move(dbg));
+        }
 
         if (pid == st.currentTarget)
             currentTargetLiveScore = score;
@@ -589,13 +607,16 @@ void ReplayWindow::UpdateAutoCamera(float dt)
             if (IsAgentTakingDamage(nid, now))
             {
                 int lordScore = 700;
-                AutoCamDebugEntry dbg;
-                dbg.agentId = nid;
-                dbg.name = "Guild Lord";
-                dbg.hpPct = snap->health_pct;
-                dbg.score = lordScore;
-                dbg.reason = "Guild Lord under attack";
-                m_autoCamDebug.push_back(std::move(dbg));
+
+                if (m_autoCamShowDebug) {
+                    AutoCamDebugEntry dbg;
+                    dbg.agentId = nid;
+                    dbg.name = "Guild Lord";
+                    dbg.hpPct = snap->health_pct;
+                    dbg.score = lordScore;
+                    dbg.reason = "Guild Lord under attack";
+                    m_autoCamDebug.push_back(std::move(dbg));
+                }
 
                 if (nid == st.currentTarget)
                     currentTargetLiveScore = lordScore;

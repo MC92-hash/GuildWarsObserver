@@ -286,7 +286,7 @@ void ReplayWindow::DrawCombatLog()
             struct Match { int id; std::string name; };
             std::vector<Match> matches;
 
-            auto& db = GetSkillDatabase();
+            const auto& db = m_skillView;
             if (db.IsLoaded())
             {
                 db.ForEachSkill([&](const SkillInfo& si) {

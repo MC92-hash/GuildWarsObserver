@@ -581,6 +581,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 {
     auto* rw = new ReplayWindow();
     rw->m_matchMeta   = match;
+    rw->m_skillView   = GetSkillDatabase().GetView(match.year, match.month, match.day);
     rw->m_datManager   = sharedDatManager;
     rw->m_hashIndex    = &hashIndex;
 
@@ -712,6 +713,7 @@ bool ReplayWindow::InitGraphics()
     if (height <= 0) height = 720;
 
     m_deviceResources = std::make_unique<DX::DeviceResources>(DXGI_FORMAT_R8G8B8A8_UNORM);
+    m_deviceResources->SetVSyncEnabled(false);  // Don't block on vsync; MapBrowser provides the frame cadence
     m_deviceResources->SetWindow(m_hwnd, width, height);
     m_deviceResources->CreateDeviceResources();
     m_deviceResources->CreateWindowSizeDependentResources();
@@ -2414,6 +2416,13 @@ void ReplayWindow::Tick()
             PrecomputeShrineTimeline();
         }
 
+        // Pre-compute display labels and team lookup once, at classification time.
+        for (auto& [agentId, ard] : m_replayCtx.agents)
+        {
+            ard.cachedLabel = GetAgentLabel(ard);
+            m_agentTeams[agentId] = ard.teamId;
+        }
+
         m_agentsClassified = true;
         LoadAutoCamSettings();
     }
@@ -2474,7 +2483,7 @@ void ReplayWindow::Tick()
         }
 
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             auto implicitClose = [&](int casterId) {
                 auto oc = openCasts.find(casterId);
                 if (oc == openCasts.end()) return;
@@ -2560,7 +2569,7 @@ void ReplayWindow::Tick()
         // 2) Process StoC attack skill events
         openCasts.clear();
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             auto implicitCloseSkillUse = [&](int casterId) {
                 auto oc = openCasts.find(casterId);
                 if (oc == openCasts.end()) return;
@@ -2677,7 +2686,7 @@ void ReplayWindow::Tick()
         // skills are active (e.g. Quickening Zephyr). In standard GvG this is rare.
         // Known limitation — no fix planned.
         {
-            auto& skillDb = GetSkillDatabase();
+            const auto& skillDb = m_skillView;
             for (auto& [id, ard] : m_replayCtx.agents)
             {
                 // Group events by skill ID
@@ -3219,8 +3228,8 @@ void ReplayWindow::Render()
         pickingRTV,
         m_deviceResources->GetDepthStencilView());
 
-    // Picking readback: resolve and copy the picking RT to CPU-accessible staging
-    if (m_assetSelectionEnabled)
+    // Picking readback: only perform the expensive GPU->CPU copy on click
+    if (m_assetSelectionEnabled && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
     {
         auto* ctx = m_deviceResources->GetD3DDeviceContext();
         if (m_deviceResources->GetMsaaLevelIndex() > 0) {
@@ -4184,6 +4193,8 @@ void InterpolateAgentPosition(const AgentReplayData& ard, float t,
 
 std::string GetAgentLabel(const AgentReplayData& ard)
 {
+    if (!ard.cachedLabel.empty())
+        return ard.cachedLabel;
     switch (ard.type) {
     case AgentType::Player:
         if (!ard.guildTag.empty())

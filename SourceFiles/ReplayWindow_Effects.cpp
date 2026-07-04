@@ -119,7 +119,7 @@ void ReplayWindow::UpdateIncomingEffects()
         return { false, 0.f, 0.f, 0 };
     };
 
-    auto& db = GetSkillDatabase();
+    const auto& db = m_skillView;
 
     auto pushEffect = [&](IncomingEffect eff) {
         constexpr float kMinSep = 35.f;
@@ -911,7 +911,7 @@ void ReplayWindow::UpdateSpeechBubbles()
             ++it;
     }
 
-    auto& db = GetSkillDatabase();
+    const auto& db = m_skillView;
     if (!db.IsLoaded()) return;
 
     constexpr int kShoutType = 20;
@@ -1225,7 +1225,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     // --- Current skill cast bar (icon left-aligned under health bar) ---
     if (showCast)
     {
-        auto& db = GetSkillDatabase();
+        const auto& db = m_skillView;
         const SkillInfo* si = db.Get(sv.skillId);
         uint8_t castAlpha = (uint8_t)(sv.alpha * 255.f);
 

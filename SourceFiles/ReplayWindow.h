@@ -28,6 +28,7 @@
 #include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
 #include "BitmapFont.h"
+#include "SkillDatabase.h"
 #include <string>
 #include <memory>
 #include <utility>
@@ -127,6 +128,7 @@ private:
 
     ReplayContext m_replayCtx;
     MatchMeta m_matchMeta;
+    SkillDatabaseView m_skillView;
     std::unique_ptr<Terrain> m_terrain;
 
     std::string m_errorMsg;
@@ -240,6 +242,10 @@ private:
     // --- Flag Timeline (from FlagTimelineBuilder) ---
     FlagTimeline m_flagTimeline;
     bool m_flagTimelineBuilt = false;
+    StandOwner m_obeliskLastOwner = StandOwner::Neutral;
+    bool m_obeliskOwnerInitialized = false;
+    StandOwner m_towerLastOwner = StandOwner::Neutral;
+    bool m_towerOwnerInitialized = false;
 
     void BuildFlagTimeline();
     void DrawFlags();
@@ -1114,6 +1120,7 @@ private:
     HeatmapAccumulator    m_heatmapAccumulator;
     HeatmapRenderer       m_heatmapRenderer;
     bool                  m_heatmapInitialized = false;
+    std::unordered_map<int, uint8_t> m_agentTeams;
     bool                  m_heatmapMeshBuilt   = false;
     bool                  m_heatmapPopulated   = false;
 

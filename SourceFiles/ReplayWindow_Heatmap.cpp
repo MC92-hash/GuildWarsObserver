@@ -112,10 +112,6 @@ void ReplayWindow::DrawHeatmapOverlay()
 
     UpdateHeatmapSamples();
 
-    std::unordered_map<int, uint8_t> agentTeams;
-    for (auto& [agentId, ard] : m_replayCtx.agents)
-        agentTeams[agentId] = ard.teamId;
-
     size_t layerCount = m_heatmapSettings.layers.size();
     m_heatmapAccumulator.EnsureLayerCount(layerCount);
     m_heatmapRenderer.EnsureLayerTextures(m_deviceResources->GetD3DDevice(), layerCount);
@@ -130,7 +126,7 @@ void ReplayWindow::DrawHeatmapOverlay()
         m_heatmapAccumulator.RebuildLayerIfDirty(
             i, def, m_debugTimeline,
             m_heatmapSettings.timeRange, m_heatmapSettings.windowSeconds,
-            agentTeams);
+            m_agentTeams);
 
         m_heatmapRenderer.UpdateLayerDensityTexture(ctx, i, m_heatmapAccumulator);
         m_heatmapAccumulator.ClearLayerTextureDirty(i);

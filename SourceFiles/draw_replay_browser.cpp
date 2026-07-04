@@ -686,9 +686,9 @@ static void DrawCostIconInt(const char* iconFile, const char* valueFmt, int val,
     hasCost = true;
 }
 
-static void DrawSkillTooltip(int skillId)
+static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullptr)
 {
-    const SkillInfo* si = GetSkillDatabase().Get(skillId);
+    const SkillInfo* si = view ? view->Get(skillId) : GetSkillDatabase().Get(skillId);
     if (!si) return;
 
     ImGui::BeginTooltip();
@@ -2748,6 +2748,14 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                                 const GuildLabel& guild, bool isWinner,
                                 const ResponsiveSizes& sz)
 {
+    // Use skill data matching this match's date
+    static std::unordered_map<int, SkillDatabaseView> s_matchViewCache;
+    int dateKey = m.year * 10000 + m.month * 100 + m.day;
+    auto [cacheIt, inserted] = s_matchViewCache.try_emplace(dateKey);
+    if (inserted)
+        cacheIt->second = GetSkillDatabase().GetView(m.year, m.month, m.day);
+    const auto& matchView = cacheIt->second;
+
     const float iconSize = sz.profIcon;
     const float skillIconSize = sz.skillIcon;
     const float smallIconSize = sz.cupIcon + 2.0f;
@@ -2981,7 +2989,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 ImGui::TableNextColumn();
                 if (!p.used_skills.empty())
                 {
-                    auto sortedSkills = GetSkillDatabase().SortSkillsForDisplay(
+                    auto sortedSkills = matchView.SortSkillsForDisplay(
                         p.used_skills, p.primary, p.secondary);
                     for (int ski = 0; ski < (int)sortedSkills.size(); ski++)
                     {
@@ -2992,7 +3000,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                         {
                             ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
                             if (ImGui::IsItemHovered())
-                                DrawSkillTooltip(skillId);
+                                DrawSkillTooltip(skillId, &matchView);
                         }
                         else
                             ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));

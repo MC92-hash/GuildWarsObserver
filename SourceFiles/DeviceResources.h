@@ -45,6 +45,7 @@ namespace DX
         void HandleDeviceLost();
         void RegisterDeviceNotify(IDeviceNotify* deviceNotify) noexcept { m_deviceNotify = deviceNotify; }
         void Present();
+        void SetVSyncEnabled(bool enabled) noexcept { m_vsyncEnabled = enabled; }
         void UpdateColorSpace();
 
         // Device Accessors.
@@ -163,6 +164,8 @@ namespace DX
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_shadowMapDSV;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_shadowMapSRV;
         D3D11_VIEWPORT m_shadowViewport;
+        UINT m_shadowWidth = 0;
+        UINT m_shadowHeight = 0;
 
         // Reflection rendering resources
         Microsoft::WRL::ComPtr<ID3D11Texture2D> m_reflectionRenderTarget;
@@ -171,6 +174,8 @@ namespace DX
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_reflectionSRV;
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView>  m_reflectionDepthStencilView;
         D3D11_VIEWPORT m_reflectionViewport;
+        UINT m_reflectionWidth = 0;
+        UINT m_reflectionHeight = 0;
 
         // Direct3D properties.
         DXGI_FORMAT                                     m_backBufferFormat;
@@ -188,6 +193,7 @@ namespace DX
 
         // DeviceResources options (see flags above)
         unsigned int                                    m_options;
+        bool                                            m_vsyncEnabled = true;
 
         // The IDeviceNotify can be held directly as it owns the DeviceResources.
         IDeviceNotify*                                  m_deviceNotify;

@@ -1318,16 +1318,19 @@ void ReplayWindow::DrawAgentModels()
         auto agentIt = m_replayCtx.agents.find(agentId);
         if (agentIt == m_replayCtx.agents.end()) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            m_agentModelRenderStatus[agentId] = std::format("hidden: not in agents (meshes={})", meshIds.size());
+            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = std::format("hidden: not in agents (meshes={})", meshIds.size());
             continue;
         }
 
         auto& ard = agentIt->second;
         if (ard.snapshots.empty()) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            m_agentModelRenderStatus[agentId] = "hidden: no snapshots";
+            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: no snapshots";
             continue;
         }
+
+        // Cache snapshot index once per agent per frame - reused below for rotation lookup
+        const int snapIdx = FindSnapshotIndex(ard.snapshots, m_debugTimeline);
 
         // Spirits: only visible within their snapshot time range
         if (ard.type == AgentType::Spirit) {
@@ -1337,7 +1340,7 @@ void ReplayWindow::DrawAgentModels()
                 ard.isDeadAtTime(m_debugTimeline) ||
                 !ard.isAliveAtTime(m_debugTimeline)) {
                 for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-                m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
+                if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
                 continue;
             }
         }
@@ -1358,7 +1361,7 @@ void ReplayWindow::DrawAgentModels()
         bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
         if (inFog && !m_fogGhostMode) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            m_agentModelRenderStatus[agentId] = "hidden: fog";
+            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: fog";
             continue;
         }
 
@@ -1379,14 +1382,13 @@ void ReplayWindow::DrawAgentModels()
             if (dist > lodDot) {
                 for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
                 ard.currentLOD = 0;
-                m_agentModelRenderStatus[agentId] = std::format("hidden: LOD icon (dist={:.0f})", dist);
+                if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = std::format("hidden: LOD icon (dist={:.0f})", dist);
                 continue;
             }
         }
         ard.currentLOD = 2;
 
         // Get rotation from nearest snapshot
-        int snapIdx = FindSnapshotIndex(ard.snapshots, m_debugTimeline);
         float rotRad = ard.snapshots[snapIdx].rotation;
 
         // Scale: FFNA models are already in game units; only apply the GW NPC adjustment
@@ -1740,10 +1742,11 @@ void ReplayWindow::DrawAgentModels()
                 animState.perMeshCBs[si2].highlight_state = hovered ? 5 : 0;
             }
 
-            m_agentModelRenderStatus[agentId] = std::format(
-                "skinned{}: submeshes={} pos=({:.0f},{:.0f},{:.0f}) anim=0x{:X}",
-                dead ? " (dead)" : "", animState.animMeshes.size(),
-                pos.x, pos.y, pos.z, snap.animation_code);
+            m_agentModelRenderStatus[agentId] = m_showAgentModelWindow
+                ? std::format("skinned{}: submeshes={} pos=({:.0f},{:.0f},{:.0f}) anim=0x{:X}",
+                    dead ? " (dead)" : "", animState.animMeshes.size(),
+                    pos.x, pos.y, pos.z, snap.animation_code)
+                : "skinned";
         } else {
             // Rigid prop rendering
             float rigidAlpha = inFog ? 0.3f : 1.0f;
@@ -1762,9 +1765,10 @@ void ReplayWindow::DrawAgentModels()
                     renderedCount++;
                 }
             }
-            m_agentModelRenderStatus[agentId] = std::format(
-                "shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
-                renderedCount, meshIds.size(), pos.x, pos.y, pos.z, scale);
+            m_agentModelRenderStatus[agentId] = m_showAgentModelWindow
+                ? std::format("shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
+                    renderedCount, meshIds.size(), pos.x, pos.y, pos.z, scale)
+                : "shown";
         }
     }
 
