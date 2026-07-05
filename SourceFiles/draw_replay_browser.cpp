@@ -2799,10 +2799,10 @@ static void DrawGalleryCard(const FilteredMatch& fm, float cardWidth, bool isSel
                     IM_COL32(212, 212, 216, 255), fm.mapName.c_str());
         dl->PopClipRect();
 
-        // Date: 14px mono #a1a1aa
+        // Date: 16px mono #a1a1aa
         char dateBuf[32];
         snprintf(dateBuf, sizeof(dateBuf), "%s %d, %04d", MonthAbbrev(m.month), m.day, m.year);
-        dl->AddText(mono, 14.f, ImVec2(textX, thumbY + 22.f),
+        dl->AddText(mono, 16.f, ImVec2(textX, thumbY + 24.f),
                     IM_COL32(161, 161, 170, 255), dateBuf);
 
         // Duration + rank badge — same row, vertically centered in head, right-aligned
@@ -2824,15 +2824,14 @@ static void DrawGalleryCard(const FilteredMatch& fm, float cardWidth, bool isSel
                 rx = bx - 8.f; // gap:8px per HTML
             }
 
-            // Duration (left of badge, same row)
+            // Duration (left of badge, same row) — 18px
             if (!m.match_duration.empty())
             {
-                ImVec2 durSz = mono->CalcTextSizeA(16.f, FLT_MAX, 0.f, m.match_duration.c_str());
+                ImVec2 durSz = mono->CalcTextSizeA(18.f, FLT_MAX, 0.f, m.match_duration.c_str());
                 float dx = rx - durSz.x;
-                dl->AddText(mono, 16.f, ImVec2(dx, rowY),
+                dl->AddText(mono, 18.f, ImVec2(dx, rowY),
                             IM_COL32(212, 212, 216, 255), m.match_duration.c_str());
-                // Clock glyph (regular font for unicode fallback), gap:4px per HTML
-                dl->AddText(font, 16.f, ImVec2(dx - 18.f, rowY),
+                dl->AddText(font, 18.f, ImVec2(dx - 20.f, rowY),
                             IM_COL32(245, 158, 11, 255), "\xe2\x97\xb7");
             }
         }
@@ -3408,51 +3407,34 @@ static void DrawGalleryTopBar(int matchCount)
         GuiGlobalConstants::SaveSettings();
     }
 
-    // Grid size toggle
+    // Refresh button — always visible, same height as Table/Cards buttons
     ImGui::SameLine(0, 16);
-    ImGui::TextColored(kColorTextDim, "Grid:");
-    ImGui::SameLine(0, 4);
-
-    for (int n = 2; n <= 4; n++)
     {
-        if (n > 2) ImGui::SameLine(0, 2);
-        char lbl[8];
-        snprintf(lbl, sizeof(lbl), "%d##gcol", n);
-        bool active = (s_state.galleryColumns == n);
-        if (ViewBtn(lbl, active))
+        bool hint = g_refreshHint;
+        if (hint)
         {
-            s_state.galleryColumns = n;
-            GuiGlobalConstants::replay_gallery_columns = n;
-            GuiGlobalConstants::SaveSettings();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.12f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.961f, 0.620f, 0.043f, 0.20f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.984f, 0.749f, 0.141f, 1.f));
         }
-    }
-
-    // Theme selector
-    ImGui::SameLine(0, 16);
-    ImGui::TextColored(kColorTextDim, "|");
-    ImGui::SameLine(0, 8);
-    ImGui::SetNextItemWidth(120.f);
-    const char* themeLabels[] = { "GW Observer", "Watchtower" };
-    int curTheme = GuiGlobalConstants::replay_browser_theme;
-    if (ImGui::Combo("##theme_sel", &curTheme, themeLabels, 2))
-    {
-        GuiGlobalConstants::replay_browser_theme = curTheme;
-        s_appliedTheme = -1; // force re-apply
-        GuiGlobalConstants::SaveSettings();
-    }
-
-    // Refresh button
-    if (g_refreshHint)
-    {
-        ImGui::SameLine(0, 16);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.4f, 0.1f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.15f, 0.5f, 0.15f, 0.9f));
-        if (ImGui::SmallButton("REFRESH"))
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.14f, 0.16f, 0.8f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.20f, 0.22f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.247f, 0.247f, 0.275f, 0.45f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.631f, 0.631f, 0.667f, 1.f));
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
+        if (ImGui::Button("REFRESH"))
         {
             g_refreshMatchIndex = true;
             g_refreshHint = false;
         }
-        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(4);
     }
 }
 
@@ -3479,7 +3461,7 @@ static void DrawCardGallery(const std::vector<FilteredMatch>& filtered,
 
     // Scrollable grid
     {
-        int cols = s_state.galleryColumns;
+        int cols = 3; // fixed 3-column grid
         float gridSpacing = 12.0f;
         float availW = ImGui::GetContentRegionAvail().x;
         float cardWidth = (availW - gridSpacing * (cols - 1)) / cols;
@@ -4814,7 +4796,9 @@ void draw_replay_browser(ReplayLibrary& library)
     if (!library.IsLoaded() || library.GetMatches().empty())
         return;
 
-    ApplyBrowserTheme(GuiGlobalConstants::replay_browser_theme);
+    // Card gallery always uses Watchtower theme; table view uses user's choice
+    int themeToApply = s_state.cardGalleryMode ? 1 : GuiGlobalConstants::replay_browser_theme;
+    ApplyBrowserTheme(themeToApply);
 
     const auto& matches = library.GetMatches();
     BuildFilterLists(matches);
