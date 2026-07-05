@@ -198,6 +198,7 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("heatmap",         "Heatmap",              &m_heatmapSettings.show, false, true);
     m_panelLayout.RegisterPanel("agent_names",     "Agent Names",          &m_showNameFilterPanel,  false, true);
     m_panelLayout.RegisterPanel("split_camera",    "Split Camera",         &m_pipEnabled,           false, true);
+    m_panelLayout.RegisterPanel("minimap",         "Minimap",              &m_minimapEnabled,       false, true);
     m_panelLayout.RegisterPanel("notepad",         "Match Notepad",        &m_showNotepad,          false, true);
 }
 
@@ -335,6 +336,10 @@ void ReplayWindow::SaveUILayout()
     ps["pipFollowPitch"]      = m_pipFollowPitch;
     ps["pipManualAgent"]      = m_pipManualAgent;
 
+    // Minimap state
+    ps["minimapZoom"]         = m_minimapZoom;
+    ps["minimapShowLabels"]   = m_minimapShowLabels;
+
     j["panelState"] = ps;
 
     f << j.dump(2) << "\n";
@@ -441,6 +446,10 @@ void ReplayWindow::LoadUILayout()
             fv("pipFollowYaw",   m_pipFollowYaw);
             fv("pipFollowPitch", m_pipFollowPitch);
             iv("pipManualAgent", m_pipManualAgent);
+
+            // Minimap state
+            fv("minimapZoom",        m_minimapZoom);
+            bv("minimapShowLabels",  m_minimapShowLabels);
         }
     } catch (...) {}
 
@@ -3218,6 +3227,9 @@ void ReplayWindow::Render()
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
 
+    if (m_minimapEnabled && m_minimapResourcesReady)
+        RenderMinimap();
+
     Clear();
 
     auto* pickingRTV = m_assetSelectionEnabled
@@ -3375,6 +3387,7 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Skill Analytics (BETA)", nullptr, &m_showSkillAnalytics);
             ImGui::MenuItem("Agent Names", nullptr, &m_showNameFilterPanel);
             ImGui::MenuItem("Split Camera", nullptr, &m_pipEnabled);
+            ImGui::MenuItem("Minimap", nullptr, &m_minimapEnabled);
             ImGui::Separator();
             ImGui::MenuItem("Sound FX (BETA)", nullptr, &m_audioEnabled);
             ImGui::EndMenu();
@@ -3572,6 +3585,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawNotepad();
     DrawNameFilterPanel();
     DrawPiPPanel();
+    DrawMinimapPanel();
 
     {
         auto lutGetter = [this](HeatmapPalette p) -> ID3D11ShaderResourceView* {

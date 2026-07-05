@@ -937,6 +937,27 @@ private:
 
     void DrawNotepad();
 
+    // --- Minimap ---
+    bool  m_minimapEnabled       = false;
+    float m_minimapZoom          = 1.0f;     // 1.0 = full map, >1 = zoomed in
+    float m_minimapPanX          = 0.f;      // world-unit pan offset
+    float m_minimapPanZ          = 0.f;
+    bool  m_minimapShowLabels    = true;
+    int   m_minimapWidth         = 400;
+    int   m_minimapHeight        = 400;
+    DirectX::XMFLOAT4X4 m_minimapViewProj{};
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_minimapTexture;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_minimapRTV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_minimapDepthTexture;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView>   m_minimapDSV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_minimapSRV;
+    bool m_minimapResourcesReady = false;
+
+    void InitMinimapResources();
+    void RenderMinimap();
+    void DrawMinimapPanel();
+
     // --- Picture-in-Picture (Split Camera) ---
     bool  m_pipEnabled       = false;
     int   m_pipTargetAgent   = -1;
