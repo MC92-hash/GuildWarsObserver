@@ -172,6 +172,28 @@ static void LoadSelectedFont(float fontSize)
         }
     }
 
+    // Load Roboto Mono for tabular/monospace elements (card gallery comp counts, stats, etc.)
+    GuiGlobalConstants::monoFont = nullptr;
+    GuiGlobalConstants::monoBoldFont = nullptr;
+    {
+        std::string base = GetFontBasePath();
+        if (!base.empty())
+        {
+            std::string monoPath = base + "\\RobotoMono-Regular.ttf";
+            std::string monoBoldPath = base + "\\RobotoMono-Bold.ttf";
+            if (std::filesystem::exists(monoPath))
+            {
+                GuiGlobalConstants::monoFont = io.Fonts->AddFontFromFileTTF(monoPath.c_str(), fontSize);
+                MergeUnicodeFallback(io.Fonts, fontSize);
+            }
+            if (std::filesystem::exists(monoBoldPath))
+            {
+                GuiGlobalConstants::monoBoldFont = io.Fonts->AddFontFromFileTTF(monoBoldPath.c_str(), fontSize);
+                MergeUnicodeFallback(io.Fonts, fontSize);
+            }
+        }
+    }
+
     io.Fonts->Build();
 }
 

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #131315; }
+  ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 5px; }
+  .clamp2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+</style>
+</helmet>
+<div style="min-height:100vh; background:#18181b; color:#e4e4e7; font-family:'Chakra Petch',sans-serif; padding:0 0 40px;">
+
+  <!-- ===== HEADER ===== -->
+  <div style="position:sticky; top:0; z-index:20; background:#1c1c1f; border-bottom:1px solid #27272a; padding:12px 20px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:baseline; gap:8px;">
+      <span style="font-weight:700; font-size:15px; letter-spacing:1.5px; color:#f59e0b;">MATCHES</span>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#71717a;">{{ shownCount }} / 1576</span>
+    </div>
+
+    <div style="position:relative; flex:1; min-width:220px; max-width:360px;">
+      <span style="position:absolute; left:11px; top:50%; transform:translateY(-50%); color:#71717a; font-size:13px;">⌕</span>
+      <input value="{{ query }}" onInput="{{ onSearch }}" placeholder="Search team, guild tag, map…" style="width:100%; background:#232327; border:1px solid #3f3f46; border-radius:6px; color:#e4e4e7; font-family:'Chakra Petch',sans-serif; font-size:13px; padding:7px 10px 7px 30px; outline:none;">
+    </div>
+
+    <div style="display:flex; align-items:center; gap:14px; margin-left:auto; flex-wrap:wrap;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span style="font-size:11px; letter-spacing:1px; color:#71717a;">SORT</span>
+        <div style="background:#26262a; border:1px solid #3f3f46; border-radius:6px; padding:6px 10px; font-size:12px; color:#d4d4d8;">Newest First ▾</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span style="font-size:11px; letter-spacing:1px; color:#71717a;">GRID</span>
+        <div style="display:flex; gap:3px;">
+          <sc-for list="{{ densities }}" as="d" hint-placeholder-count="3">
+            <button onClick="{{ d.set }}" style="{{ d.style }}">{{ d.n }}</button>
+          </sc-for>
+        </div>
+      </div>
+      <button style="background:rgba(245,158,11,0.12); border:1px solid #f59e0b; color:#fbbf24; border-radius:6px; padding:7px 14px; font-family:'Chakra Petch',sans-serif; font-weight:600; font-size:12px; letter-spacing:1px; cursor:pointer;">↻ REFRESH</button>
+    </div>
+  </div>
+
+  <!-- ===== RANK LEGEND ===== -->
+  <div style="display:flex; align-items:center; gap:16px; padding:9px 20px; background:#161618; border-bottom:1px solid #212124; font-size:11px; color:#71717a;">
+    <span style="letter-spacing:1.5px; color:#5b5b61;">TIER</span>
+    <sc-for list="{{ legend }}" as="l" hint-placeholder-count="4">
+      <span style="display:inline-flex; align-items:center; gap:6px;">
+        <span style="width:30px; text-align:center; font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:10px; padding:2px 0; border-radius:3px; color:{{ l.fg }}; background:{{ l.bg }}; border:{{ l.border }};">{{ l.code }}</span>
+        <span>{{ l.label }}</span>
+      </span>
+    </sc-for>
+    <span style="margin-left:auto; display:inline-flex; align-items:center; gap:5px; color:#5b5b61;"><span style="color:#f59e0b;">▲</span> winner side tinted amber</span>
+  </div>
+
+  <!-- ===== GRID ===== -->
+  <div style="padding:16px 20px; display:grid; gap:14px; grid-template-columns:{{ gridCols }};">
+    <sc-for list="{{ matches }}" as="m" hint-placeholder-count="9">
+      <div style="background:#1c1c1f; border:1px solid #27272a; border-radius:8px; overflow:hidden; display:flex; flex-direction:column;">
+
+        <!-- card head -->
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:#161618; border-bottom:1px solid #212124;">
+          
+          <div style="height: 86px; border-radius: 6px; flex-shrink: 0; background: #26262a; border: 1px solid #3f3f46; display: flex; align-items: center; justify-content: center; font-family: 'IBM Plex Mono',monospace; font-weight: 600; font-size: 13px; color: #8a8a90; border-width: 3px; width: 135px" title="{{ m.map }} — map image">{{ m.mapAbbr }}</div><div style="min-width:0;">
+            <div style="font-size:17px; font-weight:600; color:#d4d4d8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ m.map }}</div>
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:14px; color:#a1a1aa;">{{ m.date }}</div>
+          </div>
+          <div style="margin-left:auto; display:flex; align-items:center; gap:8px;">
+            <span style="display:inline-flex; align-items:center; gap:4px; font-family:'IBM Plex Mono',monospace; font-size:16px; color:#d4d4d8;" title="match length"><span style="color:#f59e0b;">◷</span>{{ m.duration }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:12px; letter-spacing:.5px; padding:3px 7px; border-radius:4px; white-space:nowrap; flex-shrink:0; color:{{ m.rankFg }}; background:{{ m.rankBg }}; border:{{ m.rankBorder }};">{{ m.rank }}</span>
+          </div>
+        </div>
+
+        <!-- matchup body: left | VS | right -->
+        <div style="display:grid; grid-template-columns:1fr auto 1fr; align-items:stretch;">
+
+          <!-- LEFT TEAM -->
+          <div style="padding:10px 12px; display:flex; flex-direction:column; gap:6px; align-items:flex-start; {{ m.left.halfBg }}">
+            <div style="display:flex; align-items:baseline; gap:6px;">
+              <span class="clamp2" style="min-width: 0; font-size: 16px; line-height: 1.15; color: {{ m.left.nameColor }}; font-weight: {{ m.left.nameWeight }}">{{ m.left.name }}</span>
+              <span style="font-family: 'IBM Plex Mono',monospace; font-size: 15.5px; color: rgba(245,158,11,0.72); flex-shrink: 0">[{{ m.left.tag }}]</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-family:'IBM Plex Mono',monospace; font-size:{{ compFont }};">
+              <sc-for list="{{ m.left.comp }}" as="c" hint-placeholder-count="5">
+                <span style="display:inline-flex; align-items:center; gap:3px; white-space:nowrap;"><sc-if value="{{ c.icon }}" hint-placeholder-val=""><img src="{{ c.icon }}" alt="{{ c.prof }}" style="width:{{ iconPx }}; height:{{ iconPx }}; object-fit:contain; display:block;"></sc-if><span style="color:#d4d4d8; font-weight:600;">{{ c.count }}</span></span>
+              </sc-for>
+            </div>
+            <sc-if value="{{ m.left.strategy }}" hint-placeholder-val=""><span style="font-family: 'IBM Plex Mono',monospace; font-size: 13.5px; color: #f59e0b; border: 1px dashed rgba(245,158,11,0.4); padding: 1px 6px; border-radius: 3px">◆ {{ m.left.strategy }}</span></sc-if>
+          </div>
+
+          <!-- VS -->
+          <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 4px; gap:5px;">
+            <div style="width:1px; flex:1; background:#27272a;"></div>
+            <span style="font-family: 'IBM Plex Mono',monospace; font-weight: 600; font-size: 15px; letter-spacing: 1px; color: #f59e0b">VS</span>
+            <div style="width:1px; flex:1; background:#27272a;"></div>
+          </div>
+
+          <!-- RIGHT TEAM -->
+          <div style="padding:10px 12px; display:flex; flex-direction:column; gap:6px; align-items:flex-end; text-align:right; {{ m.right.halfBg }}">
+            <div style="display:flex; align-items:baseline; gap:6px; justify-content:flex-end;">
+              <span class="clamp2" style="min-width: 0; font-size: 16px; line-height: 1.15; color: {{ m.right.nameColor }}; font-weight: {{ m.right.nameWeight }}">{{ m.right.name }}</span>
+              <span style="font-family: 'IBM Plex Mono',monospace; font-size: 15.5px; color: rgba(245,158,11,0.72); flex-shrink: 0">[{{ m.right.tag }}]</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; font-family:'IBM Plex Mono',monospace; font-size:{{ compFont }};">
+              <sc-for list="{{ m.right.comp }}" as="c" hint-placeholder-count="5">
+                <span style="display:inline-flex; align-items:center; gap:3px; white-space:nowrap;"><sc-if value="{{ c.icon }}" hint-placeholder-val=""><img src="{{ c.icon }}" alt="{{ c.prof }}" style="width:{{ iconPx }}; height:{{ iconPx }}; object-fit:contain; display:block;"></sc-if><span style="color:#d4d4d8; font-weight:600;">{{ c.count }}</span></span>
+              </sc-for>
+            </div>
+            <sc-if value="{{ m.right.strategy }}" hint-placeholder-val=""><span style="font-family:'IBM Plex Mono',monospace; font-size:13.5px; color:#f59e0b; border:1px dashed rgba(245,158,11,0.4); padding:1px 6px; border-radius:3px;">◆ {{ m.right.strategy }}</span></sc-if>
+          </div>
+        </div>
+
+        <!-- footer: link -->
+        <div style="margin-top:auto; display:flex; align-items:center; padding:7px 12px; border-top:1px solid #212124;">
+          <a href="#" style="margin-left: auto; font-size: 16px; letter-spacing: .5px; color: #a1a1aa; text-decoration: none">Details ›</a>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+
+  <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+    <div style="text-align:center; padding:60px 20px; color:#71717a; font-family:'IBM Plex Mono',monospace; font-size:13px;">No matches for "{{ query }}"</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: &quot;100%&quot;, &quot;height&quot;: 720 },
+  &quot;teamNameSize&quot;: { &quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 13.5, &quot;min&quot;: 12, &quot;max&quot;: 20, &quot;step&quot;: 0.5, &quot;unit&quot;: &quot;px&quot;, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Typography&quot;, &quot;label&quot;: &quot;Team name size&quot; },
+  &quot;compSize&quot;: { &quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 14, &quot;min&quot;: 11, &quot;max&quot;: 20, &quot;step&quot;: 1, &quot;unit&quot;: &quot;px&quot;, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Typography&quot;, &quot;label&quot;: &quot;Comp text size&quot; },
+  &quot;iconSize&quot;: { &quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 20, &quot;min&quot;: 14, &quot;max&quot;: 30, &quot;step&quot;: 1, &quot;unit&quot;: &quot;px&quot;, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Typography&quot;, &quot;label&quot;: &quot;Profession icon size&quot; }
+}">
+class Component extends DCLogic {
+  state = { cols: 3, query: "" };
+
+  // Profession glyphs kept monochrome-amber to respect the Watchtower CI.
+  // (Per-profession color is an option — see HANDOFF.md.)
+  MAPS = {
+    "Isle of Wurms":   { bg: "#a1a1aa", abbr: "IW" },
+    "Burning Isle":    { bg: "#c98f4e", abbr: "BI" },
+    "Uncharted Isle":  { bg: "#8a8a90", abbr: "UI" },
+    "Isle of Jade":    { bg: "#b7b7bd", abbr: "IJ" }
+  };
+
+  // Tier ramp stays inside CI: amber intensity for prestige, zinc for lower.
+  RANK = {
+    "A AT":  { bg: "rgba(245,158,11,0.9)", fg: "#18181b", border: "none",             label: "Tier A" },
+    "B AT":  { bg: "transparent",          fg: "#f59e0b", border: "1px solid #f59e0b", label: "Tier B" },
+    "C AT":  { bg: "rgba(245,158,11,0.13)", fg: "#e0a24e", border: "none",            label: "Tier C" },
+    "Scrim": { bg: "transparent",          fg: "#71717a", border: "1px solid #3f3f46", label: "Scrim" }
+  };
+
+  RAW = [
+    ["Isle of Wurms","Jul 5, 2026","03:38","C AT",["Twenty Five Wins","NwAy","1D/2Me/3Mo/2P",1],["Ixl Savant Ixl","Crew","1Me/3Mo/1N/1P/1R/1W",0]],
+    ["Burning Isle","Jul 5, 2026","15:23","C AT",["티원 T1 Superstars","SKT","8Mo",0],["Let Me Write It Down In My Care","Book","1Me/3Mo/1P/1Rt/2W",1]],
+    ["Burning Isle","Jul 5, 2026","08:59","C AT",["The Bouncers","BcS","1D/2Me/3Mo/1P/1W",1],["Ixl Savant Ixl","Crew","2E/2Me/2Mo/1N/1R",0]],
+    ["Burning Isle","Jul 5, 2026","07:41","C AT",["No Avatars","push","1D/1E/2Me/3Mo/1P",1],["Vive Le Serpiente","OG","1Me/2Mo/2P/2Rt/1W",0]],
+    ["Burning Isle","Jul 5, 2026","06:24","C AT",["Girls Just Wanna Have","Fun","1Me/7Mo",0],["One Thousand Kilogram Whale","yM","1D/1Me/3Mo/1P/2W",1]],
+    ["Burning Isle","Jul 5, 2026","06:06","C AT",["Yellin Into The Mic From Cuenca","QenK","1D/1E/1Me/3Mo/1P/1W",1],["Virtual Refuge","Free","2E/1Me/3Mo/2P",0]],
+    ["Burning Isle","Jul 5, 2026","03:51","C AT",["Traditional Techniques","TECH","1E/1Me/3Mo/1N/2P",0],["The Dream Police","drm","2Me/3Mo/2P/1W",1]],
+    ["Burning Isle","Jul 5, 2026","03:14","C AT",["Twenty Five Wins","NwAy","1Mo/1R/2Rt/4W",1,"Spiritway"],["Endless Doom Greatest Endeavour","EDGE","1E/1Me/3Mo/1R/2W",0]],
+    ["Uncharted Isle","Jul 5, 2026","07:12","B AT",["De Gekke Jongens","Jwz","1E/2Mo/2N/1P/2W",0],["Endless Doom Greatest Endeavour","EDGE","1E/3Mo/1P/1R/2W",1]],
+    ["Uncharted Isle","Jul 5, 2026","22:38","A AT",["No Avatars","push","1E/1Me/3Mo/1P/2W",1],["Traditional Techniques","TECH","1E/2Mo/3Mo/2P/1W",0]],
+    ["Uncharted Isle","Jul 5, 2026","03:53","A AT",["Special Grade Sorcerers","JJK","1D/1E/2Me/3Mo/1W",1],["Sumthing Stoopid Returns","DUM","1E/4Mo/2W",0]],
+    ["Isle of Wurms","Jul 5, 2026","07:18","A AT",["Special Grade Sorcerers","JJK","1D/1E/2Me/3Mo/1W",0],["No Avatars","push","1E/1Me/3Mo/1P/2W",1]],
+    ["Burning Isle","Jul 5, 2026","03:53","A AT",["Special Grade Sorcerers","JJK","1Mo/1R/2Rt/4W",1,"Spiritway"],["Traditional Techniques","TECH","2E/1Me/3Mo/2P",0]],
+    ["Isle of Jade","Jul 5, 2026","06:51","Scrim",["One Thousand Kilogram Whale","yM","1D/2Me/3Mo/1P/1W",0],["Vive Le Serpiente","OG","1Me/3Mo/2P/1Rt/1W",1]],
+    ["Uncharted Isle","Jul 4, 2026","25:48","C AT",["Just A Pug","pug","1D/2Me/2Mo/1P/1Rt/1W",0],["Let Me Write It Down In My Care","Book","1Me/3Mo/2N/1P/1W",1]]
+  ];
+
+  // profession abbreviation -> GW profession id (icon file prof/{id}.png)
+  PROF_ID = { W:1, R:2, Mo:3, N:4, Me:5, E:6, A:7, Rt:8, P:9, D:10 };
+
+  // display order: melees first, then casters
+  PROF_ORDER = ["W","D","A","R","P","E","N","Me","Mo","Rt"];
+
+  parseComp(str) {
+    const arr = str.split("/").map(tok => {
+      const m = tok.match(/^(\d+)([A-Za-z]+)$/);
+      const prof = m ? m[2] : tok;
+      const id = this.PROF_ID[prof];
+      return { count: m ? m[1] : "", prof, icon: id ? `prof/${id}.png` : "" };
+    });
+    const rank = p => { const i = this.PROF_ORDER.indexOf(p); return i === -1 ? 99 : i; };
+    return arr.sort((a, b) => rank(a.prof) - rank(b.prof));
+  }
+
+  buildTeam(arr) {
+    const won = arr[3] === 1;
+    return {
+      name: arr[0], tag: arr[1], won, strategy: arr[4] || "",
+      comp: this.parseComp(arr[2]),
+      nameColor: won ? "#fbbf24" : "#a1a1aa",
+      nameWeight: won ? 700 : 500,
+      halfBg: won ? "background:linear-gradient(180deg,rgba(245,158,11,0.10) 0%,rgba(245,158,11,0.03) 100%);" : ""
+    };
+  }
+
+  renderVals() {
+    const q = this.state.query.trim().toLowerCase();
+    const all = this.RAW.map(r => {
+      const map = this.MAPS[r[0]] || { bg: "#71717a", abbr: "??" };
+      const rank = this.RANK[r[3]] || { bg: "#27272a", fg: "#a1a1aa", border: "none" };
+      const left = this.buildTeam(r[4]);
+      const right = this.buildTeam(r[5]);
+      return {
+        map: r[0], mapBg: map.bg, mapAbbr: map.abbr,
+        date: r[1], duration: r[2],
+        rank: r[3], rankBg: rank.bg, rankFg: rank.fg, rankBorder: rank.border,
+        left, right,
+        winnerName: left.won ? left.name : right.name,
+        _search: (r[4][0] + " " + r[4][1] + " " + r[5][0] + " " + r[5][1] + " " + r[0]).toLowerCase()
+      };
+    });
+    const matches = q ? all.filter(m => m._search.includes(q)) : all;
+
+    const densities = [2, 3, 4].map(n => ({
+      n,
+      set: () => this.setState({ cols: n }),
+      style: `background:${this.state.cols === n ? "rgba(245,158,11,0.15)" : "#232327"}; border:1px solid ${this.state.cols === n ? "#f59e0b" : "#3f3f46"}; color:${this.state.cols === n ? "#fbbf24" : "#a1a1aa"}; border-radius:5px; width:26px; height:26px; font-family:'IBM Plex Mono',monospace; font-size:12px; cursor:pointer;`
+    }));
+
+    const legend = Object.keys(this.RANK).map(k => ({
+      code: k, bg: this.RANK[k].bg, fg: this.RANK[k].fg, border: this.RANK[k].border, label: this.RANK[k].label
+    }));
+
+    return {
+      nameSize: (this.props.teamNameSize ?? 13.5) + "px",
+      compFont: (this.props.compSize ?? 14) + "px",
+      iconPx: (this.props.iconSize ?? 20) + "px",
+      matches,
+      shownCount: matches.length,
+      empty: matches.length === 0,
+      query: this.state.query,
+      onSearch: (e) => this.setState({ query: e.target.value }),
+      gridCols: `repeat(${this.state.cols}, minmax(0,1fr))`,
+      densities,
+      legend
+    };
+  }
+}
+</script>
+</body>
+</html>

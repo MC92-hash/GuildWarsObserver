@@ -107,6 +107,8 @@ public:
 	inline static float saved_font_size = 15.0f;
 	inline static bool font_needs_rebuild = false;
 	inline static ImFont* boldFont = nullptr;
+	inline static ImFont* monoFont = nullptr;      // Roboto Mono Regular
+	inline static ImFont* monoBoldFont = nullptr;   // Roboto Mono Bold
 
 	// Window settings
 	inline static int window_width = -1;
@@ -118,6 +120,10 @@ public:
 	// Replay browser splitter settings (-1 = use default proportions)
 	inline static int replay_filter_width = -1;
 	inline static int replay_list_height = -1;
+	inline static int replay_card_gallery_mode = 0;  // 0=table, 1=card gallery
+	inline static int replay_gallery_columns = 3;    // 2, 3, or 4
+	inline static int replay_browser_theme = 0;      // 0=GW Observer, 1=Watchtower
+	inline static int replay_card_style = 0;         // 0=Classic, 1=Visual
 
 	// Update settings
 	inline static std::string dismissed_update_version;
@@ -334,6 +340,10 @@ public:
 		file << "window_maximized=" << (window_maximized ? 1 : 0) << "\n";
 		file << "replay_filter_width=" << replay_filter_width << "\n";
 		file << "replay_list_height=" << replay_list_height << "\n";
+		file << "replay_card_gallery_mode=" << replay_card_gallery_mode << "\n";
+		file << "replay_gallery_columns=" << replay_gallery_columns << "\n";
+		file << "replay_browser_theme=" << replay_browser_theme << "\n";
+		file << "replay_card_style=" << replay_card_style << "\n";
 
 		file << "\n[Updates]\n";
 		file << "dismissed_update_version=" << dismissed_update_version << "\n";
@@ -499,6 +509,10 @@ public:
 			else if (key == "window_maximized") window_maximized = (value != 0);
 			else if (key == "replay_filter_width") replay_filter_width = value;
 			else if (key == "replay_list_height") replay_list_height = value;
+			else if (key == "replay_card_gallery_mode") replay_card_gallery_mode = value;
+			else if (key == "replay_gallery_columns") replay_gallery_columns = std::clamp(value, 2, 4);
+			else if (key == "replay_browser_theme") replay_browser_theme = std::clamp(value, 0, 1);
+			else if (key == "replay_card_style") replay_card_style = std::clamp(value, 0, 1);
 		}
 
 		if (legacyUnifiedMovement >= 0.f) {

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #131315; }
+  ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 5px; }
+</style>
+</helmet>
+<div style="min-height:100vh; background:#18181b; color:#e4e4e7; font-family:'Chakra Petch',sans-serif;">
+
+  <!-- ===== TOP BAR ===== -->
+  <div style="display:flex; align-items:center; padding:12px 20px; background:#1c1c1f; border-bottom:1px solid #27272a;">
+    <span style="font-weight:700; font-size:14px; letter-spacing:1.5px; color:#f59e0b;">MATCH DETAILS</span>
+    <div style="margin-left:auto; display:flex; align-items:center; gap:14px;">
+      <button style="display:inline-flex; align-items:center; gap:7px; background:rgba(245,158,11,0.12); border:1px solid #f59e0b; color:#fbbf24; border-radius:6px; padding:7px 16px; font-family:'Chakra Petch',sans-serif; font-weight:600; font-size:12px; letter-spacing:1px; cursor:pointer;"><span style="font-size:10px;">▶</span> REPLAY MATCH</button>
+      <button style="background:none; border:1px solid #3f3f46; color:#a1a1aa; border-radius:6px; width:30px; height:30px; cursor:pointer; font-size:13px;">✕</button>
+    </div>
+  </div>
+
+  <!-- ===== BODY: sidebar + two team panels ===== -->
+  <div style="display:grid; grid-template-columns:220px 1fr 1fr; gap:20px; padding:20px;">
+
+    <!-- SIDEBAR: match meta -->
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div style="width:100%; height:150px; border-radius:8px; background:#26262a; border:1px solid #3f3f46; display:flex; align-items:center; justify-content:center; font-family:'IBM Plex Mono',monospace; font-size:12px; color:#71717a;" title="map screenshot">MAP IMAGE</div>
+      <div style="display:flex; flex-direction:column; gap:9px; font-size:13px;">
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#d4d4d8;">{{ meta.date }}</div>
+        <div style="display:flex; align-items:center; gap:7px; color:#f59e0b; font-weight:600;">◆ {{ meta.map }}</div>
+        <div style="display:flex; align-items:center; gap:7px; color:#a1a1aa;">⚑ {{ meta.mode }}</div>
+        <div style="display:flex; align-items:center; gap:7px; font-family:'IBM Plex Mono',monospace; color:#d4d4d8;"><span style="color:#f59e0b;">◷</span> {{ meta.duration }}</div>
+        <div style="display:flex; align-items:center; gap:7px; color:#a488e0;">◈ {{ meta.strategy }}</div>
+      </div>
+      <div style="height:1px; background:#27272a;"></div>
+      <div>
+        <div style="font-size:11px; letter-spacing:1px; color:#71717a; margin-bottom:4px;">RATING</div>
+        <div style="color:#3f3f46; font-size:15px; letter-spacing:2px;">☆☆☆☆☆</div>
+      </div>
+      <div>
+        <div style="font-size:11px; letter-spacing:1px; color:#71717a; margin-bottom:6px;">NOTES</div>
+        <div style="min-height:60px; border:1px solid #27272a; border-radius:6px; background:#161618;"></div>
+      </div>
+      <div style="height:1px; background:#27272a;"></div>
+      <div>
+        <div style="font-size:11px; letter-spacing:1px; color:#f59e0b; margin-bottom:6px;">LORD DAMAGE</div>
+        <div style="font-size:12px; color:#71717a;">No lord damage recorded.</div>
+      </div>
+    </div>
+
+    <!-- TEAM PANELS -->
+    <sc-for list="{{ teams }}" as="t" hint-placeholder-count="2">
+      <div style="{{ t.panelBg }} border:1px solid #27272a; border-radius:8px; padding:12px 14px; min-width:0; overflow-x:auto;">
+
+        <!-- team title -->
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span style="font-size:15px; font-weight:700; color:{{ t.nameColor }};">{{ t.name }}</span>
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:rgba(245,158,11,0.72);">[{{ t.tag }}]</span>
+          <sc-if value="{{ t.won }}" hint-placeholder-val="{{ true }}"><span style="font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:9px; letter-spacing:1px; color:#18181b; background:#f59e0b; padding:2px 7px; border-radius:3px;">WON</span></sc-if>
+        </div>
+
+        <!-- column header row -->
+        <div style="display:grid; grid-template-columns:{{ gridCols }}; align-items:end; gap:0; padding:0 0 6px; border-bottom:1px solid #27272a;">
+          <div></div><div></div><div></div>
+          <div style="font-size:9px; letter-spacing:1px; color:#5b5b61; text-align:center;">BUILD</div>
+          <div style="width:14px;"></div>
+          <sc-for list="{{ t.cols }}" as="c" hint-placeholder-count="5">
+            <div style="text-align:center;" title="{{ c.title }}">
+              <div style="font-size:9px; letter-spacing:.5px; color:#71717a;">{{ c.label }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:#f59e0b;">{{ c.total }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- player rows -->
+        <sc-for list="{{ t.players }}" as="p" hint-placeholder-count="8">
+          <div style="display:grid; grid-template-columns:{{ gridCols }}; align-items:center; gap:0; padding:5px 0; border-bottom:1px solid #1c1c1f;">
+            <!-- prof icons -->
+            <div style="display:flex; align-items:center; gap:1px;">
+              <img src="{{ p.pIcon }}" alt="" style="width:22px; height:22px; object-fit:contain;" />
+              <img src="{{ p.sIcon }}" alt="" style="width:15px; height:15px; object-fit:contain; opacity:.85;" />
+            </div>
+            <!-- name -->
+            <div style="font-size:13px; color:#d4d4d8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:6px;">{{ p.name }}</div>
+            <!-- copy build -->
+            <button style="background:none; border:none; color:#71717a; cursor:pointer; font-size:13px; padding:2px;" title="Copy build template">⧉</button>
+            <!-- build: 8 skill tiles -->
+            <div style="display:flex; gap:2px;">
+              <sc-for list="{{ p.build }}" as="s" hint-placeholder-count="8">
+                <div style="width:28px; height:28px; border-radius:3px; background:#2a2a2e; border:1px solid {{ s.border }};" title="skill icon (GetSkillIcon)"></div>
+              </sc-for>
+            </div>
+            <div style="width:14px;"></div>
+            <!-- stats -->
+            <sc-for list="{{ p.stats }}" as="v" hint-placeholder-count="5">
+              <div style="font-family:'IBM Plex Mono',monospace; font-size:12px; text-align:center; color:{{ v.color }};">{{ v.n }}</div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{ &quot;$preview&quot;: { &quot;width&quot;: 1500, &quot;height&quot;: 760 } }">
+class Component extends DCLogic {
+  // real profession icons copied into prof/{id}.png ; skill icons load via GetSkillIcon in-app
+  ICON = id => `prof/${id}.png`;
+
+  meta = {
+    date: "2026/07/05", map: "Isle of Jade", mode: "Scrimmage",
+    duration: "06:51", strategy: "Chain Combo"
+  };
+
+  // 5 stat columns — map these to the real MatchIndex player fields
+  COLS = [
+    { key: "k",    label: "K",    title: "Kills" },
+    { key: "d",    label: "D",    title: "Deaths" },
+    { key: "dmg",  label: "DMG",  title: "Damage dealt (total_damage)" },
+    { key: "heal", label: "HEAL", title: "Healing dealt (total_healing_dealt)" },
+    { key: "rcv",  label: "RCV",  title: "Damage received (total_damage_received)" }
+  ];
+
+  // [name, primary, secondary, k, d, dmg, heal, rcv]
+  RAW = [
+    { name: "One Thousand Kilogram Whale", tag: "yM", won: false, players: [
+      ["S R S Lorrin", 4, 5, 0, 2, 2074, 3200, 4100],
+      ["Rupt Boi", 4, 2, 1, 3, 2621, 0, 3800],
+      ["Iddqd Legendary", 3, 5, 0, 2, 2683, 5400, 2900],
+      ["Headache", 5, 2, 0, 3, 7252, 0, 5100],
+      ["Seregon Alqua", 2, 1, 0, 2, 7845, 0, 4800],
+      ["Srz", 9, 3, 0, 3, 26, 18900, 3200],
+      ["Nutella Toast II", 9, 3, 0, 2, 290, 16400, 2600],
+      ["Fearless Kasperov", 9, 5, 0, 1, 0, 12000, 1800]
+    ]},
+    { name: "Vive Le Serpiente", tag: "OG", won: true, players: [
+      ["God Said Trap", 3, 5, 5, 0, 10195, 600, 3900],
+      ["Motoko", 2, 3, 8, 0, 8295, 0, 4200],
+      ["Guava Island", 2, 4, 3, 0, 8949, 0, 3100],
+      ["Brett", 4, 5, 4, 0, 1987, 0, 2400],
+      ["Holye Seance", 5, 4, 2, 1, 2324, 4100, 2800],
+      ["Tremendously Inept", 9, 3, 0, 0, 76, 9800, 1900],
+      ["No Monk For You", 9, 3, 0, 0, 873, 11200, 2100],
+      ["Love", 9, 5, 0, 0, 0, 8600, 1500]
+    ]}
+  ];
+
+  fmt(n) { return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n); }
+
+  renderVals() {
+    const teams = this.RAW.map(tm => {
+      const players = tm.players.map(pl => {
+        const [name, p, s, k, d, dmg, heal, rcv] = pl;
+        const vals = { k, d, dmg, heal, rcv };
+        return {
+          name, pIcon: this.ICON(p), sIcon: this.ICON(s),
+          build: Array.from({ length: 8 }, (_, i) => ({ border: i === 0 ? "#f59e0b" : "#3f3f46" })),
+          stats: this.COLS.map(c => {
+            const raw = vals[c.key];
+            const isKey = (c.key === "k" || c.key === "d") && raw > 0;
+            return { n: (c.key === "dmg" || c.key === "heal" || c.key === "rcv") ? this.fmt(raw) : raw,
+                     color: isKey ? "#d4d4d8" : (raw === 0 ? "#5b5b61" : "#a1a1aa") };
+          })
+        };
+      });
+      const IDX = { k: 3, d: 4, dmg: 5, heal: 6, rcv: 7 };
+      const cols = this.COLS.map(c => {
+        const sum = tm.players.reduce((a, pl) => a + pl[IDX[c.key]], 0);
+        const big = (c.key === "dmg" || c.key === "heal" || c.key === "rcv");
+        return { label: c.label, title: c.title, total: big ? this.fmt(sum) : sum };
+      });
+      return {
+        name: tm.name, tag: tm.tag, won: tm.won,
+        nameColor: tm.won ? "#fbbf24" : "#d4d4d8",
+        panelBg: tm.won ? "background:linear-gradient(180deg,rgba(245,158,11,0.07) 0%,rgba(245,158,11,0.02) 120px, #1c1c1f 320px);" : "background:#1c1c1f;",
+        players, cols
+      };
+    });
+
+    return {
+      meta: this.meta,
+      teams,
+      gridCols: "40px minmax(90px,1fr) 24px auto 14px repeat(5, 46px)"
+    };
+  }
+}
+</script>
+</body>
+</html>

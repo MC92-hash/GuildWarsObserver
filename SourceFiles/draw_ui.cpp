@@ -529,6 +529,45 @@ static void draw_settings_window()
 	ImGui::Spacing();
 	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Font changes apply immediately.");
 
+	// ──── Browser Section ──────────────────────────────────────────
+	ImGui::Spacing();
+	ImGui::SeparatorText("Browser");
+
+	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+		"Choose how the match list is displayed in the replay browser.");
+	ImGui::Dummy(ImVec2(0, 4.f));
+
+	{
+		int viewMode = GuiGlobalConstants::replay_card_gallery_mode;
+		if (ImGui::RadioButton("Table View", &viewMode, 0))
+		{
+			GuiGlobalConstants::replay_card_gallery_mode = 0;
+			GuiGlobalConstants::SaveSettings();
+			g_invalidateFilters = true;
+		}
+		ImGui::SameLine(0, 16);
+		if (ImGui::RadioButton("Card Gallery", &viewMode, 1))
+		{
+			GuiGlobalConstants::replay_card_gallery_mode = 1;
+			GuiGlobalConstants::SaveSettings();
+			g_invalidateFilters = true;
+		}
+
+		if (viewMode == 1)
+		{
+			ImGui::Dummy(ImVec2(0, 4.f));
+			ImGui::TextUnformatted("Grid Columns");
+			ImGui::SameLine(0, 8);
+			int cols = GuiGlobalConstants::replay_gallery_columns;
+			ImGui::SetNextItemWidth(120.f);
+			if (ImGui::SliderInt("##gallery_cols", &cols, 2, 4))
+			{
+				GuiGlobalConstants::replay_gallery_columns = cols;
+				GuiGlobalConstants::SaveSettings();
+			}
+		}
+	}
+
 	// ──── Keybindings Section ──────────────────────────────────────
 	ImGui::Spacing();
 	ImGui::SeparatorText("Keybindings");
