@@ -3688,15 +3688,16 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         ImGui::SetNextItemWidth(220.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.12f, 0.8f));
-        bool guildInputActive = ImGui::InputTextWithHint("##prep_guild_search",
+        ImGui::InputTextWithHint("##prep_guild_search",
             "Search opponent guild...",
             s_state.tournamentGuildBuf, sizeof(s_state.tournamentGuildBuf));
+        bool guildInputFocused = ImGui::IsItemActive();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
 
         // Autocomplete popup
         std::string guildSearchLower = ToLower(std::string(s_state.tournamentGuildBuf));
-        if (guildInputActive && !guildSearchLower.empty() && s_state.guildNames.size() > 1)
+        if (guildInputFocused && !guildSearchLower.empty() && s_state.guildNames.size() > 1)
         {
             ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
             ImGui::SetNextWindowSizeConstraints(ImVec2(280, 0), ImVec2(400, 250));
@@ -3776,15 +3777,16 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         ImGui::SetNextItemWidth(160.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.12f, 0.8f));
-        bool mapInputActive = ImGui::InputTextWithHint("##prep_map_filter",
+        ImGui::InputTextWithHint("##prep_map_filter",
             "Filter map...",
             s_state.tournamentMapBuf, sizeof(s_state.tournamentMapBuf));
+        bool mapInputFocused = ImGui::IsItemActive();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
 
         // Map autocomplete popup
         std::string mapSearchLower = ToLower(std::string(s_state.tournamentMapBuf));
-        if (mapInputActive && !mapSearchLower.empty() && s_state.mapNames.size() > 1)
+        if (mapInputFocused && !mapSearchLower.empty() && s_state.mapNames.size() > 1)
         {
             ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
             ImGui::SetNextWindowSizeConstraints(ImVec2(200, 0), ImVec2(320, 200));
