@@ -3678,6 +3678,9 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
     }
 
     // ── Opponent guild search + map filter (inline in top bar when Prep is active) ──
+    static bool s_guildDropdownOpen = false;
+    static bool s_mapDropdownOpen = false;
+
     if (s_state.tournamentMode)
     {
         ImGui::SameLine(0, 16);
@@ -3692,19 +3695,27 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
             "Search opponent guild...",
             s_state.tournamentGuildBuf, sizeof(s_state.tournamentGuildBuf));
         bool guildInputFocused = ImGui::IsItemActive();
+        ImVec2 guildDropdownPos(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
 
-        // Autocomplete popup
+        // Open dropdown when input is focused and has text
         std::string guildSearchLower = ToLower(std::string(s_state.tournamentGuildBuf));
-        if (guildInputFocused && !guildSearchLower.empty() && s_state.guildNames.size() > 1)
+        if (guildInputFocused && !guildSearchLower.empty())
+            s_guildDropdownOpen = true;
+        else if (!guildInputFocused && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+            s_guildDropdownOpen = false;
+
+        // Autocomplete popup
+        if (s_guildDropdownOpen && !guildSearchLower.empty() && s_state.guildNames.size() > 1)
         {
-            ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
+            ImGui::SetNextWindowPos(guildDropdownPos);
             ImGui::SetNextWindowSizeConstraints(ImVec2(280, 0), ImVec2(400, 250));
+            ImGui::SetNextWindowFocus();
             if (ImGui::Begin("##guild_autocomplete", nullptr,
                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing))
+                ImGuiWindowFlags_AlwaysAutoResize))
             {
                 int shown = 0;
                 for (int i = 1; i < (int)s_state.guildNames.size() && shown < 12; i++)
@@ -3734,17 +3745,22 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
                             s_state.tournamentGuildName = gn;
                             s_state.tournamentGuildTag = gn;
                         }
-                        // Copy display name into input buffer
                         snprintf(s_state.tournamentGuildBuf,
                                  sizeof(s_state.tournamentGuildBuf), "%s", gn.c_str());
                         s_state.tournamentSelectedBuild = -1;
                         s_state.tournamentSelectedLostTo = -1;
-                        s_tournamentCacheKey.clear(); // force re-aggregate
+                        s_tournamentCacheKey.clear();
+                        s_guildDropdownOpen = false;
                     }
                     shown++;
                 }
                 if (shown == 0)
                     ImGui::TextColored(ImVec4(kColorTextDim), "No guilds match");
+
+                // Close if clicked outside this window and not on the input
+                if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
+                    !guildInputFocused && ImGui::IsMouseClicked(0))
+                    s_guildDropdownOpen = false;
             }
             ImGui::End();
         }
@@ -3759,7 +3775,6 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
             std::string badgeLabel = "[" + s_state.tournamentGuildTag + "] x";
             if (ImGui::SmallButton(badgeLabel.c_str()))
             {
-                // Clear guild selection
                 s_state.tournamentGuildBuf[0] = '\0';
                 s_state.tournamentGuildDisplay.clear();
                 s_state.tournamentGuildTag.clear();
@@ -3781,19 +3796,27 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
             "Filter map...",
             s_state.tournamentMapBuf, sizeof(s_state.tournamentMapBuf));
         bool mapInputFocused = ImGui::IsItemActive();
+        ImVec2 mapDropdownPos(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y);
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
 
-        // Map autocomplete popup
+        // Open dropdown when input is focused and has text
         std::string mapSearchLower = ToLower(std::string(s_state.tournamentMapBuf));
-        if (mapInputFocused && !mapSearchLower.empty() && s_state.mapNames.size() > 1)
+        if (mapInputFocused && !mapSearchLower.empty())
+            s_mapDropdownOpen = true;
+        else if (!mapInputFocused && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow))
+            s_mapDropdownOpen = false;
+
+        // Map autocomplete popup
+        if (s_mapDropdownOpen && !mapSearchLower.empty() && s_state.mapNames.size() > 1)
         {
-            ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y));
+            ImGui::SetNextWindowPos(mapDropdownPos);
             ImGui::SetNextWindowSizeConstraints(ImVec2(200, 0), ImVec2(320, 200));
+            ImGui::SetNextWindowFocus();
             if (ImGui::Begin("##map_autocomplete", nullptr,
                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing))
+                ImGuiWindowFlags_AlwaysAutoResize))
             {
                 int shown = 0;
                 for (int i = 1; i < (int)s_state.mapNames.size() && shown < 10; i++)
@@ -3816,6 +3839,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
                         s_tournamentCacheKey.clear();
                         s_state.tournamentSelectedBuild = -1;
                         s_state.tournamentSelectedLostTo = -1;
+                        s_mapDropdownOpen = false;
                     }
 
                     if (alreadySelected)
@@ -3824,6 +3848,10 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
                 }
                 if (shown == 0)
                     ImGui::TextColored(ImVec4(kColorTextDim), "No maps match");
+
+                if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
+                    !mapInputFocused && ImGui::IsMouseClicked(0))
+                    s_mapDropdownOpen = false;
             }
             ImGui::End();
         }
