@@ -1311,9 +1311,28 @@ struct BrowserState
     ImVec2 hoveredCardScreenMin;
     ImVec2 hoveredCardScreenMax;
     float  hoveredCardWidth = 0.0f;
+
+    // Tournament Prep state
+    bool tournamentMode = false;
+    char tournamentGuildBuf[128] = {};       // search input
+    std::string tournamentGuildDisplay;      // selected guild "Name [Tag]"
+    std::string tournamentGuildTag;          // tag for matching
+    std::string tournamentGuildName;         // name for matching
+    std::set<std::string> tournamentMaps;    // optional map filter
+    char tournamentMapBuf[128] = {};
+    int  tournamentSortColumn = 2;           // default sort by times played
+    bool tournamentSortAsc = false;
+    int  tournamentSelectedBuild = -1;       // drill-down row index (builds table)
+    int  tournamentSelectedLostTo = -1;      // drill-down row index (lost-to table)
+    char tournamentLostToSearch[128] = {};   // search filter for lost-to table
 };
 
 static BrowserState s_state;
+
+// Tournament Prep cache (forward-declared, populated in AggregateTournamentBuilds)
+static std::vector<struct TournamentBuildStats> s_tournamentCache;
+static std::string s_tournamentCacheKey;
+static int s_tournamentCacheMatchCount = -1;
 
 // Build naming popup state
 static struct {
@@ -1419,6 +1438,7 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
     {
         s_state.filtersBuilt = false;
         g_invalidateFilters = false;
+        s_tournamentCacheKey.clear();
     }
     if (s_state.filtersBuilt && s_state.lastMatchCount == (int)matches.size())
         return;
@@ -2100,6 +2120,209 @@ static const char* MonthAbbrev(int month)
     return "";
 }
 
+// ─── Tournament Prep aggregation ────────────────────────────────────────────
+
+struct TournamentBuildStats
+{
+    std::string buildName;
+    std::string profSignature;
+    std::map<std::string, int> profCounts;
+    int timesPlayed = 0;
+    int wins = 0;
+    int losses = 0;
+    float winPct = 0.0f;
+    std::vector<int> matchIndices;   // original indices for drill-down
+};
+
+// Returns party ID ("1" or "2") if the guild is in the match, or "" if not found
+static std::string FindGuildParty(const MatchMeta& m,
+    const std::string& guildTag, const std::string& guildName)
+{
+    // Primary: match by tag in guilds map
+    if (!guildTag.empty())
+    {
+        for (const auto& [partyId, gm] : m.guilds)
+            if (gm.tag == guildTag) return partyId;
+    }
+
+    // Fallback: folder tag
+    std::string ft1, ft2;
+    ParseFolderTags(m.folder_name, ft1, ft2);
+    if (!guildTag.empty())
+    {
+        if (ft1 == guildTag) return "1";
+        if (ft2 == guildTag) return "2";
+    }
+
+    // Fallback: name match (case-insensitive)
+    if (!guildName.empty())
+    {
+        std::string nameLow = ToLower(guildName);
+        for (const auto& [partyId, gm] : m.guilds)
+            if (ToLower(gm.name) == nameLow) return partyId;
+    }
+    return "";
+}
+
+static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
+    const std::vector<MatchMeta>& matches)
+{
+    std::map<std::string, TournamentBuildStats> grouped;
+
+    for (int i = 0; i < (int)matches.size(); i++)
+    {
+        const auto& m = matches[i];
+
+        // Optional map filter
+        if (!s_state.tournamentMaps.empty())
+        {
+            const char* mn = GetMapName(m.map_id);
+            std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+            if (s_state.tournamentMaps.find(mapName) == s_state.tournamentMaps.end())
+                continue;
+        }
+
+        std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
+                                              s_state.tournamentGuildName);
+        if (partyId.empty()) continue;
+
+        // Compute build for this guild's party
+        auto pit = m.parties.find(partyId);
+        std::string buildName;
+        std::string profSig;
+        std::map<std::string, int> profCounts;
+
+        if (pit != m.parties.end() && !pit->second.players.empty())
+        {
+            buildName = ComputeTeamBuild(pit->second);
+            for (const auto& p : pit->second.players)
+                if (p.primary >= 1 && p.primary <= 10)
+                    profCounts[GetProfAbbrev(p.primary)]++;
+            profSig = ComputeProfSignature(profCounts);
+        }
+
+        // Skip matches with no player data (cloud-only without detail)
+        if (buildName.empty()) continue;
+        if (profSig.empty()) profSig = buildName;
+
+        auto& stats = grouped[buildName];
+        stats.buildName = buildName;
+        stats.profSignature = profSig;
+        stats.profCounts = profCounts;
+        stats.timesPlayed++;
+        stats.matchIndices.push_back(i);
+
+        bool won = (std::to_string(m.winner_party_id) == partyId);
+        if (won) stats.wins++;
+        else stats.losses++;
+    }
+
+    std::vector<TournamentBuildStats> result;
+    result.reserve(grouped.size());
+    for (auto& [key, val] : grouped)
+    {
+        val.winPct = val.timesPlayed > 0 ? (val.wins / (float)val.timesPlayed * 100.0f) : 0.0f;
+        result.push_back(std::move(val));
+    }
+
+    // Default sort: most played first, then by win% descending
+    std::sort(result.begin(), result.end(),
+        [](const TournamentBuildStats& a, const TournamentBuildStats& b) {
+            if (a.timesPlayed != b.timesPlayed) return a.timesPlayed > b.timesPlayed;
+            return a.winPct > b.winPct;
+        });
+
+    return result;
+}
+
+// Aggregate builds that BEAT the selected guild (opponent builds in losses)
+static std::vector<TournamentBuildStats> AggregateLostToBuilds(
+    const std::vector<MatchMeta>& matches)
+{
+    std::map<std::string, TournamentBuildStats> grouped;
+
+    for (int i = 0; i < (int)matches.size(); i++)
+    {
+        const auto& m = matches[i];
+
+        if (!s_state.tournamentMaps.empty())
+        {
+            const char* mn = GetMapName(m.map_id);
+            std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+            if (s_state.tournamentMaps.find(mapName) == s_state.tournamentMaps.end())
+                continue;
+        }
+
+        std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
+                                              s_state.tournamentGuildName);
+        if (partyId.empty()) continue;
+
+        bool won = (std::to_string(m.winner_party_id) == partyId);
+        if (won) continue; // only interested in losses
+
+        // Get the opponent's build
+        std::string oppPartyId = (partyId == "1") ? "2" : "1";
+        auto pit = m.parties.find(oppPartyId);
+        std::string buildName;
+        std::string profSig;
+        std::map<std::string, int> profCounts;
+
+        if (pit != m.parties.end() && !pit->second.players.empty())
+        {
+            buildName = ComputeTeamBuild(pit->second);
+            for (const auto& p : pit->second.players)
+                if (p.primary >= 1 && p.primary <= 10)
+                    profCounts[GetProfAbbrev(p.primary)]++;
+            profSig = ComputeProfSignature(profCounts);
+        }
+
+        if (buildName.empty()) continue;
+        if (profSig.empty()) profSig = buildName;
+
+        auto& stats = grouped[buildName];
+        stats.buildName = buildName;
+        stats.profSignature = profSig;
+        stats.profCounts = profCounts;
+        stats.timesPlayed++;
+        stats.matchIndices.push_back(i);
+        stats.wins++; // from the opponent's perspective, these are wins
+    }
+
+    std::vector<TournamentBuildStats> result;
+    result.reserve(grouped.size());
+    for (auto& [key, val] : grouped)
+    {
+        val.winPct = 100.0f; // all entries are wins for the opponent
+        result.push_back(std::move(val));
+    }
+
+    std::sort(result.begin(), result.end(),
+        [](const TournamentBuildStats& a, const TournamentBuildStats& b) {
+            return a.timesPlayed > b.timesPlayed;
+        });
+
+    return result;
+}
+
+static std::vector<TournamentBuildStats> s_lostToCache;
+
+static const std::vector<TournamentBuildStats>& GetTournamentStats(
+    const std::vector<MatchMeta>& matches)
+{
+    std::string key = s_state.tournamentGuildTag + "|" + s_state.tournamentGuildName + "|";
+    for (const auto& m : s_state.tournamentMaps) key += m + ",";
+
+    if (key == s_tournamentCacheKey &&
+        s_tournamentCacheMatchCount == (int)matches.size())
+        return s_tournamentCache;
+
+    s_tournamentCache = AggregateTournamentBuilds(matches);
+    s_lostToCache = AggregateLostToBuilds(matches);
+    s_tournamentCacheKey = key;
+    s_tournamentCacheMatchCount = (int)matches.size();
+    return s_tournamentCache;
+}
+
 // ─── Match filtering ─────────────────────────────────────────────────────────
 
 struct FilteredMatch
@@ -2329,6 +2552,7 @@ static int CountActiveFilters()
     if (!s_state.selectedOccasions.empty()) n++;
     if (!s_state.selectedBuilds.empty()) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
+    if (s_state.tournamentMode) n++;
     return n;
 }
 
@@ -2516,6 +2740,16 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
         s_state.calBrowseToMonth = 0; s_state.calBrowseToYear = 0;
         s_state.minRatingFilter = 0;
+        s_state.tournamentMode = false;
+        s_state.tournamentGuildBuf[0] = '\0';
+        s_state.tournamentGuildDisplay.clear();
+        s_state.tournamentGuildTag.clear();
+        s_state.tournamentGuildName.clear();
+        s_state.tournamentMaps.clear();
+        s_state.tournamentMapBuf[0] = '\0';
+        s_state.tournamentSelectedBuild = -1;
+        s_state.tournamentSelectedLostTo = -1;
+        s_state.tournamentLostToSearch[0] = '\0';
     }
     ImGui::PopStyleVar();
 
@@ -3335,38 +3569,44 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
     }
 }
 
-static void DrawGalleryTopBar(int matchCount)
+static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
 {
     ImFont* boldFnt = GuiGlobalConstants::boldFont;
 
-    // Match count
-    if (boldFnt) ImGui::PushFont(boldFnt);
-    ImGui::TextColored(kColorAccent, "MATCHES");
-    if (boldFnt) ImGui::PopFont();
-    ImGui::SameLine(0, 4);
-    ImGui::TextColored(kColorTextDim, "(%d)", matchCount);
-
-    // Sort combo
-    ImGui::SameLine(0, 16);
-    ImGui::SetNextItemWidth(160.f);
-    const char* sortLabels[] = { "Newest First", "Oldest First", "Highest Rating", "Map Name" };
-    int sortIdx = 0;
-    if (s_state.sortColumn == 0 && !s_state.sortAscending) sortIdx = 0;
-    else if (s_state.sortColumn == 0 && s_state.sortAscending) sortIdx = 1;
-    else if (s_state.sortColumn == 7) sortIdx = 2;
-    else if (s_state.sortColumn == 2) sortIdx = 3;
-
-    if (ImGui::Combo("##gallery_sort", &sortIdx, sortLabels, 4))
+    if (!hideSortAndCount)
     {
-        switch (sortIdx) {
-            case 0: s_state.sortColumn = 0; s_state.sortAscending = false; break;
-            case 1: s_state.sortColumn = 0; s_state.sortAscending = true;  break;
-            case 2: s_state.sortColumn = 7; s_state.sortAscending = false; break;
-            case 3: s_state.sortColumn = 2; s_state.sortAscending = true;  break;
+        // Match count
+        if (boldFnt) ImGui::PushFont(boldFnt);
+        ImGui::TextColored(kColorAccent, "MATCHES");
+        if (boldFnt) ImGui::PopFont();
+        ImGui::SameLine(0, 4);
+        ImGui::TextColored(kColorTextDim, "(%d)", matchCount);
+    }
+
+    // Sort combo (hidden in tournament mode)
+    if (!hideSortAndCount)
+    {
+        ImGui::SameLine(0, 16);
+        ImGui::SetNextItemWidth(160.f);
+        const char* sortLabels[] = { "Newest First", "Oldest First", "Highest Rating", "Map Name" };
+        int sortIdx = 0;
+        if (s_state.sortColumn == 0 && !s_state.sortAscending) sortIdx = 0;
+        else if (s_state.sortColumn == 0 && s_state.sortAscending) sortIdx = 1;
+        else if (s_state.sortColumn == 7) sortIdx = 2;
+        else if (s_state.sortColumn == 2) sortIdx = 3;
+
+        if (ImGui::Combo("##gallery_sort", &sortIdx, sortLabels, 4))
+        {
+            switch (sortIdx) {
+                case 0: s_state.sortColumn = 0; s_state.sortAscending = false; break;
+                case 1: s_state.sortColumn = 0; s_state.sortAscending = true;  break;
+                case 2: s_state.sortColumn = 7; s_state.sortAscending = false; break;
+                case 3: s_state.sortColumn = 2; s_state.sortAscending = true;  break;
+            }
         }
     }
 
-    // View toggle: Table | Cards
+    // View toggle: Table | Cards | Prep
     ImGui::SameLine(0, 16);
     ImGui::TextColored(kColorTextDim, "|");
     ImGui::SameLine(0, 8);
@@ -3393,18 +3633,50 @@ static void DrawGalleryTopBar(int matchCount)
         return clicked;
     };
 
-    if (ViewBtn("Table", !s_state.cardGalleryMode))
+    if (ViewBtn("Table", !s_state.cardGalleryMode && !s_state.tournamentMode))
     {
         s_state.cardGalleryMode = false;
+        s_state.tournamentMode = false;
         GuiGlobalConstants::replay_card_gallery_mode = 0;
         GuiGlobalConstants::SaveSettings();
     }
     ImGui::SameLine(0, 2);
-    if (ViewBtn("Cards", s_state.cardGalleryMode))
+    if (ViewBtn("Cards", s_state.cardGalleryMode && !s_state.tournamentMode))
     {
         s_state.cardGalleryMode = true;
+        s_state.tournamentMode = false;
         GuiGlobalConstants::replay_card_gallery_mode = 1;
         GuiGlobalConstants::SaveSettings();
+    }
+    ImGui::SameLine(0, 2);
+    {
+        // Tournament Prep button - amber accent when active
+        bool prepActive = s_state.tournamentMode;
+        if (prepActive)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.15f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.7f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.56f, 0.63f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
+        if (ImGui::Button("Prep"))
+        {
+            s_state.tournamentMode = !s_state.tournamentMode;
+            if (s_state.tournamentMode)
+                s_state.sidebarExpanded = true; // show sidebar so they can pick a guild
+        }
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Tournament Prep - scout opponent builds");
     }
 
     // Refresh button — always visible, same height as Table/Cards buttons
@@ -3436,6 +3708,496 @@ static void DrawGalleryTopBar(int matchCount)
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(4);
     }
+}
+
+// ─── Tournament Prep stats panel ────────────────────────────────────────────
+
+static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, float listH)
+{
+    ImFont* font = ImGui::GetFont();
+    ImFont* boldFnt = GuiGlobalConstants::boldFont;
+    ImFont* monoBold = GuiGlobalConstants::monoBoldFont ? GuiGlobalConstants::monoBoldFont : (boldFnt ? boldFnt : font);
+
+    ImGui::SameLine(0, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16, 12));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, kColorPanel);
+    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+
+    float h = listH > 0 ? listH : ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("##tournament_panel", ImVec2(-1, h), ImGuiChildFlags_Border);
+
+    // Reuse the same toolbar so Table/Cards/Prep are always visible
+    DrawGalleryTopBar(0, true);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const auto& stats = GetTournamentStats(matches);
+
+    // ── Header ──
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+        if (boldFnt) ImGui::PushFont(boldFnt);
+        ImGui::TextUnformatted("TOURNAMENT PREP");
+        if (boldFnt) ImGui::PopFont();
+        ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(kColorText), "- %s", s_state.tournamentGuildDisplay.c_str());
+
+        // Summary line
+        int totalWins = 0, totalLosses = 0;
+        for (const auto& s : stats) { totalWins += s.wins; totalLosses += s.losses; }
+        int totalMatches = totalWins + totalLosses;
+        float overallPct = totalMatches > 0 ? (totalWins / (float)totalMatches * 100.0f) : 0.0f;
+
+        ImGui::TextColored(ImVec4(kColorTextDim),
+            "%d matches | %d builds | Record: %d-%d (%.0f%%)",
+            totalMatches, (int)stats.size(), totalWins, totalLosses, overallPct);
+
+        // Map filter badge
+        if (!s_state.tournamentMaps.empty())
+        {
+            ImGui::SameLine();
+            for (const auto& m : s_state.tournamentMaps)
+            {
+                ImGui::SameLine(0, 4.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.12f, 0.08f, 0.80f));
+                ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+                ImGui::SmallButton(m.c_str());
+                ImGui::PopStyleColor(2);
+                ImGui::PopStyleVar();
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
+    if (stats.empty())
+    {
+        ImGui::TextColored(ImVec4(kColorTextDim),
+            "No matches found for %s", s_state.tournamentGuildDisplay.c_str());
+        if (!s_state.tournamentMaps.empty())
+            ImGui::TextColored(ImVec4(kColorTextDim), "Try removing the map filter.");
+    }
+    else
+    {
+        // ── Build stats table ──
+        float availH = ImGui::GetContentRegionAvail().y;
+        bool hasBuildDrillDown = (s_state.tournamentSelectedBuild >= 0 &&
+                             s_state.tournamentSelectedBuild < (int)stats.size());
+        bool hasLostToDrillDown = (s_state.tournamentSelectedLostTo >= 0 &&
+                             s_state.tournamentSelectedLostTo < (int)s_lostToCache.size());
+        bool hasDrillDown = hasBuildDrillDown || hasLostToDrillDown;
+        bool hasLostTo = !s_lostToCache.empty();
+        float tableH;
+        if (hasDrillDown)
+            tableH = availH * 0.30f;
+        else if (hasLostTo)
+            tableH = availH * 0.55f;
+        else
+            tableH = availH;
+
+        ImGuiTableFlags tblFlags =
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
+            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX;
+
+        if (ImGui::BeginTable("##tournament_builds", 5, tblFlags, ImVec2(0, tableH)))
+        {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Build", ImGuiTableColumnFlags_DefaultSort, 0.30f);
+            ImGui::TableSetupColumn("Composition", ImGuiTableColumnFlags_NoSort, 0.30f);
+            ImGui::TableSetupColumn("Played", ImGuiTableColumnFlags_DefaultSort, 0.12f);
+            ImGui::TableSetupColumn("W-L", ImGuiTableColumnFlags_DefaultSort, 0.12f);
+            ImGui::TableSetupColumn("Win %", ImGuiTableColumnFlags_DefaultSort, 0.16f);
+            ImGui::TableHeadersRow();
+
+            // Handle sorting
+            if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
+            {
+                if (sortSpecs->SpecsDirty && sortSpecs->SpecsCount > 0)
+                {
+                    s_state.tournamentSortColumn = sortSpecs->Specs[0].ColumnIndex;
+                    s_state.tournamentSortAsc = (sortSpecs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
+                    sortSpecs->SpecsDirty = false;
+
+                    // We need a mutable copy for sorting
+                    s_tournamentCache = s_tournamentCache; // already mutable
+                    auto& cache = s_tournamentCache;
+                    int col = s_state.tournamentSortColumn;
+                    bool asc = s_state.tournamentSortAsc;
+                    std::sort(cache.begin(), cache.end(),
+                        [col, asc](const TournamentBuildStats& a, const TournamentBuildStats& b) {
+                            int cmp = 0;
+                            switch (col) {
+                            case 0: cmp = a.buildName.compare(b.buildName); break;
+                            case 2: cmp = a.timesPlayed - b.timesPlayed; break;
+                            case 3: cmp = a.wins - b.wins; break;
+                            case 4: cmp = (a.winPct < b.winPct) ? -1 : (a.winPct > b.winPct ? 1 : 0); break;
+                            default: cmp = a.timesPlayed - b.timesPlayed; break;
+                            }
+                            return asc ? cmp < 0 : cmp > 0;
+                        });
+                }
+            }
+
+            ImGuiListClipper clipper;
+            clipper.Begin((int)stats.size());
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
+                {
+                    const auto& bs = stats[row];
+                    bool isSelected = (s_state.tournamentSelectedBuild == row);
+
+                    ImGui::TableNextRow();
+
+                    // Build name
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(row);
+
+                    if (isSelected)
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(kColorAccent.x, kColorAccent.y, kColorAccent.z, 0.20f));
+
+                    if (ImGui::Selectable("##trow", isSelected,
+                        ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    {
+                        s_state.tournamentSelectedBuild = isSelected ? -1 : row;
+                        s_state.tournamentSelectedLostTo = -1; // clear other drill-down
+                    }
+
+                    if (isSelected)
+                        ImGui::PopStyleColor();
+
+                    ImGui::SameLine();
+                    bool hasBuildName = (bs.buildName != bs.profSignature && bs.buildName != "Unknown");
+                    if (hasBuildName && boldFnt)
+                    {
+                        ImGui::PushFont(boldFnt);
+                        ImGui::TextUnformatted(bs.buildName.c_str());
+                        ImGui::PopFont();
+                    }
+                    else
+                    {
+                        ImGui::TextUnformatted(bs.buildName.c_str());
+                    }
+
+                    // Composition (profession icons)
+                    ImGui::TableNextColumn();
+                    {
+                        auto tokens = ParseCompString(bs.profSignature);
+                        float iconSz = 18.f;
+                        float gap = 6.f;
+                        ImVec2 startPos = ImGui::GetCursorScreenPos();
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float x = startPos.x;
+                        float y = startPos.y;
+                        for (auto& t : tokens)
+                        {
+                            ImTextureID ico = GetProfessionIcon(t.profId);
+                            if (ico)
+                                dl->AddImage(ico, ImVec2(x, y), ImVec2(x + iconSz, y + iconSz));
+                            x += iconSz + 2.f;
+                            char countBuf[8]; snprintf(countBuf, sizeof(countBuf), "%d", t.count);
+                            dl->AddText(monoBold, 13.f, ImVec2(x, y + 2.f),
+                                        IM_COL32(212, 212, 216, 255), countBuf);
+                            x += monoBold->CalcTextSizeA(13.f, FLT_MAX, 0.f, countBuf).x + gap;
+                        }
+                        ImGui::Dummy(ImVec2(x - startPos.x, iconSz));
+                    }
+
+                    // Played
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%d", bs.timesPlayed);
+
+                    // W-L
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%d-%d", bs.wins, bs.losses);
+
+                    // Win %
+                    ImGui::TableNextColumn();
+                    {
+                        ImU32 pctCol;
+                        if (bs.winPct >= 60.f)
+                            pctCol = IM_COL32(76, 175, 80, 255);
+                        else if (bs.winPct >= 40.f)
+                            pctCol = IM_COL32(245, 158, 11, 255);
+                        else
+                            pctCol = IM_COL32(229, 57, 53, 255);
+
+                        ImGui::Text("%.0f%%", bs.winPct);
+                        ImGui::SameLine(0, 8.0f);
+
+                        // Win rate bar
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float barW = 50.0f, barH = 10.0f;
+                        ImVec2 barMin = ImGui::GetCursorScreenPos();
+                        barMin.y += 4.0f;
+                        ImVec2 barMax(barMin.x + barW, barMin.y + barH);
+                        dl->AddRectFilled(barMin, barMax, IM_COL32(40, 40, 40, 200), 2.0f);
+                        float fillW = barW * (bs.winPct / 100.0f);
+                        dl->AddRectFilled(barMin, ImVec2(barMin.x + fillW, barMax.y), pctCol, 2.0f);
+                        ImGui::Dummy(ImVec2(barW, barH));
+                    }
+
+                    ImGui::PopID();
+                }
+            }
+            clipper.End();
+            ImGui::EndTable();
+        }
+
+        // ── "Lost To" table: builds that beat this guild ──
+        if (hasLostTo)
+        {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+            if (boldFnt) ImGui::PushFont(boldFnt);
+            ImGui::TextUnformatted("LOST AGAINST");
+            if (boldFnt) ImGui::PopFont();
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(kColorTextDim), "- builds that beat %s (%d)",
+                               s_state.tournamentGuildDisplay.c_str(),
+                               (int)s_lostToCache.size());
+
+            // Search filter
+            ImGui::SameLine(0, 12);
+            ImGui::SetNextItemWidth(180.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.12f, 0.8f));
+            ImGui::InputTextWithHint("##lostto_search", "Search builds...",
+                                     s_state.tournamentLostToSearch,
+                                     sizeof(s_state.tournamentLostToSearch));
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+            ImGui::Spacing();
+
+            std::string lostToSearchLower = ToLower(std::string(s_state.tournamentLostToSearch));
+
+            float lostH = hasDrillDown
+                ? ImGui::GetContentRegionAvail().y * 0.45f
+                : ImGui::GetContentRegionAvail().y;
+
+            ImGuiTableFlags ltFlags =
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Sortable |
+                ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX;
+
+            if (ImGui::BeginTable("##tournament_lostto", 3, ltFlags, ImVec2(0, lostH)))
+            {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Build", ImGuiTableColumnFlags_DefaultSort, 0.40f);
+                ImGui::TableSetupColumn("Composition", ImGuiTableColumnFlags_NoSort, 0.35f);
+                ImGui::TableSetupColumn("Times", ImGuiTableColumnFlags_DefaultSort, 0.25f);
+                ImGui::TableHeadersRow();
+
+                for (int row = 0; row < (int)s_lostToCache.size(); row++)
+                {
+                    const auto& lt = s_lostToCache[row];
+
+                    // Apply search filter
+                    if (!lostToSearchLower.empty())
+                    {
+                        if (ToLower(lt.buildName).find(lostToSearchLower) == std::string::npos &&
+                            ToLower(lt.profSignature).find(lostToSearchLower) == std::string::npos)
+                            continue;
+                    }
+
+                    bool isSelected = (s_state.tournamentSelectedLostTo == row);
+
+                    ImGui::TableNextRow();
+
+                    // Build name
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(row + 10000); // offset to avoid ID collisions
+
+                    if (isSelected)
+                        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.90f, 0.22f, 0.21f, 0.20f));
+
+                    if (ImGui::Selectable("##lt_row", isSelected,
+                        ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
+                    {
+                        s_state.tournamentSelectedLostTo = isSelected ? -1 : row;
+                        s_state.tournamentSelectedBuild = -1; // clear other drill-down
+                    }
+
+                    if (isSelected)
+                        ImGui::PopStyleColor();
+
+                    ImGui::SameLine();
+                    bool hasBuild = (lt.buildName != lt.profSignature);
+                    if (hasBuild && boldFnt)
+                    {
+                        ImGui::PushFont(boldFnt);
+                        ImGui::TextUnformatted(lt.buildName.c_str());
+                        ImGui::PopFont();
+                    }
+                    else
+                    {
+                        ImGui::TextUnformatted(lt.buildName.c_str());
+                    }
+
+                    // Composition
+                    ImGui::TableNextColumn();
+                    {
+                        auto tokens = ParseCompString(lt.profSignature);
+                        float iconSz = 18.f;
+                        float gap = 6.f;
+                        ImVec2 startPos = ImGui::GetCursorScreenPos();
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float x = startPos.x;
+                        float y = startPos.y;
+                        for (auto& t : tokens)
+                        {
+                            ImTextureID ico = GetProfessionIcon(t.profId);
+                            if (ico)
+                                dl->AddImage(ico, ImVec2(x, y), ImVec2(x + iconSz, y + iconSz));
+                            x += iconSz + 2.f;
+                            char countBuf[8]; snprintf(countBuf, sizeof(countBuf), "%d", t.count);
+                            dl->AddText(monoBold, 13.f, ImVec2(x, y + 2.f),
+                                        IM_COL32(212, 212, 216, 255), countBuf);
+                            x += monoBold->CalcTextSizeA(13.f, FLT_MAX, 0.f, countBuf).x + gap;
+                        }
+                        ImGui::Dummy(ImVec2(x - startPos.x, iconSz));
+                    }
+
+                    // Times
+                    ImGui::TableNextColumn();
+                    ImGui::TextColored(ImVec4(0.90f, 0.22f, 0.21f, 1.0f), "%d", lt.timesPlayed);
+
+                    ImGui::PopID();
+                }
+
+                ImGui::EndTable();
+            }
+        }
+
+        // ── Drill-down: matches for selected build or selected lost-to ──
+        const TournamentBuildStats* drillDownBuild = nullptr;
+        const char* drillDownLabel = nullptr;
+        bool drillDownIsLoss = false;
+
+        if (s_state.tournamentSelectedBuild >= 0 &&
+            s_state.tournamentSelectedBuild < (int)stats.size())
+        {
+            drillDownBuild = &stats[s_state.tournamentSelectedBuild];
+            drillDownLabel = "Matches playing";
+        }
+        else if (s_state.tournamentSelectedLostTo >= 0 &&
+                 s_state.tournamentSelectedLostTo < (int)s_lostToCache.size())
+        {
+            drillDownBuild = &s_lostToCache[s_state.tournamentSelectedLostTo];
+            drillDownLabel = "Losses against";
+            drillDownIsLoss = true;
+        }
+
+        if (drillDownBuild)
+        {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, drillDownIsLoss
+                ? ImVec4(0.90f, 0.22f, 0.21f, 1.0f) : kColorAccent);
+            ImGui::Text("%s \"%s\" (%d)", drillDownLabel,
+                        drillDownBuild->buildName.c_str(),
+                        (int)drillDownBuild->matchIndices.size());
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+
+            ImGuiTableFlags ddFlags =
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+
+            float ddH = ImGui::GetContentRegionAvail().y;
+
+            if (ImGui::BeginTable("##tournament_dd", 5, ddFlags, ImVec2(0, ddH)))
+            {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Date", 0, 0.20f);
+                ImGui::TableSetupColumn("Map", 0, 0.22f);
+                ImGui::TableSetupColumn(drillDownIsLoss ? "Lost To" : "Opponent", 0, 0.30f);
+                ImGui::TableSetupColumn("Result", 0, 0.12f);
+                ImGui::TableSetupColumn("Duration", 0, 0.16f);
+                ImGui::TableHeadersRow();
+
+                for (int mi : drillDownBuild->matchIndices)
+                {
+                    if (mi < 0 || mi >= (int)matches.size()) continue;
+                    const auto& m = matches[mi];
+
+                    std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
+                                                         s_state.tournamentGuildName);
+                    std::string opponentPartyId = (partyId == "1") ? "2" : "1";
+                    bool won = (std::to_string(m.winner_party_id) == partyId);
+
+                    // Opponent guild label
+                    std::string ft1, ft2;
+                    ParseFolderTags(m.folder_name, ft1, ft2);
+                    std::string oppFolderTag = (opponentPartyId == "1") ? ft1 : ft2;
+                    GuildLabel opponent = GetPartyGuild(m, opponentPartyId, oppFolderTag);
+
+                    ImGui::TableNextRow();
+
+                    // Date
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(mi);
+                    if (ImGui::Selectable("##dd_row", false,
+                        ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
+                    {
+                        if (ImGui::IsMouseDoubleClicked(0))
+                        {
+                            s_state.selectedMatchIndex = mi;
+                            s_state.tournamentMode = false;
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (m.month >= 1 && m.month <= 12)
+                        ImGui::Text("%s %d, %d", MonthAbbrev(m.month), m.day, m.year);
+                    else
+                        ImGui::Text("%02d/%02d/%d", m.day, m.month, m.year);
+
+                    // Map
+                    ImGui::TableNextColumn();
+                    {
+                        const char* mn = GetMapName(m.map_id);
+                        ImGui::TextUnformatted(mn ? mn : "Unknown");
+                    }
+
+                    // Opponent
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(opponent.display.c_str());
+
+                    // Result
+                    ImGui::TableNextColumn();
+                    if (won)
+                        ImGui::TextColored(ImVec4(0.30f, 0.69f, 0.31f, 1.0f), "Win");
+                    else
+                        ImGui::TextColored(ImVec4(0.90f, 0.22f, 0.21f, 1.0f), "Loss");
+
+                    // Duration
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(m.match_duration.c_str());
+
+                    ImGui::PopID();
+                }
+
+                ImGui::EndTable();
+            }
+        }
+    }
+
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(2);
 }
 
 static void DrawCardGallery(const std::vector<FilteredMatch>& filtered,
@@ -3558,8 +4320,40 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     ImGui::Text("MATCHES  (%d)", (int)filtered.size());
     ImGui::PopStyleColor();
 
-    ImGui::SameLine();
+    // Prep button in table header
+    ImGui::SameLine(0, 12);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - textOffsetY);
+    {
+        bool prepActive = s_state.tournamentMode;
+        if (prepActive)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.15f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.7f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.56f, 0.63f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+        }
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, btnPadY));
+        if (ImGui::Button("Prep"))
+        {
+            s_state.tournamentMode = !s_state.tournamentMode;
+            if (s_state.tournamentMode)
+                s_state.sidebarExpanded = true;
+        }
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Tournament Prep - scout opponent builds");
+    }
+
+    ImGui::SameLine(0, 8);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY());
     // Refresh button — highlighted when new matches are available
     if (g_refreshHint)
     {
@@ -4904,8 +5698,9 @@ void draw_replay_browser(ReplayLibrary& library)
         const float splitterThick = 6.0f;
         float availW = ImGui::GetContentRegionAvail().x;
         float totalH = ImGui::GetContentRegionAvail().y;
+        bool inTournament = s_state.tournamentMode && !s_state.tournamentGuildTag.empty();
         bool hasDetail = validSelection() && s_state.layout != LayoutMode::Mobile
-                         && !s_state.cardGalleryMode;
+                         && !s_state.cardGalleryMode && !inTournament;
 
         // ── Filter width (horizontal splitter state) ──
         const float filterMinW = 220.0f;
@@ -4965,7 +5760,9 @@ void draw_replay_browser(ReplayLibrary& library)
 
         GuiGlobalConstants::replay_filter_width = (int)s_state.userFilterW;
 
-        if (s_state.cardGalleryMode && s_state.layout != LayoutMode::Mobile)
+        if (s_state.tournamentMode && !s_state.tournamentGuildTag.empty())
+            DrawTournamentStatsPanel(matches, topRowH);
+        else if (s_state.cardGalleryMode && s_state.layout != LayoutMode::Mobile)
             DrawCardGallery(filtered, matches, topRowH);
         else
             DrawMatchListTable(filtered, matches, topRowH);
