@@ -1333,6 +1333,7 @@ static BrowserState s_state;
 static std::vector<struct TournamentBuildStats> s_tournamentCache;
 static std::string s_tournamentCacheKey;
 static int s_tournamentCacheMatchCount = -1;
+static int s_tournamentCacheGeneration = -1;
 
 // Build naming popup state
 static struct {
@@ -2131,36 +2132,49 @@ struct TournamentBuildStats
     int wins = 0;
     int losses = 0;
     float winPct = 0.0f;
-    std::vector<int> matchIndices;   // original indices for drill-down
+    // No stored match references - drill-down recomputes on the fly
 };
+
+// Resolve a guild ID to a party ID ("1" or "2") by matching players' guild_id
+static std::string ResolveGuildToParty(const MatchMeta& m, int guildId)
+{
+    for (const auto& [partyKey, party] : m.parties)
+        for (const auto& p : party.players)
+            if (p.guild_id == guildId) return partyKey;
+    return "";
+}
 
 // Returns party ID ("1" or "2") if the guild is in the match, or "" if not found
 static std::string FindGuildParty(const MatchMeta& m,
     const std::string& guildTag, const std::string& guildName)
 {
-    // Primary: match by tag in guilds map
-    if (!guildTag.empty())
+    // Only check the two competing team guilds (keys "1" and "2").
+    // Other guild entries are guest players' home guilds and should be ignored.
+    for (const char* teamKey : {"1", "2"})
     {
-        for (const auto& [partyId, gm] : m.guilds)
-            if (gm.tag == guildTag) return partyId;
+        auto it = m.guilds.find(teamKey);
+        if (it == m.guilds.end()) continue;
+        const auto& gm = it->second;
+
+        if (!guildTag.empty() && gm.tag == guildTag)
+            return teamKey;
+        if (!guildName.empty() && ToLower(gm.name) == ToLower(guildName))
+            return teamKey;
     }
 
-    // Fallback: folder tag
-    std::string ft1, ft2;
-    ParseFolderTags(m.folder_name, ft1, ft2);
-    if (!guildTag.empty())
+    // Folder tag fallback - only used when guilds map has no data at all
+    // (e.g. cloud-only match without guild metadata)
+    if (m.guilds.empty())
     {
-        if (ft1 == guildTag) return "1";
-        if (ft2 == guildTag) return "2";
+        std::string ft1, ft2;
+        ParseFolderTags(m.folder_name, ft1, ft2);
+        if (!guildTag.empty())
+        {
+            if (ft1 == guildTag) return "1";
+            if (ft2 == guildTag) return "2";
+        }
     }
 
-    // Fallback: name match (case-insensitive)
-    if (!guildName.empty())
-    {
-        std::string nameLow = ToLower(guildName);
-        for (const auto& [partyId, gm] : m.guilds)
-            if (ToLower(gm.name) == nameLow) return partyId;
-    }
     return "";
 }
 
@@ -2210,7 +2224,6 @@ static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
         stats.profSignature = profSig;
         stats.profCounts = profCounts;
         stats.timesPlayed++;
-        stats.matchIndices.push_back(i);
 
         bool won = (std::to_string(m.winner_party_id) == partyId);
         if (won) stats.wins++;
@@ -2284,7 +2297,6 @@ static std::vector<TournamentBuildStats> AggregateLostToBuilds(
         stats.profSignature = profSig;
         stats.profCounts = profCounts;
         stats.timesPlayed++;
-        stats.matchIndices.push_back(i);
         stats.wins++; // from the opponent's perspective, these are wins
     }
 
@@ -2307,19 +2319,21 @@ static std::vector<TournamentBuildStats> AggregateLostToBuilds(
 static std::vector<TournamentBuildStats> s_lostToCache;
 
 static const std::vector<TournamentBuildStats>& GetTournamentStats(
-    const std::vector<MatchMeta>& matches)
+    const std::vector<MatchMeta>& matches, int generation)
 {
     std::string key = s_state.tournamentGuildTag + "|" + s_state.tournamentGuildName + "|";
     for (const auto& m : s_state.tournamentMaps) key += m + ",";
 
     if (key == s_tournamentCacheKey &&
-        s_tournamentCacheMatchCount == (int)matches.size())
+        s_tournamentCacheMatchCount == (int)matches.size() &&
+        s_tournamentCacheGeneration == generation)
         return s_tournamentCache;
 
     s_tournamentCache = AggregateTournamentBuilds(matches);
     s_lostToCache = AggregateLostToBuilds(matches);
     s_tournamentCacheKey = key;
     s_tournamentCacheMatchCount = (int)matches.size();
+    s_tournamentCacheGeneration = generation;
     return s_tournamentCache;
 }
 
@@ -3667,17 +3681,17 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
-        if (ImGui::Button("Prep"))
+        if (ImGui::Button("Bounty"))
         {
             s_state.tournamentMode = !s_state.tournamentMode;
         }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Tournament Prep - scout opponent builds");
+            ImGui::SetTooltip("Bounty - scout opponent builds");
     }
 
-    // ── Opponent guild search + map filter (inline in top bar when Prep is active) ──
+    // ── Opponent guild search + map filter (inline in top bar when Bounty is active) ──
     if (s_state.tournamentMode)
     {
         ImGui::SameLine(0, 16);
@@ -3888,7 +3902,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
 
 // ─── Tournament Prep stats panel ────────────────────────────────────────────
 
-static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, float listH)
+static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, float listH, int generation)
 {
     ImFont* font = ImGui::GetFont();
     ImFont* boldFnt = GuiGlobalConstants::boldFont;
@@ -3914,7 +3928,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
         if (boldFnt) ImGui::PushFont(boldFnt);
-        ImGui::TextUnformatted("TOURNAMENT PREP");
+        ImGui::TextUnformatted("BOUNTY");
         if (boldFnt) ImGui::PopFont();
         ImGui::PopStyleColor();
         ImGui::Spacing();
@@ -3926,13 +3940,13 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
         return;
     }
 
-    const auto& stats = GetTournamentStats(matches);
+    const auto& stats = GetTournamentStats(matches, generation);
 
     // ── Header ──
     {
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
         if (boldFnt) ImGui::PushFont(boldFnt);
-        ImGui::TextUnformatted("TOURNAMENT PREP");
+        ImGui::TextUnformatted("BOUNTY");
         if (boldFnt) ImGui::PopFont();
         ImGui::PopStyleColor();
 
@@ -4303,7 +4317,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
                 ? ImVec4(0.90f, 0.22f, 0.21f, 1.0f) : kColorAccent);
             ImGui::Text("%s \"%s\" (%d)", drillDownLabel,
                         drillDownBuild->buildName.c_str(),
-                        (int)drillDownBuild->matchIndices.size());
+                        drillDownBuild->timesPlayed);
             ImGui::PopStyleColor();
             ImGui::Spacing();
 
@@ -4323,15 +4337,42 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
                 ImGui::TableSetupColumn("Duration", 0, 0.16f);
                 ImGui::TableHeadersRow();
 
-                for (int mi : drillDownBuild->matchIndices)
+                // Recompute matching games on the fly from the current matches vector
+                const std::string& targetBuild = drillDownBuild->buildName;
+                for (int mi = 0; mi < (int)matches.size(); mi++)
                 {
-                    if (mi < 0 || mi >= (int)matches.size()) continue;
                     const auto& m = matches[mi];
+
+                    // Apply same map filter as the aggregation
+                    if (!s_state.tournamentMaps.empty())
+                    {
+                        const char* mnf = GetMapName(m.map_id);
+                        std::string mapNameF = mnf ? mnf : ("Map " + std::to_string(m.map_id));
+                        if (s_state.tournamentMaps.find(mapNameF) == s_state.tournamentMaps.end())
+                            continue;
+                    }
 
                     std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
                                                          s_state.tournamentGuildName);
-                    std::string opponentPartyId = (partyId == "1") ? "2" : "1";
+                    if (partyId.empty()) continue;
+
                     bool won = (std::to_string(m.winner_party_id) == partyId);
+
+                    // For losses drill-down: only show losses where opponent ran this build
+                    // For builds drill-down: only show matches where our guild ran this build
+                    std::string checkPartyId = drillDownIsLoss
+                        ? ((partyId == "1") ? "2" : "1")  // opponent's party
+                        : partyId;                          // our party
+
+                    if (drillDownIsLoss && won) continue; // only losses
+
+                    auto pit = m.parties.find(checkPartyId);
+                    if (pit == m.parties.end() || pit->second.players.empty()) continue;
+
+                    std::string buildName = ComputeTeamBuild(pit->second);
+                    if (buildName != targetBuild) continue;
+
+                    std::string opponentPartyId = (partyId == "1") ? "2" : "1";
 
                     // Opponent guild label
                     std::string ft1, ft2;
@@ -4344,13 +4385,20 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
                     // Date
                     ImGui::TableNextColumn();
                     ImGui::PushID(mi);
-                    if (ImGui::Selectable("##dd_row", false,
+                    bool ddSelected = (s_state.selectedMatchIndex == mi);
+                    if (ImGui::Selectable("##dd_row", ddSelected,
                         ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
                     {
-                        if (ImGui::IsMouseDoubleClicked(0))
+                        if (ImGui::IsMouseDoubleClicked(0) && !g_cloudDownloadInProgress)
                         {
                             s_state.selectedMatchIndex = mi;
                             s_state.tournamentMode = false;
+                            g_pendingReplay.requested = true;
+                            g_pendingReplay.match = m;
+                        }
+                        else
+                        {
+                            s_state.selectedMatchIndex = ddSelected ? -1 : mi;
                         }
                     }
                     ImGui::SameLine();
@@ -4534,14 +4582,14 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, btnPadY));
-        if (ImGui::Button("Prep"))
+        if (ImGui::Button("Bounty"))
         {
             s_state.tournamentMode = !s_state.tournamentMode;
         }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Tournament Prep - scout opponent builds");
+            ImGui::SetTooltip("Bounty - scout opponent builds");
     }
 
     ImGui::SameLine(0, 8);
@@ -5953,7 +6001,7 @@ void draw_replay_browser(ReplayLibrary& library)
         GuiGlobalConstants::replay_filter_width = (int)s_state.userFilterW;
 
         if (s_state.tournamentMode)
-            DrawTournamentStatsPanel(matches, topRowH);
+            DrawTournamentStatsPanel(matches, topRowH, library.GetGeneration());
         else if (s_state.cardGalleryMode && s_state.layout != LayoutMode::Mobile)
             DrawCardGallery(filtered, matches, topRowH);
         else

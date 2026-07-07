@@ -157,11 +157,13 @@ public:
     bool IsLoaded() const { return m_loaded; }
     const std::string& GetFolderPath() const { return m_folder_path; }
     int GetMatchCount() const { return static_cast<int>(m_matches.size()); }
+    int GetGeneration() const { return m_generation; }
 
 private:
     std::unique_ptr<IReplayProvider> m_provider;
     std::vector<MatchMeta> m_matches;
     std::string m_folder_path;
     bool m_loaded = false;
+    int m_generation = 0;
     std::vector<std::string> m_newMatchFolders;
 };

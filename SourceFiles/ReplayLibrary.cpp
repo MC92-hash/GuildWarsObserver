@@ -492,7 +492,18 @@ void ReplayLibrary::ScanFolder()
     if (m_folder_path.empty()) return;
 
     m_matches = m_provider->GetAvailableReplays();
+
+    // Sort by date descending (newest first) to match RescanDiff order
+    std::sort(m_matches.begin(), m_matches.end(), [](const MatchMeta& a, const MatchMeta& b)
+    {
+        if (a.year != b.year) return a.year > b.year;
+        if (a.month != b.month) return a.month > b.month;
+        if (a.day != b.day) return a.day > b.day;
+        return a.folder_path < b.folder_path;
+    });
+
     m_loaded = true;
+    m_generation++;
 }
 
 int ReplayLibrary::RescanDiff()
@@ -548,15 +559,17 @@ int ReplayLibrary::RescanDiff()
         }
     }
 
-    // Sort by date descending (newest first)
+    // Sort by date descending (newest first), tiebreak by folder_path for determinism
     std::sort(m_matches.begin(), m_matches.end(), [](const MatchMeta& a, const MatchMeta& b)
     {
         if (a.year != b.year) return a.year > b.year;
         if (a.month != b.month) return a.month > b.month;
-        return a.day > b.day;
+        if (a.day != b.day) return a.day > b.day;
+        return a.folder_path < b.folder_path;
     });
 
     m_loaded = true;
+    m_generation++;
     return added;
 }
 
