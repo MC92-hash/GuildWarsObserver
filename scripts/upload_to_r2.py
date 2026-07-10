@@ -607,25 +607,28 @@ def cmd_upload(args, config: dict) -> dict:
     print(f"R2 bucket: {bucket}")
     print()
 
-    # Collect completed recordings from GWToolbox output
-    recording_source = config.get("RECORDING_SOURCE_DIR", "")
-    if recording_source:
-        rec_dir = Path(os.path.expandvars(os.path.expanduser(recording_source)))
-        if rec_dir.is_dir():
-            print("Collecting new recordings...")
-            collected = collect_recordings(rec_dir, source_dir, include_scrimmage=args.include_scrimmage)
-            if collected:
-                print(f"  Collected {collected} recording(s).\n")
-            else:
-                print("  No new recordings to collect.\n")
-
-    # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
-    print("Checking for archives to extract...")
-    extracted = extract_archives(source_dir)
-    if extracted:
-        print(f"  Extracted {extracted} archive(s).\n")
+    if args.dry_run:
+        print("Dry run: skipping recording collection + archive extraction (no files will be moved).\n")
     else:
-        print("  No new archives found.\n")
+        # Collect completed recordings from GWToolbox output
+        recording_source = config.get("RECORDING_SOURCE_DIR", "")
+        if recording_source:
+            rec_dir = Path(os.path.expandvars(os.path.expanduser(recording_source)))
+            if rec_dir.is_dir():
+                print("Collecting new recordings...")
+                collected = collect_recordings(rec_dir, source_dir, include_scrimmage=args.include_scrimmage)
+                if collected:
+                    print(f"  Collected {collected} recording(s).\n")
+                else:
+                    print("  No new recordings to collect.\n")
+
+        # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
+        print("Checking for archives to extract...")
+        extracted = extract_archives(source_dir)
+        if extracted:
+            print(f"  Extracted {extracted} archive(s).\n")
+        else:
+            print("  No new archives found.\n")
 
     # Fetch existing index
     print("Fetching remote index.json...")
