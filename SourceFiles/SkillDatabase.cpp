@@ -6,6 +6,9 @@
 #include <unordered_set>
 #include <tuple>
 #include <filesystem>
+#include <regex>
+#include <cctype>
+#include <cstring>
 
 using json = nlohmann::json;
 
@@ -73,9 +76,64 @@ bool SkillDatabase::Load(const std::string& dataDir)
         }
     }
 
+    // Parse scales from skill descriptions and classify deduction usability.
+    for (auto& [id, si] : m_skills)
+    {
+        ParseScalesFromDescription(si);
+        ClassifyDeductionUsability(si);
+    }
+
     m_loaded = !m_skills.empty();
     if (m_loaded)
         m_baseView = std::make_shared<const std::unordered_map<int, SkillInfo>>(m_skills);
+
+#ifdef _DEBUG
+    if (m_loaded)
+    {
+        int total = 0, dmg = 0, heal = 0, steal = 0, loss = 0, dfConf = 0;
+        for (const auto& [id, si] : m_skills)
+        {
+            if (!si.deductionUsable) continue;
+            ++total;
+            switch (si.deductionKind) {
+            case SkillScaleKind::Damage:    ++dmg;   break;
+            case SkillScaleKind::Heal:      ++heal;  break;
+            case SkillScaleKind::LifeSteal: ++steal; break;
+            case SkillScaleKind::LifeLoss:  ++loss;  break;
+            default: break;
+            }
+            if (si.dfConfounded) ++dfConf;
+        }
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+            "[AttrDeduce] usable=%d (Damage %d, Heal %d, LifeSteal %d, LifeLoss %d) dfConfounded=%d\n",
+            total, dmg, heal, steal, loss, dfConf);
+        OutputDebugStringA(buf);
+
+        static const int kSpotIds[] = { 23, 69, 153, 156, 110, 3058, 1233, 1234,
+                                        287, 3232, 281, 286, 229, 102, 42, 915 };
+        for (int sid : kSpotIds)
+        {
+            auto it = m_skills.find(sid);
+            if (it == m_skills.end()) continue;
+            const SkillInfo& si = it->second;
+            const char* kindName = "None";
+            switch (si.deductionKind) {
+            case SkillScaleKind::Damage:    kindName = "Damage";    break;
+            case SkillScaleKind::Heal:      kindName = "Heal";      break;
+            case SkillScaleKind::LifeSteal: kindName = "LifeSteal"; break;
+            case SkillScaleKind::LifeLoss:  kindName = "LifeLoss";  break;
+            default: break;
+            }
+            snprintf(buf, sizeof(buf),
+                "[AttrDeduce]   id=%d %-24s usable=%d kind=%-9s v0=%.0f v15=%.0f df=%d\n",
+                sid, si.name.c_str(), si.deductionUsable ? 1 : 0,
+                kindName, si.dedV0, si.dedV15, si.dfConfounded ? 1 : 0);
+            OutputDebugStringA(buf);
+        }
+    }
+#endif
+
     return m_loaded;
 }
 
@@ -553,6 +611,8 @@ void SkillDatabase::LoadPatches(const std::string& dataDir)
             if (val.contains("description")) old.description = val["description"].get<std::string>();
             if (val.contains("concise"))     old.concise     = val["concise"].get<std::string>();
 
+            ParseScalesFromDescription(old);
+            ClassifyDeductionUsability(old);
             patch.overrides[skillId] = std::move(old);
         }
 
@@ -593,4 +653,274 @@ SkillDatabaseView SkillDatabase::GetView(int year, int month, int day)
 SkillDatabaseView SkillDatabase::GetBaseView() const
 {
     return SkillDatabaseView(m_baseView);
+}
+
+void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
+{
+    si.scales.clear();
+
+    // Prefer the full description; fall back to the concise form.
+    const std::string& text = !si.description.empty() ? si.description : si.concise;
+    if (text.empty()) return;
+
+    auto toLower = [](const std::string& s) {
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return out;
+    };
+    auto ltrim = [](const std::string& s) {
+        size_t i = 0;
+        while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
+        return s.substr(i);
+    };
+    auto startsWith = [](const std::string& s, const char* pfx) {
+        size_t n = std::strlen(pfx);
+        return s.size() >= n && s.compare(0, n, pfx) == 0;
+    };
+    auto contains = [](const std::string& s, const char* needle) {
+        return s.find(needle) != std::string::npos;
+    };
+
+    // Matches two-value ranges such as "82...172". GW descriptions never use a
+    // three-value form, so a single pattern suffices.
+    static const std::regex kRangeRe(R"((\d+)\.\.\.(\d+))");
+    // "damage" possibly preceded by a single qualifier word ("cold damage").
+    static const std::regex kDamageRe(R"(^\s*(?:[a-z]+\s+)?damage)");
+
+    auto begin = std::sregex_iterator(text.begin(), text.end(), kRangeRe);
+    auto end   = std::sregex_iterator();
+
+    for (auto it = begin; it != end; ++it)
+    {
+        const std::smatch& m = *it;
+
+        int v0 = 0, v15 = 0;
+        try {
+            v0  = std::stoi(m[1].str());
+            v15 = std::stoi(m[2].str());
+        } catch (...) {
+            continue;
+        }
+
+        size_t matchStart = (size_t)m.position(0);
+        size_t matchEnd   = matchStart + (size_t)m.length(0);
+
+        // Percentages are ratios, not absolute magnitudes.
+        if (matchEnd < text.size() && text[matchEnd] == '%')
+            continue;
+
+        // ~40 chars of context on each side, lower-cased.
+        size_t beforeStart = (matchStart > 40) ? matchStart - 40 : 0;
+        std::string before = toLower(text.substr(beforeStart, matchStart - beforeStart));
+        std::string after  = toLower(text.substr(matchEnd, std::min<size_t>(40, text.size() - matchEnd)));
+        std::string afterTrim = ltrim(after);
+
+        SkillScaleKind kind = SkillScaleKind::None;
+
+        if (startsWith(afterTrim, "second"))
+        {
+            // "for X...Y second(s)" / "X...Y seconds"
+            kind = SkillScaleKind::Duration;
+        }
+        else if (startsWith(afterTrim, "health"))
+        {
+            if (contains(before, "steal"))
+                kind = SkillScaleKind::LifeSteal;
+            else if (contains(before, "lose") || contains(before, "sacrifice"))
+                kind = SkillScaleKind::LifeLoss;
+            else if (contains(before, "heal") || contains(before, "gain") ||
+                     contains(before, "regain"))
+                kind = SkillScaleKind::Heal;
+        }
+
+        if (kind == SkillScaleKind::None && std::regex_search(afterTrim, kDamageRe))
+            kind = SkillScaleKind::Damage;
+
+        if (kind == SkillScaleKind::None)
+            continue; // unmatched context -> drop
+
+        SkillScale sc;
+        sc.kind = kind;
+        sc.v0 = (float)v0;
+        sc.v15 = (float)v15;
+        sc.multiplier = 1.f;
+        si.scales.push_back(sc);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClassifyDeductionUsability
+//
+// Auto-derives the set of skills whose live description yields a single clean,
+// attribute-scaled magnitude that the AttributeDeducer can invert into a rank.
+// This replaces the former hand-curated 8-skill whitelist.
+//
+// A skill is usable only if its description parses (with the SAME range/context
+// semantics as ParseScalesFromDescription) to EXACTLY ONE scale of a consumable
+// kind (Damage / Heal / LifeSteal / LifeLoss); Duration scales are ignored.
+// Multi-scale skills (e.g. Shadow Strike id 102: Damage + LifeSteal) are
+// ambiguous and dropped, as are per-instance multiplier skills ("N damage for
+// each ...", e.g. Desecrate Enchantments id 112 / Energy Burn id 42).
+//
+// The "for each" / "for every" veto MUST be sentence-bounded: it looks only from
+// the end of the matched range to the next '.'. A fixed character window would
+// wrongly veto Mend Body and Soul (id 1234) - "healed for 20...115 Health. That
+// ally loses one condition for each spirit ..." - whose "for each" lives in the
+// following sentence. Id 1234 must stay usable (Heal 20..115); id 112 must not.
+//
+// Divine Favor: single-target Monk heals gain a flat bonus (~3.2 * DF rank) on
+// top of the spell's own heal. These are FLAGGED (dfConfounded) rather than
+// excluded so the deducer can jointly solve Divine Favor + Healing/Protection.
+// Party-wide heals (Heal Party id 287) get NO Divine Favor bonus and are
+// detected via the word "party", leaving them clean.
+//
+// Runtime notes handled by the deducer, not here:
+//   - Damage rows are only accepted when armor-ignoring (damageType == 55), so
+//     elemental skills like Lightning Orb (id 229) classify as Damage but
+//     contribute zero accepted observations.
+//   - Weapon attacks ("+10...40 damage") are vetoed here via IsWeaponAttack plus
+//     a '+'-prefix guard.
+// ---------------------------------------------------------------------------
+void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
+{
+    si.deductionUsable = false;
+    si.dfConfounded = false;
+    si.deductionKind = SkillScaleKind::None;
+    si.dedV0 = 0.f;
+    si.dedV15 = 0.f;
+
+    // Same source-text selection as ParseScalesFromDescription.
+    const std::string& text = !si.description.empty() ? si.description : si.concise;
+    if (text.empty()) return;
+
+    auto toLower = [](const std::string& s) {
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return out;
+    };
+    auto ltrim = [](const std::string& s) {
+        size_t i = 0;
+        while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
+        return s.substr(i);
+    };
+    auto startsWith = [](const std::string& s, const char* pfx) {
+        size_t n = std::strlen(pfx);
+        return s.size() >= n && s.compare(0, n, pfx) == 0;
+    };
+    auto contains = [](const std::string& s, const char* needle) {
+        return s.find(needle) != std::string::npos;
+    };
+
+    static const std::regex kRangeRe(R"((\d+)\.\.\.(\d+))");
+    static const std::regex kDamageRe(R"(^\s*(?:[a-z]+\s+)?damage)");
+
+    // Consumable-kind matches with their text positions (needed for the
+    // sentence-bounded and '+'-prefix vetoes below).
+    struct UsableMatch {
+        SkillScaleKind kind = SkillScaleKind::None;
+        float v0 = 0, v15 = 0;
+        size_t start = 0, end = 0;
+    };
+    std::vector<UsableMatch> matches;
+
+    auto begin = std::sregex_iterator(text.begin(), text.end(), kRangeRe);
+    auto end   = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it)
+    {
+        const std::smatch& m = *it;
+
+        int v0 = 0, v15 = 0;
+        try {
+            v0  = std::stoi(m[1].str());
+            v15 = std::stoi(m[2].str());
+        } catch (...) {
+            continue;
+        }
+
+        size_t matchStart = (size_t)m.position(0);
+        size_t matchEnd   = matchStart + (size_t)m.length(0);
+
+        if (matchEnd < text.size() && text[matchEnd] == '%')
+            continue;
+
+        size_t beforeStart = (matchStart > 40) ? matchStart - 40 : 0;
+        std::string before = toLower(text.substr(beforeStart, matchStart - beforeStart));
+        std::string after  = toLower(text.substr(matchEnd, std::min<size_t>(40, text.size() - matchEnd)));
+        std::string afterTrim = ltrim(after);
+
+        SkillScaleKind kind = SkillScaleKind::None;
+
+        if (startsWith(afterTrim, "second"))
+        {
+            kind = SkillScaleKind::Duration;
+        }
+        else if (startsWith(afterTrim, "health"))
+        {
+            if (contains(before, "steal"))
+                kind = SkillScaleKind::LifeSteal;
+            else if (contains(before, "lose") || contains(before, "sacrifice"))
+                kind = SkillScaleKind::LifeLoss;
+            else if (contains(before, "heal") || contains(before, "gain") ||
+                     contains(before, "regain"))
+                kind = SkillScaleKind::Heal;
+        }
+
+        if (kind == SkillScaleKind::None && std::regex_search(afterTrim, kDamageRe))
+            kind = SkillScaleKind::Damage;
+
+        if (kind == SkillScaleKind::None) continue; // unmatched context
+        if (kind == SkillScaleKind::Duration) continue; // durations are not consumable
+
+        UsableMatch um;
+        um.kind = kind;
+        um.v0 = (float)v0;
+        um.v15 = (float)v15;
+        um.start = matchStart;
+        um.end = matchEnd;
+        matches.push_back(um);
+    }
+
+    // Rule (a): exactly one consumable-kind scale.
+    if (matches.size() != 1) return;
+    const UsableMatch& um = matches.front();
+
+    // Rule (b): meaningful per-rank step (>= 1 -> 17 distinct breakpoints).
+    // Kills regen-pip / tiny-range false positives. Multiplier is always 1 here.
+    if (std::fabs(um.v15 - um.v0) < 15.f) return;
+
+    // Rule (c): attribute must map to a real profession (drops No Attribute and
+    // title tracks).
+    if (GetProfessionForAttribute(si.attribute) == 0) return;
+
+    // Rule (d): weapon-attack veto.
+    if (IsWeaponAttack(si.type)) return;
+
+    // Rule (e): per-instance multiplier veto, SENTENCE-BOUNDED.
+    {
+        size_t dot = text.find('.', um.end);
+        size_t sentEnd = (dot == std::string::npos) ? text.size() : dot;
+        std::string sentence = toLower(text.substr(um.end, sentEnd - um.end));
+        if (contains(sentence, "for each") || contains(sentence, "for every"))
+            return;
+    }
+
+    // Rule (f): '+'-prefix veto (weapon-style additive bonuses).
+    if (um.start > 0 && text[um.start - 1] == '+') return;
+
+    // Passed all vetoes.
+    si.deductionUsable = true;
+    si.deductionKind = um.kind;
+    si.dedV0 = um.v0;
+    si.dedV15 = um.v15;
+
+    // Rule (g): Divine Favor confound flag (NOT an exclusion). A single-target
+    // Monk heal is confounded; a party-wide heal is not.
+    if (um.kind == SkillScaleKind::Heal && si.profession == 3)
+    {
+        std::string lowText = toLower(text);
+        if (!contains(lowText, "party"))
+            si.dfConfounded = true;
+    }
 }

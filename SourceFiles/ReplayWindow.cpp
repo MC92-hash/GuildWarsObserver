@@ -7,6 +7,7 @@
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
+#include "MaxHpSolver.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -440,6 +441,7 @@ void ReplayWindow::LoadUILayout()
             // Damage / Heal meter toggles
             bv("showDamageMeter", m_showDamageMeter);
             bv("showHealMeter",   m_showHealMeter);
+            bv("showAbsoluteHp",  m_showAbsoluteHp);
 
             // Split Camera state
             fv("pipFollowDist",  m_pipFollowDist);
@@ -2774,6 +2776,14 @@ void ReplayWindow::Tick()
         m_knockdownIntervalsBuilt = true;
     }
 
+    // Solve per-player max_hp timelines from combat decimals before the combat
+    // log is built, so absolute damage/heal values benefit from the result.
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_maxHpSolved)
+    {
+        SolveMaxHpTimelines(m_replayCtx.agents, m_replayCtx.stocData.combat);
+        m_maxHpSolved = true;
+    }
+
     // Build combat log from merged StoC streams
     if (m_skillUseTimelineBuilt && m_replayCtx.stocLoaded && !m_combatLogBuilt)
     {
@@ -2781,32 +2791,9 @@ void ReplayWindow::Tick()
 
         auto findMaxHp = [&](int agentId, float t) -> uint32_t {
             auto it = m_replayCtx.agents.find(agentId);
-            if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return 0;
-            auto& snaps = it->second.snapshots;
-
-            // Binary search for the last snapshot at or before t
-            int idx = 0;
-            if (t >= snaps.back().time) {
-                idx = (int)snaps.size() - 1;
-            } else if (t > snaps.front().time) {
-                int lo = 0, hi = (int)snaps.size() - 1;
-                while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
-                idx = lo;
-            }
-
-            if (snaps[idx].max_hp > 0) return snaps[idx].max_hp;
-
-            // max_hp unknown at this time — scan forward for the earliest known value
-            for (int i = idx + 1; i < (int)snaps.size(); ++i)
-            {
-                if (snaps[i].max_hp > 0) return snaps[i].max_hp;
-            }
-            // Also scan backward in case only earlier snapshots have it
-            for (int i = idx - 1; i >= 0; --i)
-            {
-                if (snaps[i].max_hp > 0) return snaps[i].max_hp;
-            }
-            return 0;
+            if (it == m_replayCtx.agents.end()) return 0;
+            if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
+            return it->second.maxHpAtTime(t);
         };
 
         // Pass 1: skill events -> primary rows
@@ -2951,6 +2938,7 @@ void ReplayWindow::Tick()
                         r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
                         r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
                                                       : CombatLogCategory::Heal;
+                        r.damageType = ce.damage_type;
                         matched[bestIdx] = true;
                     }
                     else
@@ -2964,6 +2952,7 @@ void ReplayWindow::Tick()
                         r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
                         r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
                                                       : CombatLogCategory::Heal;
+                        r.damageType = ce.damage_type;
                         m_combatLog.push_back(std::move(r));
                     }
                 }
@@ -3089,6 +3078,23 @@ void ReplayWindow::Tick()
         std::sort(m_combatLog.begin(), m_combatLog.end(),
             [](const CombatLogRow& a, const CombatLogRow& b) { return a.time < b.time; });
         m_combatLogBuilt = true;
+    }
+
+    // Deduce attributes from combat log
+    if (m_combatLogBuilt && !m_attributesDeduced)
+    {
+        auto resolveMaxHpLambda = [this](int agentId, float t) -> std::pair<uint32_t, bool> {
+            auto it = m_replayCtx.agents.find(agentId);
+            if (it == m_replayCtx.agents.end()) return { 0, true };
+            auto sample = ResolveMaxHp(it->second, t);
+            return { sample.value, sample.estimated };
+        };
+        m_attrProfiles = DeduceAttributes(
+            m_replayCtx.agents,
+            m_combatLog,
+            m_skillView,
+            resolveMaxHpLambda);
+        m_attributesDeduced = true;
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
@@ -6035,7 +6041,7 @@ void DrawPartyHealthBar(
     const AgentSnapshot* snap, uint8_t teamId, bool isDead,
     const char* name, const PartyIcons& icons,
     int followedAgentId, int agentId, bool fogHidden,
-    ImTextureID flagTex)
+    ImTextureID flagTex, uint32_t absMaxHp, bool hpEstimated)
 {
     ImVec2 barBR(barTL.x + barW, barTL.y + barH);
 
@@ -6192,6 +6198,26 @@ void DrawPartyHealthBar(
         {
             iconX -= iconSz;
             dl->AddImage(flagTex, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
+        }
+
+        // Absolute HP display (right-aligned, avoiding icon region)
+        if (absMaxHp > 0)
+        {
+            uint32_t displayHp = (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
+            char hpStr[32];
+            if (hpEstimated)
+                snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
+            else
+                snprintf(hpStr, sizeof(hpStr), "%u/%u", displayHp, absMaxHp);
+
+            ImVec2 hpSize = ImGui::CalcTextSize(hpStr);
+            float hpTextX = std::min(innerBR.x - iconSz * 6.f - 4.f, innerBR.x - hpSize.x - 4.f);
+            float hpTextY = innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f;
+
+            ImU32 hpTextCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+            ImU32 hpShadowCol = IM_COL32(0, 0, 0, 0xCC);
+            dl->AddText(ImVec2(hpTextX + 1, hpTextY + 1), hpShadowCol, hpStr);
+            dl->AddText(ImVec2(hpTextX, hpTextY), hpTextCol, hpStr);
         }
     }
 }

@@ -163,6 +163,7 @@ bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, 
         out.match_end_time_ms = j.value("match_end_time_ms", 0);
         out.match_end_time_formatted = j.value("match_end_time_formatted", std::string());
         out.winner_party_id = j.value("winner_party_id", 0);
+        out.recording_version = j.value("recording_version", 0);
 
         if (j.contains("team_kills") && j["team_kills"].is_object())
         {

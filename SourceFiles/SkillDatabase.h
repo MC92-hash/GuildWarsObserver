@@ -4,6 +4,16 @@
 #include <unordered_map>
 #include <memory>
 
+enum class SkillScaleKind : uint8_t { None, Damage, Heal, LifeSteal, LifeLoss, Duration };
+
+struct SkillScale
+{
+    SkillScaleKind kind = SkillScaleKind::None;
+    float v0 = 0;
+    float v15 = 0;
+    float multiplier = 1.f;
+};
+
 struct SkillInfo
 {
     int id = 0;
@@ -28,6 +38,16 @@ struct SkillInfo
     bool is_pvp = false;
     bool pvp_split = false;
     int  split_id = 0;
+
+    std::vector<SkillScale> scales;
+
+    // Auto-derived attribute-deduction classification (filled by
+    // ClassifyDeductionUsability, run right after ParseScalesFromDescription).
+    bool deductionUsable = false;              // safe to use for rank deduction
+    bool dfConfounded = false;                 // single-target Monk heal (Divine Favor bonus applies)
+    SkillScaleKind deductionKind = SkillScaleKind::None;
+    float dedV0 = 0;                           // usable scale endpoints (rank 0 / rank 15)
+    float dedV15 = 0;
 };
 
 class SkillDatabaseView
@@ -79,6 +99,9 @@ public:
                                           int primaryProf, int secondaryProf) const;
 
     int ResolvePvpSkillId(int skillId) const;
+
+    static void ParseScalesFromDescription(SkillInfo& si);
+    static void ClassifyDeductionUsability(SkillInfo& si);
 
     void LoadPatches(const std::string& dataDir);
     SkillDatabaseView GetView(int year, int month, int day);
