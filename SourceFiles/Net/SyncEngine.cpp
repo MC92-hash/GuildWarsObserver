@@ -158,19 +158,44 @@ void SyncEngine::SyncThread()
             if (extracted)
             {
                 // The archive may contain files at root or inside a subfolder.
-                // Check if infos.json ended up in tmpDir/folderName/ (nested) or tmpDir/ (flat).
-                if (std::filesystem::exists(tmpDir / folderName / "infos.json"))
+                // The inner folder name may differ from the archive filename (e.g. due
+                // to Unicode encoding mismatches), so scan subdirectories rather than
+                // relying on folderName to match.
+                std::filesystem::path infosLocation;
+
+                if (std::filesystem::exists(tmpDir / "infos.json"))
                 {
-                    // Nested: rename the inner folder to the final destination
-                    std::filesystem::remove_all(destDir, ec);
-                    std::filesystem::rename(tmpDir / folderName, destDir, ec);
-                    std::filesystem::remove_all(tmpDir, ec);
+                    // Flat: infos.json is at the root of the extracted content
+                    infosLocation = tmpDir;
                 }
-                else if (std::filesystem::exists(tmpDir / "infos.json"))
+                else
                 {
-                    // Flat: rename tmpDir itself
+                    // Nested: look for any subdirectory containing infos.json
+                    for (const auto& sub : std::filesystem::directory_iterator(tmpDir, ec))
+                    {
+                        if (sub.is_directory() &&
+                            std::filesystem::exists(sub.path() / "infos.json"))
+                        {
+                            infosLocation = sub.path();
+                            break;
+                        }
+                    }
+                }
+
+                if (!infosLocation.empty())
+                {
                     std::filesystem::remove_all(destDir, ec);
-                    std::filesystem::rename(tmpDir, destDir, ec);
+                    if (infosLocation == tmpDir)
+                    {
+                        // Flat: rename tmpDir itself to the final destination
+                        std::filesystem::rename(tmpDir, destDir, ec);
+                    }
+                    else
+                    {
+                        // Nested: move the inner folder to the final destination
+                        std::filesystem::rename(infosLocation, destDir, ec);
+                        std::filesystem::remove_all(tmpDir, ec);
+                    }
                 }
                 else
                 {

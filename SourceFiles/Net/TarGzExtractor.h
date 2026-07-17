@@ -140,9 +140,16 @@ inline bool ExtractTarData(const uint8_t* tarData, size_t tarSize,
 
         pos += 512; // advance past header
 
+        // Tar headers store filenames as UTF-8. Convert to a proper
+        // filesystem path so non-ASCII characters survive on Windows
+        // (where std::string is interpreted as the active code page).
+        auto nameU8 = std::u8string(
+            reinterpret_cast<const char8_t*>(name.data()), name.size());
+        std::filesystem::path namePath(nameU8);
+
         // Zip-slip prevention: ensure resolved path stays within destDir
         auto resolvedDest = std::filesystem::weakly_canonical(destDir);
-        auto resolvedEntry = std::filesystem::weakly_canonical(destDir / name);
+        auto resolvedEntry = std::filesystem::weakly_canonical(destDir / namePath);
         auto rel = resolvedEntry.lexically_relative(resolvedDest);
         if (rel.empty() || rel.string().starts_with(".."))
         {
@@ -154,12 +161,12 @@ inline bool ExtractTarData(const uint8_t* tarData, size_t tarSize,
         if (typeFlag == '5' || (!name.empty() && name.back() == '/'))
         {
             // Directory entry
-            std::filesystem::create_directories(destDir / name, ec);
+            std::filesystem::create_directories(destDir / namePath, ec);
         }
         else if (typeFlag == '0' || typeFlag == '\0')
         {
             // Regular file
-            auto filePath = destDir / name;
+            auto filePath = destDir / namePath;
             std::filesystem::create_directories(filePath.parent_path(), ec);
 
             std::ofstream outFile(filePath, std::ios::binary);
