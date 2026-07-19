@@ -24,6 +24,16 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+# Heuristic thresholds used to tell a legitimate DRAW (winner_party_id == 0
+# because the match genuinely ended tied) apart from an INCOMPLETE recording
+# (winner_party_id == 0 because GW crashed or the recording was interrupted).
+# Both cases look identical from the winner field alone, so completeness of
+# the recording is used as the discriminator instead. These are heuristic
+# and tunable, adjust if real draws get rejected or broken recordings slip
+# through.
+DRAW_MIN_DURATION_SECONDS = 600
+DRAW_MIN_PLAYERS_PER_TEAM = 6
+
 
 @dataclass
 class ValidationResult:
@@ -77,8 +87,41 @@ def check_henchmen(
     return True, ""
 
 
+def get_match_duration_seconds(data: dict) -> float:
+    """Compute the recorded match duration in seconds from infos.json fields.
+
+    Prefers ``match_end_time_ms`` (milliseconds since match start), falling
+    back to parsing the "MM:SS" ``match_duration`` string. Returns -1.0 if
+    neither field yields a usable positive duration.
+    """
+    end_ms = data.get("match_end_time_ms", 0)
+    if isinstance(end_ms, (int, float)) and end_ms > 0:
+        return end_ms / 1000.0
+
+    duration_str = data.get("match_duration", "")
+    if isinstance(duration_str, str) and ":" in duration_str:
+        try:
+            minutes_str, seconds_str = duration_str.strip().split(":", 1)
+            return int(minutes_str) * 60 + float(seconds_str)
+        except (ValueError, IndexError):
+            return -1.0
+
+    return -1.0
+
+
 def check_match_completion(match_dir: Path) -> tuple[bool, str]:
-    """Check if the match ended with a winner (not interrupted by crash).
+    """Check if the match ended with a winner, or a complete draw.
+
+    A drawn GvG match reports ``winner_party_id == 0``, exactly like a
+    crashed or interrupted recording - the winner field alone cannot tell
+    the two apart. To resolve the ambiguity, a completeness heuristic is
+    used: a winner-less recording is accepted as a genuine DRAW only if it
+    looks like a full match was recorded (long enough duration, both teams
+    present with a real roster, both teams show actual combat activity).
+    Otherwise it is rejected as incomplete, same as before.
+
+    The thresholds (DRAW_MIN_DURATION_SECONDS, DRAW_MIN_PLAYERS_PER_TEAM)
+    are heuristic and tunable.
 
     Returns (passed, reason).
     """
@@ -92,10 +135,39 @@ def check_match_completion(match_dir: Path) -> tuple[bool, str]:
     except (json.JSONDecodeError, OSError):
         return True, ""
 
-    winner = data.get("winner_party_id", 0)
-    if winner == 0:
-        return False, "Incomplete match: no winner (recording interrupted or GW crashed)"
+    incomplete_reason = "Incomplete match: no winner (recording interrupted or GW crashed)"
 
+    winner = data.get("winner_party_id", 0)
+    if winner != 0:
+        return True, ""
+
+    # winner_party_id == 0: decide draw vs. incomplete based on completeness.
+    duration_seconds = get_match_duration_seconds(data)
+    if duration_seconds < DRAW_MIN_DURATION_SECONDS:
+        return False, incomplete_reason
+
+    parties = data.get("parties", {})
+    if not isinstance(parties, dict) or len(parties) != 2:
+        return False, incomplete_reason
+
+    team_damage = data.get("team_damage", {})
+    if not isinstance(team_damage, dict):
+        team_damage = {}
+
+    for party_id, party in parties.items():
+        players = party.get("PLAYER", []) if isinstance(party, dict) else []
+        if len(players) < DRAW_MIN_PLAYERS_PER_TEAM:
+            return False, incomplete_reason
+
+        players_damage = sum(
+            p.get("total_damage", 0) for p in players if isinstance(p, dict)
+        )
+        team_damage_value = team_damage.get(party_id, 0)
+        if players_damage <= 0 and team_damage_value <= 0:
+            return False, incomplete_reason
+
+    # Duration, roster, and activity all check out: this is a real draw,
+    # not a crash. A draw is a valid, complete match - do not invent a winner.
     return True, ""
 
 

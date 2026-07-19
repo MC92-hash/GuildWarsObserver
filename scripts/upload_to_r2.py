@@ -448,6 +448,9 @@ def match_fingerprint(infos: dict) -> str:
 
     Uses date + map_id + sorted team tags (from the two match parties only)
     so that the same match is identified regardless of folder naming.
+    The occasion is also part of the identity, so a Swiss round and a
+    playoff game between the same two guilds on the same map and day are
+    treated as distinct matches instead of colliding.
     """
     year = infos.get("year", 0)
     month = infos.get("month", 0)
@@ -460,18 +463,25 @@ def match_fingerprint(infos: dict) -> str:
         g.get("tag", "") for gid, g in guilds.items()
         if isinstance(g, dict) and g.get("tag") and gid in party_ids
     )
-    return f"{year:04d}-{month:02d}-{day:02d}_{map_id}_{'_vs_'.join(tags)}"
+    occasion = (infos.get("occasion", "") or "").strip()
+    return f"{year:04d}-{month:02d}-{day:02d}_{map_id}_{'_vs_'.join(tags)}_{occasion}"
 
 
 def index_entry_fingerprint(entry: dict) -> str:
-    """Build a content fingerprint from an index.json entry for dedup."""
+    """Build a content fingerprint from an index.json entry for dedup.
+
+    The occasion is included in the identity to stay consistent with
+    match_fingerprint, so a Swiss round and a playoff game between the
+    same two guilds on the same map and day are treated as distinct matches.
+    """
     party_ids = set(entry.get("parties", {}).keys())
     guilds = entry.get("guilds", {})
     tags = sorted(
         g.get("tag", "") for gid, g in guilds.items()
         if isinstance(g, dict) and g.get("tag") and gid in party_ids
     )
-    return f"{entry.get('date', '')}_{entry.get('map_id', 0)}_{'_vs_'.join(tags)}"
+    occasion = (entry.get("occasion", "") or "").strip()
+    return f"{entry.get('date', '')}_{entry.get('map_id', 0)}_{'_vs_'.join(tags)}_{occasion}"
 
 
 def sanitize_folder_name(name: str) -> str:
