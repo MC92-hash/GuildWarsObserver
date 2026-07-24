@@ -29,6 +29,8 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include <cmath>
+#include <map>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -121,6 +123,7 @@ void ReplayHotkeys::Save() const
       << "  \"toggleTopView\": "       << toggleTopView       << ",\n"
       << "  \"togglePianoRoll\": "     << togglePianoRoll     << ",\n"
       << "  \"toggleHeatmap\": "       << toggleHeatmap       << ",\n"
+      << "  \"toggleMinimap\": "       << toggleMinimap       << ",\n"
       << "  \"addBookmark\": "         << addBookmark         << ",\n"
       << "  \"exitFollowMode\": "      << exitFollowMode      << ",\n"
       << "  \"camForward\": "          << camForward          << ",\n"
@@ -161,6 +164,7 @@ void ReplayHotkeys::Load()
         readKey("toggleTopView",       toggleTopView);
         readKey("togglePianoRoll",     togglePianoRoll);
         readKey("toggleHeatmap",       toggleHeatmap);
+        readKey("toggleMinimap",       toggleMinimap);
         readKey("addBookmark",         addBookmark);
         readKey("exitFollowMode",      exitFollowMode);
         readKey("camForward",          camForward);
@@ -1368,6 +1372,18 @@ void ReplayWindow::StepLoadInit()
     m_totalPropInstances = static_cast<int>(m_mapFile.props_info_chunk.prop_array.props_info.size());
     m_propModelLoadIndex = 0;
     m_propPlaceIndex = 0;
+    m_weepingLeverCandidates.clear();
+    m_weepingLeverResolved = false;
+    m_weepingLeverHasDoor = false;
+    m_weepingFadeProps.clear();
+    m_weepingLeverModelLoaded = false;
+    m_frozenGateCandidates.clear();
+    m_frozenGatesResolved = false;
+    m_frozenGateIcons.clear();
+    m_frozenLeverModelLoaded = false;
+    m_frozenLeverCandidates.clear();
+    m_druidBridgeCandidates.clear();
+    m_druidBridgesResolved = false;
     m_propModelFiles.clear();
     m_propModelFiles.reserve(m_totalPropFilenames);
     m_propModelFileHashes.clear();
@@ -1576,6 +1592,15 @@ void ReplayWindow::StepPlaceProps()
                 uint32_t segHash = 0;
                 size_t   segFallback = SIZE_MAX;
 
+                // DIAGNOSTIC: dump every prop hash on Druid's Isle so we can locate the
+                // vine-bridge model (it did not match 0x29FD in the static prop loop).
+                if (m_replayCtx.datMapId == 0x1F27A)
+                {
+                    std::ofstream dbg("door_debug.log", std::ios::app);
+                    dbg << "[DruidProp] prop " << i << " fileHash=0x" << std::hex << fileHash
+                        << std::dec << " submeshes=" << propMeshes.size() << "\n";
+                }
+
                 if (m_replayCtx.datMapId == 0x334A2 && fileHash == 0x2E13A)
                 {
                     segHash = 0x0000000;
@@ -1585,6 +1610,13 @@ void ReplayWindow::StepPlaceProps()
                 {
                     segHash = 0x35E6AE29;
                     segFallback = 1;
+                }
+                else if (m_replayCtx.datMapId == 0x1F27A && fileHash == 0x1504E)
+                {
+                    // Druid's Isle: ambient prop with a single looping segment
+                    // (hash 0x0). Loops for the whole replay; all bones animate.
+                    segHash = 0x00000000;
+                    segFallback = 0;
                 }
 
                 if (segFallback != SIZE_MAX)
@@ -1599,6 +1631,31 @@ void ReplayWindow::StepPlaceProps()
                     meshIds.size() > 1)
                 {
                     map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[0], false);
+                }
+
+                // Isle of Wurms: always hide submeshes 1, 2, 3 for asset 0x3C2B7
+                if (m_replayCtx.datMapId == 0x3321C && fileHash == 0x3C2B7)
+                {
+                    for (size_t s = 1; s <= 3 && s < meshIds.size(); s++)
+                        map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[s], false);
+                }
+
+                // Isle of the Weeping Stone: hide submesh 1 for asset 0x285A6
+                if (m_replayCtx.datMapId == 0x2661F && fileHash == 0x285A6)
+                {
+                    if (meshIds.size() > 1)
+                        map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[1], false);
+                }
+
+                // Corrupted Isle: hide specific submeshes on environment props
+                if (m_replayCtx.datMapId == 0x3314E)
+                {
+                    if (fileHash == 0x3C22F && meshIds.size() > 1)
+                        map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[1], false);
+                    if (fileHash == 0x330D0 && meshIds.size() > 8)
+                        map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[8], false);
+                    if (fileHash == 0x32F27 && meshIds.size() > 7)
+                        map_renderer->GetMeshManager()->SetMeshShouldRender(meshIds[7], false);
                 }
 
                 if (m_replayCtx.datMapId == 0x28784)
@@ -1661,6 +1718,2076 @@ void ReplayWindow::StepPlaceProps()
                             OutputDebugStringA(
                                 std::format("[DoorAnim] Prop {} set up as door type {} (hash 0x{:X})\n",
                                             i, doorType, fileHash).c_str());
+                        }
+                    }
+                }
+
+                // Burning Isle doors (2 gates that open at the start of the match).
+                // Both start closed and play their open animation (segment hash
+                // 0x303419C9) exactly once, driven by the StoC door events. The
+                // "closed" pose is frame 0 of that open segment (not a separate close
+                // segment), so the gate holds still until the open event fires.
+                if (m_replayCtx.datMapId == 0x1F24D && fileHash == 0x1F23F)
+                {
+                    // Door 0x1F23F: all submeshes animate together.
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, 0x303419C9, 2);
+
+                    auto& animProps = m_mapRenderer->GetAnimatedProps();
+                    if (!animProps.empty())
+                    {
+                        auto& last = animProps.back();
+                        last.doorType = 5;
+                        last.closedAtOpenStart = true;
+                        last.openSegmentIndex  = SIZE_MAX;
+
+                        if (last.clip)
+                        {
+                            const auto& segs = last.clip->animationSegments;
+                            for (size_t s = 0; s < segs.size(); s++)
+                                if (segs[s].hash == 0x303419C9) last.openSegmentIndex = s;
+                            if (last.openSegmentIndex == SIZE_MAX) last.openSegmentIndex = 2;
+                        }
+                        last.closeSegmentIndex = last.openSegmentIndex;
+
+                        // Hold at frame 0 of the open segment (closed pose), paused.
+                        last.controller->SetSegment(last.openSegmentIndex);
+                        last.controller->SetLooping(false);
+                        last.controller->SetTime(
+                            static_cast<float>(last.clip->animationSegments[last.openSegmentIndex].startTime));
+                        last.controller->Pause();
+
+                        m_doorAnimPropCount++;
+                        OutputDebugStringA(std::format(
+                            "[DoorAnim] Burning Isle prop {} set up as door type 5 (hash 0x{:X})\n",
+                            i, fileHash).c_str());
+                    }
+                }
+                else if (m_replayCtx.datMapId == 0x1F24D && fileHash == 0x1F247)
+                {
+                    // Door 0x1F247: only submesh 3 (of 0..4) moves; the frame submeshes
+                    // (0,1,2,4) stay locked to their bind pose. Build the animated prop
+                    // inline so non-animated submeshes can be pinned to a static bone.
+                    auto* device = m_deviceResources->GetD3DDevice();
+                    auto mit = m_hashIndex->find(static_cast<int>(fileHash));
+                    if (device && mit != m_hashIndex->end() && !mit->second.empty())
+                    {
+                        int mftIndex = mit->second.at(0);
+                        uint8_t* animFileData = m_datManager->read_file(mftIndex);
+                        if (animFileData)
+                        {
+                            size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                            auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+                            delete[] animFileData;
+
+                            if (clipOpt && clipOpt->IsValid())
+                            {
+                                auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                clip->BuildAnimationGroups();
+
+                                const auto& segments = clip->animationSegments;
+                                if (segments.size() >= 2)
+                                {
+                                    size_t openSeg = SIZE_MAX;
+                                    for (size_t s = 0; s < segments.size(); s++)
+                                        if (segments[s].hash == 0x303419C9) openSeg = s;
+                                    if (openSeg == SIZE_MAX) openSeg = 2;
+
+                                    auto controller = std::make_shared<GW::Animation::AnimationController>();
+                                    controller->Initialize(clip);
+                                    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                    controller->SetSegment(openSeg);
+                                    controller->SetLooping(false);
+                                    controller->SetPlaybackSpeed(100000.0f);
+                                    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+                                    controller->Play();
+                                    controller->Pause();
+
+                                    const auto& geomModels = modelFilePtr->geometry_chunk.models;
+                                    size_t boneCount = clip->boneTracks.size();
+
+                                    constexpr size_t kAnimatedSubmesh = 3;
+
+                                    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+                                    for (size_t j = 0; j < propMeshes.size(); j++)
+                                    {
+                                        const auto& mesh = propMeshes[j];
+                                        AnimationPanelState::SubmeshBoneData boneData;
+                                        std::vector<uint32_t> vertexBoneGroups;
+                                        if (j < geomModels.size())
+                                        {
+                                            const auto& geomModel = geomModels[j];
+                                            boneData = AnimationPanelState::ExtractBoneData(
+                                                geomModel.extra_data, geomModel.u0, geomModel.u1);
+                                            vertexBoneGroups.reserve(geomModel.vertices.size());
+                                            for (const auto& mv : geomModel.vertices)
+                                                vertexBoneGroups.push_back(mv.group);
+                                        }
+
+                                        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                                            mesh, boneData, vertexBoneGroups, boneCount,
+                                            clip->hierarchyMode, j);
+
+                                        // Pin every submesh except #3 to a static (identity)
+                                        // bone so only the moving gate leaf is animated.
+                                        if (j != kAnimatedSubmesh)
+                                            for (auto& sv : skinnedVerts)
+                                                sv.SetSingleBone(static_cast<uint32_t>(boneCount));
+
+                                        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                                            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+                                        if (j < perMeshTexIds.size())
+                                        {
+                                            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                                            animMesh->SetTextures(texSRVs, 3);
+                                        }
+
+                                        animMesh->SetPerObjectData(perObjectCBs[j]);
+                                        animatedMeshes.push_back(std::move(animMesh));
+                                    }
+
+                                    MapAnimatedProp prop;
+                                    prop.controller        = controller;
+                                    prop.clip              = clip;
+                                    prop.meshes            = std::move(animatedMeshes);
+                                    prop.perObjectCBs      = perObjectCBs;
+                                    prop.staticMeshIds     = meshIds;
+                                    prop.pixelShaderType   = pst;
+                                    prop.doorType          = 6;
+                                    prop.closedAtOpenStart = true;
+                                    prop.openSegmentIndex  = openSeg;
+                                    prop.closeSegmentIndex = openSeg;
+
+                                    m_mapRenderer->AddAnimatedProp(std::move(prop));
+                                    m_doorAnimPropCount++;
+                                    OutputDebugStringA(std::format(
+                                        "[DoorAnim] Burning Isle prop {} set up as door type 6 (hash 0x{:X}, only submesh 3 animates)\n",
+                                        i, fileHash).c_str());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Uncharted Isle double gates. Each is a two-leaf gate whose .dat
+                // animation only opens one leaf correctly; SetupUnchartedMirrorDoor locks
+                // the pillar (submesh 0) and mirrors the second leaf about the door's
+                // symmetry plane so both open together (segment hash 0x303419C9).
+                if (m_replayCtx.datMapId == 0x33056)
+                {
+                    if (fileHash == 0x3C163)
+                        SetupUnchartedMirrorDoor(i, *modelFilePtr, fileHash, propMeshes,
+                                                 perObjectCBs, meshIds, perMeshTexIds, pst, 7,
+                                                 /*staticSubmesh*/ 0);
+                    else if (fileHash == 0x32F3A)
+                        SetupUnchartedMirrorDoor(i, *modelFilePtr, fileHash, propMeshes,
+                                                 perObjectCBs, meshIds, perMeshTexIds, pst, 8,
+                                                 /*staticSubmesh*/ 5);
+                    else if (fileHash == 0x32F0C)
+                        // Frame = submeshes 0,1 (static). Gate bars = submeshes 2,3:
+                        // right half on bone 0 (slides +X), left half on bone 1 -> mirror bone 0.
+                        SetupUnchartedSlideDoor(i, *modelFilePtr, fileHash, propMeshes,
+                                                perObjectCBs, meshIds, perMeshTexIds, pst, 9,
+                                                /*staticSubmeshes*/ { 0, 1 },
+                                                /*mirror follower->driver*/ { { 1, 0 } });
+                    else if (fileHash == 0x336BB)
+                        // Frame = submeshes 0,1 (static). Gate bars = submeshes 2,3, a
+                        // telescoping slide: right side on bones 0 (+X outer) and 1 (+X inner);
+                        // left side on bones 2,3 (authored fixed/partial) -> mirror bone 2 off
+                        // bone 0 and bone 3 off bone 1 so both panels slide apart symmetrically.
+                        SetupUnchartedSlideDoor(i, *modelFilePtr, fileHash, propMeshes,
+                                                perObjectCBs, meshIds, perMeshTexIds, pst, 10,
+                                                /*staticSubmeshes*/ { 0, 1 },
+                                                /*mirror follower->driver*/ { { 2, 0 }, { 3, 1 } });
+                }
+
+                // Nomad's Isle doors
+                if (m_replayCtx.datMapId == 0x1F268)
+                {
+                    if (fileHash == 0x19750)
+                        // Submesh 1 is the static frame; the rest of the gate animates.
+                        SetupDoorPartialStatic(i, *modelFilePtr, fileHash, propMeshes,
+                                               perObjectCBs, meshIds, perMeshTexIds, pst, 11,
+                                               /*staticSubmeshes*/ { 1 },
+                                               /*staticBones*/ {});
+                    else if (fileHash == 0x197A9)
+                        // The .dat only animates one leaf: bone 0 = right panel (swings
+                        // correctly), bone 6 = left panel (barely moves), bone 2 = inert
+                        // central pillar, bones 1,3,4,5 = frame bits that ride along wrongly.
+                        // Pin the frame static, keep bone 0 swinging, and mirror it onto the
+                        // dead left panel (bone 6). Submeshes 1, 2 and 4 must also stay fixed
+                        // (they rotated otherwise), so pin them static regardless of bone.
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 11,
+                                             /*staticBones*/ { 1, 3, 4, 5 },
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ { 6 },
+                                             /*staticSubmeshes*/ { 1, 2, 4 });
+                    else if (fileHash == 0x22143)
+                        // Ambient looping animation — plays immediately on map load.
+                        SetupAnimatedProp(i, *modelFilePtr, fileHash, propMeshes,
+                                          perObjectCBs, meshIds, perMeshTexIds, pst,
+                                          0x303419C9, 1);
+                }
+
+                // Isle of Wurms doors (open once, all at the same frame)
+                if (m_replayCtx.datMapId == 0x3321C)
+                {
+                    if (fileHash == 0x330F7)
+                        // Lock the root and play 0x303419C9 once on open. Submesh 1 is the
+                        // moving gate; submeshes 0, 2, 3 are the static frame/walls and must
+                        // not move. Bone 4 (cyan) is the static frame. Inside the moving
+                        // submesh 1, bone 0 (red) is the skeleton root — locking the root
+                        // freezes it, so re-skin it onto sliding bone 1 (dark blue) so it
+                        // slides in the same direction as the rest of the gate.
+                        SetupDoorPartialStatic(i, *modelFilePtr, fileHash, propMeshes,
+                                               perObjectCBs, meshIds, perMeshTexIds, pst, 13,
+                                               /*staticSubmeshes*/ { 0, 2, 3 },
+                                               /*staticBones*/ { 4 },
+                                               /*lockRootPosition*/ true,
+                                               /*boneRemap*/ { { 0, 1 } });
+                    else if (fileHash == 0x331A4)
+                        // Per GWMB: only submesh 3 (the sliding door leaf, on bone 0) should
+                        // animate. Lock submeshes 0,1,2 (pillars + wall) and bone 1, so the
+                        // remaining bone-0 slide only affects submesh 3.
+                        SetupDoorPartialStatic(i, *modelFilePtr, fileHash, propMeshes,
+                                               perObjectCBs, meshIds, perMeshTexIds, pst, 13,
+                                               /*staticSubmeshes*/ { 0, 1, 2 },
+                                               /*staticBones*/ { 1 },
+                                               /*lockRootPosition*/ false);
+                }
+
+                // Isle of Jade doors (open once, all at the same frame)
+                if (m_replayCtx.datMapId == 0x26625)
+                {
+                    if (fileHash == 0x285E7)
+                    {
+                        // Double hinge door. GWMB analysis (matrix-stack skinning on): the
+                        // .dat only swings one leaf, driven by bones 0 and 4-23; bones 1,2,3
+                        // are the static frame; bones 24-57 are the dead second leaf. Pin the
+                        // frame, keep the driver leaf swinging, and mirror it onto the dead
+                        // leaf (all of 24-57 -> mirrored copy of driver bone 0) so both leaves
+                        // pivot symmetrically and meet cleanly at the center.
+                        std::vector<uint32_t> deadLeafBones;
+                        for (uint32_t b = 24; b <= 57; b++)
+                            deadLeafBones.push_back(b);
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 14,
+                                             /*staticBones*/ { 1, 2, 3 },
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ deadLeafBones,
+                                             /*staticSubmeshes*/ { 2 });
+                    }
+                    else if (fileHash == 0x265B5)
+                    {
+                        // Double hinge door. GWMB color-by-index (0=red, 1=blue, 2=green,
+                        // 3=pink) maps to: bone 0 = left leaf (red, swings ~90° correctly),
+                        // bone 1 = right leaf (blue, ~6deg + a bad translation in the .dat, so
+                        // it never opens), bone 2 = left pillar (green), bone 3 = right pillar
+                        // (pink). Bones 2 and 3 are the pillars and must stay static (bone 2
+                        // wrongly rides the left-leaf swing in the .dat; bone 3 is already
+                        // still). Geometry is mixed by bone across submeshes 0-3, so pin by
+                        // bone, not by submesh. Drive the left leaf with bone 0 and mirror it
+                        // onto bone 1 so both leaves pivot symmetrically and meet at the center.
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 14,
+                                             /*staticBones*/ { 2, 3 },
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ { 1 },
+                                             /*staticSubmeshes*/ {});
+                    }
+                }
+
+                // Isle of the Dead doors (open once, all at the same frame)
+                if (m_replayCtx.datMapId == 0x1F29B)
+                {
+                    if (fileHash == 0x1F294 || fileHash == 0x1F291)
+                    {
+                        // Both doors share a 3-bone layout (confirmed via door_debug.log):
+                        // submesh 0 holds the two door panels — bone 0 = right leaf (which
+                        // is also the frame/root and carries the real ~80deg hinge swing),
+                        // bone 1 = left leaf (child, only inherits bone 0's swing). Bone 2
+                        // has no geometry. All remaining submeshes (1,2,3) are the static
+                        // frame. Drive the right leaf with bone 0's swing and mirror it onto
+                        // the left leaf (bone 1); pin the frame by submesh (mirroring by
+                        // bone 0 would otherwise drag the whole frame along). Submesh 3 only
+                        // exists on 0x1F291; listing it is harmless for 0x1F294.
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 15,
+                                             /*staticBones*/ {},
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ { 1 },
+                                             /*staticSubmeshes*/ { 1, 2, 3 });
+                    }
+                    else if (fileHash == 0x1F281)
+                    {
+                        // --- Structural probe: dump bone layout + which bone swings so the
+                        // hinge-mirror config can be confirmed from door_debug.log. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x1F281 (Isle of the Dead) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();   // copy: closed pose
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();   // copy: open pose
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+
+                                        struct BoneAcc { int n = 0; double sx = 0, sy = 0, sz = 0;
+                                            float miny = 1e9f, maxy = -1e9f, minz = 1e9f, maxz = -1e9f; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                            // Raw GWMB vertex-group histogram (the index the user
+                                            // reads in GWMB 'color bone by index') + how each group
+                                            // maps to our clip bone after skinning.
+                                            std::map<uint32_t, BoneAcc> perGroup;
+                                            std::map<uint32_t, uint32_t> groupToBone;
+                                            for (size_t vi = 0; vi < sv.size() && vi < vbg.size(); vi++) {
+                                                uint32_t g = vbg[vi];
+                                                auto& a = perGroup[g];
+                                                a.n++; a.sx += sv[vi].position.x; a.sy += sv[vi].position.y; a.sz += sv[vi].position.z;
+                                                a.miny = std::min(a.miny, sv[vi].position.y);
+                                                a.maxy = std::max(a.maxy, sv[vi].position.y);
+                                                a.minz = std::min(a.minz, sv[vi].position.z);
+                                                a.maxz = std::max(a.maxz, sv[vi].position.z);
+                                                groupToBone[g] = sv[vi].boneIndices[0];
+                                            }
+                                            dbg << "    rawgroups:";
+                                            for (auto& [g, a] : perGroup)
+                                                dbg << " g" << g << "(n=" << a.n << "->bone" << groupToBone[g]
+                                                    << ",cx=" << (a.sx / a.n) << ",cy=" << (a.sy / a.n)
+                                                    << ",cz=" << (a.sz / a.n)
+                                                    << ",y[" << a.miny << "," << a.maxy << "]"
+                                                    << ",z[" << a.minz << "," << a.maxz << "])";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Best-guess: same panel-in-submesh-0 family as 0x1F294 — drive the
+                        // leaf that swings and mirror onto the other; frame (submeshes 1,2)
+                        // static. Refine driverBone/mirrorBones from door_debug.log.
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 15,
+                                             /*staticBones*/ {},
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ { 1 },
+                                             /*staticSubmeshes*/ { 1, 2 });
+                    }
+                    else if (fileHash == 0x1E820)
+                    {
+                        // --- Structural probe: dump bone layout + which bone swings so the
+                        // hinge-mirror config can be confirmed from door_debug.log. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x1E820 (Isle of the Dead) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();   // copy: closed pose
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();   // copy: open pose
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+
+                                        struct BoneAcc { int n = 0; double sx = 0, sy = 0, sz = 0;
+                                            float miny = 1e9f, maxy = -1e9f, minz = 1e9f, maxz = -1e9f; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                            // Raw GWMB vertex-group histogram (the index the user
+                                            // reads in GWMB 'color bone by index') + how each group
+                                            // maps to our clip bone after skinning.
+                                            std::map<uint32_t, BoneAcc> perGroup;
+                                            std::map<uint32_t, uint32_t> groupToBone;
+                                            for (size_t vi = 0; vi < sv.size() && vi < vbg.size(); vi++) {
+                                                uint32_t g = vbg[vi];
+                                                auto& a = perGroup[g];
+                                                a.n++; a.sx += sv[vi].position.x; a.sy += sv[vi].position.y; a.sz += sv[vi].position.z;
+                                                a.miny = std::min(a.miny, sv[vi].position.y);
+                                                a.maxy = std::max(a.maxy, sv[vi].position.y);
+                                                a.minz = std::min(a.minz, sv[vi].position.z);
+                                                a.maxz = std::max(a.maxz, sv[vi].position.z);
+                                                groupToBone[g] = sv[vi].boneIndices[0];
+                                            }
+                                            dbg << "    rawgroups:";
+                                            for (auto& [g, a] : perGroup)
+                                                dbg << " g" << g << "(n=" << a.n << "->bone" << groupToBone[g]
+                                                    << ",cx=" << (a.sx / a.n) << ",cy=" << (a.sy / a.n)
+                                                    << ",cz=" << (a.sz / a.n)
+                                                    << ",y[" << a.miny << "," << a.maxy << "]"
+                                                    << ",z[" << a.minz << "," << a.maxz << "])";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Best-guess: same panel-in-submesh-0 family — drive the swinging
+                        // leaf (bone 0) and mirror onto the other (bone 1); frame (submeshes
+                        // 1,2,3) static. Refine from door_debug.log if the leaves are off.
+                        SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
+                                             perObjectCBs, meshIds, perMeshTexIds, pst, 15,
+                                             /*staticBones*/ {},
+                                             /*driverBone*/ 0,
+                                             /*mirrorBones*/ { 1 },
+                                             /*staticSubmeshes*/ { 1, 2, 3 });
+                    }
+                }
+
+                // Isle of Solitude doors (open once, all at the same frame)
+                if (m_replayCtx.datMapId == 0x334A2)
+                {
+                    if (fileHash == 0x33CD5)
+                    {
+                        // --- Structural probe: both door leaves live in submesh 1 (per
+                        // GWMB), driven by different bones. Dump the layout + which bone
+                        // swings so the hinge-mirror config can be confirmed. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x33CD5 (Isle of Solitude) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();   // copy: closed pose
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();   // copy: open pose
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+
+                                        struct BoneAcc { int n = 0; double sx = 0, sy = 0, sz = 0;
+                                            float miny = 1e9f, maxy = -1e9f, minz = 1e9f, maxz = -1e9f; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                            // Raw GWMB vertex-group histogram (the index the user
+                                            // reads in GWMB 'color bone by index') + how each group
+                                            // maps to our clip bone after skinning.
+                                            std::map<uint32_t, BoneAcc> perGroup;
+                                            std::map<uint32_t, uint32_t> groupToBone;
+                                            for (size_t vi = 0; vi < sv.size() && vi < vbg.size(); vi++) {
+                                                uint32_t g = vbg[vi];
+                                                auto& a = perGroup[g];
+                                                a.n++; a.sx += sv[vi].position.x; a.sy += sv[vi].position.y; a.sz += sv[vi].position.z;
+                                                a.miny = std::min(a.miny, sv[vi].position.y);
+                                                a.maxy = std::max(a.maxy, sv[vi].position.y);
+                                                a.minz = std::min(a.minz, sv[vi].position.z);
+                                                a.maxz = std::max(a.maxz, sv[vi].position.z);
+                                                groupToBone[g] = sv[vi].boneIndices[0];
+                                            }
+                                            dbg << "    rawgroups:";
+                                            for (auto& [g, a] : perGroup)
+                                                dbg << " g" << g << "(n=" << a.n << "->bone" << groupToBone[g]
+                                                    << ",cx=" << (a.sx / a.n) << ",cy=" << (a.sy / a.n)
+                                                    << ",cz=" << (a.sz / a.n)
+                                                    << ",y[" << a.miny << "," << a.maxy << "]"
+                                                    << ",z[" << a.minz << "," << a.maxz << "])";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Inverted rig (confirmed via door_debug.log): the two door panels
+                        // live in submesh 1 but are weighted to STATIC bones 0 (right,
+                        // cx+118) and 1 (left, cx-98). Borrowing a swinging bone's absolute
+                        // matrix flings them off their bind pose, so swing them procedurally:
+                        // each panel rotates about its own outer vertical edge, mirrored
+                        // between the leaves. Frame (submeshes 0 and 2) and the small center
+                        // bar (bone 8) stay static.
+                        // The leaves (submesh 1) sit at Z=-176 while the standing pillars
+                        // (submesh 2) sit at Z~+24, so the doors float ~200u behind their
+                        // pillars. Seat them onto the pillar plane with a forward-Z offset
+                        // (X already meets at center). Offsets shift both the baked verts and
+                        // the hinge pivot, so the swing stays correct at the new position.
+                        SetupDoorProceduralDoubleHinge(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 16,
+                            /*staticSubmeshes*/ { 0, 2 },
+                            /*staticBones*/ { 8 },
+                            /*leftBones*/ { 1 },
+                            /*rightBones*/ { 0 },
+                            /*openAngleDegrees*/ 90.f,
+                            // +Z seats them on the pillar line; the X terms slide each leaf
+                            // toward the door midpoint (~+10) so the inner edges meet when
+                            // closed. The leaves are too short to reach center otherwise
+                            // (left inner -23.5, right inner +43.9 => ~67u gap, ~33.7 each).
+                            /*leftOffset*/  {  33.7f, 0.f, 200.f },
+                            /*rightOffset*/ { -33.7f, 0.f, 200.f });
+                    }
+                    else if (fileHash == 0x3323B)
+                    {
+                        // --- Structural probe: dump bone binds, open-clip deltas, and the
+                        // submesh->bone / rawgroup layout so the hinge-mirror driver/mirror
+                        // bones can be confirmed (blue=submesh0, red=submesh1, pillar=
+                        // submesh2, submeshes 3-7 hidden per GWMB). ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x3323B (Isle of Solitude) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sy = 0, sz = 0;
+                                            float miny = 1e9f, maxy = -1e9f, minz = 1e9f, maxz = -1e9f; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Confirmed via door_debug.log: the leaf that truly hinges in the raw
+                        // open clip is the RED one (submesh 1, bone 0, rotProxy 2.91 ~ 90 deg).
+                        // Bone 1 (blue leaf) is nearly pure translation (rotProxy 0.25), which
+                        // is why driving from it "pushed the leaves forward" and crossed them.
+                        // So drive from bone 0 (red) and mirror onto bone 1 (blue). Pillar
+                        // (submesh 2) static; submeshes 3-7 hidden.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 16,
+                            /*staticBones*/ {},
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ { 1 },
+                            /*staticSubmeshes*/ { 2 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ { 3, 4, 5, 6, 7 });
+                    }
+                }
+
+                // Isle of the Weeping Stone doors (open once, all at the same frame)
+                if (m_replayCtx.datMapId == 0x2661F)
+                {
+                    if (fileHash == 0x2858E)
+                    {
+                        // --- Structural probe: both leaves live in submesh 0 (per GWMB),
+                        // driven by different bones; bone 0 is locked. Dump binds, open-clip
+                        // deltas and submesh->bone layout to confirm driver/mirror bones. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x2858E (Weeping Stone) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // door_debug.log: 3 bones. Bone 0 (root) is the TRUE hinge
+                        // (rotProxy 3.15 ~ 90 deg) and carries the LEFT leaf (submesh 0
+                        // cx=-168) plus the entire frame (submeshes 1-5, all bone 0).
+                        // Bone 1 (child of 0) is nearly pure translation (rotProxy 0.18)
+                        // and carries the RIGHT leaf (submesh 0 cx=+180) - the "dead" leaf
+                        // GWMB can't animate. So drive from bone 0 and mirror its swing onto
+                        // the right leaf. Only submesh 0 animates; frame submeshes 1-5 are
+                        // pinned static so the hinge on bone 0 doesn't drag the pillars.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 17,
+                            /*staticBones*/ {},
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ { 1 },
+                            /*staticSubmeshes*/ { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {});
+                    }
+                    else if (fileHash == 0x28578)
+                    {
+                        // --- Structural probe (same layout expected as 0x2858E): both leaves
+                        // in submesh 0 driven by different bones; other submeshes are frame. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x28578 (Weeping Stone) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // First guess: same rig as 0x2858E - bone 0 is the hinge (drives one
+                        // leaf + frame), bone 1 the dead leaf. Drive from bone 0, mirror onto
+                        // bone 1, pin every non-leaf submesh static. Refined from the log.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 17,
+                            /*staticBones*/ {},
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ { 1 },
+                            /*staticSubmeshes*/ { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {});
+                    }
+                    else if (fileHash == 0x1EAFB)
+                    {
+                        // Event-driven arched gate (StoC door ids 147/9305/30563/4417 ->
+                        // door type 18). Submesh 0 holds both leaves (blue + red); submesh 1
+                        // is the frame/pillar and must stay static. GWMB animates the blue
+                        // panel; mirror the red one horizontally. --- Structural probe ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x1EAFB (Weeping Stone) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // door_debug.log: 3 bones. Bone 0 (right pillar) is the hinge
+                        // (rotProxy 2.80) carrying the RIGHT triangular leaf (submesh 0
+                        // cx=+16.6). Bone 1 (left pillar) is dead (rotProxy ~0), carrying the
+                        // LEFT leaf (cx=-16.6). Bone 2 (origin) rotates identically to bone 0
+                        // but holds 10 CENTER/arch verts (cx~0) - NOT a leaf, so pin it static
+                        // or it spins the arch top and breaks symmetry. Drive bone 0, mirror
+                        // onto bone 1, keep bone 2 + frame (submesh 1) static.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 18,
+                            /*staticBones*/ { 2 },
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ { 1 },
+                            /*staticSubmeshes*/ { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {});
+
+                        // All 0x1EAFB props start as the event-gate group (type 18). One of
+                        // them (object 122, the lever door) toggles instead; since props have
+                        // no object id, remember this instance's animated-prop index + world
+                        // position so the lever door can be resolved as the one nearest the
+                        // flag stand and promoted to the lever type (19) once the flag timeline
+                        // is built. The just-added prop is the last animated prop.
+                        {
+                            auto& aps = m_mapRenderer->GetAnimatedProps();
+                            if (!aps.empty())
+                                m_weepingLeverCandidates.push_back({
+                                    aps.size() - 1,
+                                    XMFLOAT3(prop_info.x, prop_info.y, prop_info.z) });
+                        }
+                    }
+                    else if (fileHash == 0x285BC)
+                    {
+                        // Portcullis-style gate. The .dat animation for this gate can't be
+                        // reproduced cleanly (only bones 104-108 slide, and neither segment
+                        // reads as a believable "open"), so instead of animating it we fake the
+                        // opening by fading the whole asset out: fully opaque for the first 5 s,
+                        // then fade 100% -> 30% over the next 3 s (see UpdateWeepingGateFade in
+                        // Update). Leave it as a normal static prop and just record its index.
+                        m_weepingFadeProps.push_back(static_cast<uint32_t>(i));
+                    }
+                }
+
+                // Frozen Isle doors
+                if (m_replayCtx.datMapId == 0x1F265)
+                {
+                    if (fileHash == 0x1F251)
+                    {
+                        // Two-leaf hinge door that opens once per match (door type 20). Each
+                        // leaf is its own submesh: submesh 0 (blue) and submesh 1 (green). Per
+                        // GWMB the raw open animation (0x303419C9) already swings BOTH leaves
+                        // correctly on their own hinges (symmetric, meeting at the center when
+                        // closed), so no mirroring is needed - just let submeshes 0/1 animate on
+                        // their native bones and pin every other submesh (the frame) static.
+                        // --- Structural probe to confirm bone/submesh layout. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x1F251 (Frozen Isle) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << ","
+                                                    << dz << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData bd;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                bd = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], bd, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, int> perBone;
+                                            for (auto& v : sv) perBone[v.boneIndices[0]]++;
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " bones:";
+                                            for (auto& [b, n] : perBone) dbg << " " << b << "(n=" << n << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // No mirror: both leaf bones already swing correctly in the raw clip.
+                        // driverBone is arbitrary here (with an empty mirror set, every non-static
+                        // bone simply animates as authored). Pin submeshes 2+ (the frame/pillars).
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 20,
+                            /*staticBones*/ {},
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ {},
+                            /*staticSubmeshes*/ { 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 });
+                    }
+                    else if (fileHash == 0x1F252)
+                    {
+                        // Second, more complex gate (also door type 20, opens with the same
+                        // event). Per GWMB (matrix-stack skinning), the raw open animation
+                        // (0x303419C9) reproduces perfectly by locking bones 0 and 14 to the
+                        // bind pose and letting bones 1-13 animate as authored - no mirror.
+                        // --- Structural probe to confirm bone/submesh layout. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x1F252 (Frozen Isle) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << ","
+                                                    << dz << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData bd;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                bd = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], bd, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, int> perBone;
+                                            for (auto& v : sv) perBone[v.boneIndices[0]]++;
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " bones:";
+                                            for (auto& [b, n] : perBone) dbg << " " << b << "(n=" << n << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                // Lock bones 0 and 14 (frame/root), animate 1-13 as authored. No mirror.
+                // driverBone is arbitrary with an empty mirror set; use an unlocked bone.
+                // Bone 0 is the hierarchy root: re-pointing its verts to the static slot
+                // isn't enough because its transform still propagates to the child bones
+                // (1-13). lockRoot=true pins bone 0 at bind in the controller too, which is
+                // what GWMB's "lock bone 0" does.
+                SetupDoorHingeMirror(
+                    i, *modelFilePtr, fileHash, propMeshes,
+                    perObjectCBs, meshIds, perMeshTexIds, pst, 20,
+                    /*staticBones*/ { 0, 14 },
+                    /*driverBone*/ 1,
+                    /*mirrorBones*/ {},
+                    /*staticSubmeshes*/ {},
+                    /*driverRemapBones*/ {},
+                    /*hiddenSubmeshes*/ {},
+                    /*unlockedBones*/ {},
+                    /*openSegHash*/ 0x303419C9,
+                    /*lockRoot*/ true);
+                    }
+                    else if (fileHash == 0x255BE)
+                    {
+                        // Lever gates 1 & 2 (share this model). Hinged double-door: per GWMB
+                        // (matrix-stack skinning) bone 0 (parent -1) is locked, bones 1 & 2
+                        // (parent 0) unlocked, and only submeshes 0/1/2 animate. That swings
+                        // ONE leaf (blue) correctly; the other leaf (red) has no usable swing
+                        // in the clip and must be mirrored horizontally from the blue one.
+                        // These are TOGGLING doors driven by per-object-id events (open
+                        // 0x303419C9, close 0x31D3EDC8). doorType 21 is a placeholder here;
+                        // ResolveFrozenGates() reassigns each of the two props to 21 (red side,
+                        // obj 61318) or 22 (blue side, obj 11692) by nearest guild lord.
+                        // --- Structural probe to confirm bone/submesh layout. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX, closeSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++) {
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                            if (segs[s].hash == 0x31D3EDC8) closeSeg = s;
+                                        }
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x255BE (Frozen Isle lever gate) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << " closeSeg=" << closeSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Hinge-mirror config from door_debug.log (bones=3):
+                        //  - bone 0 (root, left hinge) carries a ~90 deg rotation, but as the
+                        //    root it drags everything, so LOCK it in the controller only
+                        //    (ctrlLockedBones={0}). With bone 0 frozen, bone 1's local track
+                        //    (which cancels bone 0 while unlocked) makes the RIGHT leaf swing.
+                        //  - driverBone = 1 -> blue (right) leaf swings on its hinge.
+                        //  - the red (left) leaf verts are on bone 0 inside leaf submeshes
+                        //    0/1/2, so mirror bone 0 (mirrorBones={0}); staticSubmeshes {3,4}
+                        //    (center frame, also bone 0) take precedence and stay put.
+                        //  - bone 2 is the center arch (no own motion) -> pin static.
+                        // Open 0x303419C9 / close 0x31D3EDC8 so the gate toggles.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 21,
+                            /*staticBones*/ { 2 },
+                            /*driverBone*/ 1,
+                            /*mirrorBones*/ { 0 },
+                            /*staticSubmeshes*/ { 3, 4 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {},
+                            /*unlockedBones*/ {},
+                            /*openSegHash*/ 0x303419C9,
+                            /*lockRoot*/ false,
+                            /*closeSegHash*/ 0x31D3EDC8,
+                            /*ctrlLockedBones*/ { 0 });
+
+                        // Record this instance so ResolveFrozenGates() can assign its real
+                        // door type (21 red side / 22 blue side) by nearest guild lord.
+                        {
+                            auto& aps = m_mapRenderer->GetAnimatedProps();
+                            if (!aps.empty())
+                                m_frozenGateCandidates.push_back({
+                                    aps.size() - 1,
+                                    XMFLOAT3(prop_info.x, prop_info.y, prop_info.z),
+                                    fileHash });
+                        }
+                    }
+                    else if (fileHash == 0x57B57)
+                    {
+                        // Lever gates 3 & 4 (objects 56526 / 12669). Same bone/submesh rig and
+                        // animation as 0x255BE (doors 1 & 2), so use the identical hinge-mirror
+                        // config: lock the root (bone 0) in the controller so bone 1 swings the
+                        // blue leaf, mirror it onto the bone-0 red leaf, and pin the center
+                        // frame (submeshes 3/4) and center arch (bone 2). These start CLOSED
+                        // (doors 3 & 4), which is the default m_doorTypeOpen state. doorType 23
+                        // is a placeholder; ResolveFrozenGates() reassigns each prop to 23 (red,
+                        // obj 56526) or 24 (blue, obj 12669) by nearest guild lord.
+                        // --- Structural probe to confirm the layout matches 0x255BE. ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX, closeSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++) {
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                            if (segs[s].hash == 0x31D3EDC8) closeSeg = s;
+                                        }
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x57B57 (Frozen Isle lever gate) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << " closeSeg=" << closeSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 23,
+                            /*staticBones*/ { 2 },
+                            /*driverBone*/ 1,
+                            /*mirrorBones*/ { 0 },
+                            /*staticSubmeshes*/ { 3, 4 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {},
+                            /*unlockedBones*/ {},
+                            /*openSegHash*/ 0x303419C9,
+                            /*lockRoot*/ false,
+                            /*closeSegHash*/ 0x31D3EDC8,
+                            /*ctrlLockedBones*/ { 0 });
+
+                        // Record this instance so ResolveFrozenGates() can assign its real
+                        // door type (23 red side / 24 blue side) by nearest guild lord.
+                        {
+                            auto& aps = m_mapRenderer->GetAnimatedProps();
+                            if (!aps.empty())
+                                m_frozenGateCandidates.push_back({
+                                    aps.size() - 1,
+                                    XMFLOAT3(prop_info.x, prop_info.y, prop_info.z),
+                                    fileHash });
+                        }
+                    }
+                }
+
+                // Corrupted Isle doors (all 4 open once, same time, type 25)
+                if (m_replayCtx.datMapId == 0x3314E)
+                {
+                    if (fileHash == 0x330EA)
+                    {
+                        // Hinge-mirror double door (3 instances share this model).
+                        // GWMB: bone 0 (root, parent -1) locked, bones 1 & 2 (parent 0) unlocked.
+                        // Submeshes 0 & 1 are static frame; submeshes 2, 3, 4 are the animated
+                        // panels (red = one leaf, blue = other, mirrored horizontally).
+                        // --- Structural probe for door_debug.log ---
+                        {
+                            auto mitP = m_hashIndex->find(static_cast<int>(fileHash));
+                            if (mitP != m_hashIndex->end() && !mitP->second.empty())
+                            {
+                                int mftIndex = mitP->second.at(0);
+                                uint8_t* animData = m_datManager->read_file(mftIndex);
+                                if (animData)
+                                {
+                                    size_t animSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+                                    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+                                    delete[] animData;
+                                    if (clipOpt && clipOpt->IsValid())
+                                    {
+                                        auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+                                        clip->BuildAnimationGroups();
+                                        const auto& segs = clip->animationSegments;
+                                        size_t openSeg = SIZE_MAX;
+                                        for (size_t s = 0; s < segs.size(); s++)
+                                            if (segs[s].hash == 0x303419C9) openSeg = s;
+                                        if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                                        auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                                        ctrl->Initialize(clip);
+                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                                        ctrl->SetSegment(openSeg);
+                                        ctrl->SetLooping(false);
+                                        ctrl->SetPlaybackSpeed(100000.f);
+                                        size_t boneCount = clip->boneTracks.size();
+                                        const auto& geomModels = modelFilePtr->geometry_chunk.models;
+
+                                        std::ofstream dbg("door_debug.log", std::ios::app);
+                                        dbg << "\n=== 0x330EA (Corrupted Isle door) prop " << i << " ===\n";
+                                        dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                            << " openSeg=" << openSeg << "\n";
+                                        dbg << " -- bone bind pos / parent --\n";
+                                        for (size_t b = 0; b < boneCount; b++) {
+                                            const auto& bp = clip->boneTracks[b].basePosition;
+                                            int32_t par = (b < clip->boneParents.size()) ? clip->boneParents[b] : -1;
+                                            dbg << "  bone " << b << " pos=(" << bp.x << "," << bp.y << "," << bp.z
+                                                << ") parent=" << par << "\n";
+                                        }
+                                        if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].startTime));
+                                            auto mc = ctrl->GetBoneMatrices();
+                                            ctrl->SetTime(static_cast<float>(segs[openSeg].endTime));
+                                            auto mo = ctrl->GetBoneMatrices();
+                                            dbg << " -- per-bone delta (open - closed) --\n";
+                                            for (size_t b = 0; b < std::min(mc.size(), mo.size()); b++) {
+                                                float dx = mo[b]._41 - mc[b]._41;
+                                                float dy = mo[b]._42 - mc[b]._42;
+                                                float dz = mo[b]._43 - mc[b]._43;
+                                                float rot = std::fabs(mo[b]._11 - mc[b]._11)
+                                                          + std::fabs(mo[b]._13 - mc[b]._13)
+                                                          + std::fabs(mo[b]._31 - mc[b]._31);
+                                                dbg << "  bone " << b << " dT=(" << dx << "," << dy << "," << dz
+                                                    << ") rotProxy=" << rot << "\n";
+                                            }
+                                        }
+                                        struct BoneAcc { int n = 0; double sx = 0, sz = 0; };
+                                        for (size_t j = 0; j < propMeshes.size(); j++) {
+                                            AnimationPanelState::SubmeshBoneData boneData;
+                                            std::vector<uint32_t> vbg;
+                                            if (j < geomModels.size()) {
+                                                const auto& gm = geomModels[j];
+                                                boneData = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                                vbg.reserve(gm.vertices.size());
+                                                for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                            }
+                                            auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                                propMeshes[j], boneData, vbg, boneCount, clip->hierarchyMode, j);
+                                            std::map<uint32_t, BoneAcc> perBone;
+                                            for (auto& v : sv) {
+                                                auto& a = perBone[v.boneIndices[0]];
+                                                a.n++; a.sx += v.position.x; a.sz += v.position.z;
+                                            }
+                                            dbg << "  submesh " << j << " verts=" << sv.size() << " :";
+                                            for (auto& [b, a] : perBone)
+                                                dbg << " bone" << b << "(n=" << a.n
+                                                    << ",cx=" << (a.sx / a.n) << ",cz=" << (a.sz / a.n) << ")";
+                                            dbg << "\n";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bone 0 (root) carries the ~90° swing but also drags everything.
+                        // Lock it in the controller so bone 1's counter-track manifests as
+                        // the real swing. Mirror bone-0 panel verts from bone 1. Pin bone 2
+                        // (center arch) and keep submeshes 0 (center) and 1 (pillar) static.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 25,
+                            /*staticBones*/ { 2 },
+                            /*driverBone*/ 1,
+                            /*mirrorBones*/ { 0 },
+                            /*staticSubmeshes*/ { 0, 1 },
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ {},
+                            /*unlockedBones*/ {},
+                            /*openSegHash*/ 0x303419C9,
+                            /*lockRoot*/ false,
+                            /*closeSegHash*/ 0,
+                            /*ctrlLockedBones*/ { 0 });
+                    }
+                    else if (fileHash == 0x32F5C)
+                    {
+                        // 4th door (1 instance). Animation works as-is; hide submeshes
+                        // 6, 12, and 17-24 by default.
+                        SetupDoorHingeMirror(
+                            i, *modelFilePtr, fileHash, propMeshes,
+                            perObjectCBs, meshIds, perMeshTexIds, pst, 25,
+                            /*staticBones*/ {},
+                            /*driverBone*/ 0,
+                            /*mirrorBones*/ {},
+                            /*staticSubmeshes*/ {},
+                            /*driverRemapBones*/ {},
+                            /*hiddenSubmeshes*/ { 6, 12, 17, 18, 19, 20, 21, 22, 23, 24 },
+                            /*unlockedBones*/ {},
+                            /*openSegHash*/ 0x303419C9,
+                            /*lockRoot*/ false,
+                            /*closeSegHash*/ 0,
+                            /*ctrlLockedBones*/ {});
+                    }
+                }
+
+                // Druid's Isle vine bridges (grow forward on vine-seed StoC event, type 26).
+                // Geometry is 0x29FD (425 bones, no embedded animation); the animation lives
+                // in a SEPARATE file 0x21297 (BB9, 425 bones, 4 seq) that GWMB finds by model-
+                // hash match. Segment 0x303419C9 (~4.8s) is the "build" and 0x31D3EDC8 (~0.03s)
+                // is the reset/closed pose. Load 0x21297, probe how it moves, then play it.
+                if (m_replayCtx.datMapId == 0x1F27A && fileHash == 0x29FD)
+                {
+                    constexpr uint32_t kBridgeAnimHash = 0x21297;
+                    {
+                        std::ofstream dbg("door_debug.log", std::ios::app);
+                        dbg << "\n=== 0x29FD probe prop " << i << " (anim 0x21297) ===\n";
+                        std::shared_ptr<GW::Animation::AnimationClip> clip;
+                        auto refIt = m_hashIndex->find(static_cast<int>(kBridgeAnimHash));
+                        if (refIt != m_hashIndex->end() && !refIt->second.empty())
+                        {
+                            dbg << "  0x21297 has " << refIt->second.size() << " mft entries\n";
+                            size_t bestBones = 0;
+                            for (int refMft : refIt->second)
+                            {
+                                uint8_t* refData = m_datManager->read_file(refMft);
+                                if (!refData) continue;
+                                size_t refSize = m_datManager->get_MFT()[refMft].uncompressedSize;
+                                auto co = GW::Parsers::ParseAnimationFromFile(refData, refSize);
+                                delete[] refData;
+                                bool ok = (co && co->IsValid());
+                                bool hasOpen = false;
+                                if (ok)
+                                    for (auto& sg : co->animationSegments)
+                                        if (sg.hash == 0x303419C9) hasOpen = true;
+                                dbg << "   mft=" << refMft << " parsed=" << (co ? 1 : 0)
+                                    << " valid=" << (ok ? 1 : 0)
+                                    << " segs=" << (ok ? co->animationSegments.size() : 0)
+                                    << " bones=" << (ok ? co->boneTracks.size() : 0)
+                                    << " has0x303419C9=" << (hasOpen ? 1 : 0) << "\n";
+                                if (ok && hasOpen && co->boneTracks.size() >= bestBones) {
+                                    bestBones = co->boneTracks.size();
+                                    clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*co));
+                                    clip->BuildAnimationGroups();
+                                }
+                            }
+                        }
+                        else dbg << "  hashIndex miss for 0x21297\n";
+
+                        if (clip)
+                        {
+                            const auto& segs = clip->animationSegments;
+                            size_t openSeg = SIZE_MAX;
+                            for (size_t s = 0; s < segs.size(); s++)
+                                if (segs[s].hash == 0x303419C9) openSeg = s;
+                            if (openSeg == SIZE_MAX && !segs.empty()) openSeg = segs.size() - 1;
+
+                            auto ctrl = std::make_shared<GW::Animation::AnimationController>();
+                            ctrl->Initialize(clip);
+                            ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+                            ctrl->SetSegment(openSeg);
+                            ctrl->SetLooping(false);
+                            ctrl->SetPlaybackSpeed(100000.f);
+                            size_t boneCount = clip->boneTracks.size();
+                            dbg << "boneCount=" << boneCount << " segs=" << segs.size()
+                                << " openSeg=" << openSeg << " hierarchyMode=" << (int)clip->hierarchyMode << "\n";
+                            for (size_t s = 0; s < segs.size(); s++)
+                                dbg << "  seg " << s << " hash=0x" << std::hex << segs[s].hash << std::dec
+                                    << " [" << segs[s].startTime << "," << segs[s].endTime << "]\n";
+                            if (openSeg != SIZE_MAX && openSeg < segs.size()) {
+                                double st = segs[openSeg].startTime, en = segs[openSeg].endTime;
+                                const double fracs[] = { 0.0, 0.1, 0.25, 0.5, 0.75, 1.0 };
+                                for (double f : fracs) {
+                                    ctrl->SetTime(static_cast<float>(st + f * (en - st)));
+                                    auto m = ctrl->GetBoneMatrices();
+                                    float mnx=1e9f,mny=1e9f,mnz=1e9f,mxx=-1e9f,mxy=-1e9f,mxz=-1e9f;
+                                    float mnScale=1e9f, mxScale=-1e9f;
+                                    for (size_t b = 0; b < m.size(); b++) {
+                                        mnx=std::min(mnx,m[b]._41); mxx=std::max(mxx,m[b]._41);
+                                        mny=std::min(mny,m[b]._42); mxy=std::max(mxy,m[b]._42);
+                                        mnz=std::min(mnz,m[b]._43); mxz=std::max(mxz,m[b]._43);
+                                        float sc=std::sqrt(m[b]._11*m[b]._11+m[b]._12*m[b]._12+m[b]._13*m[b]._13);
+                                        mnScale=std::min(mnScale,sc); mxScale=std::max(mxScale,sc);
+                                    }
+                                    dbg << "  t=" << f << " bboxX[" << mnx << "," << mxx << "] Y[" << mny << ","
+                                        << mxy << "] Z[" << mnz << "," << mxz << "] scale[" << mnScale << ","
+                                        << mxScale << "]\n";
+                                }
+
+                                // Vertex-level bbox: transform each mesh vertex by its bone's
+                                // matrix (single-bone skinning, row-vector) at bind (identity)
+                                // vs built (end) pose. This is what actually renders, so it
+                                // tells us whether the VISIBLE bridge grows/spans, unlike the
+                                // all-bones bbox above (which includes unused bones).
+                                const auto& geomModels = modelFilePtr->geometry_chunk.models;
+                                ctrl->SetTime(static_cast<float>(en));
+                                auto endM = ctrl->GetBoneMatrices();
+                                float bnX0=1e9f,bnX1=-1e9f,bnY0=1e9f,bnY1=-1e9f,bnZ0=1e9f,bnZ1=-1e9f; // bind
+                                float edX0=1e9f,edX1=-1e9f,edY0=1e9f,edY1=-1e9f,edZ0=1e9f,edZ1=-1e9f; // end
+                                for (size_t j = 0; j < propMeshes.size(); j++) {
+                                    AnimationPanelState::SubmeshBoneData bd;
+                                    std::vector<uint32_t> vbg;
+                                    if (j < geomModels.size()) {
+                                        const auto& gm = geomModels[j];
+                                        bd = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                        vbg.reserve(gm.vertices.size());
+                                        for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                    }
+                                    auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                        propMeshes[j], bd, vbg, boneCount, clip->hierarchyMode, j);
+                                    for (auto& v : sv) {
+                                        bnX0=std::min(bnX0,v.position.x); bnX1=std::max(bnX1,v.position.x);
+                                        bnY0=std::min(bnY0,v.position.y); bnY1=std::max(bnY1,v.position.y);
+                                        bnZ0=std::min(bnZ0,v.position.z); bnZ1=std::max(bnZ1,v.position.z);
+                                        uint32_t bi = v.boneIndices[0];
+                                        if (bi < endM.size()) {
+                                            XMVECTOR p = XMVectorSet(v.position.x, v.position.y, v.position.z, 1.f);
+                                            XMFLOAT3 o; XMStoreFloat3(&o, XMVector3Transform(p, XMLoadFloat4x4(&endM[bi])));
+                                            edX0=std::min(edX0,o.x); edX1=std::max(edX1,o.x);
+                                            edY0=std::min(edY0,o.y); edY1=std::max(edY1,o.y);
+                                            edZ0=std::min(edZ0,o.z); edZ1=std::max(edZ1,o.z);
+                                        }
+                                    }
+                                }
+                                dbg << "  VERT bind bboxX[" << bnX0 << "," << bnX1 << "] Y[" << bnY0 << ","
+                                    << bnY1 << "] Z[" << bnZ0 << "," << bnZ1 << "]\n";
+                                dbg << "  VERT end  bboxX[" << edX0 << "," << edX1 << "] Y[" << edY0 << ","
+                                    << edY1 << "] Z[" << edZ0 << "," << edZ1 << "]\n";
+                            }
+                        }
+                    }
+
+                    // The map file places these bridge props at a retracted position that does
+                    // NOT span the canyon gap. Nudge the animated bridge along its length axis
+                    // (model +X points toward the near/anchor cliff) so the built span lines up
+                    // with the two edges. Applied only to the animated copy's world matrix; the
+                    // static mesh (already added + hidden) keeps its original transform. Tune
+                    // kBridgeShiftModelX to slide the bridge along its length.
+                    {
+                        const float kBridgeShiftModelX = -2800.0f;
+                        DirectX::XMMATRIX shift = DirectX::XMMatrixTranslation(kBridgeShiftModelX, 0.0f, 0.0f);
+                        for (auto& cb : perObjectCBs)
+                        {
+                            DirectX::XMMATRIX w = DirectX::XMLoadFloat4x4(&cb.world);
+                            DirectX::XMStoreFloat4x4(&cb.world, shift * w);
+                        }
+                    }
+
+                    // The .dat animation does NOT deform this mesh (all motion is in unused
+                    // particle bones), and the geometry is already a full-length static bridge.
+                    // So we procedurally scale it along its length axis from a near-end anchor:
+                    // collapsed at the anchor until the vine-seed event, then extending to full
+                    // length over ~1.5s (doorType 26).
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, 0x303419C9, 2, kBridgeAnimHash);
+
+                    auto& animProps = m_mapRenderer->GetAnimatedProps();
+                    if (!animProps.empty())
+                    {
+                        auto& last = animProps.back();
+                        last.doorType = 26;
+                        last.openSegmentIndex  = SIZE_MAX;
+                        last.closeSegmentIndex = SIZE_MAX;
+
+                        // Compute the mesh's model-space bounds AND per-bone average X position
+                        // (for arch curve). Use the loaded clip's hierarchyMode/boneCount.
+                        float mnx=1e9f,mny=1e9f,mnz=1e9f,mxx=-1e9f,mxy=-1e9f,mxz=-1e9f;
+                        std::unordered_map<uint32_t, std::pair<double,int>> boneSumX;
+                        std::unordered_map<uint32_t, double> boneSumY;
+                        std::unordered_map<uint32_t, int> boneSubmesh;
+                        // Submesh 0 of 0x29FD is a DETACHED vine pod/plant sitting past the
+                        // cliff edge (measured X[4066,4693], bones 31 & 77 only), separated
+                        // from the bridge proper (X[754,3775]) by a ~290 unit gap. It must be
+                        // excluded from both the grow span and the arch, otherwise the bridge
+                        // end gets normalised to t=0.23 and lifted ~245 units off the cliff.
+                        constexpr size_t kPodSubmesh = 0;
+                        float brMinX = 1e9f, brMaxX = -1e9f;
+                        std::string submeshReport;
+                        if (last.clip)
+                        {
+                            const auto& geomModels = modelFilePtr->geometry_chunk.models;
+                            size_t bc = last.clip->boneTracks.size();
+                            for (size_t j = 0; j < propMeshes.size(); j++) {
+                                AnimationPanelState::SubmeshBoneData bd;
+                                std::vector<uint32_t> vbg;
+                                if (j < geomModels.size()) {
+                                    const auto& gm = geomModels[j];
+                                    bd = AnimationPanelState::ExtractBoneData(gm.extra_data, gm.u0, gm.u1);
+                                    vbg.reserve(gm.vertices.size());
+                                    for (const auto& mv : gm.vertices) vbg.push_back(mv.group);
+                                }
+                                auto sv = AnimationPanelState::CreateSkinnedVertices(
+                                    propMeshes[j], bd, vbg, bc, last.clip->hierarchyMode, j);
+                                float sx0=1e9f,sy0=1e9f,sz0=1e9f,sx1=-1e9f,sy1=-1e9f,sz1=-1e9f;
+                                for (auto& v : sv) {
+                                    mnx=std::min(mnx,v.position.x); mxx=std::max(mxx,v.position.x);
+                                    mny=std::min(mny,v.position.y); mxy=std::max(mxy,v.position.y);
+                                    mnz=std::min(mnz,v.position.z); mxz=std::max(mxz,v.position.z);
+                                    sx0=std::min(sx0,v.position.x); sx1=std::max(sx1,v.position.x);
+                                    sy0=std::min(sy0,v.position.y); sy1=std::max(sy1,v.position.y);
+                                    sz0=std::min(sz0,v.position.z); sz1=std::max(sz1,v.position.z);
+                                    uint32_t bi = v.boneIndices[0];
+                                    boneSumX[bi].first += v.position.x;
+                                    boneSumX[bi].second++;
+                                    boneSumY[bi] += v.position.y;
+                                    boneSubmesh[bi] = static_cast<int>(j);
+                                }
+                                if (j != kPodSubmesh && !sv.empty()) {
+                                    brMinX = std::min(brMinX, sx0);
+                                    brMaxX = std::max(brMaxX, sx1);
+                                }
+                                submeshReport += "  submesh " + std::to_string(j)
+                                    + " verts=" + std::to_string(sv.size())
+                                    + " X[" + std::to_string(sx0) + "," + std::to_string(sx1)
+                                    + "] Y[" + std::to_string(sy0) + "," + std::to_string(sy1)
+                                    + "] Z[" + std::to_string(sz0) + "," + std::to_string(sz1) + "]\n";
+                            }
+                        }
+
+                        // The bridge always runs along model X for this asset; use the bridge
+                        // span (pod excluded) so the anchor sits where the deck meets the cliff
+                        // (~3775) rather than at the pod's outer tip (~4692).
+                        if (brMaxX <= brMinX) { brMinX = mnx; brMaxX = mxx; }
+                        last.growAxis = 0;
+                        last.growAnchor = DirectX::XMFLOAT3(brMaxX, mny, mnz);
+                        last.proceduralGrow = ((brMaxX - brMinX) > 1.0f);
+                        last.growProgress   = 0.f;
+                        last.growDuration   = 5.0f;
+
+                        // Per-bone normalized position along the bridge: 0 at the anchored
+                        // (cliff) end, 1 at the far end, so sin(pi*t) gives zero lift at BOTH
+                        // ends and peaks mid-span. Bones left at -1 are excluded from the grow
+                        // and held at bind pose (the detached pod, plus unused bones).
+                        {
+                            float span = brMaxX - brMinX;
+                            size_t bc = last.clip ? last.clip->boneTracks.size() : 0;
+                            last.growBoneNormPos.assign(bc, -1.0f);
+                            if (span > 1.0f) {
+                                for (auto& [bone, sumCount] : boneSumX) {
+                                    if (bone >= bc || sumCount.second <= 0)
+                                        continue;
+                                    auto sit = boneSubmesh.find(bone);
+                                    if (sit != boneSubmesh.end() &&
+                                        static_cast<size_t>(sit->second) == kPodSubmesh)
+                                        continue;   // pod stays static
+                                    float avgX = static_cast<float>(sumCount.first / sumCount.second);
+                                    last.growBoneNormPos[bone] =
+                                        std::clamp((brMaxX - avgX) / span, 0.0f, 1.0f);
+                                }
+                            }
+                            // Deck is naturally flat (measured Y only 698..744 across the span),
+                            // so the arch is fully synthetic. ~6% of the 3021-unit span.
+                            last.growArchHeight = 180.0f;
+                            // The asset's natural span (3021 model units, ~2730 world) overshoots
+                            // the canyon gap. Trim it toward the anchored cliff end; the anchored
+                            // end (and therefore kBridgeShiftModelX above) is unaffected.
+                            last.growLengthScale = 0.85f;
+                        }
+
+                        // Submesh 0 is the detached vine pod and submesh 3 the end platforms;
+                        // neither is wanted on screen. Hidden purely for rendering: the grow
+                        // span above is still measured from the full geometry so the visible
+                        // vines keep the position/length already tuned.
+                        last.submeshVisibility.assign(propMeshes.size(), true);
+                        for (size_t hid : { size_t(0), size_t(3) })
+                            if (hid < last.submeshVisibility.size())
+                                last.submeshVisibility[hid] = false;
+
+                        // Each bridge grows on its own vine-seed event, so record this
+                        // instance and let ResolveDruidBridges() give it a per-instance door
+                        // type once the guild lords (the red/blue reference) are loaded.
+                        if (!perObjectCBs.empty())
+                        {
+                            const auto& w = perObjectCBs[0].world;
+                            m_druidBridgeCandidates.push_back(
+                                { animProps.size() - 1,
+                                  DirectX::XMFLOAT3(w._41, w._42, w._43),
+                                  fileHash });
+                        }
+
+                        m_doorAnimPropCount++;
+
+                        // Log mesh bounds + prop world position so we can verify the bridge's
+                        // orientation across the gap.
+                        std::ofstream dbg("door_debug.log", std::ios::app);
+                        size_t podBones = 0;
+                        for (float t : last.growBoneNormPos)
+                            if (t < 0.f) podBones++;
+                        dbg << "[VineGrow] prop " << i
+                            << " bboxX[" << mnx << "," << mxx << "] Y[" << mny << "," << mxy
+                            << "] Z[" << mnz << "," << mxz << "]\n";
+                        dbg << "  bridgeX[" << brMinX << "," << brMaxX << "] anchorX="
+                            << last.growAnchor.x << " arch=" << last.growArchHeight
+                            << " lenScale=" << last.growLengthScale
+                            << " finalLen=" << (brMaxX - brMinX) * last.growLengthScale
+                            << " staticBones=" << podBones << "/"
+                            << last.growBoneNormPos.size() << "\n";
+                        dbg << submeshReport;
+                        if (!perObjectCBs.empty()) {
+                            const auto& w = perObjectCBs[0].world;
+                            dbg << "  worldRow3 pos=(" << w._41 << "," << w._42 << "," << w._43 << ")"
+                                << " row0=(" << w._11 << "," << w._12 << "," << w._13 << ")"
+                                << " row2=(" << w._31 << "," << w._32 << "," << w._33 << ")\n";
                         }
                     }
                 }
@@ -2429,6 +4556,10 @@ void ReplayWindow::Tick()
         for (auto& [agentId, ard] : m_replayCtx.agents)
         {
             ard.cachedLabel = GetAgentLabel(ard);
+            // Frozen Isle: the "Gate lever" gadgets are gate locks; relabel for this map only.
+            // (categoryName is left unchanged so gold-dot / special-gadget styling still applies.)
+            if (m_replayCtx.datMapId == 0x1F265 && ard.cachedLabel == "Gate lever")
+                ard.cachedLabel = "Gate Lock";
             m_agentTeams[agentId] = ard.teamId;
         }
 
@@ -3125,6 +5256,52 @@ void ReplayWindow::Tick()
         m_loadingPhase == LoadingPhase::Ready && !m_towerModelLoaded)
         SetupTowerFlagStand();
 
+    // Isle of the Weeping Stone: resolve which 0x1EAFB door is the lever door (object 122).
+    // All 0x1EAFB props were set up as the event gate group (type 18); the physical instance
+    // closest to the flag stand is the lever door, which toggles open/close (0x303419C9 open,
+    // 0x31D3EDC8 close). Do this once the flag stand position is known.
+    if (m_replayCtx.datMapId == 0x2661F && !m_weepingLeverResolved &&
+        m_flagTimelineBuilt && m_flagTimeline.valid && m_calibrationLoaded &&
+        m_flagTimeline.stand.standAgentId >= 0 && !m_weepingLeverCandidates.empty())
+    {
+        XMFLOAT3 standW = ApplyMapTransformToPos(
+            m_flagTimeline.stand.standX, m_flagTimeline.stand.standY,
+            m_flagTimeline.stand.standZ, m_replayCtx.mapTransform);
+
+        size_t bestIdx = m_weepingLeverCandidates[0].first;
+        XMFLOAT3 bestPos = m_weepingLeverCandidates[0].second;
+        float  bestDist = FLT_MAX;
+        for (const auto& [apIdx, p] : m_weepingLeverCandidates)
+        {
+            float dx = p.x - standW.x, dy = p.y - standW.y, dz = p.z - standW.z;
+            float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < bestDist) { bestDist = d2; bestIdx = apIdx; bestPos = p; }
+        }
+
+        auto& aps = m_mapRenderer->GetAnimatedProps();
+        if (bestIdx < aps.size())
+        {
+            auto& ap = aps[bestIdx];
+            ap.doorType = 19;               // lever door: driven by object 122 events
+            ap.closedAtOpenStart = false;   // play the real close clip, not a snap-to-closed
+            if (ap.clip)
+            {
+                const auto& segs = ap.clip->animationSegments;
+                for (size_t s = 0; s < segs.size(); s++)
+                {
+                    if (segs[s].hash == 0x303419C9) ap.openSegmentIndex = s;
+                    if (segs[s].hash == 0x31D3EDC8) ap.closeSegmentIndex = s;
+                }
+            }
+            m_weepingLeverWorldPos = bestPos;   // for the minimap state icon
+            m_weepingLeverHasDoor  = true;
+            OutputDebugStringA(std::format(
+                "[DoorAnim] Weeping Stone lever door resolved: animProp {} (dist {:.0f})\n",
+                bestIdx, std::sqrt(bestDist)).c_str());
+        }
+        m_weepingLeverResolved = true;
+    }
+
     // Set up gate lock animated levers (Isle of Meditation)
     if (m_flagTimelineBuilt && m_calibrationLoaded &&
         m_loadingPhase == LoadingPhase::Ready && !m_gateLockModelsLoaded)
@@ -3133,6 +5310,24 @@ void ReplayWindow::Tick()
     if (m_flagTimelineBuilt && m_calibrationLoaded &&
         m_loadingPhase == LoadingPhase::Ready && !m_imperialGateLockLoaded)
         SetupImperialGateLockProps();
+
+    // Set up the animated gate lever (Isle of the Weeping Stone)
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_weepingLeverModelLoaded)
+        SetupWeepingLeverProp();
+
+    // Set up the animated gate lock levers (Frozen Isle)
+    if (m_flagTimelineBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_frozenLeverModelLoaded)
+        SetupFrozenGateLockProps();
+
+    // Assign the Frozen Isle lever gates their per-object-id door types by nearest guild lord
+    if (m_loadingPhase == LoadingPhase::Ready && !m_frozenGatesResolved)
+        ResolveFrozenGates();
+
+    // Same for the two Druid's Isle vine bridges, so each grows on its own seed event
+    if (m_loadingPhase == LoadingPhase::Ready && !m_druidBridgesResolved)
+        ResolveDruidBridges();
 
     m_timer.Tick([this]()
     {
@@ -3211,6 +5406,20 @@ void ReplayWindow::Update(double elapsedMs)
     m_mapRenderer->Update(dt);
 
     UpdateDoorAnimations();
+
+    // Isle of the Weeping Stone portcullis gate (0x285BC): fake the opening by fading the
+    // asset out. Fully opaque for the first 5 s, then fade 100% -> 30% over the next 3 s,
+    // then hold at 30%. Timeline is 0-based seconds and only advances while playing.
+    if (m_replayCtx.datMapId == 0x2661F && !m_weepingFadeProps.empty())
+    {
+        float t = m_debugTimeline;
+        float a = (t <= 5.f) ? 1.f
+                : (t >= 8.f) ? 0.3f
+                : 1.f - 0.7f * (t - 5.f) / 3.f;
+        for (uint32_t pi : m_weepingFadeProps)
+            SetPropAlpha(static_cast<int>(pi), a);
+    }
+
     UpdateObeliskFlagStand();
     UpdateTowerFlagStand();
 
@@ -3855,6 +6064,9 @@ void ReplayWindow::DrawImGuiOverlay()
                 SaveHeatmapSettings();
             }
 
+            if (HotkeyPressed(hk.toggleMinimap))
+                m_minimapEnabled = !m_minimapEnabled;
+
             if (HotkeyPressed(hk.addBookmark))
                 m_annotationMgr.BeginAddBookmark();
         }
@@ -3875,6 +6087,9 @@ void ReplayWindow::DrawImGuiOverlay()
         g_CurrentCursor = CursorMode::Hidden;
     else if (m_rightMouseDown)
         g_CurrentCursor = CursorMode::Precision;
+    // Minimap draws its own software cursor: hide the OS cursor while over it.
+    if (m_minimapCursorActive)
+        g_CurrentCursor = CursorMode::Hidden;
     ApplyCursor();
 
     // Cache for next Update() — suppresses WASD camera polling while a text widget is active
@@ -4643,6 +6858,70 @@ ImTextureID LoadNPCIcon(ID3D11Device* device, const char* filename)
     return (ImTextureID)srv.Get();
 }
 
+// DDS variant for Textures/NPC (compressed game textures like GW.EXE_*.dds).
+ImTextureID LoadNPCIconDDS(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetNPCIconBasePath() / std::filesystem::path(filename);
+    if (!std::filesystem::exists(fullPath)) { s_cache[filename] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromDDSFile(fullPath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) { s_cache[filename] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage decompressed;
+    if (DirectX::IsCompressed(meta.format))
+    {
+        hr = DirectX::Decompress(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+        if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+        image = std::move(decompressed);
+    }
+
+    DirectX::ScratchImage converted;
+    if (image.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, &tex);
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
 
 ImTextureID LoadSkillIconFile(ID3D11Device* device, const char* filename)
 {
@@ -5147,6 +7426,63 @@ ImTextureID LoadWeaponTexture(ID3D11Device* device, const char* filename)
     ComPtr<ID3D11ShaderResourceView> srv;
     hr = device->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
     if (FAILED(hr)) return nullptr;
+
+    s_cache[filename] = srv;
+    return (ImTextureID)srv.Get();
+}
+
+// Load a minimap cursor / zoom-button texture from Textures/Game_UI/Cursor/.
+// Caches results (including misses) since this is called every frame.
+ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename)
+{
+    static ID3D11Device* s_cachedDevice = nullptr;
+    static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
+    if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
+
+    auto it = s_cache.find(filename);
+    if (it != s_cache.end()) return (ImTextureID)it->second.Get();
+
+    auto fullPath = GetGameUIBasePath() / "Cursor" / filename;
+    if (!std::filesystem::exists(fullPath)) { s_cache[filename] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage image;
+    HRESULT hr = DirectX::LoadFromWICFile(fullPath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, image);
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+
+    const auto& meta = image.GetMetadata();
+    if (meta.width == 0 || meta.height == 0) { s_cache[filename] = nullptr; return nullptr; }
+
+    DirectX::ScratchImage converted;
+    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);
+        if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+    }
+    const DirectX::ScratchImage& src = converted.GetImageCount() > 0 ? converted : image;
+    const auto* img = src.GetImage(0, 0, 0);
+
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = static_cast<UINT>(img->width);
+    texDesc.Height = static_cast<UINT>(img->height);
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = img->pixels;
+    initData.SysMemPitch = static_cast<UINT>(img->rowPitch);
+
+    ComPtr<ID3D11Texture2D> tex;
+    hr = device->CreateTexture2D(&texDesc, &initData, tex.GetAddressOf());
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = device->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
+    if (FAILED(hr)) { s_cache[filename] = nullptr; return nullptr; }
 
     s_cache[filename] = srv;
     return (ImTextureID)srv.Get();

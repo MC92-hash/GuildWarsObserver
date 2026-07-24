@@ -416,8 +416,22 @@ FodyWeavers.xsd
 # Alternate cursor set (app uses Textures/cursor/, not Cursors/)
 /Textures/Cursors/
 
-# NPC icons (loader exists but has no call sites)
-/Textures/NPC/
+# NPC icons: ignore all, then whitelist only the ones the app loads
+# (flag stand / ankh shrine states, carried bundles, gate lever + door states,
+#  and the replay camera direction marker)
+/Textures/NPC/*
+!/Textures/NPC/GreyFlag.png
+!/Textures/NPC/RedFlag.png
+!/Textures/NPC/BlueFlag.png
+!/Textures/NPC/GreyAnkh.png
+!/Textures/NPC/RedAnkh.png
+!/Textures/NPC/BlueAnkh.png
+!/Textures/NPC/Lever.png
+!/Textures/NPC/RepairKit.png
+!/Textures/NPC/Vine Seed.png
+!/Textures/NPC/GW.EXE_0x37802955.dds
+!/Textures/NPC/texture_191464.dds
+!/Textures/NPC/texture_193320.dds
 
 # SVG transport icons (playback bar uses ImGui text, not SVGs)
 /Textures/timebar_UI/

@@ -36,6 +36,8 @@ std::string GetAgentLabel(const AgentReplayData& ard);
 //     PlayerInfo, SkillAnalytics, EventTimeline, ...) ---
 ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
 ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
+// Minimap cursor / zoom-button textures: Textures/Game_UI/Cursor/<filename>
+ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename);
 ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename);
 ImTextureID LoadEffectIcon(ID3D11Device* device, const char* filename);
 ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device, int skillId,
@@ -71,6 +73,8 @@ const char* StandOwnerName(StandOwner o);
 
 // --- NPC icon loader ---
 ImTextureID LoadNPCIcon(ID3D11Device* device, const char* filename);
+// DDS variant (Textures/NPC/<filename>.dds) for compressed game textures
+ImTextureID LoadNPCIconDDS(ID3D11Device* device, const char* filename);
 
 // --- Settings file paths (shared: core + Heatmap/Audio feature TUs) ---
 std::filesystem::path GetHeatmapSettingsPath();

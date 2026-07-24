@@ -150,11 +150,21 @@ public:
                               std::vector<XMFLOAT3>& outWorldPositions,
                               std::vector<XMFLOAT4>& outWorldRotations,
                               const std::vector<XMFLOAT3>* customBindPositions = nullptr,
-                              bool lockRootPosition = false)
+                              bool lockRootPosition = false,
+                              const std::vector<uint32_t>* lockedBones = nullptr)
     {
         size_t boneCount = clip.boneTracks.size();
         outWorldPositions.resize(boneCount);
         outWorldRotations.resize(boneCount);
+
+        // Per-bone lock (matches GWMB's per-bone "lock" checkbox): a locked bone's
+        // local transform is forced to bind pose (no position/rotation animation), so
+        // the bone stays put AND its frozen transform is what child bones inherit.
+        auto isBoneLocked = [&](size_t idx) -> bool {
+            if (!lockedBones) return false;
+            return std::find(lockedBones->begin(), lockedBones->end(),
+                             static_cast<uint32_t>(idx)) != lockedBones->end();
+        };
 
         // Helper to get bind position - uses custom if available, otherwise animation
         auto getBindPosition = [&](size_t idx) -> XMFLOAT3 {
@@ -192,6 +202,13 @@ public:
         for (size_t i = 0; i < boneCount; i++)
         {
             BoneTransform localTransform = EvaluateBoneTrack(clip.boneTracks[i], time);
+            if (isBoneLocked(i))
+            {
+                // Freeze to bind pose: zero position delta, identity rotation.
+                localTransform.position = { 0.0f, 0.0f, 0.0f };
+                localTransform.rotation = { 0.0f, 0.0f, 0.0f, 1.0f };
+                localTransform.scale    = { 1.0f, 1.0f, 1.0f };
+            }
             int32_t parentIdx = (i < clip.boneParents.size()) ? clip.boneParents[i] : -1;
 
             if (parentIdx < 0)
@@ -279,7 +296,8 @@ public:
      */
     void ComputeSkinningFromHierarchy(const AnimationClip& clip, float time,
                                       std::vector<XMFLOAT4X4>& outSkinningMatrices,
-                                      bool lockRootPosition = false)
+                                      bool lockRootPosition = false,
+                                      const std::vector<uint32_t>* lockedBones = nullptr)
     {
         // Use animation bind positions directly
         std::vector<XMFLOAT3> bindPositions;
@@ -288,7 +306,7 @@ public:
         {
             bindPositions.push_back(track.basePosition);
         }
-        ComputeSkinningWithCustomBindPositions(clip, time, bindPositions, outSkinningMatrices, lockRootPosition);
+        ComputeSkinningWithCustomBindPositions(clip, time, bindPositions, outSkinningMatrices, lockRootPosition, lockedBones);
     }
 
     /**
@@ -315,12 +333,13 @@ public:
     void ComputeSkinningWithCustomBindPositions(const AnimationClip& clip, float time,
                                                  const std::vector<XMFLOAT3>& customBindPositions,
                                                  std::vector<XMFLOAT4X4>& outSkinningMatrices,
-                                                 bool lockRootPosition = false)
+                                                 bool lockRootPosition = false,
+                                                 const std::vector<uint32_t>* lockedBones = nullptr)
     {
         // Evaluate hierarchical transforms
         std::vector<XMFLOAT3> worldPositions;
         std::vector<XMFLOAT4> worldRotations;
-        EvaluateHierarchical(clip, time, worldPositions, worldRotations, nullptr, lockRootPosition);
+        EvaluateHierarchical(clip, time, worldPositions, worldRotations, nullptr, lockRootPosition, lockedBones);
 
         size_t boneCount = clip.boneTracks.size();
 

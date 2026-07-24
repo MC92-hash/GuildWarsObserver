@@ -215,6 +215,12 @@ void ReplayWindow::DrawAgentOverlay()
                 continue;
         }
 
+        // Summoned minions (e.g. Bone Horror): the name/overlay only appears
+        // while the agent exists and is alive (same rule as its 3D model).
+        if (ard.type == AgentType::NPC && IsNpcHiddenWhenDead(ard.modelId)
+            && !ard.isMinionVisibleAtTime(m_debugTimeline))
+            continue;
+
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
 
@@ -515,7 +521,7 @@ void ReplayWindow::DrawAgentOverlay()
                                         ard.categoryName == "Resurrection Shrine" ||
                                         ard.categoryName == "Dwarven Resurrection Shrine" ||
                                         ard.categoryName == "Southern Health Shrine" ||
-                                        ard.categoryName == "Lever");
+                                        ard.categoryName == "Gate lever");
                 ImU32 dotColor;
                 if (isSpecialGadget)
                     dotColor = IM_COL32(220, 200, 120, 255);
@@ -671,7 +677,7 @@ void ReplayWindow::DrawAgentOverlay()
                                    ard.categoryName == "Resurrection Shrine" ||
                                    ard.categoryName == "Dwarven Resurrection Shrine" ||
                                    ard.categoryName == "Southern Health Shrine" ||
-                                   ard.categoryName == "Lever");
+                                   ard.categoryName == "Gate lever");
             float pad = 2.f;
             if (isSpecialLabel)
             {

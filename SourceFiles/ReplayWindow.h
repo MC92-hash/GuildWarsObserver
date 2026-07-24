@@ -179,7 +179,108 @@ private:
                            const std::vector<std::vector<int>>& perMeshTexIds,
                            PixelShaderType pst,
                            uint32_t segmentHash,
-                           size_t segmentFallbackIndex);
+                           size_t segmentFallbackIndex,
+                           uint32_t animFileHash = 0);
+
+    // Uncharted Isle double-gate setup. Locks the pillar/frame submesh (staticSubmesh)
+    // static, animates the open segment (hash 0x303419C9), and drives the second leaf
+    // from a mirrored copy of bone 0 so both leaves open symmetrically and meet at the
+    // center. The static submesh index differs per model (0x3C163 -> 0, 0x32F3A -> 5).
+    void SetupUnchartedMirrorDoor(int propIndex, const FFNA_ModelFile& modelFile,
+                                  uint32_t modelFileHash,
+                                  const std::vector<Mesh>& meshes,
+                                  const std::vector<PerObjectCB>& perObjectCBs,
+                                  const std::vector<int>& meshIds,
+                                  const std::vector<std::vector<int>>& perMeshTexIds,
+                                  PixelShaderType pst,
+                                  uint8_t doorType,
+                                  size_t staticSubmesh);
+
+    // Uncharted Isle horizontal double-slide gates (0x32F0C, 0x336BB). The .dat only
+    // slides the driver panel; the opposite panel's bones are authored fixed/partial.
+    // Each (follower, driver) pair drives the follower bone's vertices from a mirrored
+    // copy of the driver bone, so the two panels slide apart symmetrically. staticSubmeshes
+    // are pinned to the bind pose (frame/pillars). A reflected pure translation preserves
+    // winding, so no double-sided rendering is needed. Open segment hash 0x303419C9.
+    void SetupUnchartedSlideDoor(int propIndex, const FFNA_ModelFile& modelFile,
+                                 uint32_t modelFileHash,
+                                 const std::vector<Mesh>& meshes,
+                                 const std::vector<PerObjectCB>& perObjectCBs,
+                                 const std::vector<int>& meshIds,
+                                 const std::vector<std::vector<int>>& perMeshTexIds,
+                                 PixelShaderType pst,
+                                 uint8_t doorType,
+                                 const std::vector<size_t>& staticSubmeshes,
+                                 const std::vector<std::pair<uint32_t, uint32_t>>& mirrorFollowerToDriver);
+
+    // Generic door where only part of the mesh animates: a vertex is pinned to the bind
+    // pose if it belongs to a static submesh OR is skinned to a static bone; everything
+    // else plays the open segment (hash 0x303419C9) normally. Used by Nomad's Isle doors.
+    void SetupDoorPartialStatic(int propIndex, const FFNA_ModelFile& modelFile,
+                                uint32_t modelFileHash,
+                                const std::vector<Mesh>& meshes,
+                                const std::vector<PerObjectCB>& perObjectCBs,
+                                const std::vector<int>& meshIds,
+                                const std::vector<std::vector<int>>& perMeshTexIds,
+                                PixelShaderType pst,
+                                uint8_t doorType,
+                                const std::vector<size_t>& staticSubmeshes,
+                                const std::vector<uint32_t>& staticBones,
+                                bool lockRootPosition = false,
+                                const std::vector<std::pair<uint32_t, uint32_t>>& boneRemap = {});
+
+    // Hinged double-door where the .dat only swings one leaf. staticBones are pinned to
+    // the bind pose (pillars/frame); mirrorBones' vertices are driven by a mirrored copy
+    // of driverBone (reflected across the door's symmetry plane) so the second leaf swings
+    // open symmetrically. The mirror plane is the midpoint of the two leaves' X-centroids,
+    // and winding is reversed by the reflection (double-sided). Open segment hash 0x303419C9.
+    //
+    // driverRemapBones: bones whose vertices are re-skinned ONTO the driver bone so they
+    // swing with it. Needed when the visible leaf geometry is rigged to a static bone but a
+    // *different* bone carries the correct hinge swing (e.g. Isle of Solitude 0x33CD5, where
+    // the panels sit on static bones 0/1 while bone 3 holds the swing). The driver-side
+    // centroid used for the mirror plane is then taken from these remapped verts.
+    void SetupDoorHingeMirror(int propIndex, const FFNA_ModelFile& modelFile,
+                              uint32_t modelFileHash,
+                              const std::vector<Mesh>& meshes,
+                              const std::vector<PerObjectCB>& perObjectCBs,
+                              const std::vector<int>& meshIds,
+                              const std::vector<std::vector<int>>& perMeshTexIds,
+                              PixelShaderType pst,
+                              uint8_t doorType,
+                              const std::vector<uint32_t>& staticBones,
+                              uint32_t driverBone,
+                              const std::vector<uint32_t>& mirrorBones,
+                              const std::vector<size_t>& staticSubmeshes = {},
+                              const std::vector<uint32_t>& driverRemapBones = {},
+                              const std::vector<size_t>& hiddenSubmeshes = {},
+                              const std::vector<uint32_t>& unlockedBones = {},
+                              uint32_t openSegHash = 0x303419C9,
+                              bool lockRoot = false,
+                              uint32_t closeSegHash = 0,
+                              const std::vector<uint32_t>& ctrlLockedBones = {});
+
+    // Procedural double-hinge door for a broken rig: the two visible panels are rigged
+    // to static bones (the .dat never swings them), so instead of borrowing another
+    // bone's matrix we synthesize a pure hinge rotation about each panel's own vertical
+    // edge, driven by the door's open progress and mirrored between the leaves. leftBones
+    // / rightBones select which bones' vertices belong to each leaf; everything in
+    // staticSubmeshes or staticBones is pinned. Open segment hash 0x303419C9.
+    void SetupDoorProceduralDoubleHinge(int propIndex, const FFNA_ModelFile& modelFile,
+                                        uint32_t modelFileHash,
+                                        const std::vector<Mesh>& meshes,
+                                        const std::vector<PerObjectCB>& perObjectCBs,
+                                        const std::vector<int>& meshIds,
+                                        const std::vector<std::vector<int>>& perMeshTexIds,
+                                        PixelShaderType pst,
+                                        uint8_t doorType,
+                                        const std::vector<size_t>& staticSubmeshes,
+                                        const std::vector<uint32_t>& staticBones,
+                                        const std::vector<uint32_t>& leftBones,
+                                        const std::vector<uint32_t>& rightBones,
+                                        float openAngleDegrees,
+                                        DirectX::XMFLOAT3 leftOffset = { 0.f, 0.f, 0.f },
+                                        DirectX::XMFLOAT3 rightOffset = { 0.f, 0.f, 0.f });
 
     void UpdateDoorAnimations();
 
@@ -302,9 +403,39 @@ private:
     std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
 
     // --- Door animation state tracking (per door type, not per object) ---
-    bool  m_doorTypeOpen[5] = {};     // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors
+    bool  m_doorTypeOpen[28] = {};    // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors, index 5/6 = Burning Isle doors (0x1F23F / 0x1F247), index 7 = Uncharted Isle door 0x3C163, index 8 = Uncharted Isle door 0x32F3A, index 9 = Uncharted Isle slide gate 0x32F0C, index 10 = Uncharted Isle slide gate 0x336BB, index 11 = Nomad's Isle doors (0x19750/0x197A9), index 12 = Nomad's Isle looping doors (0x22143), index 13 = Isle of Wurms doors (0x330F7/0x331A4), index 14 = Isle of Jade doors (0x285E7/0x265B5), index 15 = Isle of the Dead doors (0x1F294/0x1F291/0x1F281/0x1E820), index 16 = Isle of Solitude doors (0x33CD5/0x3323B), index 17 = Isle of the Weeping Stone auto-open doors (0x2858E/0x28578), index 18 = Isle of the Weeping Stone event gates (0x1EAFB, ids 147/9305/30563/4417), index 19 = Isle of the Weeping Stone lever door (0x1EAFB nearest the flag stand, object 122), index 20 = Frozen Isle doors (0x1F251/0x1F252), index 21 = Frozen Isle lever gate door 1 (0x255BE, obj 61318, red side), index 22 = Frozen Isle lever gate door 2 (0x255BE, obj 11692, blue side), index 23 = Frozen Isle lever gate door 3 (0x57B57, obj 56526, red side), index 24 = Frozen Isle lever gate door 4 (0x57B57, obj 12669, blue side), index 25 = Corrupted Isle doors (0x330EA/0x32F5C), index 26 = Druid's Isle vine bridge nearest the red lord (obj 39278), index 27 = Druid's Isle vine bridge nearest the blue lord (obj 51238)
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
+
+    // Isle of the Weeping Stone lever door: 0x1EAFB is shared by the event gates and the
+    // lever door (object 122). Props carry no game object id, so we record every 0x1EAFB
+    // animated-prop (index into MapRenderer animated props + world position) at load and,
+    // once the flag timeline is known, promote the one closest to the flag stand to the
+    // lever door type (open on 0x303419C9, close on 0x31D3EDC8).
+    std::vector<std::pair<size_t, DirectX::XMFLOAT3>> m_weepingLeverCandidates;
+    bool  m_weepingLeverResolved = false;
+    bool  m_weepingLeverHasDoor  = false;               // a lever door was resolved
+    DirectX::XMFLOAT3 m_weepingLeverWorldPos{ 0.f, 0.f, 0.f }; // its world position (prop space)
+
+    // Isle of the Weeping Stone portcullis gate (0x285BC): not animated - faded out to
+    // fake the opening. Holds the prop indices whose alpha is driven by the timeline.
+    std::vector<uint32_t> m_weepingFadeProps;
+
+    // Frozen Isle lever gates (0x255BE = doors 1/2, 0x57B57 = doors 3/4). Each model has
+    // two instances that toggle independently from different levers, so each needs its own
+    // door type. Props carry no game object id, so we record every instance (animated-prop
+    // index + world pos + model hash) at load and, once guild-lord positions are known,
+    // assign the one nearest the blue lord to the blue-side object id's door type and the
+    // one nearest the red lord to the red-side type (see door_events analysis).
+    struct FrozenGateCandidate {
+        size_t            animPropIndex;
+        DirectX::XMFLOAT3 worldPos;
+        uint32_t          modelHash;
+    };
+    std::vector<FrozenGateCandidate> m_frozenGateCandidates;
+    bool m_frozenGatesResolved = false;
+    // Resolved (doorType, world pos) per lever gate, for the minimap open/closed state icons.
+    std::vector<std::pair<int, DirectX::XMFLOAT3>> m_frozenGateIcons;
 
     // --- Obelisk Flag Stand 3D model (Isle of Meditation) ---
     int  m_obeliskAnimPropIndex = -1;
@@ -333,6 +464,31 @@ private:
     // --- Gate Lock animated models (Imperial Isle) ---
     bool m_imperialGateLockLoaded = false;
     void SetupImperialGateLockProps();
+
+    // --- Gate lever animated model (Isle of the Weeping Stone) ---
+    bool m_weepingLeverModelLoaded = false;
+    void SetupWeepingLeverProp();
+
+    // --- Frozen Isle gate lock animated levers (model 0x1E0E1) ---
+    // Two lever props are placed at the "Gate lever" gadgets. Each is resolved to a gate
+    // door type (21 red side / 22 blue side) by nearest guild lord in ResolveFrozenGates,
+    // so the lever plays its open (0x35E6AE29) / close (0x36F05E31) segment in sync with
+    // the gate it controls (only submesh 0 animates; bone 1 locked).
+    bool m_frozenLeverModelLoaded = false;
+    void SetupFrozenGateLockProps();
+    std::vector<FrozenGateCandidate> m_frozenLeverCandidates;
+
+    // --- Frozen Isle lever gates: assign each shared-model prop its door type by nearest
+    // guild lord (runs once, after guild-lord snapshots are available). ---
+    void ResolveFrozenGates();
+
+    // --- Druid's Isle vine bridges (model 0x29FD, two instances). Each grows on its own
+    // vine-seed door event, so each needs its own door type. Props carry no game object id,
+    // so we record both instances at load and, once guild-lord positions are known, assign
+    // the one nearest the red lord to object 39278's type and the other to 51238's. ---
+    std::vector<FrozenGateCandidate> m_druidBridgeCandidates;
+    bool m_druidBridgesResolved = false;
+    void ResolveDruidBridges();
 
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
@@ -943,6 +1099,13 @@ private:
     float m_minimapPanX          = 0.f;      // world-unit pan offset
     float m_minimapPanZ          = 0.f;
     bool  m_minimapShowLabels    = true;
+    bool  m_minimapShowProfession = false;
+    bool  m_minimapCursorActive  = false;   // true while a software cursor is drawn over the minimap
+
+    // Resurrection Shrine -> team (1=red, 2=blue) attribution, computed once at
+    // map load by nearest guild lord. Shrines are static so this never changes.
+    std::unordered_map<int, int> m_resShrineTeam;
+    bool  m_resShrineTeamComputed = false;
     int   m_minimapWidth         = 400;
     int   m_minimapHeight        = 400;
     DirectX::XMFLOAT4X4 m_minimapViewProj{};

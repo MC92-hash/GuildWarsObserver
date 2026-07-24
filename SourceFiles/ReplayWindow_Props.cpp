@@ -26,6 +26,9 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include <tuple>
+#include <map>
+#include <cmath>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -49,7 +52,8 @@ void ReplayWindow::SetupAnimatedProp(
     const std::vector<std::vector<int>>& perMeshTexIds,
     PixelShaderType pst,
     uint32_t segmentHash,
-    size_t segmentFallbackIndex)
+    size_t segmentFallbackIndex,
+    uint32_t animFileHash)
 {
     if (!m_datManager || !m_hashIndex || !m_mapRenderer)
         return;
@@ -58,18 +62,57 @@ void ReplayWindow::SetupAnimatedProp(
     if (!device)
         return;
 
-    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    // The animation clip may live in a different file than the geometry
+    // (e.g. Druid's Isle vine bridge: geometry 0x29FD, animation 0x21297).
+    uint32_t clipFileHash = (animFileHash != 0) ? animFileHash : modelFileHash;
+    auto mit = m_hashIndex->find(static_cast<int>(clipFileHash));
     if (mit == m_hashIndex->end() || mit->second.empty())
         return;
 
-    int mftIndex = mit->second.at(0);
-    uint8_t* fileData = m_datManager->read_file(mftIndex);
-    if (!fileData)
-        return;
-
-    size_t fileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
-    auto clipOpt = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
-    delete[] fileData;
+    std::optional<GW::Animation::AnimationClip> clipOpt;
+    if (animFileHash == 0)
+    {
+        // Geometry and animation share the file: use the first entry as before.
+        int mftIndex = mit->second.at(0);
+        uint8_t* fileData = m_datManager->read_file(mftIndex);
+        if (!fileData)
+            return;
+        size_t fileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+        clipOpt = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
+        delete[] fileData;
+    }
+    else
+    {
+        // Separate animation file: several MFT entries can share this hash. Pick the
+        // one whose clip actually contains the requested segment, preferring the one
+        // with the most bones (the real rigged clip vs. unrelated stub clips).
+        size_t bestBones = 0;
+        std::optional<GW::Animation::AnimationClip> bestWithSeg, bestAny;
+        for (int idx : mit->second)
+        {
+            uint8_t* fileData = m_datManager->read_file(idx);
+            if (!fileData)
+                continue;
+            size_t fileSize = m_datManager->get_MFT()[idx].uncompressedSize;
+            auto co = GW::Parsers::ParseAnimationFromFile(fileData, fileSize);
+            delete[] fileData;
+            if (!co || !co->IsValid())
+                continue;
+            bool hasSeg = false;
+            for (const auto& sg : co->animationSegments)
+                if (sg.hash == segmentHash) { hasSeg = true; break; }
+            if (hasSeg && co->boneTracks.size() >= bestBones)
+            {
+                bestBones = co->boneTracks.size();
+                bestWithSeg = std::move(co);
+            }
+            else if (!bestWithSeg && !bestAny)
+            {
+                bestAny = std::move(co);
+            }
+        }
+        clipOpt = bestWithSeg ? std::move(bestWithSeg) : std::move(bestAny);
+    }
 
     if (!clipOpt || !clipOpt->IsValid())
         return;
@@ -78,7 +121,9 @@ void ReplayWindow::SetupAnimatedProp(
     clip->BuildAnimationGroups();
 
     const auto& segments = clip->animationSegments;
-    if (segments.size() < 2)
+    // Doors carry a closed+open segment pair, but some ambient looping props
+    // (e.g. Druid's Isle 0x1504E) ship a single segment that just loops.
+    if (segments.empty())
         return;
 
     size_t targetSegment = SIZE_MAX;
@@ -92,6 +137,8 @@ void ReplayWindow::SetupAnimatedProp(
     }
     if (targetSegment == SIZE_MAX)
         targetSegment = segmentFallbackIndex;
+    if (targetSegment >= segments.size())
+        targetSegment = 0;
 
     auto controller = std::make_shared<GW::Animation::AnimationController>();
     controller->Initialize(clip);
@@ -164,6 +211,1021 @@ void ReplayWindow::SetupAnimatedProp(
     prop.pixelShaderType = pst;
 
     m_mapRenderer->AddAnimatedProp(std::move(prop));
+}
+
+// ---------------------------------------------------------------------------
+// Uncharted Isle double gates (0x3C163, 0x32F3A, ...).
+//
+// Structure (from door_debug.log): 6 submeshes, 3 bones.
+//   - submesh 0 is the static pillar/frame (must not move)
+//   - submeshes 1..5 are the two door leaves, each split ~50/50 between
+//     bone 0 (right leaf, the hierarchy root — animates correctly) and
+//     bone 1 (left leaf, parented to bone 0 so it compounds the motion and
+//     pivots incorrectly).
+// The .dat animation only opens one leaf correctly. We drive the second leaf
+// from a *mirrored* copy of bone 0: the bone-1 verts are reassigned to a virtual
+// mirror slot, and bone 0 is reflected across the door's symmetry plane (the
+// midpoint of the two leaf centroids, which is where the leaves meet).
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupUnchartedMirrorDoor(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint8_t doorType,
+    size_t staticSubmesh)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* animFileData = m_datManager->read_file(mftIndex);
+    if (!animFileData)
+        return;
+
+    size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+    delete[] animFileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+        if (segments[s].hash == 0x303419C9) openSeg = s;
+    if (openSeg == SIZE_MAX) openSeg = 2;
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(openSeg);
+    controller->SetLooping(false);
+    controller->SetPlaybackSpeed(100000.0f);
+    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+    controller->Play();
+    controller->Pause();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    const size_t       kStaticSubmesh = staticSubmesh;   // pillar / frame (model-specific)
+    constexpr uint32_t kDriverBone    = 0;   // correctly-opening leaf (hierarchy root)
+    constexpr uint32_t kMirroredBone  = 1;   // leaf to replace with a mirror of bone 0
+    const uint32_t staticSlot = static_cast<uint32_t>(boneCount);       // identity
+    const uint32_t mirrorSlot = static_cast<uint32_t>(boneCount) + 1;   // mirror of bone 0
+
+    double sumXDriver = 0.0, sumXMirror = 0.0;
+    size_t cntDriver = 0, cntMirror = 0;
+
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+
+        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount,
+            clip->hierarchyMode, j);
+
+        if (j == kStaticSubmesh)
+        {
+            for (auto& sv : skinnedVerts)
+                sv.SetSingleBone(staticSlot);
+        }
+        else
+        {
+            for (auto& sv : skinnedVerts)
+            {
+                if (sv.boneIndices[0] == kDriverBone)
+                {
+                    sumXDriver += sv.position.x; cntDriver++;
+                }
+                else if (sv.boneIndices[0] == kMirroredBone)
+                {
+                    sumXMirror += sv.position.x; cntMirror++;
+                    sv.SetSingleBone(mirrorSlot);
+                }
+            }
+        }
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    // Symmetry plane = midpoint of the two leaf centroids (per-leaf half-width
+    // cancels, so it's independent of leaf size).
+    float mirrorPlaneX = 0.f;
+    if (cntDriver > 0 && cntMirror > 0)
+        mirrorPlaneX = static_cast<float>(
+            (sumXDriver / cntDriver + sumXMirror / cntMirror) * 0.5);
+
+    MapAnimatedProp prop;
+    prop.controller        = controller;
+    prop.clip              = clip;
+    prop.meshes            = std::move(animatedMeshes);
+    prop.perObjectCBs      = perObjectCBs;
+    prop.staticMeshIds     = meshIds;
+    prop.pixelShaderType   = pst;
+    prop.doorType          = doorType;
+    prop.closedAtOpenStart = true;
+    prop.openSegmentIndex  = openSeg;
+    prop.closeSegmentIndex = openSeg;
+    prop.mirrorBonePairs   = {{ static_cast<int>(kDriverBone), static_cast<int>(mirrorSlot) }};
+    prop.mirrorPlaneX      = mirrorPlaneX;
+    prop.doubleSided       = true;   // mirroring reverses winding
+
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
+    m_doorAnimPropCount++;
+    OutputDebugStringA(std::format(
+        "[DoorAnim] Uncharted Isle prop {} door type {} (hash 0x{:X}) mirror bone {}->{} plane x={:.2f}\n",
+        propIndex, static_cast<int>(doorType), modelFileHash,
+        kDriverBone, mirrorSlot, mirrorPlaneX).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Uncharted Isle horizontal double-slide gate (0x32F0C).
+//
+// Structure (from door_debug.log): 4 submeshes, 3 bones.
+//   - bone 0 (root) slides +X by ~122 over the open segment  -> driver leaf
+//   - bone 2 (child of 0) copies bone 0's motion (also +X)    -> opposite leaf,
+//                                                                but wrongly moved +X
+//   - bone 1 (child of 0) is net-fixed in world               -> opposite-leaf trim
+// The gate should open by both leaves sliding apart. We keep the driver bone (0)
+// leaf sliding +X and drive everything else from a *mirrored* copy of bone 0, which
+// for a pure translation +t produces exactly -t (independent of the mirror plane) and
+// preserves winding, so no static bone or double-sided rendering is required.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupUnchartedSlideDoor(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint8_t doorType,
+    const std::vector<size_t>& staticSubmeshes,
+    const std::vector<std::pair<uint32_t, uint32_t>>& mirrorFollowerToDriver)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* animFileData = m_datManager->read_file(mftIndex);
+    if (!animFileData)
+        return;
+
+    size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+    delete[] animFileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+        if (segments[s].hash == 0x303419C9) openSeg = s;
+    if (openSeg == SIZE_MAX) openSeg = segments.size() - 1;
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(openSeg);
+    controller->SetLooping(false);
+    controller->SetPlaybackSpeed(100000.0f);
+    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+    controller->Play();
+    controller->Pause();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    // Slot layout appended after the real bones: one static (identity) slot for the
+    // frame, then one mirror slot per unique driver bone. Follower bones are re-skinned
+    // to their driver's mirror slot; MapRenderer fills that slot with R * driverM * R.
+    const uint32_t staticSlot = static_cast<uint32_t>(boneCount);
+    std::unordered_map<uint32_t, uint32_t> followerDriver;   // follower bone -> driver bone
+    std::unordered_map<uint32_t, uint32_t> driverSlot;       // driver bone   -> mirror slot
+    uint32_t nextSlot = staticSlot + 1;
+    for (const auto& [follower, driver] : mirrorFollowerToDriver)
+    {
+        followerDriver[follower] = driver;
+        if (!driverSlot.count(driver))
+            driverSlot[driver] = nextSlot++;
+    }
+
+    auto isStaticSubmesh = [&](size_t j) {
+        return std::find(staticSubmeshes.begin(), staticSubmeshes.end(), j) != staticSubmeshes.end();
+    };
+
+    std::ofstream dbg("door_debug.log", std::ios::app);
+    dbg << "\n[SlideDoor 0x" << std::hex << modelFileHash << std::dec
+        << "] prop " << propIndex << " staticSubmeshes={";
+    for (size_t s : staticSubmeshes) dbg << s << " ";
+    dbg << "} mirror{";
+    for (const auto& [f, d] : mirrorFollowerToDriver) dbg << f << "->" << d << " ";
+    dbg << "}\n";
+
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+
+        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount,
+            clip->hierarchyMode, j);
+
+        // Bounding box per submesh (helps confirm which piece is the pillar / leaves).
+        float bxMin = FLT_MAX, bxMax = -FLT_MAX, bzMin = FLT_MAX, bzMax = -FLT_MAX;
+        for (const auto& v : skinnedVerts)
+        {
+            bxMin = std::min(bxMin, v.position.x); bxMax = std::max(bxMax, v.position.x);
+            bzMin = std::min(bzMin, v.position.z); bzMax = std::max(bzMax, v.position.z);
+        }
+
+        if (isStaticSubmesh(j))
+        {
+            // Pillar / frame: pin to a static bind-pose bone so it never moves.
+            for (auto& sv : skinnedVerts)
+                sv.SetSingleBone(staticSlot);
+            dbg << "  submesh[" << j << "] STATIC verts=" << skinnedVerts.size()
+                << " x[" << bxMin << "," << bxMax << "] z[" << bzMin << "," << bzMax << "]\n";
+        }
+        else
+        {
+            // Driver-bone verts stay put (they slide correctly); follower-bone verts are
+            // re-skinned onto their driver's mirror slot so they slide the opposite way.
+            for (auto& sv : skinnedVerts)
+            {
+                auto it = followerDriver.find(sv.boneIndices[0]);
+                if (it != followerDriver.end())
+                    sv.SetSingleBone(driverSlot[it->second]);
+            }
+            dbg << "  submesh[" << j << "] verts=" << skinnedVerts.size()
+                << " x[" << bxMin << "," << bxMax << "] z[" << bzMin << "," << bzMax << "]\n";
+        }
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    MapAnimatedProp prop;
+    prop.controller        = controller;
+    prop.clip              = clip;
+    prop.meshes            = std::move(animatedMeshes);
+    prop.perObjectCBs      = perObjectCBs;
+    prop.staticMeshIds     = meshIds;
+    prop.pixelShaderType   = pst;
+    prop.doorType          = doorType;
+    prop.closedAtOpenStart = true;
+    prop.openSegmentIndex  = openSeg;
+    prop.closeSegmentIndex = openSeg;
+    // Each driver -> mirror-slot pair. The mirror plane cancels out for a pure
+    // translation (R * T(t) * R = T(-t) regardless of the plane), so 0 is fine.
+    for (const auto& [driver, slot] : driverSlot)
+        prop.mirrorBonePairs.push_back({ static_cast<int>(driver), static_cast<int>(slot) });
+    prop.mirrorPlaneX      = 0.f;
+    prop.doubleSided       = false;   // reflected translation preserves winding
+
+    size_t mirrorPairCount = prop.mirrorBonePairs.size();
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
+    m_doorAnimPropCount++;
+    OutputDebugStringA(std::format(
+        "[DoorAnim] Uncharted Isle prop {} slide door type {} (hash 0x{:X}) with {} mirror pair(s)\n",
+        propIndex, static_cast<int>(doorType), modelFileHash, mirrorPairCount).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Door where only part of the mesh animates (Nomad's Isle).
+// Pins vertices belonging to a static submesh OR a static bone to the bind pose,
+// while the rest plays the open segment (hash 0x303419C9) normally.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupDoorPartialStatic(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint8_t doorType,
+    const std::vector<size_t>& staticSubmeshes,
+    const std::vector<uint32_t>& staticBones,
+    bool lockRootPosition,
+    const std::vector<std::pair<uint32_t, uint32_t>>& boneRemap)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* animFileData = m_datManager->read_file(mftIndex);
+    if (!animFileData)
+        return;
+
+    size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+    delete[] animFileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+        if (segments[s].hash == 0x303419C9) openSeg = s;
+    if (openSeg == SIZE_MAX) openSeg = segments.size() - 1;
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    // Mirror the GWMB "Lock Root Position" toggle: strips root-bone translation so the
+    // door leaves rotate in place (hinge swing) instead of sliding away. Must be set
+    // before the SetSegment/SetTime calls below, which evaluate the bone matrices.
+    controller->SetLockRootPosition(lockRootPosition);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(openSeg);
+    controller->SetLooping(false);
+    controller->SetPlaybackSpeed(100000.0f);
+    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+    controller->Play();
+    controller->Pause();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+    const uint32_t staticSlot = static_cast<uint32_t>(boneCount);
+
+    auto isStaticSubmesh = [&](size_t j) {
+        return std::find(staticSubmeshes.begin(), staticSubmeshes.end(), j) != staticSubmeshes.end();
+    };
+    auto isStaticBone = [&](uint32_t b) {
+        return std::find(staticBones.begin(), staticBones.end(), b) != staticBones.end();
+    };
+    auto remapTarget = [&](uint32_t b) -> int {
+        for (const auto& [from, to] : boneRemap)
+            if (from == b) return static_cast<int>(to);
+        return -1;
+    };
+
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+
+        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount,
+            clip->hierarchyMode, j);
+
+        const bool wholeSubmeshStatic = isStaticSubmesh(j);
+        for (auto& sv : skinnedVerts)
+        {
+            uint32_t b = sv.boneIndices[0];
+            if (wholeSubmeshStatic || isStaticBone(b))
+            {
+                sv.SetSingleBone(staticSlot);
+            }
+            else
+            {
+                // Re-skin a bone's vertices onto another bone (e.g. a locked root bone's
+                // geometry that should follow a sliding child bone instead of freezing).
+                int to = remapTarget(b);
+                if (to >= 0)
+                    sv.SetSingleBone(static_cast<uint32_t>(to));
+            }
+        }
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    MapAnimatedProp prop;
+    prop.controller        = controller;
+    prop.clip              = clip;
+    prop.meshes            = std::move(animatedMeshes);
+    prop.perObjectCBs      = perObjectCBs;
+    prop.staticMeshIds     = meshIds;
+    prop.pixelShaderType   = pst;
+    prop.doorType          = doorType;
+    prop.closedAtOpenStart = true;
+    prop.openSegmentIndex  = openSeg;
+    prop.closeSegmentIndex = openSeg;
+
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
+    m_doorAnimPropCount++;
+    OutputDebugStringA(std::format(
+        "[DoorAnim] partial-static prop {} door type {} (hash 0x{:X}) staticSubmeshes={} staticBones={}\n",
+        propIndex, static_cast<int>(doorType), modelFileHash,
+        staticSubmeshes.size(), staticBones.size()).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Hinged double-door where the .dat only swings one leaf (Nomad's Isle 0x197A9).
+// The correct leaf swings on its hinge (driverBone); the second leaf (mirrorBones)
+// is driven by a mirrored copy of the driver so it swings open symmetrically.
+// staticBones (pillars/frame) are pinned to the bind pose.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupDoorHingeMirror(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint8_t doorType,
+    const std::vector<uint32_t>& staticBones,
+    uint32_t driverBone,
+    const std::vector<uint32_t>& mirrorBones,
+    const std::vector<size_t>& staticSubmeshes,
+    const std::vector<uint32_t>& driverRemapBones,
+    const std::vector<size_t>& hiddenSubmeshes,
+    const std::vector<uint32_t>& unlockedBones,
+    uint32_t openSegHash,
+    bool lockRoot,
+    uint32_t closeSegHash,
+    const std::vector<uint32_t>& ctrlLockedBones)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* animFileData = m_datManager->read_file(mftIndex);
+    if (!animFileData)
+        return;
+
+    size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+    delete[] animFileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+        if (segments[s].hash == openSegHash) openSeg = s;
+    if (openSeg == SIZE_MAX) openSeg = segments.size() - 1;
+
+    // Optional distinct close segment (for doors that toggle open<->closed, e.g. the
+    // Frozen Isle lever gates). When absent the door reuses the open segment's first
+    // frame as its closed pose (closedAtOpenStart, the open-once behavior).
+    size_t closeSeg = SIZE_MAX;
+    if (closeSegHash != 0)
+    {
+        for (size_t s = 0; s < segments.size(); s++)
+            if (segments[s].hash == closeSegHash) closeSeg = s;
+    }
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(openSeg);
+    controller->SetLooping(false);
+    controller->SetPlaybackSpeed(100000.0f);
+    // GWMB-style per-bone lock: freeze the given bones to bind pose in the controller
+    // itself (NOT SetLockRootPosition - GWMB leaves "Lock Root Position" unchecked). A
+    // frozen bone contributes no motion to itself AND its child bones inherit the frozen
+    // (bind) transform, which is what GWMB's per-bone "lock" checkbox does. Re-pointing
+    // verts to the static slot alone can't stop hierarchy propagation to children.
+    // ctrlLockedBones lets the controller-locked set differ from the static-vertex set:
+    // e.g. a locked root whose own leaf verts still need to be mirrored (Frozen lever gate).
+    if (!ctrlLockedBones.empty())
+        controller->SetLockedBones(ctrlLockedBones);
+    else if (lockRoot && !staticBones.empty())
+        controller->SetLockedBones(staticBones);
+    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+    controller->Play();
+    controller->Pause();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+    const uint32_t staticSlot = static_cast<uint32_t>(boneCount);
+    const uint32_t mirrorSlot = static_cast<uint32_t>(boneCount) + 1;
+
+    auto isStaticBone = [&](uint32_t b) {
+        // If an explicit unlocked set is given, lock every bone NOT in it (inverse mode);
+        // otherwise lock only the bones listed in staticBones.
+        if (!unlockedBones.empty())
+            return std::find(unlockedBones.begin(), unlockedBones.end(), b) == unlockedBones.end();
+        return std::find(staticBones.begin(), staticBones.end(), b) != staticBones.end();
+    };
+    auto isMirrorBone = [&](uint32_t b) {
+        return std::find(mirrorBones.begin(), mirrorBones.end(), b) != mirrorBones.end();
+    };
+    auto isDriverRemapBone = [&](uint32_t b) {
+        return std::find(driverRemapBones.begin(), driverRemapBones.end(), b) != driverRemapBones.end();
+    };
+    auto isStaticSubmesh = [&](size_t j) {
+        return std::find(staticSubmeshes.begin(), staticSubmeshes.end(), j) != staticSubmeshes.end();
+    };
+    auto isHiddenSubmesh = [&](size_t j) {
+        return std::find(hiddenSubmeshes.begin(), hiddenSubmeshes.end(), j) != hiddenSubmeshes.end();
+    };
+
+    // Symmetry plane = midpoint between the swinging (driver-side) leaf and the mirrored
+    // leaf, measured from vertex X-centroids.
+    double sumXDriver = 0.0, sumXMirror = 0.0;
+    size_t cntDriver = 0, cntMirror = 0;
+
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        // Hidden submeshes are not turned into animated instances; their static
+        // originals are already suppressed by AddAnimatedProp, so they vanish.
+        if (isHiddenSubmesh(j))
+            continue;
+
+        const auto& mesh = meshes[j];
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+
+        auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount,
+            clip->hierarchyMode, j);
+
+        const bool wholeSubmeshStatic = isStaticSubmesh(j);
+        for (auto& sv : skinnedVerts)
+        {
+            uint32_t b = sv.boneIndices[0];
+            if (wholeSubmeshStatic || isStaticBone(b))
+            {
+                sv.SetSingleBone(staticSlot);
+            }
+            else if (isMirrorBone(b))
+            {
+                sumXMirror += sv.position.x; cntMirror++;
+                sv.SetSingleBone(mirrorSlot);
+            }
+            else if (isDriverRemapBone(b))
+            {
+                // Panel geometry rigged to a static bone: re-skin it onto the driver bone
+                // so it swings with the real hinge. Counts toward the driver-side centroid.
+                sumXDriver += sv.position.x; cntDriver++;
+                sv.SetSingleBone(driverBone);
+            }
+            else
+            {
+                // Swinging (driver-side) leaf: left on its own bone, animates normally.
+                // Only the driver bone's own vertices define the panel centroid used for
+                // the symmetry plane (other animating bones may be off-center frame bits).
+                if (b == driverBone) { sumXDriver += sv.position.x; cntDriver++; }
+            }
+        }
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    float mirrorPlaneX = 0.f;
+    if (cntDriver > 0 && cntMirror > 0)
+        mirrorPlaneX = static_cast<float>(
+            (sumXDriver / cntDriver + sumXMirror / cntMirror) * 0.5);
+
+    MapAnimatedProp prop;
+    prop.controller        = controller;
+    prop.clip              = clip;
+    prop.meshes            = std::move(animatedMeshes);
+    prop.perObjectCBs      = perObjectCBs;
+    prop.staticMeshIds     = meshIds;
+    prop.pixelShaderType   = pst;
+    prop.doorType          = doorType;
+    if (closeSeg != SIZE_MAX)
+    {
+        // Toggling door: real open and close segments, no closed-at-open-start reuse.
+        prop.closedAtOpenStart = false;
+        prop.openSegmentIndex  = openSeg;
+        prop.closeSegmentIndex = closeSeg;
+    }
+    else
+    {
+        prop.closedAtOpenStart = true;
+        prop.openSegmentIndex  = openSeg;
+        prop.closeSegmentIndex = openSeg;
+    }
+    prop.mirrorBonePairs   = {{ static_cast<int>(driverBone), static_cast<int>(mirrorSlot) }};
+    prop.mirrorPlaneX      = mirrorPlaneX;
+    prop.doubleSided       = true;   // hinge reflection reverses winding
+
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
+    m_doorAnimPropCount++;
+    OutputDebugStringA(std::format(
+        "[DoorAnim] hinge-mirror prop {} door type {} (hash 0x{:X}) driver bone {} plane x={:.2f}\n",
+        propIndex, static_cast<int>(doorType), modelFileHash, driverBone, mirrorPlaneX).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Procedural double-hinge door (broken rig — panels rigged to static bones).
+// Synthesizes a pure vertical-axis hinge rotation for each panel about its own
+// outer edge, driven by door open progress, mirrored between the two leaves.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupDoorProceduralDoubleHinge(
+    int propIndex,
+    const FFNA_ModelFile& modelFile,
+    uint32_t modelFileHash,
+    const std::vector<Mesh>& meshes,
+    const std::vector<PerObjectCB>& perObjectCBs,
+    const std::vector<int>& meshIds,
+    const std::vector<std::vector<int>>& perMeshTexIds,
+    PixelShaderType pst,
+    uint8_t doorType,
+    const std::vector<size_t>& staticSubmeshes,
+    const std::vector<uint32_t>& staticBones,
+    const std::vector<uint32_t>& leftBones,
+    const std::vector<uint32_t>& rightBones,
+    float openAngleDegrees,
+    XMFLOAT3 leftOffset,
+    XMFLOAT3 rightOffset)
+{
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    auto mit = m_hashIndex->find(static_cast<int>(modelFileHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+    uint8_t* animFileData = m_datManager->read_file(mftIndex);
+    if (!animFileData)
+        return;
+
+    size_t animFileSize = m_datManager->get_MFT()[mftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animFileData, animFileSize);
+    delete[] animFileData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+        if (segments[s].hash == 0x303419C9) openSeg = s;
+    if (openSeg == SIZE_MAX) openSeg = segments.size() - 1;
+
+    auto controller = std::make_shared<GW::Animation::AnimationController>();
+    controller->Initialize(clip);
+    controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+    controller->SetSegment(openSeg);
+    controller->SetLooping(false);
+    controller->SetPlaybackSpeed(100000.0f);
+    controller->SetTime(static_cast<float>(segments[openSeg].startTime));
+    controller->Play();
+    controller->Pause();
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+    const uint32_t staticSlot = static_cast<uint32_t>(boneCount);
+    const uint32_t leftSlot   = static_cast<uint32_t>(boneCount) + 1;
+    const uint32_t rightSlot  = static_cast<uint32_t>(boneCount) + 2;
+
+    auto inList = [](const std::vector<uint32_t>& v, uint32_t b) {
+        return std::find(v.begin(), v.end(), b) != v.end();
+    };
+    auto isStaticSubmesh = [&](size_t j) {
+        return std::find(staticSubmeshes.begin(), staticSubmeshes.end(), j) != staticSubmeshes.end();
+    };
+
+    // Pass 1: extract vertices and accumulate per-leaf X bounds + centroid. The outer
+    // vertical edge (min-X for the left leaf, max-X for the right) is the hinge; the
+    // centroid gives the panel's long-axis direction so we can measure how far the bind
+    // pose is tilted out of the wall plane.
+    bool haveL = false, haveR = false;
+    float lMinX = 0, lMaxX = 0, rMinX = 0, rMaxX = 0;
+    double lcx = 0, lcz = 0; int lcn = 0;
+    double rcx = 0, rcz = 0; int rcn = 0;
+
+    std::vector<std::vector<SkinnedGWVertex>> perMeshVerts(meshes.size());
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+        AnimationPanelState::SubmeshBoneData boneData;
+        std::vector<uint32_t> vertexBoneGroups;
+        if (j < geomModels.size())
+        {
+            const auto& geomModel = geomModels[j];
+            boneData = AnimationPanelState::ExtractBoneData(
+                geomModel.extra_data, geomModel.u0, geomModel.u1);
+            vertexBoneGroups.reserve(geomModel.vertices.size());
+            for (const auto& mv : geomModel.vertices)
+                vertexBoneGroups.push_back(mv.group);
+        }
+        perMeshVerts[j] = AnimationPanelState::CreateSkinnedVertices(
+            mesh, boneData, vertexBoneGroups, boneCount, clip->hierarchyMode, j);
+
+        if (isStaticSubmesh(j)) continue;
+        for (const auto& sv : perMeshVerts[j])
+        {
+            uint32_t b = sv.boneIndices[0];
+            if (inList(leftBones, b)) {
+                if (!haveL) { lMinX = lMaxX = sv.position.x; haveL = true; }
+                lMinX = std::min(lMinX, sv.position.x);
+                lMaxX = std::max(lMaxX, sv.position.x);
+                lcx += sv.position.x; lcz += sv.position.z; lcn++;
+            } else if (inList(rightBones, b)) {
+                if (!haveR) { rMinX = rMaxX = sv.position.x; haveR = true; }
+                rMinX = std::min(rMinX, sv.position.x);
+                rMaxX = std::max(rMaxX, sv.position.x);
+                rcx += sv.position.x; rcz += sv.position.z; rcn++;
+            }
+        }
+    }
+
+    float lHingeX = lMinX;                 // left leaf outer edge
+    float rHingeX = rMaxX;                 // right leaf outer edge
+    const float lEdgeBand = (lMaxX - lMinX) * 0.15f + 1.0f;
+    const float rEdgeBand = (rMaxX - rMinX) * 0.15f + 1.0f;
+
+    // Pass 1b: hinge-edge Z (average Z of the verts on the outer edge).
+    double lHingeZSum = 0, rHingeZSum = 0; int lHingeZN = 0, rHingeZN = 0;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        if (isStaticSubmesh(j)) continue;
+        for (const auto& sv : perMeshVerts[j])
+        {
+            uint32_t b = sv.boneIndices[0];
+            if (inList(leftBones, b) && sv.position.x <= lHingeX + lEdgeBand) {
+                lHingeZSum += sv.position.z; lHingeZN++;
+            } else if (inList(rightBones, b) && sv.position.x >= rHingeX - rEdgeBand) {
+                rHingeZSum += sv.position.z; rHingeZN++;
+            }
+        }
+    }
+    float lHingeZ = lHingeZN ? static_cast<float>(lHingeZSum / lHingeZN) : 0.f;
+    float rHingeZ = rHingeZN ? static_cast<float>(rHingeZSum / rHingeZN) : 0.f;
+
+    // Flatten each leaf into the wall plane (both hinges share ~the same Z). The panel's
+    // long axis runs from the hinge to its centroid; rotate about the hinge so that axis
+    // aligns with the wall line (left leaf -> +X toward center, right leaf -> -X). This
+    // removes the bind-pose tilt that leaves the panels behind the pillars and apart.
+    auto wrapPi = [](float a) {
+        while (a >  3.14159265358979f) a -= 6.28318530717959f;
+        while (a < -3.14159265358979f) a += 6.28318530717959f;
+        return a;
+    };
+    float betaL = 0.f, betaR = 0.f;
+    if (lcn) betaL = wrapPi(std::atan2(static_cast<float>(lcz / lcn) - lHingeZ,
+                                       static_cast<float>(lcx / lcn) - lHingeX) - 0.f);
+    if (rcn) betaR = wrapPi(std::atan2(static_cast<float>(rcz / rcn) - rHingeZ,
+                                       static_cast<float>(rcx / rcn) - rHingeX)
+                            - 3.14159265358979f);
+
+    // Seat each leaf onto its pillar: flatten (negligible here) then translate by the
+    // caller-supplied offset. The hinge pivot shifts by the same offset so the runtime
+    // swing stays consistent, just relocated onto the pillar.
+    XMFLOAT3 Lp{ lHingeX + leftOffset.x,  leftOffset.y,  lHingeZ + leftOffset.z };
+    XMFLOAT3 Rp{ rHingeX + rightOffset.x, rightOffset.y, rHingeZ + rightOffset.z };
+    XMMATRIX Lflat = XMMatrixTranslation(-lHingeX, 0.f, -lHingeZ)
+                   * XMMatrixRotationY(betaL)
+                   * XMMatrixTranslation(lHingeX, 0.f, lHingeZ)
+                   * XMMatrixTranslation(leftOffset.x, leftOffset.y, leftOffset.z);
+    XMMATRIX Rflat = XMMatrixTranslation(-rHingeX, 0.f, -rHingeZ)
+                   * XMMatrixRotationY(betaR)
+                   * XMMatrixTranslation(rHingeX, 0.f, rHingeZ)
+                   * XMMatrixTranslation(rightOffset.x, rightOffset.y, rightOffset.z);
+    auto bakeMat = [](SkinnedGWVertex& sv, XMMATRIX M) {
+        XMVECTOR p = XMVectorSet(sv.position.x, sv.position.y, sv.position.z, 1.0f);
+        XMStoreFloat3(&sv.position, XMVector3Transform(p, M));
+        XMVECTOR n = XMVectorSet(sv.normal.x, sv.normal.y, sv.normal.z, 0.0f);
+        XMStoreFloat3(&sv.normal, XMVector3Normalize(XMVector3TransformNormal(n, M)));
+    };
+
+    // Pass 2: bake the flatten rotation into each leaf and assign bones to slots.
+    std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+    for (size_t j = 0; j < meshes.size(); j++)
+    {
+        const auto& mesh = meshes[j];
+        auto skinnedVerts = std::move(perMeshVerts[j]);
+
+        const bool wholeSubmeshStatic = isStaticSubmesh(j);
+        for (auto& sv : skinnedVerts)
+        {
+            uint32_t b = sv.boneIndices[0];
+            if (wholeSubmeshStatic || inList(staticBones, b))
+            {
+                sv.SetSingleBone(staticSlot);
+            }
+            else if (inList(leftBones, b))
+            {
+                bakeMat(sv, Lflat);
+                sv.SetSingleBone(leftSlot);
+            }
+            else if (inList(rightBones, b))
+            {
+                bakeMat(sv, Rflat);
+                sv.SetSingleBone(rightSlot);
+            }
+            else
+            {
+                // Unclassified geometry: keep static so nothing unexpected moves.
+                sv.SetSingleBone(staticSlot);
+            }
+        }
+
+        auto animMesh = std::make_shared<AnimatedMeshInstance>(
+            device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+        if (j < perMeshTexIds.size())
+        {
+            auto texSRVs = m_mapRenderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+            animMesh->SetTextures(texSRVs, 3);
+        }
+
+        animMesh->SetPerObjectData(perObjectCBs[j]);
+        animatedMeshes.push_back(std::move(animMesh));
+    }
+
+    {
+        std::ofstream dbg("door_debug.log", std::ios::app);
+        dbg << "\n=== [procedural-hinge] 0x" << std::hex << modelFileHash << std::dec
+            << " prop " << propIndex << " ===\n";
+        dbg << "  Lpivot=(" << lHingeX << "," << lHingeZ << ") Rpivot=("
+            << rHingeX << "," << rHingeZ << ")\n";
+        dbg << "  flatten betaL=" << (betaL * 57.29578f) << "deg betaR="
+            << (betaR * 57.29578f) << "deg  Lx[" << lMinX << "," << lMaxX
+            << "] Rx[" << rMinX << "," << rMaxX << "]\n";
+    }
+
+    MapAnimatedProp prop;
+    prop.controller        = controller;
+    prop.clip              = clip;
+    prop.meshes            = std::move(animatedMeshes);
+    prop.perObjectCBs      = perObjectCBs;
+    prop.staticMeshIds     = meshIds;
+    prop.pixelShaderType   = pst;
+    prop.doorType          = doorType;
+    prop.closedAtOpenStart = true;
+    prop.openSegmentIndex  = openSeg;
+    prop.closeSegmentIndex = openSeg;
+    prop.proceduralHinge   = true;
+    prop.hingeStaticSlot   = staticSlot;
+    prop.hingeLeftSlot     = leftSlot;
+    prop.hingeRightSlot    = rightSlot;
+    prop.hingeLeftPivot    = Lp;
+    prop.hingeRightPivot   = Rp;
+    prop.hingeMaxAngle     = openAngleDegrees * 3.14159265358979f / 180.f;
+    prop.doubleSided       = true;   // rotating panels may face away from the camera
+
+    m_mapRenderer->AddAnimatedProp(std::move(prop));
+    m_doorAnimPropCount++;
+    OutputDebugStringA(std::format(
+        "[DoorAnim] procedural-hinge prop {} door type {} (hash 0x{:X}) "
+        "Lpivot=({:.1f},{:.1f}) Rpivot=({:.1f},{:.1f}) angle={:.0f}deg\n",
+        propIndex, static_cast<int>(doorType), modelFileHash,
+        lHingeX, lHingeZ, rHingeX, rHingeZ, openAngleDegrees).c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,6 +2632,777 @@ void ReplayWindow::SetupGateLockProps()
 }
 
 // ---------------------------------------------------------------------------
+// Gate lever — load and render the animated lever model (Isle of the Weeping Stone)
+//
+// The physical lever (model 0x2AD0D) sits at the "Gate lever" gadget. It is static
+// by default and plays its open segment (0x35E6AE29) / close segment (0x36F05E31)
+// in sync with the lever door (object 122 -> door type 19), exactly like the Isle of
+// Meditation gate locks: same animation clip (0x7079), only submesh 0 animated.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupWeepingLeverProp()
+{
+    if (m_weepingLeverModelLoaded)
+        return;
+    m_weepingLeverModelLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_replayCtx.datMapId != 0x2661F)
+        return;
+
+    if (m_replayCtx.agents.empty())
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    struct LeverPos { float x, y, z; };
+    std::vector<LeverPos> positions;
+    for (auto& [aid, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        if (ard.categoryName != "Gate lever") continue;
+        positions.push_back({ ard.snapshots[0].x, ard.snapshots[0].y, ard.snapshots[0].z });
+    }
+    if (positions.empty())
+        return;
+
+    constexpr uint32_t kLeverModelHash = 0x2AD0D;
+    auto mit = m_hashIndex->find(static_cast<int>(kLeverModelHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+
+    // The lever shares the Isle of Meditation gate-lock animation clip (segment hashes
+    // match: 0x35E6AE29 open, 0x36F05E31 close).
+    constexpr uint32_t kLeverAnimHash = 0x7079;
+    auto animIt = m_hashIndex->find(static_cast<int>(kLeverAnimHash));
+    if (animIt == m_hashIndex->end() || animIt->second.empty())
+        return;
+
+    int animMftIndex = animIt->second.at(0);
+    uint8_t* animData = m_datManager->read_file(animMftIndex);
+    if (!animData)
+        return;
+
+    size_t animSize = m_datManager->get_MFT()[animMftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+    delete[] animData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX, closeSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+    {
+        if (segments[s].hash == 0x35E6AE29) openSeg = s;
+        if (segments[s].hash == 0x36F05E31) closeSeg = s;
+    }
+    if (openSeg == SIZE_MAX) openSeg = 2;
+    if (closeSeg == SIZE_MAX) closeSeg = 3;
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    for (const auto& pos : positions)
+    {
+        XMFLOAT3 renderPos = ApplyMapTransformToPos(pos.x, pos.y, pos.z, m_replayCtx.mapTransform);
+        // Rotate the lever -90 deg (yaw about vertical Y) so it faces the tower flag stand.
+        XMMATRIX worldMat = XMMatrixRotationY(-XM_PIDIV2)
+                          * XMMatrixTranslation(renderPos.x, renderPos.y, renderPos.z);
+
+        std::vector<PerObjectCB> perObjectCBs(meshes.size());
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+            auto& mesh = meshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                modelFile.textures_parsed_correctly)
+            {
+                perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+                {
+                    perObjectCBs[j].uv_indices[k / 4][k % 4]     = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                    perObjectCBs[j].texture_indices[k / 4][k % 4] = static_cast<uint32_t>(mesh.tex_indices[k]);
+                    perObjectCBs[j].blend_flags[k / 4][k % 4]     = static_cast<uint32_t>(mesh.blend_flags[k]);
+                    perObjectCBs[j].texture_types[k / 4][k % 4]   = static_cast<uint32_t>(mesh.texture_types[k]);
+                }
+            }
+        }
+
+        auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0007u, pst);
+
+        if (modelFile.textures_parsed_correctly)
+        {
+            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+            {
+                auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+                map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            }
+        }
+
+        auto controller = std::make_shared<GW::Animation::AnimationController>();
+        controller->Initialize(clip);
+        controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+        controller->SetLooping(false);
+
+        std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+        std::vector<int> animStaticMeshIds;
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            // Only submesh 0 is animated (the lever handle on bone 0); all other
+            // submeshes stay as static rendered meshes.
+            if (j != 0)
+            {
+                animatedMeshes.push_back(nullptr);
+                continue;
+            }
+
+            const auto& mesh = meshes[j];
+            AnimationPanelState::SubmeshBoneData boneData;
+            std::vector<uint32_t> vertexBoneGroups;
+            if (j < geomModels.size())
+            {
+                const auto& geomModel = geomModels[j];
+                boneData = AnimationPanelState::ExtractBoneData(
+                    geomModel.extra_data, geomModel.u0, geomModel.u1);
+                vertexBoneGroups.reserve(geomModel.vertices.size());
+                for (const auto& mv : geomModel.vertices)
+                    vertexBoneGroups.push_back(mv.group);
+            }
+
+            if (j < meshIds.size())
+                animStaticMeshIds.push_back(meshIds[j]);
+
+            auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                mesh, boneData, vertexBoneGroups, boneCount,
+                clip->hierarchyMode, j);
+
+            // Lock bone 1 vertices to identity so only bone 0 (lever) animates
+            for (auto& sv : skinnedVerts)
+            {
+                if (sv.boneIndices[0] == 1)
+                    sv.SetSingleBone(static_cast<uint32_t>(boneCount));
+            }
+
+            auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+            if (j < perMeshTexIds.size())
+            {
+                auto texSRVs = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                animMesh->SetTextures(texSRVs, 3);
+            }
+
+            animMesh->SetPerObjectData(perObjectCBs[j]);
+            animatedMeshes.push_back(std::move(animMesh));
+        }
+
+        MapAnimatedProp prop;
+        prop.controller      = controller;
+        prop.clip            = clip;
+        prop.meshes          = std::move(animatedMeshes);
+        prop.perObjectCBs    = perObjectCBs;
+        prop.staticMeshIds   = animStaticMeshIds;
+        prop.pixelShaderType = pst;
+        prop.doorType        = 19;   // driven by the lever door (object 122) open/close events
+        prop.openSegmentIndex  = openSeg;
+        prop.closeSegmentIndex = closeSeg;
+
+        // Start closed/static: hold the last frame of the close segment, paused.
+        controller->SetSegment(closeSeg);
+        controller->SetTime(static_cast<float>(segments[closeSeg].endTime));
+        controller->Pause();
+
+        map_renderer->AddAnimatedProp(std::move(prop));
+        m_doorAnimPropCount++;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gate Lock — load and render the animated lever models (Frozen Isle)
+//
+// Two lever props (model 0x1E0E1) sit at the "Gate lever" gadgets. Each is static by
+// default and plays its open segment (0x35E6AE29) / close segment (0x36F05E31), once
+// per trigger (no looping), in sync with the gate it controls. Bone 0 drives the lever
+// handle and bone 1 is locked; only submesh 0 animates (submeshes 1 & 2 stay static).
+// The shared gate-lock animation clip (0x7079) carries those segments. Each prop's real
+// door type (21 red side / 22 blue side) is assigned in ResolveFrozenGates by nearest
+// guild lord, so the handle animates whenever its team's gate toggles.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupFrozenGateLockProps()
+{
+    if (m_frozenLeverModelLoaded)
+        return;
+    m_frozenLeverModelLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_replayCtx.datMapId != 0x1F265)
+        return;
+
+    if (m_replayCtx.agents.empty())
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    struct LeverPos { float x, y, z; };
+    std::vector<LeverPos> positions;
+    for (auto& [aid, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        if (ard.categoryName != "Gate lever") continue;   // categoryName stays "Gate lever"
+        positions.push_back({ ard.snapshots[0].x, ard.snapshots[0].y, ard.snapshots[0].z });
+    }
+    if (positions.empty())
+        return;
+
+    constexpr uint32_t kLeverModelHash = 0x1E0E1;
+    auto mit = m_hashIndex->find(static_cast<int>(kLeverModelHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    int mftIndex = mit->second.at(0);
+
+    FFNA_ModelFile modelFile;
+    try {
+        modelFile = m_datManager->parse_ffna_model_file(mftIndex);
+    } catch (...) {
+        return;
+    }
+    if (!modelFile.parsed_correctly)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+
+    // Shared gate-lock animation clip (segment hashes: 0x35E6AE29 open, 0x36F05E31 close).
+    constexpr uint32_t kLeverAnimHash = 0x7079;
+    auto animIt = m_hashIndex->find(static_cast<int>(kLeverAnimHash));
+    if (animIt == m_hashIndex->end() || animIt->second.empty())
+        return;
+
+    int animMftIndex = animIt->second.at(0);
+    uint8_t* animData = m_datManager->read_file(animMftIndex);
+    if (!animData)
+        return;
+
+    size_t animSize = m_datManager->get_MFT()[animMftIndex].uncompressedSize;
+    auto clipOpt = GW::Parsers::ParseAnimationFromFile(animData, animSize);
+    delete[] animData;
+
+    if (!clipOpt || !clipOpt->IsValid())
+        return;
+
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*clipOpt));
+    clip->BuildAnimationGroups();
+
+    const auto& segments = clip->animationSegments;
+    if (segments.size() < 2)
+        return;
+
+    size_t openSeg = SIZE_MAX, closeSeg = SIZE_MAX;
+    for (size_t s = 0; s < segments.size(); s++)
+    {
+        if (segments[s].hash == 0x35E6AE29) openSeg = s;
+        if (segments[s].hash == 0x36F05E31) closeSeg = s;
+    }
+    if (openSeg == SIZE_MAX) openSeg = 2;
+    if (closeSeg == SIZE_MAX) closeSeg = 3;
+
+    const auto& geomModels = modelFile.geometry_chunk.models;
+    size_t boneCount = clip->boneTracks.size();
+
+    // Determine red/blue guild lord positions so we can orient each lever per team side.
+    XMFLOAT3 redLord{}, blueLord{};
+    bool haveRed = false, haveBlue = false;
+    for (auto& [aid, a] : m_replayCtx.agents)
+    {
+        if (a.snapshots.empty()) continue;
+        if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
+        const auto& s0 = a.snapshots.front();
+        if (a.teamId == 1 && !haveRed)  { redLord  = { s0.x, s0.y, s0.z }; haveRed  = true; }
+        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+    }
+
+    for (const auto& pos : positions)
+    {
+        XMFLOAT3 renderPos = ApplyMapTransformToPos(pos.x, pos.y, pos.z, m_replayCtx.mapTransform);
+
+        // Red-side lever rotated 180°, blue-side lever rotated 90°.
+        float yaw = 0.f;
+        if (haveRed && haveBlue)
+        {
+            float dr = (pos.x - redLord.x) * (pos.x - redLord.x)
+                     + (pos.y - redLord.y) * (pos.y - redLord.y)
+                     + (pos.z - redLord.z) * (pos.z - redLord.z);
+            float db = (pos.x - blueLord.x) * (pos.x - blueLord.x)
+                     + (pos.y - blueLord.y) * (pos.y - blueLord.y)
+                     + (pos.z - blueLord.z) * (pos.z - blueLord.z);
+            yaw = (dr <= db) ? XM_PI : XM_PIDIV2;   // red: 180°, blue: 90°
+        }
+        XMMATRIX worldMat = XMMatrixRotationY(yaw)
+                          * XMMatrixTranslation(renderPos.x, renderPos.y, renderPos.z);
+
+        std::vector<PerObjectCB> perObjectCBs(meshes.size());
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+            auto& mesh = meshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                modelFile.textures_parsed_correctly)
+            {
+                perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+                {
+                    perObjectCBs[j].uv_indices[k / 4][k % 4]     = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                    perObjectCBs[j].texture_indices[k / 4][k % 4] = static_cast<uint32_t>(mesh.tex_indices[k]);
+                    perObjectCBs[j].blend_flags[k / 4][k % 4]     = static_cast<uint32_t>(mesh.blend_flags[k]);
+                    perObjectCBs[j].texture_types[k / 4][k % 4]   = static_cast<uint32_t>(mesh.texture_types[k]);
+                }
+            }
+        }
+
+        auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0007u, pst);
+
+        if (modelFile.textures_parsed_correctly)
+        {
+            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+            {
+                auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+                map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            }
+        }
+
+        auto controller = std::make_shared<GW::Animation::AnimationController>();
+        controller->Initialize(clip);
+        controller->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
+        controller->SetLooping(false);
+
+        std::vector<std::shared_ptr<AnimatedMeshInstance>> animatedMeshes;
+        std::vector<int> animStaticMeshIds;
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            // Only submesh 0 is animated (the lever handle on bone 0); submeshes 1 & 2
+            // stay as static rendered meshes.
+            if (j != 0)
+            {
+                animatedMeshes.push_back(nullptr);
+                continue;
+            }
+
+            const auto& mesh = meshes[j];
+            AnimationPanelState::SubmeshBoneData boneData;
+            std::vector<uint32_t> vertexBoneGroups;
+            if (j < geomModels.size())
+            {
+                const auto& geomModel = geomModels[j];
+                boneData = AnimationPanelState::ExtractBoneData(
+                    geomModel.extra_data, geomModel.u0, geomModel.u1);
+                vertexBoneGroups.reserve(geomModel.vertices.size());
+                for (const auto& mv : geomModel.vertices)
+                    vertexBoneGroups.push_back(mv.group);
+            }
+
+            if (j < meshIds.size())
+                animStaticMeshIds.push_back(meshIds[j]);
+
+            auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
+                mesh, boneData, vertexBoneGroups, boneCount,
+                clip->hierarchyMode, j);
+
+            // Lock bone 1 vertices to identity so only bone 0 (lever) animates.
+            for (auto& sv : skinnedVerts)
+            {
+                if (sv.boneIndices[0] == 1)
+                    sv.SetSingleBone(static_cast<uint32_t>(boneCount));
+            }
+
+            auto animMesh = std::make_shared<AnimatedMeshInstance>(
+                device, skinnedVerts, mesh.indices, static_cast<int>(j));
+
+            if (j < perMeshTexIds.size())
+            {
+                auto texSRVs = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[j]);
+                animMesh->SetTextures(texSRVs, 3);
+            }
+
+            animMesh->SetPerObjectData(perObjectCBs[j]);
+            animatedMeshes.push_back(std::move(animMesh));
+        }
+
+        MapAnimatedProp prop;
+        prop.controller      = controller;
+        prop.clip            = clip;
+        prop.meshes          = std::move(animatedMeshes);
+        prop.perObjectCBs    = perObjectCBs;
+        prop.staticMeshIds   = animStaticMeshIds;
+        prop.pixelShaderType = pst;
+        prop.doorType        = 21;   // placeholder; ResolveFrozenGates() assigns 21/22 by side
+        prop.closedAtOpenStart = false;
+        prop.openSegmentIndex  = openSeg;
+        prop.closeSegmentIndex = closeSeg;
+
+        // Start at the open pose (gates 1 & 2 open at match start); UpdateDoorAnimations
+        // re-seeds the correct state on the first scan once door types are assigned.
+        controller->SetSegment(openSeg);
+        controller->SetTime(static_cast<float>(segments[openSeg].endTime));
+        controller->Pause();
+
+        auto& aps = map_renderer->GetAnimatedProps();
+        map_renderer->AddAnimatedProp(std::move(prop));
+        m_doorAnimPropCount++;
+
+        // Record this lever so ResolveFrozenGates() can bind it to its team's gate type.
+        // Store the RAW gadget position (same space as guild-lord snapshots used there).
+        if (!aps.empty())
+            m_frozenLeverCandidates.push_back({
+                aps.size() - 1,
+                XMFLOAT3(pos.x, pos.y, pos.z),
+                kLeverModelHash });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frozen Isle lever gates — resolve each shared-model prop's door type
+// ---------------------------------------------------------------------------
+// 0x255BE has two instances (doors 1 & 2) and 0x57B57 has two (doors 3 & 4). The two
+// instances of a model sit on opposite team sides, so we split each pair by nearest
+// guild lord: the prop closer to the BLUE lord takes the blue-side object id's door type,
+// the other takes the red-side type. Runs once, after guild-lord snapshots are available.
+void ReplayWindow::ResolveFrozenGates()
+{
+    if (m_frozenGatesResolved)
+        return;
+    if (m_replayCtx.datMapId != 0x1F265)
+        return;
+    if (m_frozenGateCandidates.empty())
+        return;
+    if (!m_mapRenderer || m_replayCtx.agents.empty())
+        return;
+
+    // Guild lord reference positions (teamId 1 = red, 2 = blue).
+    bool haveBlue = false, haveRed = false;
+    DirectX::XMFLOAT3 blueLord{}, redLord{};
+    for (auto& [aid, a] : m_replayCtx.agents)
+    {
+        if (a.snapshots.empty()) continue;
+        if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
+        const auto& s0 = a.snapshots.front();
+        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+        else if (a.teamId == 1 && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
+    }
+    if (!haveBlue || !haveRed)
+        return;   // wait until both lords are present
+
+    auto dist2 = [](const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b) {
+        float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+
+    // Resolve one model group (exactly its two instances) to (blueType, redType).
+    auto resolveGroup = [&](uint32_t modelHash, uint8_t blueType, uint8_t redType) {
+        std::vector<FrozenGateCandidate*> group;
+        for (auto& c : m_frozenGateCandidates)
+            if (c.modelHash == modelHash) group.push_back(&c);
+        if (group.size() < 2)
+        {
+            // Only one instance found: assign by whichever lord is nearer.
+            for (auto* c : group)
+            {
+                if (c->animPropIndex >= animProps.size()) continue;
+                bool blue = dist2(c->worldPos, blueLord) <= dist2(c->worldPos, redLord);
+                animProps[c->animPropIndex].doorType = blue ? blueType : redType;
+            }
+            return;
+        }
+        // Pick the instance closest to the blue lord as the blue-side door; the other is red.
+        size_t blueIdx = 0;
+        float bestBlue = FLT_MAX;
+        for (size_t k = 0; k < group.size(); k++)
+        {
+            float d = dist2(group[k]->worldPos, blueLord);
+            if (d < bestBlue) { bestBlue = d; blueIdx = k; }
+        }
+        for (size_t k = 0; k < group.size(); k++)
+        {
+            if (group[k]->animPropIndex >= animProps.size()) continue;
+            animProps[group[k]->animPropIndex].doorType = (k == blueIdx) ? blueType : redType;
+        }
+    };
+
+    resolveGroup(0x255BE, /*blue*/ 22, /*red*/ 21);   // doors 2 (11692) / 1 (61318)
+    resolveGroup(0x57B57, /*blue*/ 24, /*red*/ 23);   // doors 4 (12669) / 3 (56526)
+
+    // Record each gate's resolved door type + world position for the minimap state icons.
+    m_frozenGateIcons.clear();
+    for (auto& c : m_frozenGateCandidates)
+    {
+        if (c.animPropIndex >= animProps.size()) continue;
+        int dt = animProps[c.animPropIndex].doorType;
+        if (dt >= 21 && dt <= 24)
+            m_frozenGateIcons.push_back({ dt, c.worldPos });
+    }
+
+    // Bind each gate-lock lever to a gate on its own team side (nearest guild lord):
+    // red-side lever -> door 1 (type 21), blue-side lever -> door 2 (type 22). Both those
+    // gates start open, so the lever handle starts in the open pose and toggles with them.
+    for (auto& c : m_frozenLeverCandidates)
+    {
+        if (c.animPropIndex >= animProps.size()) continue;
+        bool red = dist2(c.worldPos, redLord) <= dist2(c.worldPos, blueLord);
+        animProps[c.animPropIndex].doorType = red ? 21 : 22;
+    }
+
+    m_frozenGatesResolved = true;
+    // Force UpdateDoorAnimations to re-seed poses now that door types are known.
+    m_doorLastScanTime = -1.f;
+}
+
+// ---------------------------------------------------------------------------
+// Druid's Isle vine bridges — one door type per instance
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::ResolveDruidBridges()
+{
+    if (m_druidBridgesResolved)
+        return;
+    if (m_replayCtx.datMapId != 0x1F27A)
+        return;
+    if (m_druidBridgeCandidates.empty())
+        return;
+    if (!m_mapRenderer || m_replayCtx.agents.empty())
+        return;
+
+    // Guild lord reference positions (teamId 1 = red, 2 = blue).
+    bool haveBlue = false, haveRed = false;
+    DirectX::XMFLOAT3 blueLord{}, redLord{};
+    for (auto& [aid, a] : m_replayCtx.agents)
+    {
+        if (a.snapshots.empty()) continue;
+        if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
+        const auto& s0 = a.snapshots.front();
+        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+        else if (a.teamId == 1 && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
+    }
+    if (!haveBlue || !haveRed)
+        return;   // wait until both lords are present
+
+    auto dist2 = [](const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b) {
+        float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+        return dx * dx + dy * dy + dz * dz;
+    };
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+
+    // Type 26 = object 39278 (red side), type 27 = object 51238 (blue side). If the two
+    // bridges ever turn out to be swapped relative to the events, exchange these two.
+    constexpr uint8_t kRedType = 26, kBlueType = 27;
+
+    if (m_druidBridgeCandidates.size() < 2)
+    {
+        for (auto& c : m_druidBridgeCandidates)
+        {
+            if (c.animPropIndex >= animProps.size()) continue;
+            bool red = dist2(c.worldPos, redLord) <= dist2(c.worldPos, blueLord);
+            animProps[c.animPropIndex].doorType = red ? kRedType : kBlueType;
+        }
+    }
+    else
+    {
+        // Pick the instance closest to the red lord as the red-side bridge; the other is blue.
+        size_t redIdx = 0;
+        float bestRed = FLT_MAX;
+        for (size_t k = 0; k < m_druidBridgeCandidates.size(); k++)
+        {
+            float d = dist2(m_druidBridgeCandidates[k].worldPos, redLord);
+            if (d < bestRed) { bestRed = d; redIdx = k; }
+        }
+        for (size_t k = 0; k < m_druidBridgeCandidates.size(); k++)
+        {
+            size_t pi = m_druidBridgeCandidates[k].animPropIndex;
+            if (pi >= animProps.size()) continue;
+            animProps[pi].doorType = (k == redIdx) ? kRedType : kBlueType;
+        }
+    }
+
+    m_druidBridgesResolved = true;
+    // Force UpdateDoorAnimations to re-seed poses now that door types are known.
+    m_doorLastScanTime = -1.f;
+}
+
+// ---------------------------------------------------------------------------
 // Gate Lock — render static lever models (Imperial Isle)
 // ---------------------------------------------------------------------------
 
@@ -1767,6 +3600,124 @@ static int GetDoorType(uint32_t datMapId, uint32_t objectId)
         default: return 0;
         }
     }
+    if (datMapId == 0x1F24D) // Burning Isle
+    {
+        switch (objectId) {
+        case 55597: return 5;   // door model 0x1F23F
+        case 5733:  return 6;   // door model 0x1F247
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x1F268) // Nomad's Isle
+    {
+        switch (objectId) {
+        case 55597: case 5733: return 11;
+        case 37843: case 17419: case 32640: case 18513: return 12;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x3321C) // Isle of Wurms
+    {
+        // 4 door events fire simultaneously (once per match); the object_id -> physical
+        // door mapping is unknown, and there are only two door models (0x330F7 x2,
+        // 0x331A4 x2). Since they all open together, assign every id to one door type
+        // and let each model prop share it.
+        switch (objectId) {
+        case 56526: case 61318: case 12669: case 11692: return 13;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x33056) // Uncharted Isle
+    {
+        // All 4 door events fire simultaneously (once per match) and the mapping of
+        // object_id -> physical door is unknown. Since they open together it does not
+        // matter which is which, so assign each object_id to a distinct door type.
+        switch (objectId) {
+        case 56526: return 7;   // door model 0x3C163  (hinge)
+        case 61318: return 8;   // door model 0x32F3A  (hinge)
+        case 12669: return 9;   // door model 0x32F0C  (horizontal slide)
+        case 11692: return 10;  // door model 0x336BB  (horizontal telescoping slide)
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x26625) // Isle of Jade
+    {
+        // 4 door events fire simultaneously (once per match); object_id -> physical door
+        // mapping is unknown. Two models (0x285E7 x2, 0x265B5 x2) all open together, so
+        // assign every id to one shared door type.
+        switch (objectId) {
+        case 11692: case 56526: case 12669: case 61318: return 14;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x1F29B) // Isle of the Dead
+    {
+        // 4 door events fire simultaneously (once per match); object_id -> physical door
+        // mapping is unknown. Four door models (0x1F294, 0x1F291, 0x1F281, 0x1E820) all
+        // open together, so assign every id to one shared door type.
+        switch (objectId) {
+        case 56526: case 61318: case 12669: case 11692: return 15;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x334A2) // Isle of Solitude
+    {
+        // 4 door events fire simultaneously (once per match); object_id -> physical door
+        // mapping is unknown. Two models (0x33CD5 x2, 0x3323B x2) all open together, so
+        // assign every id to one shared door type.
+        switch (objectId) {
+        case 56529: case 61318: case 12669: case 11692: return 16;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x2661F) // Isle of the Weeping Stone
+    {
+        // The 0x2858E/0x28578 gates open purely on the timeline (type 17, handled below).
+        // 0x1EAFB is shared: the four event gates (147/9305/30563/4417, open once at ~01:00)
+        // are type 18, while object 122 is the lever door that toggles open/close and is
+        // type 19. Both use model 0x1EAFB; the physical lever prop is resolved at runtime as
+        // the 0x1EAFB instance nearest the flag stand.
+        switch (objectId) {
+        case 147: case 9305: case 30563: case 4417: return 18;
+        case 122:                                    return 19;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x1F27A) // Druid's Isle
+    {
+        // Two vine bridges that grow when a vine seed is planted (StoC door event).
+        // 39278 = bridge nearest red lord, 51238 = bridge nearest blue lord. Both are model
+        // 0x29FD, but each grows on its own event, so they get separate door types; the
+        // prop -> type assignment happens by nearest guild lord in ResolveDruidBridges().
+        switch (objectId) {
+        case 39278: return 26;
+        case 51238: return 27;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x3314E) // Corrupted Isle
+    {
+        // 4 doors open simultaneously once per match; 6 object ids, unknown mapping.
+        switch (objectId) {
+        case 54462: case 63151: case 33911: case 44135: case 40443: case 52019: return 25;
+        default: return 0;
+        }
+    }
+    if (datMapId == 0x1F265) // Frozen Isle
+    {
+        // Door 0x1F251/0x1F252 open once per match; the event carries one of these object
+        // ids (15922/55597/5733) and we can't tell them apart, so map all to one door type.
+        // The four lever gates each get their own type (they toggle independently from two
+        // levers): 61318/11692 share model 0x255BE, 56526/12669 share model 0x57B57.
+        switch (objectId) {
+        case 15922: case 55597: case 5733: return 20;
+        case 61318: return 21;   // door 1 (0x255BE, red side)
+        case 11692: return 22;   // door 2 (0x255BE, blue side)
+        case 56526: return 23;   // door 3 (0x57B57, red side)
+        case 12669: return 24;   // door 4 (0x57B57, blue side)
+        default: return 0;
+        }
+    }
     return 0;
 }
 
@@ -1786,7 +3737,16 @@ void ReplayWindow::UpdateDoorAnimations()
                || (timeDelta > 1.0f);
     m_doorLastScanTime = curTime;
 
-    bool prevOpen[5] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2], m_doorTypeOpen[3], m_doorTypeOpen[4] };
+    bool prevOpen[28] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2], m_doorTypeOpen[3],
+                          m_doorTypeOpen[4], m_doorTypeOpen[5], m_doorTypeOpen[6],
+                          m_doorTypeOpen[7], m_doorTypeOpen[8], m_doorTypeOpen[9],
+                          m_doorTypeOpen[10], m_doorTypeOpen[11], m_doorTypeOpen[12],
+                          m_doorTypeOpen[13], m_doorTypeOpen[14], m_doorTypeOpen[15],
+                          m_doorTypeOpen[16], m_doorTypeOpen[17], m_doorTypeOpen[18],
+                          m_doorTypeOpen[19], m_doorTypeOpen[20], m_doorTypeOpen[21],
+                          m_doorTypeOpen[22], m_doorTypeOpen[23], m_doorTypeOpen[24],
+                          m_doorTypeOpen[25], m_doorTypeOpen[26],
+                          m_doorTypeOpen[27] };
 
     if (seeked)
     {
@@ -1794,6 +3754,40 @@ void ReplayWindow::UpdateDoorAnimations()
         m_doorTypeOpen[2] = false;
         m_doorTypeOpen[3] = false;
         m_doorTypeOpen[4] = false;
+        m_doorTypeOpen[5] = false;
+        m_doorTypeOpen[6] = false;
+        m_doorTypeOpen[7] = false;
+        m_doorTypeOpen[8] = false;
+        m_doorTypeOpen[9] = false;
+        m_doorTypeOpen[10] = false;
+        m_doorTypeOpen[11] = false;
+        m_doorTypeOpen[12] = false;
+        m_doorTypeOpen[13] = false;
+        m_doorTypeOpen[14] = false;
+        m_doorTypeOpen[15] = false;
+        m_doorTypeOpen[16] = false;
+        m_doorTypeOpen[17] = false;
+        m_doorTypeOpen[18] = false;
+        m_doorTypeOpen[19] = false;
+        m_doorTypeOpen[20] = false;
+        m_doorTypeOpen[21] = false;
+        m_doorTypeOpen[22] = false;
+        m_doorTypeOpen[23] = false;
+        m_doorTypeOpen[24] = false;
+        m_doorTypeOpen[25] = false;
+        m_doorTypeOpen[26] = false;
+        m_doorTypeOpen[27] = false;
+
+        // Frozen Isle lever gates start with doors 1 & 2 OPEN and doors 3 & 4 CLOSED
+        // (confirmed in door_events: the match-start events for 61318/11692 carry status
+        // 1=open, 56526/12669 carry status 2=closed). Those initial events are stage 3 and
+        // are skipped by the stage-2 filter below, so seed the open pair here; the per-event
+        // toggles after t=0 take over from there.
+        if (m_replayCtx.datMapId == 0x1F265)
+        {
+            m_doorTypeOpen[21] = true;   // door 1 (61318) open at start
+            m_doorTypeOpen[22] = true;   // door 2 (11692) open at start
+        }
     }
 
     m_doorTypeOpen[4] = (curTime >= 1.0f);
@@ -1815,6 +3809,13 @@ void ReplayWindow::UpdateDoorAnimations()
         m_doorTypeOpen[dt] = (ev.status == 1);
     }
 
+    // Isle of the Weeping Stone auto-open doors: the StoC door-event object ids don't map
+    // cleanly to these gates, so open them purely on the timeline instead. m_debugTimeline
+    // is 0-based (0 = start of replay, in seconds, only advancing while playing), so open
+    // them 5 s after the replay begins.
+    if (m_replayCtx.datMapId == 0x2661F)
+        m_doorTypeOpen[17] = (curTime >= 5.0f);
+
     float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 
     auto& animProps = m_mapRenderer->GetAnimatedProps();
@@ -1824,12 +3825,50 @@ void ReplayWindow::UpdateDoorAnimations()
             continue;
 
         bool isOpen = m_doorTypeOpen[ap.doorType];
+
+        // Procedural grow (Druid's Isle vine bridges): ignore the .dat clip's motion and
+        // just ramp growProgress toward the open/closed target. The renderer blends the
+        // bone palette bind->built by this progress. On seek, snap to the target.
+        if (ap.proceduralGrow)
+        {
+            float target = isOpen ? 1.0f : 0.0f;
+            float dur = (ap.growDuration > 0.0001f) ? ap.growDuration : 1.5f;
+            if (seeked)
+            {
+                ap.growProgress = target;
+            }
+            else if (ap.growProgress != target)
+            {
+                float step = frameDt / dur;
+                if (ap.growProgress < target)
+                    ap.growProgress = std::min(target, ap.growProgress + step);
+                else
+                    ap.growProgress = std::max(target, ap.growProgress - step);
+            }
+            continue;
+        }
+
         bool stateChanged = seeked || (isOpen != prevOpen[ap.doorType]);
 
         if (stateChanged)
         {
             size_t targetSeg = isOpen ? ap.openSegmentIndex : ap.closeSegmentIndex;
             const auto& segments = ap.clip->animationSegments;
+
+            // Doors whose closed pose is frame 0 of the open segment (Burning Isle):
+            // hold at the open segment's start while closed, then play it once.
+            if (ap.closedAtOpenStart && !isOpen)
+            {
+                if (ap.openSegmentIndex < segments.size())
+                {
+                    ap.controller->SetSegment(ap.openSegmentIndex);
+                    ap.controller->SetLooping(false);
+                    ap.controller->SetTime(
+                        static_cast<float>(segments[ap.openSegmentIndex].startTime));
+                    ap.controller->Pause();
+                }
+                continue;
+            }
 
             if (targetSeg >= segments.size())
             {
@@ -1846,13 +3885,47 @@ void ReplayWindow::UpdateDoorAnimations()
             if (seeked)
             {
                 ap.controller->SetSegment(targetSeg);
-                ap.controller->SetTime(static_cast<float>(segments[targetSeg].endTime));
-                ap.controller->Pause();
+                if (ap.loopOnOpen && isOpen)
+                {
+                    ap.controller->SetLooping(true);
+                    ap.controller->Play();
+                }
+                else
+                {
+                    ap.controller->SetTime(static_cast<float>(segments[targetSeg].endTime));
+                    ap.controller->Pause();
+                }
             }
             else
             {
-                ap.controller->SetSegment(targetSeg);
-                ap.controller->SetLooping(false);
+                // Capture how far the currently-playing segment has progressed BEFORE
+                // switching, so an interrupted swing can resume from its current angle
+                // instead of snapping to the new segment's start pose.
+                float curNorm = ap.controller->GetNormalizedTime();
+                curNorm = std::clamp(curNorm, 0.0f, 1.0f);
+
+                ap.controller->SetSegment(targetSeg);   // resets time to targetSeg start
+                ap.controller->SetLooping(ap.loopOnOpen);
+
+                // Smooth reverse for toggling doors (distinct open/close segments that run
+                // in opposite directions): the open segment goes closed->open as it
+                // progresses, the close segment open->closed, so the same physical openness
+                // maps to (1 - progress) in the opposite segment. Seed the new segment's
+                // time at that mirrored progress to continue from the current pose. Only for
+                // doors with BOTH segments valid and distinct (e.g. the Frozen Isle lever
+                // gates); one-way doors (closeSeg == open or SIZE_MAX) keep the old behavior.
+                if (ap.openSegmentIndex != ap.closeSegmentIndex &&
+                    ap.openSegmentIndex < segments.size() &&
+                    ap.closeSegmentIndex < segments.size() &&
+                    targetSeg < segments.size())
+                {
+                    float newNorm = 1.0f - curNorm;
+                    const auto& seg = segments[targetSeg];
+                    float t = static_cast<float>(seg.startTime)
+                            + newNorm * static_cast<float>(seg.endTime - seg.startTime);
+                    ap.controller->SetTime(t);
+                }
+
                 ap.controller->Play();
             }
         }

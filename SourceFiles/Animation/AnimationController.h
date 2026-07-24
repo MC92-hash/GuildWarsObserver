@@ -438,6 +438,16 @@ public:
     bool IsRootPositionLocked() const { return m_lockRootPosition; }
 
     /**
+     * @brief Locks specific bones to their bind pose (matches GWMB's per-bone lock).
+     *
+     * A locked bone gets no position/rotation animation, and because its transform is
+     * frozen at bind pose, its child bones inherit the frozen (bind) transform instead
+     * of the animated one. Bone indices are animation-clip bone indices.
+     */
+    void SetLockedBones(const std::vector<uint32_t>& bones) { m_lockedBones = bones; }
+    const std::vector<uint32_t>& GetLockedBones() const { return m_lockedBones; }
+
+    /**
      * @brief Gets the current sequence index.
      */
     size_t GetCurrentSequenceIndex() const { return m_currentSequenceIndex; }
@@ -861,11 +871,12 @@ private:
         // Evaluate hierarchical transforms to get world positions and rotations
         // These are needed for bone visualization and skinning
         // Pass lockRootPosition flag to keep roots at bind pose when enabled
-        m_evaluator.EvaluateHierarchical(*m_clip, m_currentTime, m_boneWorldPositions, m_boneWorldRotations, nullptr, m_lockRootPosition);
+        const std::vector<uint32_t>* lockedPtr = m_lockedBones.empty() ? nullptr : &m_lockedBones;
+        m_evaluator.EvaluateHierarchical(*m_clip, m_currentTime, m_boneWorldPositions, m_boneWorldRotations, nullptr, m_lockRootPosition, lockedPtr);
 
         // Compute skinning matrices using animation bind positions
         // GW's algorithm: T(basePos + delta) * R(localRot) * T(-basePos)
-        m_evaluator.ComputeSkinningFromHierarchy(*m_clip, m_currentTime, m_boneMatrices, m_lockRootPosition);
+        m_evaluator.ComputeSkinningFromHierarchy(*m_clip, m_currentTime, m_boneMatrices, m_lockRootPosition, lockedPtr);
     }
 
     void NotifyCallback(const std::string& event)
@@ -886,6 +897,7 @@ private:
     bool m_looping = true;
     bool m_autoCycleSequences = true;
     bool m_lockRootPosition = false;
+    std::vector<uint32_t> m_lockedBones;   // bones forced to bind pose (GWMB per-bone lock)
 
     // Smart loop state
     bool m_hasPlayedIntro = false;      // Whether intro has played in current playback

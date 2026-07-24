@@ -745,7 +745,7 @@ void ReplayWindow::DrawPiPPanel()
                                            ard.categoryName == "Resurrection Shrine" ||
                                            ard.categoryName == "Dwarven Resurrection Shrine" ||
                                            ard.categoryName == "Southern Health Shrine" ||
-                                           ard.categoryName == "Lever");
+                                           ard.categoryName == "Gate lever");
                     if (isSpecialLabel)
                     {
                         dl->AddRectFilled(ImVec2(lx - pad, ly - pad),

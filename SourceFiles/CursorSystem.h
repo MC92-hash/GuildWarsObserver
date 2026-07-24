@@ -154,8 +154,8 @@ inline void UpdateCursorMode()
 inline void ApplyCursor()
 {
     if (!g_Cursors.loaded) return;
-    if (g_CurrentCursor == CursorMode::Hidden) return;
     if (!g_CursorInClientArea) return;  // let Windows handle non-client cursors
+    if (g_CurrentCursor == CursorMode::Hidden) { ::SetCursor(nullptr); return; }
     HCURSOR cur = g_Cursors.Get(g_CurrentCursor);
     if (cur) ::SetCursor(cur);
 }

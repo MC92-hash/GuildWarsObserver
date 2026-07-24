@@ -1,4 +1,8 @@
 {
+  "hidden_assets": {
+    "7": true,
+    "9": true
+  },
   "transparent_assets": {
     "36": 1.0
   }

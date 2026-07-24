@@ -1345,6 +1345,22 @@ void ReplayWindow::DrawAgentModels()
             }
         }
 
+        // Summoned minions (e.g. Bone Horror): only render while the agent
+        // exists and is alive. Hide when it has 0 HP, is flagged dead, or its
+        // ID no longer exists (outside its snapshot/lifecycle window) — instead
+        // of leaving a stale body at its last position.
+        if (ard.type == AgentType::NPC && IsNpcHiddenWhenDead(ard.modelId)
+            && !ard.isMinionVisibleAtTime(m_debugTimeline)) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            // Must clear the render status unconditionally (not only when the
+            // debug window is open): the skinned render pass draws any agent
+            // whose status still starts with "skinned". Leaving a stale
+            // "skinned" status here keeps the minion's 3D model visible after
+            // it dies/despawns.
+            m_agentModelRenderStatus[agentId] = "hidden: minion dead/removed";
+            continue;
+        }
+
         // Dead state: keep rendering with fade (don't hide)
         bool dead = (ard.type == AgentType::NPC || ard.type == AgentType::Player)
                      && ard.isDeadAtTime(m_debugTimeline);
@@ -1398,7 +1414,13 @@ void ReplayWindow::DrawAgentModels()
 
         AgentModelInfo info = LookupAgentModelInfo(ard.type, ard.modelId,
                                                      ard.primaryProf, ard.isFemale);
-        float scale = info.npcAdjustment * m_agentModelScale;
+        float nativeH = (tmplIt != m_agentModelTemplates.end())
+                            ? tmplIt->second.nativeHeight : 0.f;
+        float scale;
+        if (info.fitHeight > 0.f && nativeH > 1.f)
+            scale = (info.fitHeight / nativeH) * m_agentModelScale;
+        else
+            scale = info.npcAdjustment * m_agentModelScale;
         XMMATRIX centering = XMMatrixIdentity();
 
         if (tmplIt != m_agentModelTemplates.end()) {
@@ -1652,14 +1674,17 @@ void ReplayWindow::DrawAgentModels()
                     // Use timing-based formula for attack animations when weapon data
                     // is available.  This fits the segment to the real attack window,
                     // just like the casting formula above.
+                    bool attackTiming = false;
                     if (!animState.isPlayingMovementAnim && !animState.isPlayingIdleAnim
                         && snap.weapon_attack_speed > 0.f && snap.attack_speed_modifier > 0.f && ctrl) {
                         float effectiveAttackTime = snap.weapon_attack_speed * snap.attack_speed_modifier;
                         float segStart = ctrl->GetSequenceStartTime();
                         float segEnd   = ctrl->GetSequenceEndTime();
                         float segDurSec = (segEnd - segStart) / 100000.f;
-                        if (effectiveAttackTime > 0.001f && segDurSec > 0.001f)
+                        if (effectiveAttackTime > 0.001f && segDurSec > 0.001f) {
                             speedMult = segDurSec / effectiveAttackTime;
+                            attackTiming = true;
+                        }
                     }
                     // The server sends a fixed animation_speed for running (typically
                     // 0.667) regardless of actual velocity.  When the character has a
@@ -1671,6 +1696,15 @@ void ReplayWindow::DrawAgentModels()
                         float velSpeed = animState.smoothVelocity / kBaseRunAnimSpeedNPC;
                         if (velSpeed > speedMult)
                             speedMult = velSpeed;
+                    }
+                    else if (!attackTiming) {
+                        // Idle / stationary stance (breathing, spirit channel,
+                        // guild-lord idle, sentinel stance, ...): these ambient
+                        // animations play at their natural authored rate in the game
+                        // client and are NOT scaled by the gameplay animation_speed
+                        // (which is tuned for locomotion). Scaling them made idle NPCs
+                        // animate too fast, so play them at 1.0x like player idles.
+                        speedMult = 1.0f;
                     }
                 } else if (isKD && ctrl) {
                     const auto* kd = ard.knockdownIntervalAtTime(m_debugTimeline);

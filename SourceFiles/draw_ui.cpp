@@ -595,6 +595,7 @@ static void draw_settings_window()
 	HotkeyInput("Lord Damage Panel",   &editingKeys.toggleLordDamage);
 	HotkeyInput("Heatmap",             &editingKeys.toggleHeatmap);
 	HotkeyInput("Piano Roll",          &editingKeys.togglePianoRoll);
+	HotkeyInput("Minimap",             &editingKeys.toggleMinimap);
 
 	ImGui::Spacing();
 	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Camera & View");
@@ -630,7 +631,8 @@ static void draw_settings_window()
 			editingKeys.toggleEventTimeline, editingKeys.toggleLordDamage,
 			editingKeys.toggleAutoCamera, editingKeys.toggleFogOfWar,
 			editingKeys.toggleTopView, editingKeys.togglePianoRoll,
-			editingKeys.toggleHeatmap, editingKeys.exitFollowMode,
+			editingKeys.toggleHeatmap, editingKeys.toggleMinimap,
+			editingKeys.exitFollowMode,
 			editingKeys.camForward, editingKeys.camBackward,
 			editingKeys.camStrafeLeft, editingKeys.camStrafeRight
 		};

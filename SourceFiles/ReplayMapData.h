@@ -128,6 +128,8 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
         { 4286, { 1213, "Spirit of Tranquility" } },
         { 2932, { 470,  "Spirit of Predatory Season" } },
         { 2934, { 472,  "Spirit of Favorable Winds" } },
+        { 2931, { 469,  "Spirit of Primal Echoes" } },
+        { 4283, { 961,  "Spirit of Lacerate" } },
     };
     for (auto& e : table)
         if (e.modelId == modelId) return &e.info;
@@ -158,6 +160,8 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
     case 5766: // Infuriating Heat
     case 4286: // Tranquility
     case 2934: // Favorable Winds
+    case 2931: // Primal Echoes
+    case 4283: // Lacerate
         return 3500.f;
 
     // --- Ritualist Binding Rituals ---
@@ -175,7 +179,7 @@ inline bool IsNatureRitual(uint32_t modelId)
     switch (modelId) {
     case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
     case 2938: case 2939: case 4289: case 5767: case 5766:
-    case 4286:
+    case 4286: case 2931: case 4283:
         return true;
     default:
         return false;
@@ -279,6 +283,8 @@ inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
     }
     if (type == AgentType::NPC) {
         switch (modelId) {
+        case 168: return 0x1FC00; // Lesser Flame Sentinel (Druid's Isle)
+        case 2280: return 0xBE07; // Bone Horror (summoned minion)
         case 170: return 0x2D161; // Guild Lord
         case 172: return 0x2D236; // Bodyguard
         case 173: return 0x26C4A; // Footman (same model as Knight)
@@ -298,6 +304,11 @@ struct AgentModelInfo {
     uint32_t fileHash;
     float    targetHeight;   // game-unit height from GWCA (0 = unknown)
     float    npcAdjustment;  // scale multiplier (1.0 = 100%, 1.3 = 130%)
+    // When > 0, the model is uniformly scaled so its rendered height matches
+    // this value (using the mesh's measured native height), instead of using
+    // npcAdjustment. Used for models whose .dat native size differs from their
+    // real in-game dimensions.
+    float    fitHeight = 0.f;
 };
 
 inline AgentModelInfo LookupPlayerModelInfo(int primaryProf, bool isFemale)
@@ -324,6 +335,9 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
     }
     if (type == AgentType::NPC) {
         switch (modelId) {
+        // Lesser Flame Sentinel: real in-game height ~329.73 (fit to it)
+        case 168: return { 0x1FC00, 329.731781f, 1.0f, 329.731781f };
+        case 2280: return { 0xBE07, 0.f, 1.0f };          // Bone Horror (native size)
         case 170: return { 0x2D161, 98.454437f, 1.3f };  // Guild Lord (0x82 = 130%)
         case 172: return { 0x2D236, 75.844055f, 1.0f };  // Bodyguard
         case 173: return { 0x26C4A, 75.734184f, 1.0f };  // Footman
@@ -368,7 +382,7 @@ inline float GetSpiritRange(uint32_t modelId)
     // Nature Rituals (all 3500)
     case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
     case 2938: case 2939: case 4289: case 5767: case 5766:
-    case 4286:
+    case 4286: case 2931: case 4283:
         return 3500.f;
 
     default: return 0.f;
@@ -399,6 +413,7 @@ inline const char* LookupNpcName(uint32_t modelId)
 {
     switch (modelId) {
     case 168: return "Lesser Flame Sentinel";
+    case 2280: return "Bone Horror";
     case 170: return "Guild Lord";
     case 172: return "Bodyguard";
     case 173: return "Footman";
@@ -406,6 +421,16 @@ inline const char* LookupNpcName(uint32_t modelId)
     case 175: return "Archer";
     case 176: return "Archer";
     default:  return nullptr;
+    }
+}
+
+// NPCs (summoned minions) that should disappear from the world/minimap when
+// dead, instead of persisting like a Player grave or a faded NPC corpse.
+inline bool IsNpcHiddenWhenDead(uint32_t modelId)
+{
+    switch (modelId) {
+    case 2280: return true;  // Bone Horror
+    default:   return false;
     }
 }
 
@@ -430,12 +455,12 @@ inline const char* LookupGadgetName(uint32_t gadgetId)
     case 33:   return "Dwarven Resurrection Shrine";
     case 34:   return "Beacon of Droknar";
     case 111:  return "Tower Flag Stand";
-    case 321:  return "Lever";
-    case 323:  return "Lever";
-    case 1323: return "Lever";
-    case 1324: return "Lever";
+    case 321:  return "Gate lever";
+    case 323:  return "Gate lever";
+    case 1323: return "Gate lever";
+    case 1324: return "Gate lever";
     case 2675: return "Miasma";
-    case 3873: return "Lever";
+    case 3873: return "Gate lever";
     case 3877: return "Obelisk Flag Stand";
     case 3879: return "Tower Flag Stand";
     case 4203: return "Tower Flag Stand";
@@ -455,7 +480,7 @@ inline const char* LookupGadgetName(uint32_t gadgetId)
     case 4720: return "Obelisk Flag Stand";
     case 4721: return "Gate Lock";
     case 4722: return "Gate Lock";
-    case 4725: return "Lever";
+    case 4725: return "Gate lever";
     case 5988: return "Southern Health Shrine";
     default:   return nullptr;
     }
@@ -890,6 +915,26 @@ struct AgentReplayData
         }
         while (lo > 0 && !snapshots[lo - 1].is_alive) lo--;
         return snapshots[lo].time;
+    }
+
+    // Visibility rule for summoned minions (e.g. Bone Horror): the agent is
+    // only shown while it actually exists AND is alive. It is hidden when:
+    //   - the current time is outside its recorded snapshot span,
+    //   - the current time is outside its lifecycle window (removed / not yet
+    //     spawned) — i.e. the agent ID no longer exists,
+    //   - it is flagged dead, or
+    //   - its HP has dropped to 0.
+    // Unlike spirits, no overlap de-duplication is applied, so any number of
+    // living minions can be visible simultaneously.
+    bool isMinionVisibleAtTime(float t) const
+    {
+        if (snapshots.empty()) return false;
+        if (t < snapshots.front().time || t > snapshots.back().time) return false;
+        if (lifecycleStart >= 0.f && t < lifecycleStart) return false;
+        if (lifecycleEnd   >= 0.f && t > lifecycleEnd)   return false;
+        if (isDeadAtTime(t)) return false;
+        if (healthPctAtTime(t) <= 0.f) return false;
+        return true;
     }
 };
 

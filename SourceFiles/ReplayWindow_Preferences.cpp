@@ -431,6 +431,7 @@ void ReplayWindow::DrawShortcutPreferences()
         HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage, true);
         HotkeyInput("Heatmap",             &editing.toggleHeatmap, true);
         HotkeyInput("Piano Roll",          &editing.togglePianoRoll, true);
+        HotkeyInput("Minimap",             &editing.toggleMinimap, true);
         HotkeyInput("Add Bookmark",        &editing.addBookmark, true);
 
         ImGui::Dummy(ImVec2(0, 8.f));

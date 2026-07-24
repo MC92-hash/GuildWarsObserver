@@ -196,6 +196,14 @@ void ReplayWindow::DrawPartyWindows()
         return false;
     };
 
+    // Summoned minions (e.g. Bone Horror): the ally entry only appears while
+    // the agent exists and is alive (same rule as its 3D model / minimap dot).
+    auto IsMinionHidden = [&](const AgentReplayData& ard) -> bool {
+        if (ard.type != AgentType::NPC) return false;
+        if (!IsNpcHiddenWhenDead(ard.modelId)) return false;
+        return !ard.isMinionVisibleAtTime(curTime);
+    };
+
     bool bothMeters = m_showDamageMeter && m_showHealMeter;
     constexpr ImU32 kDmgBarCol  = IM_COL32(0xD0, 0x8C, 0x20, 0x80);
     constexpr ImU32 kHealBarCol = IM_COL32(0x40, 0xA8, 0x40, 0x80);
@@ -214,6 +222,8 @@ void ReplayWindow::DrawPartyWindows()
 
             const AgentReplayData& ard = it->second;
             if (filterSpirits && IsSpiritHidden(ard))
+                continue;
+            if (IsMinionHidden(ard))
                 continue;
 
             const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
@@ -293,6 +303,7 @@ void ReplayWindow::DrawPartyWindows()
             if (it == m_replayCtx.agents.end()) continue;
             const AgentReplayData& ard = it->second;
             if (IsSpiritHidden(ard)) continue;
+            if (IsMinionHidden(ard)) continue;
             ++count;
         }
         return count;

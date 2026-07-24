@@ -40,9 +40,53 @@ struct MapAnimatedProp
     uint8_t  doorType = 0;
     size_t   openSegmentIndex = 0;
     size_t   closeSegmentIndex = 0;
+    // When true, the "closed" pose is frame 0 of the open segment (paused) rather
+    // than the end of a dedicated close segment. Opening simply plays the open
+    // segment once from that frame. Used by the Burning Isle gates.
+    bool     closedAtOpenStart = false;
+    // When true, the open animation loops indefinitely (instead of playing once).
+    bool     loopOnOpen = false;
 
     std::vector<std::pair<int,int>> mirrorBonePairs;
+    // Reflection plane (model-space X) used when mirroring bones. 0 = reflect about
+    // the model origin (default). Set to the door's symmetry plane when the two
+    // leaves are not centered on the origin.
+    float mirrorPlaneX = 0.f;
     bool doubleSided = false;
+
+    // --- Procedural double-hinge (for doors whose panel geometry is rigged to a
+    // static bone, so the .dat can't swing them). Each panel's vertices are re-skinned
+    // onto a synthetic slot whose matrix is a pure rotation about a vertical (Y) axis
+    // through the panel's hinge. The swing angle is driven by the door's open progress
+    // (controller normalized time), mirrored between the two leaves so they open
+    // symmetrically. Slot indices: hingeStaticSlot (identity), hingeLeftSlot,
+    // hingeRightSlot are laid out immediately past the real bones.
+    bool     proceduralHinge = false;
+    uint32_t hingeStaticSlot = 0;
+    uint32_t hingeLeftSlot = 0;
+    uint32_t hingeRightSlot = 0;
+    XMFLOAT3 hingeLeftPivot{ 0,0,0 };
+    XMFLOAT3 hingeRightPivot{ 0,0,0 };
+    float    hingeMaxAngle = 0.f;   // radians; left = +angle, right = -angle
+
+    // --- Procedural grow (Druid's Isle vine bridges). The .dat clip does NOT deform the
+    // visible mesh (all its motion is in unused particle bones), and the geometry is
+    // already a full-length static bridge. So we synthesize the "grow forward" by scaling
+    // the whole mesh along its length axis (growAxis) from a near-end anchor (growAnchor):
+    // at growProgress 0 the bridge is collapsed to the anchor, at 1 it is full length.
+    // Per-bone arch: each bone gets a vertical (Y) offset following a sine curve based on
+    // its normalized position along the bridge, giving a realistic arch shape.
+    bool     proceduralGrow = false;
+    XMFLOAT3 growAnchor{ 0,0,0 };   // model-space near end (grow origin)
+    int      growAxis = 0;          // 0 = X, 1 = Y, 2 = Z (length axis in model space)
+    float    growProgress = 0.f;
+    float    growDuration = 1.5f;
+    // Final length as a fraction of the asset's natural span. Applied on top of
+    // growProgress and about the same anchor, so trimming length only pulls the far
+    // end back toward the anchored (cliff) end and leaves the start position alone.
+    float    growLengthScale = 1.f;
+    float    growArchHeight = 0.f;  // peak Y displacement at bridge center (model-space)
+    std::vector<float> growBoneNormPos; // per-bone normalized position [0,1] along length
 
     std::vector<bool> submeshVisibility;
 
@@ -1074,7 +1118,84 @@ public:
 
             const auto& srcMatrices = ap.controller->GetBoneMatrices();
 
-            if (!ap.mirrorBonePairs.empty())
+            if (ap.proceduralGrow)
+            {
+                float p = std::clamp(ap.growProgress, 0.0f, 1.0f);
+                float s = p * ap.growLengthScale;
+                float sx = (ap.growAxis == 0) ? s : 1.0f;
+                float sy = (ap.growAxis == 1) ? s : 1.0f;
+                float sz = (ap.growAxis == 2) ? s : 1.0f;
+                const XMFLOAT3& a = ap.growAnchor;
+                XMMATRIX baseS = XMMatrixTranslation(-a.x, -a.y, -a.z)
+                               * XMMatrixScaling(sx, sy, sz)
+                               * XMMatrixTranslation(a.x, a.y, a.z);
+                size_t n = std::max<size_t>(srcMatrices.size(), 1);
+                std::vector<XMFLOAT4X4> mats(n);
+                bool perBone = !ap.growBoneNormPos.empty();
+                for (size_t b = 0; b < n; b++)
+                {
+                    if (perBone && b < ap.growBoneNormPos.size())
+                    {
+                        float t = ap.growBoneNormPos[b];
+                        if (t < 0.0f)
+                        {
+                            // Excluded from the grow (detached decoration): hold bind pose.
+                            XMStoreFloat4x4(&mats[b], XMMatrixIdentity());
+                            continue;
+                        }
+                        float archY = ap.growArchHeight * sinf(3.14159265f * t) * p;
+                        XMStoreFloat4x4(&mats[b], baseS * XMMatrixTranslation(0.0f, archY, 0.0f));
+                    }
+                    else
+                    {
+                        XMStoreFloat4x4(&mats[b], baseS);
+                    }
+                }
+                for (auto& mesh : ap.meshes)
+                {
+                    if (mesh)
+                        mesh->UpdateBoneMatrices(m_deviceContext, mats);
+                }
+            }
+            else if (ap.proceduralHinge)
+            {
+                // Swing angle from the door's open progress (0 closed -> 1 open).
+                float nt = ap.controller->GetNormalizedTime();
+                nt = std::clamp(nt, 0.0f, 1.0f);
+                float theta = nt * ap.hingeMaxAngle;
+
+                auto mats = srcMatrices;
+                size_t need = std::max<size_t>(mats.size(),
+                    static_cast<size_t>(ap.hingeRightSlot) + 1);
+                if (mats.size() < need) mats.resize(need);
+
+                // Static frame slot.
+                XMStoreFloat4x4(&mats[ap.hingeStaticSlot], XMMatrixIdentity());
+
+                // Left leaf: rotate +theta about a vertical axis through its hinge.
+                // Right leaf: rotate -theta about its own hinge (mirror). Row-vector
+                // convention: v * T(-p) * RotY * T(p).
+                {
+                    const XMFLOAT3& Lp = ap.hingeLeftPivot;
+                    XMMATRIX L = XMMatrixTranslation(-Lp.x, -Lp.y, -Lp.z)
+                               * XMMatrixRotationY(theta)
+                               * XMMatrixTranslation(Lp.x, Lp.y, Lp.z);
+                    XMStoreFloat4x4(&mats[ap.hingeLeftSlot], L);
+
+                    const XMFLOAT3& Rp = ap.hingeRightPivot;
+                    XMMATRIX Rm = XMMatrixTranslation(-Rp.x, -Rp.y, -Rp.z)
+                                * XMMatrixRotationY(-theta)
+                                * XMMatrixTranslation(Rp.x, Rp.y, Rp.z);
+                    XMStoreFloat4x4(&mats[ap.hingeRightSlot], Rm);
+                }
+
+                for (auto& mesh : ap.meshes)
+                {
+                    if (mesh)
+                        mesh->UpdateBoneMatrices(m_deviceContext, mats);
+                }
+            }
+            else if (!ap.mirrorBonePairs.empty())
             {
                 auto mirrored = srcMatrices;
                 size_t maxNeeded = mirrored.size();
@@ -1084,13 +1205,17 @@ public:
                 for (size_t k = srcMatrices.size(); k < maxNeeded; k++)
                     XMStoreFloat4x4(&mirrored[k], XMMatrixIdentity());
 
-                XMMATRIX S = XMMatrixScaling(-1.0f, 1.0f, 1.0f);
+                // Reflection about the plane x = mirrorPlaneX (row-vector convention):
+                // v * Scale(-1,1,1) * Translate(2c,0,0) maps x -> 2c - x. R is its own
+                // inverse, so a mirrored bone transform is R * M * R.
+                XMMATRIX R = XMMatrixScaling(-1.0f, 1.0f, 1.0f) *
+                             XMMatrixTranslation(2.0f * ap.mirrorPlaneX, 0.0f, 0.0f);
                 for (const auto& [srcIdx, dstIdx] : ap.mirrorBonePairs)
                 {
                     if (static_cast<size_t>(srcIdx) < srcMatrices.size())
                     {
                         XMMATRIX m = XMLoadFloat4x4(&mirrored[srcIdx]);
-                        XMStoreFloat4x4(&mirrored[dstIdx], S * m * S);
+                        XMStoreFloat4x4(&mirrored[dstIdx], R * m * R);
                     }
                 }
                 for (auto& mesh : ap.meshes)
@@ -1382,6 +1507,15 @@ public:
 
     void AddAnimatedProp(MapAnimatedProp prop)
     {
+        // Reserve a generous capacity on the first add of a map so the vector never
+        // reallocates while props are being placed. Several door/prop setup paths take
+        // a reference (e.g. `auto& last = GetAnimatedProps().back()`) or cache a raw
+        // index right after adding; a growth reallocation here would move the storage
+        // and turn any such reference into a write-through-freed-memory heap corruption
+        // (seen as a crash in ~MapAnimatedProp during a later reallocation). No GW map
+        // has anywhere near this many animated props, so this fully avoids reallocation.
+        if (m_animated_props.capacity() < 1024)
+            m_animated_props.reserve(1024);
         for (int mid : prop.staticMeshIds)
             m_mesh_manager->SetMeshShouldRender(mid, false);
         prop.active = true;
