@@ -520,7 +520,8 @@ bool PollAgentParseCompletion(ReplayContext& ctx)
 // ---------------------------------------------------------------------------
 
 void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
-                    const MatchMeta& meta, int mapId)
+                    const MatchMeta& meta, int mapId,
+                    const FlagItemRegistry* flagItems)
 {
     // Build model_id -> PlayerMeta lookup from both parties
     std::unordered_map<uint32_t, const PlayerMeta*> playerByModelId;
@@ -539,20 +540,23 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
         ard.agentModelType = first.agent_model_type;
         ard.teamId         = first.team_id;
 
-        // Flag check (item_id-based, per map) — must come early
-        if (IsFlagItemId(mapId, first.item_id))
+        // Carryable check — must come early. Which carryable an item id stands
+        // for changes over the match as the server recycles ids, so this is
+        // asked about the moment this agent came into existence.
+        BundleType carried = flagItems
+            ? flagItems->Classify(first.item_id, first.time)
+            : LookupBundleType(mapId, first.item_id);
+
+        if (carried == BundleType::Flag)
         {
             ard.type         = AgentType::Flag;
             ard.categoryName = "Flag";
             continue;
         }
-
-        // Map-specific item check (Vine Seed, Repair Kit, etc.)
-        const char* itemName = LookupMapItem(mapId, first.item_id);
-        if (itemName)
+        if (carried != BundleType::Unknown)
         {
             ard.type         = AgentType::Item;
-            ard.categoryName = itemName;
+            ard.categoryName = BundleTypeName(carried);
             ard.teamId       = 0;
             continue;
         }

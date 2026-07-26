@@ -1384,6 +1384,10 @@ void ReplayWindow::StepLoadInit()
     m_frozenLeverCandidates.clear();
     m_druidBridgeCandidates.clear();
     m_druidBridgesResolved = false;
+    m_druidBridgeIcons.clear();
+    m_druidBridgeGadgets.clear();
+    m_catapultProps.clear();
+    m_catapultPropsResolved = false;
     m_propModelFiles.clear();
     m_propModelFiles.reserve(m_totalPropFilenames);
     m_propModelFileHashes.clear();
@@ -1452,6 +1456,29 @@ void ReplayWindow::StepLoadPropModels()
         m_loadProgress = 0.30f;
         m_loadingPhase = LoadingPhase::PlaceProps;
         m_phaseStartTime = LoadClock::now();
+    }
+}
+
+// Takes submeshes back out of an animated prop and hands them to the static mesh
+// renderer, leaving them visible in the map's own pose while the rest of the prop
+// animates. Erases from the back so pending indices stay valid; staticMeshIds keeps
+// its original indexing because that is what the mesh ids are addressed by.
+static void KeepSubmeshesStatic(MapAnimatedProp& prop, MeshManager* meshManager,
+                                std::vector<int> submeshes)
+{
+    if (!meshManager) return;
+
+    std::vector<int>& ordered = submeshes;
+    std::sort(ordered.begin(), ordered.end(), std::greater<int>());
+
+    for (int idx : ordered)
+    {
+        if (idx < 0 || idx >= static_cast<int>(prop.meshes.size())) continue;
+        prop.meshes.erase(prop.meshes.begin() + idx);
+        if (idx < static_cast<int>(prop.perObjectCBs.size()))
+            prop.perObjectCBs.erase(prop.perObjectCBs.begin() + idx);
+        if (idx < static_cast<int>(prop.staticMeshIds.size()))
+            meshManager->SetMeshShouldRender(prop.staticMeshIds[idx], true);
     }
 }
 
@@ -1593,11 +1620,13 @@ void ReplayWindow::StepPlaceProps()
                 size_t   segFallback = SIZE_MAX;
 
                 // DIAGNOSTIC: dump every prop hash on Druid's Isle so we can locate the
-                // vine-bridge model (it did not match 0x29FD in the static prop loop).
-                if (m_replayCtx.datMapId == 0x1F27A)
+                // vine-bridge model (it did not match 0x29FD in the static prop loop),
+                // on Warrior's Isle for the catapults, and on Imperial Isle for the doors.
+                if (m_replayCtx.datMapId == 0x1F27A || m_replayCtx.datMapId == 0x1F1FC ||
+                    m_replayCtx.datMapId == 0x28736)
                 {
                     std::ofstream dbg("door_debug.log", std::ios::app);
-                    dbg << "[DruidProp] prop " << i << " fileHash=0x" << std::hex << fileHash
+                    dbg << "[MapProp] prop " << i << " fileHash=0x" << std::hex << fileHash
                         << std::dec << " submeshes=" << propMeshes.size() << "\n";
                 }
 
@@ -1624,6 +1653,166 @@ void ReplayWindow::StepPlaceProps()
                     SetupAnimatedProp(i, *modelFilePtr, fileHash,
                                       propMeshes, perObjectCBs, meshIds,
                                       perMeshTexIds, pst, segHash, segFallback);
+                }
+
+                // Warrior's Isle base gates (0x1F1EE). Submeshes 3 and 4 are the
+                // surrounding frame and stay put; the rest swings. They only ever
+                // open, so the closed pose is frame 0 of the open segment and there
+                // is no close segment to fall back to.
+                if (m_replayCtx.datMapId == 0x1F1FC && fileHash == 0x1F1EE)
+                {
+                    size_t before = m_mapRenderer->GetAnimatedProps().size();
+
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, 0x303419C9, 2);
+
+                    auto& animProps = m_mapRenderer->GetAnimatedProps();
+                    if (animProps.size() > before)
+                    {
+                        auto& last = animProps.back();
+                        last.doorType          = 28;
+                        last.closedAtOpenStart = true;
+                        last.openSegmentIndex  = SIZE_MAX;
+
+                        if (last.clip)
+                        {
+                            const auto& segs = last.clip->animationSegments;
+                            for (size_t s = 0; s < segs.size(); s++)
+                                if (segs[s].hash == 0x303419C9) last.openSegmentIndex = s;
+                            if (last.openSegmentIndex == SIZE_MAX) last.openSegmentIndex = 2;
+                        }
+                        last.closeSegmentIndex = last.openSegmentIndex;
+
+                        KeepSubmeshesStatic(last, m_mapRenderer->GetMeshManager(), { 3, 4 });
+
+                        last.controller->SetSegment(last.openSegmentIndex);
+                        last.controller->SetLooping(false);
+                        last.controller->SetTime(
+                            static_cast<float>(last.clip->animationSegments[last.openSegmentIndex].startTime));
+                        last.controller->Pause();
+
+                        m_doorAnimPropCount++;
+
+                        std::ofstream dbg("door_debug.log", std::ios::app);
+                        dbg << "[WarriorGate] prop " << i << " hash=0x" << std::hex << fileHash
+                            << std::dec << " openSeg=" << last.openSegmentIndex
+                            << " submeshes=" << propMeshes.size() << "\n";
+                    }
+                }
+
+                // Warrior's Isle inner gates (0x12FF7). Same one-way open as the
+                // base gates, but here only the first two submeshes are the moving
+                // leaves; everything past them is surrounding frame.
+                if (m_replayCtx.datMapId == 0x1F1FC && fileHash == 0x12FF7)
+                {
+                    size_t before = m_mapRenderer->GetAnimatedProps().size();
+
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, 0x303419C9, 2);
+
+                    auto& animProps = m_mapRenderer->GetAnimatedProps();
+                    if (animProps.size() > before)
+                    {
+                        auto& last = animProps.back();
+                        last.doorType          = 28;
+                        last.closedAtOpenStart = true;
+                        last.openSegmentIndex  = SIZE_MAX;
+
+                        if (last.clip)
+                        {
+                            const auto& segs = last.clip->animationSegments;
+                            for (size_t s = 0; s < segs.size(); s++)
+                                if (segs[s].hash == 0x303419C9) last.openSegmentIndex = s;
+                            if (last.openSegmentIndex == SIZE_MAX) last.openSegmentIndex = 2;
+                        }
+                        last.closeSegmentIndex = last.openSegmentIndex;
+
+                        std::vector<int> frame;
+                        for (int s = 2; s < static_cast<int>(last.meshes.size()); s++)
+                            frame.push_back(s);
+                        KeepSubmeshesStatic(last, m_mapRenderer->GetMeshManager(), frame);
+
+                        last.controller->SetSegment(last.openSegmentIndex);
+                        last.controller->SetLooping(false);
+                        last.controller->SetTime(
+                            static_cast<float>(last.clip->animationSegments[last.openSegmentIndex].startTime));
+                        last.controller->Pause();
+
+                        m_doorAnimPropCount++;
+
+                        std::ofstream dbg("door_debug.log", std::ios::app);
+                        dbg << "[WarriorGate] prop " << i << " hash=0x" << std::hex << fileHash
+                            << std::dec << " openSeg=" << last.openSegmentIndex
+                            << " submeshes=" << propMeshes.size() << "\n";
+                    }
+                }
+
+                // Warrior's Isle catapults. Unlike a door there is no open/closed
+                // pair to toggle: one clip carries all five poses and the machine's
+                // object state picks between them, so the prop is registered here
+                // and driven by UpdateCatapultAnimations.
+                if (m_replayCtx.datMapId == 0x1F1FC && fileHash == 0x220F6)
+                {
+                    size_t before = m_mapRenderer->GetAnimatedProps().size();
+
+                    SetupAnimatedProp(i, *modelFilePtr, fileHash,
+                                      propMeshes, perObjectCBs, meshIds,
+                                      perMeshTexIds, pst, 0xCC893A74, 4);
+
+                    // SetupAnimatedProp bails out when the clip can't be parsed, and
+                    // back() would then be somebody else's prop.
+                    auto& animProps = m_mapRenderer->GetAnimatedProps();
+                    if (animProps.size() > before)
+                    {
+                        auto& last = animProps.back();
+                        CatapultProp cp;
+                        cp.animPropIndex = static_cast<int>(animProps.size()) - 1;
+
+                        // Segment order in the shipped clip, used if a hash is missing.
+                        cp.segRepaired  = 0;
+                        cp.segFiring    = 1;
+                        cp.segRepairing = 2;
+                        cp.segLoading   = 3;
+                        cp.segBroken    = 4;
+
+                        if (last.clip)
+                        {
+                            const auto& segs = last.clip->animationSegments;
+                            for (size_t s = 0; s < segs.size(); s++)
+                            {
+                                switch (segs[s].hash)
+                                {
+                                case 0xCC893A74: cp.segBroken    = s; break;
+                                case 0x4AB1F342: cp.segLoading   = s; break;
+                                case 0x3D1F8A72: cp.segRepairing = s; break;
+                                case 0x30141DF7: cp.segFiring    = s; break;
+                                case 0x00000000: cp.segRepaired  = s; break;
+                                default: break;
+                                }
+                            }
+
+                            std::ofstream dbg("door_debug.log", std::ios::app);
+                            dbg << "[Catapult] prop " << i << " segs=" << segs.size();
+                            for (size_t s = 0; s < segs.size(); s++)
+                                dbg << " [" << s << "] 0x" << std::hex << segs[s].hash << std::dec
+                                    << " " << segs[s].startTime << ".." << segs[s].endTime;
+                            dbg << "\n";
+                        }
+
+                        if (!perObjectCBs.empty())
+                        {
+                            const auto& w = perObjectCBs[0].world;
+                            cp.renderPos = XMFLOAT3(w._41, w._42, w._43);
+                        }
+
+                        last.controller->SetLooping(false);
+                        last.controller->SetPlaybackSpeed(1.0f);
+                        last.controller->Pause();
+
+                        m_catapultProps.push_back(cp);
+                    }
                 }
 
                 // Imperial Isle: hide submesh 0 for gate frame props (only show submesh 1)
@@ -1699,20 +1888,7 @@ void ReplayWindow::StepPlaceProps()
                             last.controller->Pause();
 
                             if (doorType == 2)
-                            {
-                                for (int skip = static_cast<int>(last.meshes.size()) - 1; skip >= 0; skip--)
-                                {
-                                    if (skip == 3 || skip == 4)
-                                    {
-                                        last.meshes.erase(last.meshes.begin() + skip);
-                                        if (skip < static_cast<int>(last.perObjectCBs.size()))
-                                            last.perObjectCBs.erase(last.perObjectCBs.begin() + skip);
-                                        if (skip < static_cast<int>(last.staticMeshIds.size()))
-                                            m_mapRenderer->GetMeshManager()->SetMeshShouldRender(
-                                                last.staticMeshIds[skip], true);
-                                    }
-                                }
-                            }
+                                KeepSubmeshesStatic(last, m_mapRenderer->GetMeshManager(), { 3, 4 });
 
                             m_doorAnimPropCount++;
                             OutputDebugStringA(
@@ -3800,9 +3976,18 @@ void ReplayWindow::StepPlaceProps()
 
                     if (isImperialDoor && fileHash != 0x28699)
                     {
+                        // 0x2865B's gate leaf spans submeshes 0-2, but only 0 and 1 are
+                        // skinned to the bone that slides (output 5); submesh 2 is authored
+                        // on the static root, so without this it stays put while the rest
+                        // of the leaf lifts.
+                        std::unordered_map<size_t, uint32_t> boneOverride;
+                        if (fileHash == 0x2865B)
+                            boneOverride[2] = 5;
+
                         SetupAnimatedProp(i, *modelFilePtr, fileHash,
                                           propMeshes, perObjectCBs, meshIds,
-                                          perMeshTexIds, pst, 0x303419C9, 2);
+                                          perMeshTexIds, pst, 0x303419C9, 2,
+                                          0, boneOverride);
 
                         auto& animProps = m_mapRenderer->GetAnimatedProps();
                         if (!animProps.empty())
@@ -3811,6 +3996,15 @@ void ReplayWindow::StepPlaceProps()
                             last.doorType = (fileHash == 0x2865B) ? 4 : 3;
                             last.openSegmentIndex  = SIZE_MAX;
                             last.closeSegmentIndex = SIZE_MAX;
+
+                            // Submeshes 3 and 4 are not wanted on screen.
+                            if (fileHash == 0x2865B)
+                            {
+                                last.submeshVisibility.assign(propMeshes.size(), true);
+                                for (size_t hid : { size_t(3), size_t(4) })
+                                    if (hid < last.submeshVisibility.size())
+                                        last.submeshVisibility[hid] = false;
+                            }
 
                             if (last.clip)
                             {
@@ -3827,13 +4021,6 @@ void ReplayWindow::StepPlaceProps()
                                 static_cast<float>(last.clip->animationSegments[last.openSegmentIndex].startTime));
                             last.controller->SetLooping(false);
                             last.controller->Pause();
-
-                            // submesh hiding for 0x2865B disabled for testing
-                            // if (fileHash == 0x2865B)
-                            // {
-                            //     if (last.meshes.size() > 4) last.meshes[4] = nullptr;
-                            //     if (last.meshes.size() > 3) last.meshes[3] = nullptr;
-                            // }
 
                             m_doorAnimPropCount++;
                             {
@@ -4293,19 +4480,28 @@ void ReplayWindow::Tick()
     if (m_replayCtx.agentsLoaded && m_replayCtx.stocLoaded
         && !m_agentsClassified && !m_replayCtx.agents.empty())
     {
+        m_flagItems.Build(m_replayCtx.stocData.flagEvents.items, m_replayCtx.mapId);
+
         // Build set of flag agent IDs to skip during splitting (flags are handled
-        // by FlagTimelineBuilder via StoC events, not by agent incarnation tracking)
+        // by FlagTimelineBuilder via StoC events, not by agent incarnation tracking).
+        // Only agents that are a flag for their whole recorded life qualify: the
+        // server hands the same agent id to a flag and then to a repair kit, and
+        // leaving those joined hides the kit and drags the flag to the kit's spot.
         std::unordered_set<int> flagAgentSkipIds;
+        for (auto& [id, ard] : m_replayCtx.agents)
         {
-            std::unordered_set<uint32_t> flagItemIds;
-            for (auto& e : m_replayCtx.stocData.flagEvents.items)
-                flagItemIds.insert(static_cast<uint32_t>(e.item_id));
-            for (auto& [id, ard] : m_replayCtx.agents) {
-                if (ard.snapshots.empty()) continue;
-                uint32_t iid = ard.snapshots.front().item_id;
-                if (iid != 0 && (IsFlagItemId(m_replayCtx.mapId, iid) || flagItemIds.count(iid)))
-                    flagAgentSkipIds.insert(id);
+            if (ard.snapshots.empty()) continue;
+            if (ard.snapshots.front().item_id == 0) continue;
+
+            bool flagThroughout = true;
+            for (auto& s : ard.snapshots)
+            {
+                if (s.item_id == 0) continue;   // gap between incarnations
+                if (m_flagItems.IsFlagAt(s.item_id, s.time)) continue;
+                flagThroughout = false;
+                break;
             }
+            if (flagThroughout) flagAgentSkipIds.insert(id);
         }
         SplitRecycledAgents(m_replayCtx.agents, m_replayCtx.stocData.lifecycle, &flagAgentSkipIds);
 
@@ -4325,23 +4521,7 @@ void ReplayWindow::Tick()
                 ev.agent_id = resolved;
         }
 
-        ClassifyAgents(m_replayCtx.agents, m_matchMeta, m_replayCtx.mapId);
-
-        // Re-classify flag agents using FLAG_ITEM data (catches dynamic item_ids
-        // not in the hardcoded IsFlagItemId table, e.g. respawned flags)
-        if (!m_replayCtx.stocData.flagEvents.items.empty()) {
-            std::unordered_set<uint32_t> flagItemIds;
-            for (auto& e : m_replayCtx.stocData.flagEvents.items)
-                flagItemIds.insert(static_cast<uint32_t>(e.item_id));
-            for (auto& [id, ard] : m_replayCtx.agents) {
-                if (ard.type != AgentType::Unknown) continue;
-                if (ard.snapshots.empty()) continue;
-                if (flagItemIds.count(ard.snapshots.front().item_id)) {
-                    ard.type = AgentType::Flag;
-                    ard.categoryName = "Flag";
-                }
-            }
-        }
+        ClassifyAgents(m_replayCtx.agents, m_matchMeta, m_replayCtx.mapId, &m_flagItems);
 
         m_sortedAgentIds.reserve(m_replayCtx.agents.size());
         for (auto& [id, ard] : m_replayCtx.agents)
@@ -4560,6 +4740,9 @@ void ReplayWindow::Tick()
             // (categoryName is left unchanged so gold-dot / special-gadget styling still applies.)
             if (m_replayCtx.datMapId == 0x1F265 && ard.cachedLabel == "Gate lever")
                 ard.cachedLabel = "Gate Lock";
+            // Warrior's Isle: these levers fire the catapults and open no gate.
+            else if (m_replayCtx.mapId == kWarriorsIsleMapId && ard.cachedLabel == "Gate lever")
+                ard.cachedLabel = "Lever";
             m_agentTeams[agentId] = ard.teamId;
         }
 
@@ -5329,6 +5512,15 @@ void ReplayWindow::Tick()
     if (m_loadingPhase == LoadingPhase::Ready && !m_druidBridgesResolved)
         ResolveDruidBridges();
 
+    // Set up the catapult lever models (Warrior's Isle). Waits on the bundle carry
+    // build, which is what says where the repaired catapults are.
+    if (m_bundleCarryBuilt && m_calibrationLoaded &&
+        m_loadingPhase == LoadingPhase::Ready && !m_catapultLeverModelLoaded)
+        SetupCatapultLeverProps();
+
+    if (m_loadingPhase == LoadingPhase::Ready && !m_catapultPropsResolved)
+        ResolveCatapultProps();
+
     m_timer.Tick([this]()
     {
         if (m_loadingPhase == LoadingPhase::Ready)
@@ -5422,6 +5614,8 @@ void ReplayWindow::Update(double elapsedMs)
 
     UpdateObeliskFlagStand();
     UpdateTowerFlagStand();
+    UpdateCatapultLeverProps();
+    UpdateCatapultAnimations();
 
     if (m_pipEnabled)
         UpdatePiPTarget();

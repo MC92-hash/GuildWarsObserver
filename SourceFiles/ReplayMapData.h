@@ -389,26 +389,6 @@ inline float GetSpiritRange(uint32_t modelId)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Map-specific item_id lookup (non-flag items like Vine Seed, Repair Kit)
-// ---------------------------------------------------------------------------
-
-inline const char* LookupMapItem(int mapId, uint32_t itemId)
-{
-    if (itemId == 0) return nullptr;
-    switch (mapId) {
-    case 168: // Druid's Isle
-        if (itemId == 47 || itemId == 48) return "Vine Seed";
-        break;
-    case 171: // Warrior's Isle
-        if (itemId == 59 || itemId == 60) return "Repair Kit";
-        break;
-    // TODO: Hunter's Isle (172) — flag and repair kit item_ids unknown
-    // TODO: Wizard's Isle (173) — flag and repair kit item_ids unknown
-    }
-    return nullptr;
-}
-
 inline const char* LookupNpcName(uint32_t modelId)
 {
     switch (modelId) {
@@ -1073,14 +1053,37 @@ struct StoCLordDamageEvent
 
 enum class BundleType : uint8_t { Unknown, Flag, RepairKit, VineSeed };
 
+inline const char* BundleTypeName(BundleType bt)
+{
+    switch (bt) {
+    case BundleType::Flag:      return "Flag";
+    case BundleType::RepairKit: return "Repair Kit";
+    case BundleType::VineSeed:  return "Vine Seed";
+    default:                    return nullptr;
+    }
+}
+
+// The carryable a map hands out besides its flags. Item ids cannot answer this:
+// the server recycles them freely, so an id that is a repair kit early in a match
+// can be a respawned flag later. The map, on the other hand, is fixed.
+inline BundleType MapBundleType(int mapId)
+{
+    switch (mapId) {
+    case 168: return BundleType::VineSeed;   // Druid's Isle
+    case 171:                                // Warrior's Isle
+    case 172:                                // Hunter's Isle
+    case 173: return BundleType::RepairKit;  // Wizard's Isle
+    default:  return BundleType::Unknown;
+    }
+}
+
+// Time-blind fallback, for replays recorded before flag packets were captured.
+// Use FlagItemRegistry::Classify wherever the packets are available.
 inline BundleType LookupBundleType(int mapId, uint32_t itemId)
 {
+    if (itemId == 0) return BundleType::Unknown;
     if (IsFlagItemId(mapId, itemId)) return BundleType::Flag;
-    const char* name = LookupMapItem(mapId, itemId);
-    if (!name) return BundleType::Unknown;
-    if (strcmp(name, "Repair Kit") == 0) return BundleType::RepairKit;
-    if (strcmp(name, "Vine Seed") == 0)  return BundleType::VineSeed;
-    return BundleType::Unknown;
+    return MapBundleType(mapId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,6 +1217,59 @@ struct FlagEventData
         return static_cast<int>(pickups.size() + drops.size() + states.size()
             + items.size() + stands.size() + spawns.size() + announces.size());
     }
+};
+
+// ---------------------------------------------------------------------------
+// Flag item registry — which item ids are flags, and from when
+// ---------------------------------------------------------------------------
+
+// A FLAG_ITEM packet is the server announcing that an item id is a flag from
+// that moment on. Ids are recycled between flags and map bundles, so asking
+// whether one is a flag is only meaningful with a time attached: on Warrior's
+// Isle a single id is routinely a repair kit for the first minutes of a match
+// and a respawned flag afterwards.
+class FlagItemRegistry
+{
+public:
+    void Build(const std::vector<FlagItemEvent>& items, int mapId)
+    {
+        m_mapId = mapId;
+        m_firstDeclared.clear();
+        for (const auto& e : items)
+        {
+            uint32_t id = static_cast<uint32_t>(e.item_id);
+            auto it = m_firstDeclared.find(id);
+            if (it == m_firstDeclared.end() || e.time < it->second)
+                m_firstDeclared[id] = e.time;
+        }
+    }
+
+    bool IsFlagAt(uint32_t itemId, float time) const
+    {
+        if (itemId == 0) return false;
+        // Replays recorded before flag_events existed have nothing to go on, so
+        // fall back to the per-map table there.
+        if (m_firstDeclared.empty()) return IsFlagItemId(m_mapId, itemId);
+
+        auto it = m_firstDeclared.find(itemId);
+        if (it == m_firstDeclared.end()) return false;
+        // An agent snapshot can be stamped a hair before the packet explaining it.
+        constexpr float kTolerance = 1.0f;
+        return it->second <= time + kTolerance;
+    }
+
+    // What the given item id is at the given moment. Anything carryable that is
+    // not a flag is whatever bundle the map hands out.
+    BundleType Classify(uint32_t itemId, float time) const
+    {
+        if (itemId == 0) return BundleType::Unknown;
+        if (IsFlagAt(itemId, time)) return BundleType::Flag;
+        return MapBundleType(m_mapId);
+    }
+
+private:
+    std::unordered_map<uint32_t, float> m_firstDeclared;
+    int m_mapId = 0;
 };
 
 // ---------------------------------------------------------------------------

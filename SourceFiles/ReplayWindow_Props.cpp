@@ -53,7 +53,8 @@ void ReplayWindow::SetupAnimatedProp(
     PixelShaderType pst,
     uint32_t segmentHash,
     size_t segmentFallbackIndex,
-    uint32_t animFileHash)
+    uint32_t animFileHash,
+    const std::unordered_map<size_t, uint32_t>& submeshBoneOverride)
 {
     if (!m_datManager || !m_hashIndex || !m_mapRenderer)
         return;
@@ -172,6 +173,13 @@ void ReplayWindow::SetupAnimatedProp(
         auto skinnedVerts = AnimationPanelState::CreateSkinnedVertices(
             mesh, boneData, vertexBoneGroups, boneCount,
             clip->hierarchyMode, j);
+
+        // A submesh can be authored on a static bone even though it belongs to a
+        // moving part, in which case it stays behind while the rest of the piece
+        // moves. Re-pin it to the bone that actually carries the motion.
+        if (auto ov = submeshBoneOverride.find(j); ov != submeshBoneOverride.end())
+            for (auto& sv : skinnedVerts)
+                sv.SetSingleBone(ov->second);
 
         // Debug: log bone assignments per submesh to file
         {
@@ -3397,6 +3405,53 @@ void ReplayWindow::ResolveDruidBridges()
         }
     }
 
+    // Minimap state icons. Neither the prop's origin nor its grow anchor is the
+    // right place for these: the map already has a gadget standing at each bridge's
+    // cliff edge — the thing the seed is planted into, and what shows as a neutral
+    // dot on the minimap — so the icon belongs on the gadget and replaces its dot.
+    // Pair the two gadgets to the two bridges by guild lord proximity, exactly as
+    // the props were paired above, which keeps everything in agent space.
+    m_druidBridgeIcons.clear();
+    m_druidBridgeGadgets.clear();
+    {
+        std::vector<std::pair<int, DirectX::XMFLOAT3>> gadgets;
+        for (auto& [aid, a] : m_replayCtx.agents)
+        {
+            if (a.type != AgentType::Gadget || a.snapshots.empty()) continue;
+            const auto& s0 = a.snapshots.front();
+            gadgets.push_back({ aid, { s0.x, s0.y, s0.z } });
+        }
+
+        std::ofstream dbg("door_debug.log", std::ios::app);
+        for (auto& [aid, p] : gadgets)
+            dbg << "[DruidGadget] agent=" << aid
+                << " pos=(" << p.x << "," << p.y << "," << p.z << ")"
+                << " dRed=" << std::sqrt(dist2(p, redLord))
+                << " dBlue=" << std::sqrt(dist2(p, blueLord)) << "\n";
+
+        int redIdx = -1, blueIdx = -1;
+        float bestRed = FLT_MAX, bestBlue = FLT_MAX;
+        for (size_t k = 0; k < gadgets.size(); k++)
+        {
+            float dr = dist2(gadgets[k].second, redLord);
+            if (dr < bestRed) { bestRed = dr; redIdx = static_cast<int>(k); }
+        }
+        for (size_t k = 0; k < gadgets.size(); k++)
+        {
+            if (static_cast<int>(k) == redIdx) continue;
+            float db = dist2(gadgets[k].second, blueLord);
+            if (db < bestBlue) { bestBlue = db; blueIdx = static_cast<int>(k); }
+        }
+
+        if (redIdx >= 0 && blueIdx >= 0)
+        {
+            m_druidBridgeIcons.push_back({ kRedType,  gadgets[redIdx].second });
+            m_druidBridgeIcons.push_back({ kBlueType, gadgets[blueIdx].second });
+            m_druidBridgeGadgets.insert(gadgets[redIdx].first);
+            m_druidBridgeGadgets.insert(gadgets[blueIdx].first);
+        }
+    }
+
     m_druidBridgesResolved = true;
     // Force UpdateDoorAnimations to re-seed poses now that door types are known.
     m_doorLastScanTime = -1.f;
@@ -3580,6 +3635,363 @@ void ReplayWindow::SetupImperialGateLockProps()
 }
 
 // ---------------------------------------------------------------------------
+// Catapult lever model (Warrior's Isle)
+//
+// Once a repair kit has been applied, the flat lever icon gives way to the real
+// model. It stays hidden until then, so the world shows the catapult becoming
+// usable rather than always advertising it. The state glow and label continue to
+// be drawn in screen space over the model.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::SetupCatapultLeverProps()
+{
+    if (m_catapultLeverModelLoaded)
+        return;
+    if (!m_catapultLeversResolved || m_catapultLevers.empty())
+        return;
+    m_catapultLeverModelLoaded = true;
+
+    if (!m_datManager || !m_hashIndex || !m_mapRenderer)
+        return;
+
+    if (m_replayCtx.mapId != kWarriorsIsleMapId)
+        return;
+
+    auto* device = m_deviceResources->GetD3DDevice();
+    if (!device)
+        return;
+
+    // This file id covers more than one entry and only one of them is geometry,
+    // so every candidate is tried rather than assuming the first is the model.
+    constexpr uint32_t kLeverModelHash = 0x7079;
+    auto mit = m_hashIndex->find(static_cast<int>(kLeverModelHash));
+    if (mit == m_hashIndex->end() || mit->second.empty())
+        return;
+
+    FFNA_ModelFile modelFile;
+    bool haveModel = false;
+    for (int mftIndex : mit->second)
+    {
+        try {
+            FFNA_ModelFile candidate = m_datManager->parse_ffna_model_file(mftIndex);
+            if (candidate.parsed_correctly && !candidate.geometry_chunk.models.empty())
+            {
+                modelFile = std::move(candidate);
+                haveModel = true;
+                break;
+            }
+        } catch (...) {
+        }
+    }
+
+    {
+        std::ofstream dbg("door_debug.log", std::ios::app);
+        dbg << "[CatapultLever] hash=0x7079 entries=" << mit->second.size()
+            << " model=" << (haveModel ? "yes" : "no")
+            << " levers=" << m_catapultLevers.size() << "\n";
+    }
+    if (!haveModel)
+        return;
+
+    const auto& geom = modelFile.geometry_chunk;
+    std::vector<Mesh> meshes;
+    for (size_t j = 0; j < geom.models.size(); j++)
+    {
+        AMAT_file amat;
+        if (modelFile.textures_parsed_correctly &&
+            !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
+        {
+            int subIdx = geom.models[j].unknown;
+            if (!geom.tex_and_vertex_shader_struct.uts0.empty())
+                subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
+            if (!geom.uts1.empty())
+            {
+                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
+                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
+                    % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
+                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
+                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                auto aIt = m_hashIndex->find(amatHash);
+                if (aIt != m_hashIndex->end())
+                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            }
+        }
+        Mesh mesh = modelFile.GetMesh(static_cast<int>(j), amat);
+        if (mesh.indices.size() % 3 == 0)
+            meshes.push_back(mesh);
+    }
+    if (meshes.empty())
+        return;
+
+    auto* map_renderer = m_mapRenderer.get();
+    std::vector<int> textureIds;
+    if (modelFile.textures_parsed_correctly)
+    {
+        for (size_t t = 0; t < modelFile.texture_filenames_chunk.texture_filenames.size(); t++)
+        {
+            auto tf = modelFile.texture_filenames_chunk.texture_filenames[t];
+            auto decoded = decode_filename(tf.id0, tf.id1);
+            int texId = map_renderer->GetTextureManager()->GetTextureIdByHash(decoded);
+            if (texId >= 0) { textureIds.push_back(texId); continue; }
+            auto tit = m_hashIndex->find(decoded);
+            if (tit != m_hashIndex->end())
+            {
+                DatTexture dt = m_datManager->parse_ffna_texture_file(tit->second.at(0));
+                if (dt.width > 0 && dt.height > 0)
+                {
+                    map_renderer->GetTextureManager()->CreateTextureFromRGBA(
+                        dt.width, dt.height, dt.rgba_data.data(), &texId, decoded);
+                }
+                textureIds.push_back(texId);
+            }
+        }
+    }
+
+    std::vector<std::vector<int>> perMeshTexIds(meshes.size());
+    for (size_t k = 0; k < meshes.size(); k++)
+    {
+        std::vector<uint8_t> remappedIndices;
+        for (size_t ti = 0; ti < meshes[k].tex_indices.size(); ti++)
+        {
+            int idx = std::min(static_cast<int>(meshes[k].tex_indices[ti]),
+                               static_cast<int>(textureIds.size()) - 1);
+            if (idx >= 0 && idx < static_cast<int>(textureIds.size()))
+            {
+                perMeshTexIds[k].push_back(textureIds[idx]);
+                remappedIndices.push_back(static_cast<uint8_t>(ti));
+            }
+        }
+        meshes[k].tex_indices = remappedIndices;
+    }
+
+    auto pst = geom.unknown_tex_stuff1.empty() ? PixelShaderType::OldModel : PixelShaderType::NewModel;
+
+    for (auto& cl : m_catapultLevers)
+    {
+        float rotation = 0.f;
+        auto ait = m_replayCtx.agents.find(cl.agentId);
+        if (ait != m_replayCtx.agents.end() && !ait->second.snapshots.empty())
+            rotation = ait->second.snapshots[0].rotation;
+
+        XMFLOAT3 renderPos = ApplyMapTransformToPos(cl.x, cl.y, cl.z, m_replayCtx.mapTransform);
+        XMMATRIX worldMat = XMMatrixRotationY(rotation)
+                          * XMMatrixTranslation(renderPos.x, renderPos.y, renderPos.z);
+
+        std::vector<PerObjectCB> perObjectCBs(meshes.size());
+        for (size_t j = 0; j < meshes.size(); j++)
+        {
+            XMStoreFloat4x4(&perObjectCBs[j].world, worldMat);
+            auto& mesh = meshes[j];
+            if (mesh.uv_coord_indices.size() == mesh.tex_indices.size() &&
+                mesh.uv_coord_indices.size() < MAX_NUM_TEX_INDICES &&
+                modelFile.textures_parsed_correctly)
+            {
+                perObjectCBs[j].num_uv_texture_pairs = static_cast<uint32_t>(mesh.uv_coord_indices.size());
+                for (size_t k = 0; k < mesh.uv_coord_indices.size(); k++)
+                {
+                    perObjectCBs[j].uv_indices[k / 4][k % 4]      = static_cast<uint32_t>(mesh.uv_coord_indices[k]);
+                    perObjectCBs[j].texture_indices[k / 4][k % 4] = static_cast<uint32_t>(mesh.tex_indices[k]);
+                    perObjectCBs[j].blend_flags[k / 4][k % 4]     = static_cast<uint32_t>(mesh.blend_flags[k]);
+                    perObjectCBs[j].texture_types[k / 4][k % 4]   = static_cast<uint32_t>(mesh.texture_types[k]);
+                }
+            }
+        }
+
+        auto meshIds = map_renderer->AddProp(meshes, perObjectCBs, 0xFFFF0008u, pst);
+
+        if (modelFile.textures_parsed_correctly)
+        {
+            for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++)
+            {
+                auto texVec = map_renderer->GetTextureManager()->GetTextures(perMeshTexIds[l]);
+                map_renderer->GetMeshManager()->SetTexturesForMesh(meshIds[l], texVec, 3);
+            }
+        }
+
+        for (int mid : meshIds)
+            map_renderer->SetMeshShouldRender(mid, false);
+
+        cl.meshIds = std::move(meshIds);
+        cl.visible = false;
+    }
+}
+
+
+void ReplayWindow::UpdateCatapultLeverProps()
+{
+    if (!m_mapRenderer) return;
+
+    for (auto& cl : m_catapultLevers)
+    {
+        if (cl.meshIds.empty()) continue;
+
+        bool show = (m_debugTimeline >= cl.repairedTime);
+        // Toggling every frame would flag the shadow map dirty for no reason.
+        if (show == cl.visible) continue;
+
+        for (int mid : cl.meshIds)
+            m_mapRenderer->SetMeshShouldRender(mid, show);
+        cl.visible = show;
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Catapults (Warrior's Isle, model 0x220F6)
+//
+// The map places the two machines but says nothing about which object id drives
+// which, so each is matched to the nearest resolved lever. A catapult that is
+// never repaired has no lever and simply stays wrecked, which is what it should
+// look like anyway.
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::ResolveCatapultProps()
+{
+    if (m_catapultPropsResolved) return;
+    if (!m_catapultLeversResolved) return;
+
+    m_catapultPropsResolved = true;
+    if (m_catapultProps.empty()) return;
+
+    const auto& t = m_replayCtx.mapTransform;
+
+    for (auto& cp : m_catapultProps)
+    {
+        float bestDist = FLT_MAX;
+        const CatapultLever* best = nullptr;
+
+        for (const auto& cl : m_catapultLevers)
+        {
+            XMFLOAT3 lp = ApplyMapTransformToPos(cl.x, cl.y, cl.z, t);
+            float dx = lp.x - cp.renderPos.x;
+            float dz = lp.z - cp.renderPos.z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestDist) { bestDist = d2; best = &cl; }
+        }
+
+        // Levers sit a couple of hundred units from their machine. Without a
+        // ceiling, a catapult that is never repaired latches onto the other
+        // side's lever half a map away and mirrors its animations.
+        constexpr float kMaxLeverDist = 1500.f;
+
+        if (best && bestDist <= kMaxLeverDist * kMaxLeverDist)
+        {
+            cp.objectId     = best->objectId;
+            cp.repairedTime = best->repairedTime;
+        }
+        else
+        {
+            best = nullptr;
+        }
+
+        std::ofstream dbg("door_debug.log", std::ios::app);
+        dbg << "[Catapult] prop " << cp.animPropIndex
+            << " pos=(" << cp.renderPos.x << "," << cp.renderPos.z << ")"
+            << " objectId=" << cp.objectId
+            << " repairedAt=" << cp.repairedTime
+            << " dist=" << (best ? std::sqrt(bestDist) : -1.f) << "\n";
+    }
+}
+
+void ReplayWindow::UpdateCatapultAnimations()
+{
+    if (m_catapultProps.empty() || !m_mapRenderer) return;
+
+    auto& animProps = m_mapRenderer->GetAnimatedProps();
+    const float now = m_debugTimeline;
+
+    for (auto& cp : m_catapultProps)
+    {
+        if (cp.animPropIndex < 0 || cp.animPropIndex >= static_cast<int>(animProps.size()))
+            continue;
+
+        auto& ap = animProps[cp.animPropIndex];
+        if (!ap.controller || !ap.clip) continue;
+
+        const auto& segs = ap.clip->animationSegments;
+
+        // Clip times are in the controller's own units. 100000 of them per second
+        // is what AnimationController calls 1x, and what the model viewer plays at
+        // when its speed slider sits on 1.0.
+        constexpr float kClipUnitsPerSecond = 100000.f;
+
+        auto segDuration = [&](size_t seg) -> float {
+            if (seg >= segs.size()) return 0.f;
+            float units = static_cast<float>(segs[seg].endTime)
+                        - static_cast<float>(segs[seg].startTime);
+            return std::max(0.01f, units / kClipUnitsPerSecond);
+        };
+
+        // Every pose is addressed the same way: pick a segment and sit at a given
+        // point inside it. Nothing is ever left playing, so scrubbing the timeline
+        // lands on exactly the frame the replay time calls for.
+        auto pose = [&](size_t seg, float progress) {
+            if (seg >= segs.size()) return;
+            float s0 = static_cast<float>(segs[seg].startTime);
+            float s1 = static_cast<float>(segs[seg].endTime);
+            ap.controller->SetLooping(false);
+            ap.controller->SetSegment(seg);
+            ap.controller->SetTime(s0 + std::clamp(progress, 0.f, 1.f) * (s1 - s0));
+            ap.controller->Pause();
+        };
+
+        if (now < cp.repairedTime)
+        {
+            pose(cp.segBroken, 0.f);
+            continue;
+        }
+
+        auto csIt = m_catapultStates.find(cp.objectId);
+        if (csIt == m_catapultStates.end())
+        {
+            pose(cp.segRepaired, 0.f);
+            continue;
+        }
+
+        CatapultState st = CatapultState::Unknown;
+        float evTime = 0.f;
+        if (!csIt->second.LastEvent(now, st, evTime))
+        {
+            pose(cp.segRepaired, 0.f);
+            continue;
+        }
+
+        float elapsed = now - evTime;
+
+        switch (st)
+        {
+        case CatapultState::Repaired:
+        {
+            float d = segDuration(cp.segRepairing);
+            if (elapsed < d) pose(cp.segRepairing, elapsed / d);
+            else             pose(cp.segRepaired, 0.f);
+            break;
+        }
+        case CatapultState::Loaded:
+        {
+            // Holds the last frame of the load once it finishes: that pose is the
+            // armed catapult, waiting to be let go.
+            float d = segDuration(cp.segLoading);
+            pose(cp.segLoading, (elapsed < d) ? (elapsed / d) : 1.f);
+            break;
+        }
+        case CatapultState::Fired:
+        case CatapultState::Impact:
+        {
+            float d = segDuration(cp.segFiring);
+            if (elapsed < d) pose(cp.segFiring, elapsed / d);
+            else             pose(cp.segRepaired, 0.f);
+            break;
+        }
+        default:
+            pose(cp.segRepaired, 0.f);
+            break;
+        }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
 // Door animation update (event-driven, per door type)
 // ---------------------------------------------------------------------------
 
@@ -3718,6 +4130,16 @@ static int GetDoorType(uint32_t datMapId, uint32_t objectId)
         default: return 0;
         }
     }
+    if (datMapId == 0x1F1FC) // Warrior's Isle
+    {
+        // The four base gates share a single type: door_events shows all of them
+        // carrying the same stage-2 open at 01:00.6 and never closing again, so
+        // there is nothing to tell apart and no need to match ids to instances.
+        switch (objectId) {
+        case 11692: case 12669: case 56526: case 61318: return 28;
+        default: return 0;
+        }
+    }
     return 0;
 }
 
@@ -3737,46 +4159,12 @@ void ReplayWindow::UpdateDoorAnimations()
                || (timeDelta > 1.0f);
     m_doorLastScanTime = curTime;
 
-    bool prevOpen[28] = { false, m_doorTypeOpen[1], m_doorTypeOpen[2], m_doorTypeOpen[3],
-                          m_doorTypeOpen[4], m_doorTypeOpen[5], m_doorTypeOpen[6],
-                          m_doorTypeOpen[7], m_doorTypeOpen[8], m_doorTypeOpen[9],
-                          m_doorTypeOpen[10], m_doorTypeOpen[11], m_doorTypeOpen[12],
-                          m_doorTypeOpen[13], m_doorTypeOpen[14], m_doorTypeOpen[15],
-                          m_doorTypeOpen[16], m_doorTypeOpen[17], m_doorTypeOpen[18],
-                          m_doorTypeOpen[19], m_doorTypeOpen[20], m_doorTypeOpen[21],
-                          m_doorTypeOpen[22], m_doorTypeOpen[23], m_doorTypeOpen[24],
-                          m_doorTypeOpen[25], m_doorTypeOpen[26],
-                          m_doorTypeOpen[27] };
+    bool prevOpen[kDoorTypeCount];
+    std::copy(std::begin(m_doorTypeOpen), std::end(m_doorTypeOpen), std::begin(prevOpen));
 
     if (seeked)
     {
-        m_doorTypeOpen[1] = false;
-        m_doorTypeOpen[2] = false;
-        m_doorTypeOpen[3] = false;
-        m_doorTypeOpen[4] = false;
-        m_doorTypeOpen[5] = false;
-        m_doorTypeOpen[6] = false;
-        m_doorTypeOpen[7] = false;
-        m_doorTypeOpen[8] = false;
-        m_doorTypeOpen[9] = false;
-        m_doorTypeOpen[10] = false;
-        m_doorTypeOpen[11] = false;
-        m_doorTypeOpen[12] = false;
-        m_doorTypeOpen[13] = false;
-        m_doorTypeOpen[14] = false;
-        m_doorTypeOpen[15] = false;
-        m_doorTypeOpen[16] = false;
-        m_doorTypeOpen[17] = false;
-        m_doorTypeOpen[18] = false;
-        m_doorTypeOpen[19] = false;
-        m_doorTypeOpen[20] = false;
-        m_doorTypeOpen[21] = false;
-        m_doorTypeOpen[22] = false;
-        m_doorTypeOpen[23] = false;
-        m_doorTypeOpen[24] = false;
-        m_doorTypeOpen[25] = false;
-        m_doorTypeOpen[26] = false;
-        m_doorTypeOpen[27] = false;
+        std::fill(std::begin(m_doorTypeOpen), std::end(m_doorTypeOpen), false);
 
         // Frozen Isle lever gates start with doors 1 & 2 OPEN and doors 3 & 4 CLOSED
         // (confirmed in door_events: the match-start events for 61318/11692 carry status

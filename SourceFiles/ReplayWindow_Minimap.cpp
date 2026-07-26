@@ -472,6 +472,9 @@ void ReplayWindow::DrawMinimapPanel()
                 // NPCs/gadgets: skip dead ones (players persist as graves)
                 if (isDead && ard.type != AgentType::Player) continue;
 
+                // The vine bridge gadgets are drawn as door state icons instead.
+                if (m_druidBridgeGadgets.count(agentId)) continue;
+
                 float sx, sy, sz;
                 InterpolateAgentPosition(ard, now, is, sx, sy, sz);
                 XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
@@ -821,6 +824,57 @@ void ReplayWindow::DrawMinimapPanel()
                         dl->AddCircleFilled(ImVec2(fsx + ox, fsy + oy), 3.f, fc);
                     }
                 }
+
+                // --- Vine seeds and repair kits ---
+                // Same treatment as the flags, except these belong to no team and are
+                // gone for good once spent on a vine bridge or a catapult.
+                for (auto& bundle : m_flagTimeline.bundles)
+                {
+                    if (bundle.events.empty()) continue;
+
+                    BundleLocation bloc = bundle.locationAtTime(now);
+                    if (bloc == BundleLocation::Consumed) continue;
+                    if (bloc == BundleLocation::Base && !bundle.spawnResolved) continue;
+
+                    bool carried = (bloc == BundleLocation::Carried);
+                    int  bcarry  = carried ? bundle.carrierAtTime(now) : -1;
+
+                    float swx, swy, swz;
+                    if (carried && bcarry >= 0)
+                    {
+                        auto cit = m_replayCtx.agents.find(bcarry);
+                        if (cit != m_replayCtx.agents.end() && !cit->second.snapshots.empty())
+                            InterpolateAgentPosition(cit->second, now, is, swx, swy, swz);
+                        else
+                            bundle.positionAtTime(now, swx, swy, swz);
+                    }
+                    else
+                        bundle.positionAtTime(now, swx, swy, swz);
+
+                    XMFLOAT3 spos = ApplyMapTransformToPos(swx, swy, swz, mt);
+                    float ssx, ssy;
+                    if (!ProjectToImage(spos, ssx, ssy)) continue;
+                    if (!InBounds(ssx, ssy)) continue;
+
+                    const float sh = 9.f;
+                    float sox = carried ? 8.f : 0.f;
+                    float soy = carried ? -8.f : 0.f;
+
+                    bool isSeed = (bundle.type == BundleType::VineSeed);
+                    ImTextureID stex = LoadNPCIcon(dev, isSeed ? "Vine Seed.png"
+                                                               : "RepairKit.png");
+                    if (stex)
+                        dl->AddImage(stex, ImVec2(ssx - sh + sox, ssy - sh + soy),
+                                     ImVec2(ssx + sh + sox, ssy + sh + soy));
+                    else
+                    {
+                        dl->AddCircleFilled(ImVec2(ssx + sox, ssy + soy), 4.f,
+                                            IM_COL32(0, 0, 0, 180));
+                        dl->AddCircleFilled(ImVec2(ssx + sox, ssy + soy), 3.f,
+                                            isSeed ? IM_COL32(0x7C, 0xC8, 0x4A, 255)
+                                                   : IM_COL32(0xD2, 0xB4, 0x78, 255));
+                    }
+                }
             }
 
             // --- Isle of the Weeping Stone lever door state icon ---
@@ -910,6 +964,108 @@ void ReplayWindow::DrawMinimapPanel()
                             hoverLabelText   = "Gate";
                             hoverLabelPos    = ImVec2(dsx, dsy);
                             hoverLabelDotR   = dh;
+                            hoverLabelCol    = IM_COL32(255, 255, 255, 240);
+                        }
+                    }
+                }
+            }
+
+            // --- Druid's Isle vine bridge state icons (doors 26/27) ---
+            // Same markers as the lever gates elsewhere: red while the gap is still
+            // open, grey once a seed has been planted and the bridge has grown, which
+            // m_doorTypeOpen tracks from the StoC door event. Hovering shows a label;
+            // not clickable.
+            if (m_replayCtx.datMapId == 0x1F27A)
+            {
+                for (const auto& [doorType, gamePos] : m_druidBridgeIcons)
+                {
+                    XMFLOAT3 bpos = ApplyMapTransformToPos(gamePos.x, gamePos.y,
+                                                           gamePos.z, mt);
+                    float dsx, dsy;
+                    if (!ProjectToImage(bpos, dsx, dsy) || !InBounds(dsx, dsy))
+                        continue;
+
+                    bool grown = (doorType >= 1 && doorType < 28) && m_doorTypeOpen[doorType];
+                    const float dh = 16.f;
+
+                    ImTextureID dtex = LoadNPCIconDDS(dev, grown ? "texture_193320.dds"
+                                                                 : "texture_191464.dds");
+                    if (dtex)
+                        dl->AddImage(dtex, ImVec2(dsx - dh, dsy - dh),
+                                     ImVec2(dsx + dh, dsy + dh));
+                    else
+                    {
+                        ImU32 c = grown ? IM_COL32(120, 230, 120, 230)
+                                        : IM_COL32(230, 120, 120, 230);
+                        dl->AddCircleFilled(ImVec2(dsx, dsy), dh * 0.4f + 1.f,
+                                            IM_COL32(0, 0, 0, 180));
+                        dl->AddCircleFilled(ImVec2(dsx, dsy), dh * 0.4f, c);
+                    }
+
+                    if (hovered)
+                    {
+                        float mdx = io.MousePos.x - dsx;
+                        float mdy = io.MousePos.y - dsy;
+                        float d2  = mdx * mdx + mdy * mdy;
+                        float pick = dh + 2.f;
+                        if (d2 <= pick * pick && d2 < hoverLabelDist2)
+                        {
+                            hoverLabelDist2  = d2;
+                            hoverLabelActive = true;
+                            hoverLabelText   = grown ? "Vine Bridge (Grown)" : "Vine Bridge";
+                            hoverLabelPos    = ImVec2(dsx, dsy);
+                            hoverLabelDotR   = dh;
+                            hoverLabelCol    = IM_COL32(255, 255, 255, 240);
+                        }
+                    }
+                }
+            }
+
+            // --- Catapult levers (Warrior's Isle) ---
+            // Only once a repair kit has been applied, from which point the border
+            // tracks the firing cycle: green repaired, amber loaded, red fired.
+            if (m_replayCtx.mapId == kWarriorsIsleMapId)
+            {
+                for (const auto& cl : m_catapultLevers)
+                {
+                    if (m_debugTimeline < cl.repairedTime) continue;
+
+                    XMFLOAT3 lpos = ApplyMapTransformToPos(cl.x, cl.y, cl.z, mt);
+                    float lsx, lsy;
+                    if (!ProjectToImage(lpos, lsx, lsy) || !InBounds(lsx, lsy))
+                        continue;
+
+                    CatapultState st = CatapultState::Repaired;
+                    auto csIt = m_catapultStates.find(cl.objectId);
+                    if (csIt != m_catapultStates.end())
+                        st = csIt->second.GetState(m_debugTimeline);
+
+                    const float lh = 14.f;
+                    constexpr float bw = 2.f;
+                    ImVec2 outMin(lsx - lh, lsy - lh), outMax(lsx + lh, lsy + lh);
+                    ImVec2 inMin(outMin.x + bw, outMin.y + bw);
+                    ImVec2 inMax(outMax.x - bw, outMax.y - bw);
+
+                    dl->AddRectFilled(outMin, outMax, CatapultStateBorderColor(st), 3.f);
+                    dl->AddRectFilled(inMin, inMax, IM_COL32(10, 10, 10, 220), 2.f);
+
+                    ImTextureID ltex = LoadNPCIcon(dev, "Lever.png");
+                    if (ltex)
+                        dl->AddImage(ltex, inMin, inMax);
+
+                    if (hovered)
+                    {
+                        float mdx = io.MousePos.x - lsx;
+                        float mdy = io.MousePos.y - lsy;
+                        float d2  = mdx * mdx + mdy * mdy;
+                        float pick = lh + 2.f;
+                        if (d2 <= pick * pick && d2 < hoverLabelDist2)
+                        {
+                            hoverLabelDist2  = d2;
+                            hoverLabelActive = true;
+                            hoverLabelText   = CatapultStateName(st);
+                            hoverLabelPos    = ImVec2(lsx, lsy);
+                            hoverLabelDotR   = lh;
                             hoverLabelCol    = IM_COL32(255, 255, 255, 240);
                         }
                     }

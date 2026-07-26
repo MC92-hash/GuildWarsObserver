@@ -246,17 +246,8 @@ void ReplayWindow::DrawPartyWindows()
 
             bool isFogHidden = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
 
-            ImTextureID carriedFlagTex = nullptr;
-            if (m_flagTimelineBuilt && m_flagTimeline.valid) {
-                ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-                for (int fti = 0; fti < 2; fti++) {
-                    if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == agentId) {
-                        carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
-                            ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png");
-                        break;
-                    }
-                }
-            }
+            ImTextureID carriedFlagTex =
+                CarriedBundleIcon(m_deviceResources->GetD3DDevice(), agentId);
 
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,

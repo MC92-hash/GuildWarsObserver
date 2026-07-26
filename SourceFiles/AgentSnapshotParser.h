@@ -18,8 +18,11 @@ bool PollAgentParseCompletion(ReplayContext& ctx);
 
 // After agents are loaded, match them against the metadata from infos.json
 // and classify each agent as Player / NPC / Gadget / Flag / Unknown.
+// The registry decides flag-vs-bundle for item agents; pass null on replays
+// where flag packets were never parsed and the per-map tables are all there is.
 void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
-                    const MatchMeta& meta, int mapId);
+                    const MatchMeta& meta, int mapId,
+                    const FlagItemRegistry* flagItems = nullptr);
 
 // Split agent files that contain mixed incarnations due to agent ID recycling.
 // Uses lifecycle AGENT_ADD/AGENT_REMOVE events to define incarnation windows.

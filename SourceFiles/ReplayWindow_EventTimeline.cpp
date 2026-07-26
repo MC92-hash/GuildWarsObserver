@@ -179,6 +179,31 @@ void ReplayWindow::BuildTimelineData()
         }
     }
 
+    // Catapult levers (Warrior's Isle). Read straight from the map object stream
+    // rather than m_catapultStates, which is built on its own schedule.
+    if (m_replayCtx.mapId == kWarriorsIsleMapId)
+    {
+        for (auto& moe : m_replayCtx.stocData.mapObject)
+        {
+            if (moe.isState) continue;
+            if (moe.animation_stage != 2) continue;
+
+            // Reloads are frequent and say little on their own, so only the repair
+            // and the shots earn a marker here.
+            CatapultState cs = CatapultState::Unknown;
+            if (moe.animation_type == 2)       cs = CatapultState::Repaired;
+            else if (moe.animation_type == 12) cs = CatapultState::Fired;
+            if (cs == CatapultState::Unknown) continue;
+
+            TimelineEvent te;
+            te.time           = moe.time;
+            te.type           = TimelineEventType::Catapult;
+            te.catapultState  = cs;
+            te.label          = CatapultStateName(cs);
+            m_timeline.events.push_back(std::move(te));
+        }
+    }
+
     std::sort(m_timeline.events.begin(), m_timeline.events.end(),
         [](const TimelineEvent& a, const TimelineEvent& b) { return a.time < b.time; });
 }
@@ -348,6 +373,11 @@ void ReplayWindow::DrawEventTimeline()
             ImTextureID obeliskTex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
             FilterPill("Obelisk", m_tlFilterObelisk, obeliskTex, IM_COL32(180, 140, 255, 255));
         }
+
+        if (m_replayCtx.mapId == kWarriorsIsleMapId) {
+            ImTextureID leverTex = LoadNPCIcon(dev, "Lever.png");
+            FilterPill("Catapult", m_tlFilterCatapult, leverTex, IM_COL32(240, 170, 40, 255));
+        }
     }
 
     // ── Clip to chart area ──────────────────────────────────────────────
@@ -444,6 +474,7 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::ShrineCaptured:     return m_tlFilterShrine;
         case TimelineEventType::ShrineNeutralized:  return m_tlFilterShrine;
         case TimelineEventType::ObeliskCapture:     return m_tlFilterObelisk;
+        case TimelineEventType::Catapult:           return m_tlFilterCatapult;
         }
         return true;
     };
@@ -466,7 +497,7 @@ void ReplayWindow::DrawEventTimeline()
 
         if (e.type == TimelineEventType::FlagCapture || e.type == TimelineEventType::FlagReturn
             || e.type == TimelineEventType::ShrineCaptured || e.type == TimelineEventType::ShrineNeutralized
-            || e.type == TimelineEventType::ObeliskCapture)
+            || e.type == TimelineEventType::ObeliskCapture || e.type == TimelineEventType::Catapult)
         {
             ey = bottomRowY;
         }
@@ -479,7 +510,8 @@ void ReplayWindow::DrawEventTimeline()
                 if ((other.type == TimelineEventType::FlagCapture
                      || other.type == TimelineEventType::ShrineCaptured
                      || other.type == TimelineEventType::ShrineNeutralized
-                     || other.type == TimelineEventType::ObeliskCapture) &&
+                     || other.type == TimelineEventType::ObeliskCapture
+                     || other.type == TimelineEventType::Catapult) &&
                     isEventVisible(other) &&
                     std::abs(e.time - other.time) <= 3.f)
                 {
@@ -509,7 +541,8 @@ void ReplayWindow::DrawEventTimeline()
             || t == TimelineEventType::MoraleBoost
             || t == TimelineEventType::ShrineCaptured
             || t == TimelineEventType::ShrineNeutralized
-            || t == TimelineEventType::ObeliskCapture;
+            || t == TimelineEventType::ObeliskCapture
+            || t == TimelineEventType::Catapult;
     };
 
     for (size_t mi = 0; mi < markers.size(); ++mi)
@@ -672,6 +705,22 @@ void ReplayWindow::DrawEventTimeline()
                     IM_COL32(180, 180, 180, 255), "N");
             break;
         }
+        case TimelineEventType::Catapult: {
+            ImTextureID tex = LoadNPCIcon(dev, "Lever.png");
+            ImU32 borderCol = CatapultStateBorderColor(e.catapultState);
+            constexpr float bw = 2.f;
+            dl->AddRectFilled(iconMin, iconMax, borderCol, 2.f);
+            ImVec2 imgMin(iconMin.x + bw, iconMin.y + bw);
+            ImVec2 imgMax(iconMax.x - bw, iconMax.y - bw);
+            dl->AddRectFilled(imgMin, imgMax, IM_COL32(10, 10, 10, 220), 1.f);
+            if (tex)
+                dl->AddImage(tex, imgMin, imgMax);
+            else
+                dl->AddText(font, fs * 0.65f,
+                    ImVec2(mp.x - 3.f, mp.y - fs * 0.35f),
+                    IM_COL32(255, 255, 255, 255), "C");
+            break;
+        }
         case TimelineEventType::ObeliskCapture: {
             ImTextureID tex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
             ImU32 borderCol = (e.teamId == 2)
@@ -762,6 +811,7 @@ void ReplayWindow::DrawEventTimeline()
         case TimelineEventType::ShrineCaptured:    typeName = "Shrine Captured"; break;
         case TimelineEventType::ShrineNeutralized: typeName = "Shrine Neutralized"; break;
         case TimelineEventType::ObeliskCapture:    typeName = "Obelisk Capture"; break;
+        case TimelineEventType::Catapult:          typeName = "Catapult"; break;
         default: break;
         }
 

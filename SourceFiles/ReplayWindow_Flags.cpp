@@ -45,10 +45,62 @@ void ReplayWindow::BuildFlagTimeline()
     input.flagEvents = &m_replayCtx.stocData.flagEvents;
     input.lifecycle  = &m_replayCtx.stocData.lifecycle;
     input.mapObject  = &m_replayCtx.stocData.mapObject;
+    input.doorEvents = &m_replayCtx.stocData.doorEvents;
     input.agents     = &m_replayCtx.agents;
+    input.flagItems  = &m_flagItems;
     input.mapId      = m_replayCtx.mapId;
     m_flagTimeline = FlagTimelineBuilder::Build(input);
     m_flagTimelineBuilt = true;
+
+    if (!m_flagTimeline.bundles.empty())
+    {
+        std::ofstream dbg("door_debug.log", std::ios::app);
+        for (int ti = 0; ti < 2; ti++)
+        {
+            auto& ft = m_flagTimeline.teams[ti];
+            dbg << "[FlagTeam] " << ti
+                << " spawn=(" << ft.spawnX << "," << ft.spawnY << "," << ft.spawnZ << ")"
+                << " events=" << ft.events.size() << "\n";
+            for (auto& ev : ft.events)
+                dbg << "  t=" << ev.time
+                    << " -> " << FlagLocationName(ev.newLocation)
+                    << " actor=" << ev.actorAgentId
+                    << " carrier=" << ev.carrierAgentId
+                    << " pos=(" << ev.x << "," << ev.y << "," << ev.z << ")\n";
+        }
+        for (auto& bundle : m_flagTimeline.bundles)
+        {
+            dbg << "[Bundle] item=" << bundle.itemId
+                << " type=" << static_cast<int>(bundle.type)
+                << " spawnResolved=" << (bundle.spawnResolved ? 1 : 0)
+                << " spawn=(" << bundle.spawnX << "," << bundle.spawnY << "," << bundle.spawnZ << ")"
+                << " events=" << bundle.events.size() << "\n";
+            // The world agents the timeline was derived from, so a wrong timeline can
+            // be traced back to the raw spans rather than guessed at.
+            for (auto& [aid, ard] : m_replayCtx.agents) {
+                if (ard.snapshots.empty()) continue;
+                if (static_cast<int>(ard.snapshots.front().item_id) != bundle.itemId) continue;
+                dbg << "  [span] agent=" << aid
+                    << " type=" << static_cast<int>(ard.type)
+                    << " orig=" << ard.originalAgentId
+                    << " snaps=" << ard.snapshots.size()
+                    << " " << ard.snapshots.front().time << ".." << ard.snapshots.back().time
+                    << " at=(" << ard.snapshots.front().x << "," << ard.snapshots.front().y
+                    << "," << ard.snapshots.front().z << ")\n";
+            }
+            for (auto& ev : bundle.events)
+            {
+                static const char* kLoc[] = { "Base", "Carried", "Ground", "Consumed" };
+                dbg << "  t=" << ev.time
+                    << " -> " << kLoc[static_cast<int>(ev.newLocation)]
+                    << " actor=" << ev.actorAgentId
+                    << " carrier=" << ev.carrierAgentId
+                    << " world=" << ev.worldAgentId
+                    << " pos=(" << ev.x << "," << ev.y << "," << ev.z << ")\n";
+            }
+        }
+    }
+
     BuildFlagMessages();
 }
 
@@ -89,6 +141,49 @@ void ReplayWindow::BuildFlagMessages()
 
         m_flagMessages.push_back(std::move(msg));
     }
+
+    // Repair kits and vine seeds are announced the same way. A drop only names the
+    // player in the carry it ends, so the timeline is walked in order rather than
+    // event by event.
+    for (auto& bundle : m_flagTimeline.bundles)
+    {
+        int carrier = -1;
+        for (auto& ev : bundle.events)
+        {
+            int actorId = -1;
+            FlagTimelineEventType kind = FlagTimelineEventType::Pickup;
+
+            if (ev.newLocation == BundleLocation::Carried) {
+                actorId = ev.carrierAgentId;
+                carrier = actorId;
+            } else if (ev.newLocation == BundleLocation::Ground) {
+                actorId = carrier;
+                kind    = FlagTimelineEventType::Drop;
+                carrier = -1;
+            } else {
+                carrier = -1;
+                continue;
+            }
+            if (actorId < 0) continue;
+
+            auto it = m_replayCtx.agents.find(actorId);
+            if (it == m_replayCtx.agents.end()) continue;
+
+            FlagEventMessage msg;
+            msg.time       = ev.time;
+            msg.eventType  = kind;
+            msg.bundleType = bundle.type;
+            msg.playerName = it->second.playerName.empty()
+                ? it->second.categoryName : it->second.playerName;
+            msg.playerTeam = (it->second.teamId == 2) ? 1 : 0;
+            if (msg.playerName.empty()) continue;
+
+            m_flagMessages.push_back(std::move(msg));
+        }
+    }
+
+    std::sort(m_flagMessages.begin(), m_flagMessages.end(),
+        [](const FlagEventMessage& a, const FlagEventMessage& b) { return a.time < b.time; });
 }
 
 
@@ -257,6 +352,52 @@ void ReplayWindow::DrawFlags()
         }
 
         DrawFlagAt(worldX, worldY, worldZ, tex, ti, label);
+    }
+
+    // --- Vine seeds and repair kits ---
+    // A carried bundle is already drawn above its carrier by DrawBundleItems, so
+    // only the ones lying in the world need a marker here.
+    for (auto& bundle : m_flagTimeline.bundles)
+    {
+        if (bundle.events.empty()) continue;
+
+        BundleLocation bloc = bundle.locationAtTime(m_debugTimeline);
+        if (bloc == BundleLocation::Consumed || bloc == BundleLocation::Carried) continue;
+        if (bloc == BundleLocation::Base && !bundle.spawnResolved) continue;
+
+        bool isSeed = (bundle.type == BundleType::VineSeed);
+
+        float worldX = 0, worldY = 0, worldZ = 0;
+        bundle.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
+
+        XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
+        float scrX, scrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
+
+        constexpr float kBundleDotRadius = 5.f;
+        ImU32 dotCol = isSeed ? IM_COL32(120, 220, 120, 200) : IM_COL32(210, 180, 120, 200);
+        dl->AddCircleFilled(ImVec2(scrX, scrY), kBundleDotRadius, dotCol);
+        dl->AddCircle(ImVec2(scrX, scrY), kBundleDotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+
+        float offsetY = iconSz * 0.8f;
+        if (ImTextureID tex = LoadNPCIcon(dev, isSeed ? "Vine Seed.png" : "RepairKit.png"))
+        {
+            ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
+            ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+            dl->AddImage(tex, iconTL, iconBR);
+        }
+
+        const char* label;
+        if (isSeed) label = (bloc == BundleLocation::Ground) ? "Seed (Dropped)" : "Seed";
+        else        label = (bloc == BundleLocation::Ground) ? "Repair Kit (Dropped)"
+                                                             : "Repair Kit";
+        ImFont* font = ImGui::GetFont();
+        float fontSize = font->FontSize;
+        ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label);
+        float tx = scrX - textSz.x * 0.5f;
+        float ty = scrY - offsetY - iconSz - fontSize - 2.f;
+        dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
+        dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
     }
 }
 
@@ -586,6 +727,19 @@ void ReplayWindow::DrawFlagEventMessages()
         const char* flagTeamName = (active->flagTeam == 0) ? "red" : "blue";
 
         std::vector<Segment> line1, line2;
+
+        if (active->bundleType != BundleType::Unknown)
+        {
+            const char* what = (active->bundleType == BundleType::RepairKit)
+                ? " a repair kit!" : " a vine seed!";
+            line1.push_back({ active->playerName, playerCol });
+            line1.push_back({ (active->eventType == FlagTimelineEventType::Drop)
+                                  ? " has dropped" : " picked up", whiteCol });
+            line1.push_back({ what, whiteCol });
+            drawSegmentsCentered(line1, curY, alpha);
+            curY += lineH;
+            continue;
+        }
 
         switch (active->eventType)
         {

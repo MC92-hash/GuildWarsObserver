@@ -1096,16 +1096,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     PartyIcons hudIcons = LoadAllPartyIcons(dev);
 
-    ImTextureID carriedFlagTex = nullptr;
-    if (m_flagTimelineBuilt && m_flagTimeline.valid) {
-        for (int fti = 0; fti < 2; fti++) {
-            if (m_flagTimeline.teams[fti].carrierAtTime(m_debugTimeline) == focused) {
-                carriedFlagTex = LoadFlagIcon(dev, (fti == 0)
-                    ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png");
-                break;
-            }
-        }
-    }
+    ImTextureID carriedFlagTex = CarriedBundleIcon(dev, focused);
 
     ImVec2 panelTL(panelX, panelY);
     ImVec2 panelBR(panelX + panelW, panelY + panelH);

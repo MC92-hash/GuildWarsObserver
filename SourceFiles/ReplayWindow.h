@@ -180,7 +180,8 @@ private:
                            PixelShaderType pst,
                            uint32_t segmentHash,
                            size_t segmentFallbackIndex,
-                           uint32_t animFileHash = 0);
+                           uint32_t animFileHash = 0,
+                           const std::unordered_map<size_t, uint32_t>& submeshBoneOverride = {});
 
     // Uncharted Isle double-gate setup. Locks the pillar/frame submesh (staticSubmesh)
     // static, animates the open segment (hash 0x303419C9), and drives the second leaf
@@ -341,6 +342,9 @@ private:
     std::unordered_map<int, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_skillIconCache;
 
     // --- Flag Timeline (from FlagTimelineBuilder) ---
+    // Which item ids are flags at which point in the match. Built before agents
+    // are split, since the split depends on telling flags from map bundles.
+    FlagItemRegistry m_flagItems;
     FlagTimeline m_flagTimeline;
     bool m_flagTimelineBuilt = false;
     StandOwner m_obeliskLastOwner = StandOwner::Neutral;
@@ -359,6 +363,9 @@ private:
         int flagTeam   = 0;    // 0=blue, 1=red
         FlagTimelineEventType eventType = FlagTimelineEventType::Spawn;
         int standAgentId = -1; // which stand for Stick events (-1 = tower, else obelisk)
+        // Repair kits and vine seeds belong to no team, so the flag fields above
+        // say nothing about them and the wording comes from this instead.
+        BundleType bundleType = BundleType::Unknown;
     };
     std::vector<FlagEventMessage> m_flagMessages;
     void BuildFlagMessages();
@@ -402,8 +409,48 @@ private:
     static constexpr int kWarriorsIsleMapId = 171;
     std::unordered_map<uint32_t, CatapultLeverState> m_catapultStates;
 
+    // Each repaired catapult, tied to the lever gadget standing at it. The map
+    // object events only carry an object id, so the gadget is matched by
+    // proximity to the player who applied the repair kit.
+    struct CatapultLever {
+        uint32_t objectId     = 0;
+        int      agentId      = -1;
+        float    x = 0, y = 0, z = 0;
+        float    repairedTime = -1.f;
+        std::vector<int> meshIds;   // 3D lever model, hidden until repaired
+        bool     visible      = false;
+    };
+    std::vector<CatapultLever> m_catapultLevers;
+    bool m_catapultLeversResolved = false;
+    bool m_catapultLeverModelLoaded = false;
+    void ResolveCatapultLevers();
+    void SetupCatapultLeverProps();
+    void UpdateCatapultLeverProps();
+
+    // The catapults themselves (model 0x220F6). One clip holds every pose the
+    // machine can be in, from wrecked through to mid-shot, so the prop is parked
+    // on whichever segment its object's state calls for and scrubbed by hand
+    // instead of being played. Which prop belongs to which object id is only
+    // known once the levers resolve, so that link is made later by proximity.
+    struct CatapultProp {
+        int      animPropIndex = -1;
+        DirectX::XMFLOAT3 renderPos{ 0.f, 0.f, 0.f };
+        uint32_t objectId      = 0;
+        float    repairedTime  = FLT_MAX;
+        size_t   segBroken     = SIZE_MAX;
+        size_t   segRepairing  = SIZE_MAX;
+        size_t   segRepaired   = SIZE_MAX;
+        size_t   segLoading    = SIZE_MAX;
+        size_t   segFiring     = SIZE_MAX;
+    };
+    std::vector<CatapultProp> m_catapultProps;
+    bool m_catapultPropsResolved = false;
+    void ResolveCatapultProps();
+    void UpdateCatapultAnimations();
+
     // --- Door animation state tracking (per door type, not per object) ---
-    bool  m_doorTypeOpen[28] = {};    // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors, index 5/6 = Burning Isle doors (0x1F23F / 0x1F247), index 7 = Uncharted Isle door 0x3C163, index 8 = Uncharted Isle door 0x32F3A, index 9 = Uncharted Isle slide gate 0x32F0C, index 10 = Uncharted Isle slide gate 0x336BB, index 11 = Nomad's Isle doors (0x19750/0x197A9), index 12 = Nomad's Isle looping doors (0x22143), index 13 = Isle of Wurms doors (0x330F7/0x331A4), index 14 = Isle of Jade doors (0x285E7/0x265B5), index 15 = Isle of the Dead doors (0x1F294/0x1F291/0x1F281/0x1E820), index 16 = Isle of Solitude doors (0x33CD5/0x3323B), index 17 = Isle of the Weeping Stone auto-open doors (0x2858E/0x28578), index 18 = Isle of the Weeping Stone event gates (0x1EAFB, ids 147/9305/30563/4417), index 19 = Isle of the Weeping Stone lever door (0x1EAFB nearest the flag stand, object 122), index 20 = Frozen Isle doors (0x1F251/0x1F252), index 21 = Frozen Isle lever gate door 1 (0x255BE, obj 61318, red side), index 22 = Frozen Isle lever gate door 2 (0x255BE, obj 11692, blue side), index 23 = Frozen Isle lever gate door 3 (0x57B57, obj 56526, red side), index 24 = Frozen Isle lever gate door 4 (0x57B57, obj 12669, blue side), index 25 = Corrupted Isle doors (0x330EA/0x32F5C), index 26 = Druid's Isle vine bridge nearest the red lord (obj 39278), index 27 = Druid's Isle vine bridge nearest the blue lord (obj 51238)
+    static constexpr int kDoorTypeCount = 32;
+    bool  m_doorTypeOpen[kDoorTypeCount] = {};    // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors, index 5/6 = Burning Isle doors (0x1F23F / 0x1F247), index 7 = Uncharted Isle door 0x3C163, index 8 = Uncharted Isle door 0x32F3A, index 9 = Uncharted Isle slide gate 0x32F0C, index 10 = Uncharted Isle slide gate 0x336BB, index 11 = Nomad's Isle doors (0x19750/0x197A9), index 12 = Nomad's Isle looping doors (0x22143), index 13 = Isle of Wurms doors (0x330F7/0x331A4), index 14 = Isle of Jade doors (0x285E7/0x265B5), index 15 = Isle of the Dead doors (0x1F294/0x1F291/0x1F281/0x1E820), index 16 = Isle of Solitude doors (0x33CD5/0x3323B), index 17 = Isle of the Weeping Stone auto-open doors (0x2858E/0x28578), index 18 = Isle of the Weeping Stone event gates (0x1EAFB, ids 147/9305/30563/4417), index 19 = Isle of the Weeping Stone lever door (0x1EAFB nearest the flag stand, object 122), index 20 = Frozen Isle doors (0x1F251/0x1F252), index 21 = Frozen Isle lever gate door 1 (0x255BE, obj 61318, red side), index 22 = Frozen Isle lever gate door 2 (0x255BE, obj 11692, blue side), index 23 = Frozen Isle lever gate door 3 (0x57B57, obj 56526, red side), index 24 = Frozen Isle lever gate door 4 (0x57B57, obj 12669, blue side), index 25 = Corrupted Isle doors (0x330EA/0x32F5C), index 26 = Druid's Isle vine bridge nearest the red lord (obj 39278), index 27 = Druid's Isle vine bridge nearest the blue lord (obj 51238), index 28 = Warrior's Isle base gates (objs 11692/12669/56526/61318, all four open together one minute in)
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
 
@@ -489,10 +536,19 @@ private:
     std::vector<FrozenGateCandidate> m_druidBridgeCandidates;
     bool m_druidBridgesResolved = false;
     void ResolveDruidBridges();
+    // Resolved (doorType, game-space pos) per vine bridge, for the minimap
+    // grown/not-grown icons. The position is the bridge's gadget rather than the
+    // prop, so it is in agent space and needs the map transform when drawn.
+    std::vector<std::pair<int, DirectX::XMFLOAT3>> m_druidBridgeIcons;
+    // The gadget agents those icons replace, so their dots can be suppressed.
+    std::unordered_set<int> m_druidBridgeGadgets;
 
     void BuildBundleCarryTimeline();
     BundleType GetPlayerBundleType(int agentId, float time) const;
     void DrawBundleItems();
+    // Icon for whatever bundle a player is holding, for the single carry slot on
+    // the party bars and the focused-player HUD.
+    ImTextureID CarriedBundleIcon(ID3D11Device* device, int agentId) const;
 
     // --- Agent incarnation routing (for recycled agent IDs) ---
     // Maps originalAgentId -> list of synthetic incarnation IDs
@@ -663,7 +719,7 @@ public:
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
-    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory, ShrineCaptured, ShrineNeutralized, ObeliskCapture };
+    enum class TimelineEventType { Death, Resurrection, FlagCapture, FlagReturn, MoraleBoost, LordAttacked, Victory, ShrineCaptured, ShrineNeutralized, ObeliskCapture, Catapult };
     struct TimelineEvent {
         float time = 0.f;
         TimelineEventType type = TimelineEventType::Death;
@@ -671,6 +727,8 @@ public:
         int teamId = 0;
         int professionId = 0;
         std::string label;
+        // Which of the catapult's states this marker reports, for Catapult events.
+        CatapultState catapultState = CatapultState::Unknown;
     };
     struct TimelineData {
         std::vector<float> redHealth;
@@ -688,6 +746,7 @@ public:
     bool m_tlFilterVictory = true;
     bool m_tlFilterShrine = true;
     bool m_tlFilterObelisk = true;
+    bool m_tlFilterCatapult = true;
     void BuildTimelineData();
     void DrawEventTimeline();
 

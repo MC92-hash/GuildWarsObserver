@@ -45,29 +45,39 @@ CatapultState CatapultLeverState::EvaluateState(float t) const
 {
     if (events_.empty()) return CatapultState::Unknown;
 
+    // A shot in flight outranks everything. The server sends the reload a couple
+    // of seconds after the shot leaves, long before the boulder lands, and taking
+    // that at face value cuts the countdown short and reports the catapult as
+    // loaded while its payload is still in the air.
+    float firedTime = FindLastFiredTime(t);
+    if (firedTime >= 0.f)
+    {
+        float elapsed = t - firedTime;
+        if (elapsed < kFiredToImpactSec)  return CatapultState::Fired;
+        if (elapsed < kTotalCycleSec)     return CatapultState::Impact;
+    }
+
     // Find the last event at or before time t
     CatapultState base = CatapultState::Unknown;
-    float lastEventTime = -1.f;
+    float baseTime = -1.f;
     for (auto& ev : events_)
     {
         if (ev.time > t) break;
         base = ev.state;
-        lastEventTime = ev.time;
+        baseTime = ev.time;
     }
 
     if (base == CatapultState::Unknown)
         return CatapultState::Unknown;
 
-    // If base state is Fired, derive Impact / return-to-Repaired from elapsed time
+    // The shot that put it here has landed, so it is back to being a catapult.
     if (base == CatapultState::Fired)
-    {
-        float elapsed = t - lastEventTime;
-        if (elapsed >= kTotalCycleSec)
-            return CatapultState::Repaired;
-        if (elapsed >= kFiredToImpactSec)
-            return CatapultState::Impact;
-        return CatapultState::Fired;
-    }
+        return CatapultState::Repaired;
+
+    // The load event fires when the winding starts, not when it ends. Until the
+    // arm settles the catapult is loading, and only then is it loaded.
+    if (base == CatapultState::Loaded && (t - baseTime) < kLoadAnimSec)
+        return CatapultState::Loading;
 
     return base;
 }
@@ -75,6 +85,19 @@ CatapultState CatapultLeverState::EvaluateState(float t) const
 CatapultState CatapultLeverState::GetState(float t) const
 {
     return EvaluateState(t);
+}
+
+bool CatapultLeverState::LastEvent(float t, CatapultState& outState, float& outTime) const
+{
+    bool found = false;
+    for (auto& ev : events_)
+    {
+        if (ev.time > t) break;
+        outState = ev.state;
+        outTime  = ev.time;
+        found    = true;
+    }
+    return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +113,8 @@ std::string CatapultLeverState::GetLabelText(float t) const
         return "Lever";
     case CatapultState::Repaired:
         return "Catapult Repaired";
+    case CatapultState::Loading:
+        return "Catapult Loading";
     case CatapultState::Loaded:
         return "Catapult Loaded";
     case CatapultState::Fired:
@@ -97,7 +122,7 @@ std::string CatapultLeverState::GetLabelText(float t) const
         float firedTime = FindLastFiredTime(t);
         float remaining = kFiredToImpactSec - (t - firedTime);
         if (remaining < 0.f) remaining = 0.f;
-        return std::format("Catapult Fired \xe2\x80\x94 {:.1f}s", remaining);
+        return std::format("Catapult Fired: {:.1f}s", remaining);
     }
     case CatapultState::Impact:
         return "IMPACT";
@@ -116,6 +141,7 @@ ImU32 CatapultLeverState::GetLabelColor(float t) const
     {
     case CatapultState::Unknown:   return IM_COL32(255, 255, 255, 230);
     case CatapultState::Repaired:  return IM_COL32(255, 255, 255, 230);
+    case CatapultState::Loading:   return IM_COL32(255, 230, 60,  255);
     case CatapultState::Loaded:    return IM_COL32(255, 165, 0,   255);
     case CatapultState::Fired:     return IM_COL32(255, 60,  60,  255);
     case CatapultState::Impact:    return IM_COL32(255, 0,   0,   255);
@@ -144,6 +170,7 @@ ImU32 CatapultLeverState::GetGlowColor(float t) const
         }
         return IM_COL32(255, 255, 255, 255);
     }
+    case CatapultState::Loading: return IM_COL32(255, 235, 70,  255);
     case CatapultState::Loaded:  return IM_COL32(255, 180, 40,  255);
     case CatapultState::Fired:   return IM_COL32(255, 50,  50,  255);
     case CatapultState::Impact:  return IM_COL32(255, 0,   0,   255);
@@ -184,10 +211,11 @@ float CatapultLeverState::GetGlowOpacity(float t) const
         }
         return 0.15f;
     }
+    case CatapultState::Loading:
     case CatapultState::Loaded:
-        return 0.6f * PulseValue(t, kLoadedPulseCycleSec);
+        return 0.6f * PulseValue(t, kPulseCycleSec);
     case CatapultState::Fired:
-        return 0.85f * PulseValue(t, kFiredPulseCycleSec);
+        return 0.85f * PulseValue(t, kPulseCycleSec);
     case CatapultState::Impact:
         return 1.0f;
     }
