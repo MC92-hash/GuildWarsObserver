@@ -159,7 +159,6 @@ static void draw_settings_window()
 		if (modeChoice > 0)
 		{
 			std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
-			std::filesystem::create_directories(cacheDir);
 			SetupConfig::match_data_folder = cacheDir;
 			GuiGlobalConstants::saved_match_data_folder_path = cacheDir;
 		}

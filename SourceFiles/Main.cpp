@@ -103,6 +103,33 @@ LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// Reports a C++ exception that escaped a frame update, writes a dump, and exits.
+// Unlike the SEH filter above this has the exception message, which is what
+// actually identifies the failure in a release build without symbols.
+void ReportFatalCppException(const char* what)
+{
+    HANDLE hDumpFile = CreateFile(L"CrashDump.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hDumpFile != INVALID_HANDLE_VALUE)
+    {
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hDumpFile,
+            static_cast<MINIDUMP_TYPE>(MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithDataSegs),
+            nullptr, NULL, NULL);
+        CloseHandle(hDumpFile);
+    }
+
+    std::string msg =
+        "Sorry! Guild Wars Observer just crashed unexpectedly.\n"
+        "A dump file has been created: \"CrashDump.dmp\".\n"
+        "Please contact the developers or create an issue on Github with the dump file attached if possible.\n\n"
+        "-------------------------------------------------------------------------------\n"
+        "Unhandled C++ exception (0xE06D7363).\n\n";
+    msg += what ? what : "(no message)";
+
+    MessageBoxA(NULL, msg.c_str(), "Critical Error", MB_ICONERROR | MB_OK);
+    ExitProcess(0xE06D7363);
+}
+
 // BASS
 extern LPFNBASSSTREAMCREATEFILE lpfnBassStreamCreateFile = nullptr;
 extern LPFNBASSCHANNELPLAY lpfnBassChannelPlay = nullptr;
@@ -317,7 +344,22 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
         else
         {
-            g_map_browser->Tick();
+            // A C++ exception escaping a frame reaches the unhandled exception
+            // filter as code 0xE06D7363, where the reported call stack is
+            // unsymbolised and useless. Catch it here while the message is
+            // still available so crash reports say what actually failed.
+            try
+            {
+                g_map_browser->Tick();
+            }
+            catch (const std::exception& e)
+            {
+                ReportFatalCppException(e.what());
+            }
+            catch (...)
+            {
+                ReportFatalCppException("Unknown exception type (not derived from std::exception).");
+            }
         }
     }
 

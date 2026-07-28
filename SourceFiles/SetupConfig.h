@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <filesystem>
 
 class SetupConfig
 {
@@ -14,6 +15,6 @@ public:
     static void Load();
     static void Save();
     static bool IsFirstLaunch() { return !first_launch_complete; }
-    static std::string GetConfigDir();
-    static std::string GetConfigPath();
+    static std::filesystem::path GetConfigDir();
+    static std::filesystem::path GetConfigPath();
 };
