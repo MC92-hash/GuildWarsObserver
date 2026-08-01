@@ -644,6 +644,19 @@ struct AgentReplayData
     struct KnockdownInterval { float start; float end; };
     std::vector<KnockdownInterval> knockdownIntervals;
 
+    // Max-HP segments solved from combat damage/heal decimals (MaxHpSolver).
+    // Each segment is a stable [tStart,tEnd) window with a single best-fit
+    // max_hp. Only accepted segments are served by solvedMaxHpAtTime().
+    struct MaxHpSegment {
+        float    tStart        = 0.f;
+        float    tEnd          = FLT_MAX;
+        uint32_t maxHp         = 0;
+        int      eventCount    = 0;
+        float    medianResidual = 0.f;
+        bool     accepted      = false;
+    };
+    std::vector<MaxHpSegment> solvedMaxHp;
+
     float knockdownTiltAtTime(float t) const
     {
         constexpr float FALL = 0.15f;
@@ -710,6 +723,18 @@ struct AgentReplayData
         if (it == knockdownIntervals.begin()) return nullptr;
         --it;
         return (t <= it->end) ? &*it : nullptr;
+    }
+
+    // Returns the solved max_hp active at time t, or 0 if none/unaccepted.
+    // Mirrors the upper_bound-on-start pattern used by knockdownIntervalAtTime.
+    uint32_t solvedMaxHpAtTime(float t) const
+    {
+        if (solvedMaxHp.empty()) return 0;
+        auto it = std::upper_bound(solvedMaxHp.begin(), solvedMaxHp.end(), t,
+            [](float v, const MaxHpSegment& s) { return v < s.tStart; });
+        if (it == solvedMaxHp.begin()) return 0;
+        --it;
+        return (it->accepted && t < it->tEnd) ? it->maxHp : 0;
     }
 
     const CastInterval* castIntervalAtTime(float t) const
@@ -862,6 +887,32 @@ struct AgentReplayData
         return snapshots[lo].health_pct;
     }
 
+    uint32_t maxHpAtTime(float t) const
+    {
+        if (snapshots.empty()) return 0;
+        // Binary search for the last snapshot at or before t
+        int idx = 0;
+        if (t >= snapshots.back().time) {
+            idx = (int)snapshots.size() - 1;
+        } else if (t > snapshots.front().time) {
+            int lo = 0, hi = (int)snapshots.size() - 1;
+            while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1; }
+            idx = lo;
+        }
+
+        if (snapshots[idx].max_hp > 0) return snapshots[idx].max_hp;
+
+        // max_hp unknown at this time — scan forward for the earliest known value
+        for (int i = idx + 1; i < (int)snapshots.size(); ++i) {
+            if (snapshots[i].max_hp > 0) return snapshots[i].max_hp;
+        }
+        // Also scan backward in case only earlier snapshots have it
+        for (int i = idx - 1; i >= 0; --i) {
+            if (snapshots[i].max_hp > 0) return snapshots[i].max_hp;
+        }
+        return 0;
+    }
+
     // Returns the time at which the current death sequence began.
     // Walk backwards from the snapshot at time t to find the first is_dead
     // snapshot in this contiguous death run. Used to freeze position at death.
@@ -914,6 +965,7 @@ struct CombatLogRow {
     int         jumboTeam   = 0;
     CombatLogCategory category = CombatLogCategory::Skill;
     std::string eventType;
+    int         damageType  = 0;
 };
 
 // ---------------------------------------------------------------------------

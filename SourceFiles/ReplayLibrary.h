@@ -116,6 +116,7 @@ struct MatchMeta
     std::string folder_path;
 
     bool is_cloud_only = false;  // true if match is available online but not cached locally
+    int recording_version = 0;
 };
 
 class IReplayProvider
