@@ -391,3 +391,70 @@ void SolveMaxHpFromSkillBreakpoints(
     ApplyVotes(agents, skillVotes, AgentReplayData::MaxHpSource::SkillBreakpoint);
     ApplyVotes(agents, dfVotes,    AgentReplayData::MaxHpSource::DivineFavor);
 }
+
+// ---------------------------------------------------------------------------
+// Per-packet correction of the recorded max_hp
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Offsets the recorded max_hp is observed to be wrong by, in descending
+    // order of measured frequency across the local match archive. Tried in
+    // this order, so the most likely explanation wins.
+    //
+    // Recognisable modifiers: -30/+30 and -60/+60 are weapon and shield
+    // health mods, +48 is a full morale boost (+10% of the 480 base), -72 is
+    // one rank of death penalty (-15% of 480), +100 is the Deep Wound cap,
+    // and +78/+18/-12/-102 are sums of those. The remainder (+10, +70, -62)
+    // have no clean derivation but recur often enough in the data to earn a
+    // place; they are kept empirical rather than invented.
+    //
+    // The list length is not arbitrary. Every extra candidate is another
+    // chance to fit a fraction by accident, so both the length and the
+    // tolerance below were chosen by sweeping them against a null model of
+    // random fractions and maximising the separation between the two:
+    //
+    //     offsets  tol      real     null
+    //        6     0.0015   78.6%     5.7%
+    //       14     0.0015   85.1%     8.0%   <-- chosen
+    //       22     0.0015   86.4%     9.7%
+    //       22     0.0060   88.2%    25.6%
+    //
+    // Without correction the same measurement reads 55.3% real / 4.0% null.
+    const int kCorrectionOffsets[] = {
+        -30, 48, 30, -72, 100, -60, 60, 78, 10, 18, -102, 70, -12, -62
+    };
+
+    // Deliberately tight. A looser threshold buys a little more coverage and
+    // a great deal more coincidence, as the sweep above shows.
+    constexpr double kPacketTol = 0.0015;
+}
+
+uint32_t CorrectMaxHpForPacket(uint32_t recorded, double fraction)
+{
+    if (recorded == 0) return recorded;
+
+    const double f = std::fabs(fraction);
+    if (f <= 0.0 || f > 1.0) return recorded;
+
+    auto integral = [f](long m) {
+        if (m <= 0) return false;
+        double x = f * (double)m;
+        return x >= 0.5 && std::fabs(x - std::round(x)) <= kPacketTol;
+    };
+
+    // The recorded value is right most of the time; never move off it when it
+    // already explains the packet.
+    if (integral((long)recorded)) return recorded;
+
+    // Ordered by measured frequency, so the likeliest explanation wins.
+    for (int d : kCorrectionOffsets)
+    {
+        long m = (long)recorded + d;
+        if (integral(m)) return (uint32_t)m;
+    }
+
+    // Nothing plausible fits -- leave the caller with the recorded value
+    // rather than inventing one.
+    return recorded;
+}

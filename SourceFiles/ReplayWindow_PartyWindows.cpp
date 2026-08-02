@@ -7,6 +7,7 @@
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
+#include "MaxHpSolver.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -58,8 +59,9 @@ void ReplayWindow::BuildMeterAbsCache()
     for (auto& ce : m_replayCtx.stocData.combat)
     {
         if (!ce.IsDamageOrHeal()) continue;
-        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
-        int absVal = (mhp > 0) ? (int)(std::abs(ce.value) * mhp) : 0;
+        uint32_t mhp = CorrectMaxHpForPacket(findMaxHp(ce.target_id, ce.time), ce.value);
+        int absVal = (mhp > 0)
+            ? (int)std::lround(std::fabs((double)ce.value) * mhp) : 0;
         if (absVal <= 0) continue;
         bool isDmg = (ce.value < 0.f);
         m_meterAbsCache.push_back({ ce.time, ce.caster_id, absVal, isDmg });

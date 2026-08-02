@@ -5288,8 +5288,12 @@ void ReplayWindow::Tick()
                         if (r.targetId <= 0 || r.targetId == r.casterId)
                             r.targetId = ce.target_id;
                         r.valuePct = ce.value;
-                        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
-                        r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
+                        uint32_t mhp = CorrectMaxHpForPacket(
+                            findMaxHp(ce.target_id, ce.time), ce.value);
+                        // The corrected value makes this fraction land on a
+                        // whole number, so round rather than truncate.
+                        r.valueAbs = (mhp > 0)
+                            ? (int)std::lround((double)ce.value * (double)mhp) : 0;
                         r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
                                                       : CombatLogCategory::Heal;
                         r.damageType = ce.damage_type;
@@ -5302,8 +5306,12 @@ void ReplayWindow::Tick()
                         r.casterId = ce.caster_id;
                         r.targetId = ce.target_id;
                         r.valuePct = ce.value;
-                        uint32_t mhp = findMaxHp(ce.target_id, ce.time);
-                        r.valueAbs = (mhp > 0) ? (int)(ce.value * mhp) : 0;
+                        uint32_t mhp = CorrectMaxHpForPacket(
+                            findMaxHp(ce.target_id, ce.time), ce.value);
+                        // The corrected value makes this fraction land on a
+                        // whole number, so round rather than truncate.
+                        r.valueAbs = (mhp > 0)
+                            ? (int)std::lround((double)ce.value * (double)mhp) : 0;
                         r.category = (ce.value < 0.f) ? CombatLogCategory::Damage
                                                       : CombatLogCategory::Heal;
                         r.damageType = ce.damage_type;
@@ -5455,7 +5463,9 @@ void ReplayWindow::Tick()
             if (it == m_replayCtx.agents.end()) continue;
             uint32_t mhp = it->second.maxHpAtTime(row.time);
             if (mhp == 0) mhp = it->second.solvedMaxHpAtTime(row.time);
-            if (mhp > 0) row.valueAbs = (int)(std::fabs(row.valuePct) * mhp);
+            mhp = CorrectMaxHpForPacket(mhp, row.valuePct);
+            if (mhp > 0)
+                row.valueAbs = (int)std::lround(std::fabs((double)row.valuePct) * mhp);
         }
 
         m_meterAbsCacheBuilt = false; // meter cache was built from the old values

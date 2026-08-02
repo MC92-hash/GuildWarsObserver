@@ -7,6 +7,7 @@
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
+#include "MaxHpSolver.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -457,7 +458,8 @@ void ReplayWindow::UpdateIncomingEffects()
                 eff.skillId = su.skillId;
                 eff.type = IncomingEffectType::Heal;
 
-                uint32_t mhp = findAgentMaxHp(focused, cm.time);
+                uint32_t mhp = CorrectMaxHpForPacket(
+                    findAgentMaxHp(focused, cm.time), cm.value);
                 int rawVal = (mhp > 0) ? (int)std::round(std::abs(cm.value) * mhp) : 0;
                 if (rawVal > 0)
                     eff.label = std::format("+{}", rawVal);
@@ -546,8 +548,8 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.skillId = 0;
         eff.type = IncomingEffectType::BasicAttack;
 
-        uint32_t mhp = findAgentMaxHp(focused, am.time);
         float primary = (am.weaponValue != 0.f) ? am.weaponValue : am.vampValue;
+        uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, am.time), primary);
         int rawPrimary = (mhp > 0) ? (int)std::round(std::abs(primary) * mhp) : 0;
 
         std::string label;
@@ -652,7 +654,7 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.skillId = attrSkillId;
         eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
 
-        uint32_t mhp = findAgentMaxHp(focused, ce.time);
+        uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, ce.time), ce.value);
         int rawVal = (mhp > 0) ? (int)std::round(std::abs(ce.value) * mhp) : 0;
         if (rawVal > 0)
             eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
