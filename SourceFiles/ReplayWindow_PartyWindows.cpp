@@ -45,11 +45,14 @@ void ReplayWindow::BuildMeterAbsCache()
     m_meterAbsCache.clear();
     m_meterAbsCache.reserve(m_replayCtx.stocData.combat.size());
 
+    // Recorded max_hp is the effective value the packet fractions are taken
+    // against; the solved per-weapon-set value is the fallback. See
+    // ResolveMaxHp for why this order matters.
     auto findMaxHp = [&](int agentId, float t) -> uint32_t {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return 0;
-        if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
-        return it->second.maxHpAtTime(t);
+        if (uint32_t m = it->second.maxHpAtTime(t)) return m;
+        return it->second.solvedMaxHpAtTime(t);
     };
 
     for (auto& ce : m_replayCtx.stocData.combat)
@@ -66,11 +69,16 @@ void ReplayWindow::BuildMeterAbsCache()
 
 ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard, float t) const
 {
-    // (1) Solved from combat decimals (authoritative, works on legacy v1).
-    if (uint32_t solved = ard.solvedMaxHpAtTime(t))
-        return { solved, false };
-
-    // (2) Camera-observed max_hp (v2+ recordings carry this).
+    // (1) Camera-observed max_hp (v2+ recordings carry this).
+    //
+    // This is the EFFECTIVE max HP at time t -- it already includes morale,
+    // death penalty, Deep Wound and the equipped weapon set. Combat packets
+    // are fractions of exactly that quantity, so when the recording carries
+    // it there is nothing better to convert them with. The solver below
+    // produces a per-weapon-set build value that deliberately excludes those
+    // modifiers, so preferring it here would substitute a worse number for a
+    // measured one whenever a player is under morale/DP -- which is most of
+    // the time in a GvG.
     if (m_matchMeta.recording_version >= 2)
     {
         uint32_t maxHp = ard.maxHpAtTime(t);
@@ -78,8 +86,15 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
             return { maxHp, false };
     }
 
-    // (3) Fallback: estimate 20*level+100
-    uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 100) : 480;
+    // (2) Solved per weapon set from combat decimals and skill breakpoints.
+    // The only authoritative source on legacy v1 recordings, which carry no
+    // max_hp at all.
+    if (uint32_t solved = ard.solvedMaxHpAtTime(t))
+        return { solved, false };
+
+    // (3) Fallback: base health is 100 at level 1 and rises 20 per level, so
+    // 20*level + 80 -- which is the documented 480 at level 20, not 500.
+    uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 80) : 480;
     return { estimated, true };
 }
 

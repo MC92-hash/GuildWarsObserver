@@ -248,49 +248,60 @@ void ReplayWindow::DrawAgentDataWindow()
         {
             ImGui::Text("Player: %s", ard.playerName.c_str());
 
-            // Solved max-HP segments (from combat decimals). Read-only listing:
-            // t-range, best-fit M, event count, median residual, accepted, plus
-            // the camera-observed max_hp at each segment midpoint for comparison.
-            if (ImGui::TreeNodeEx("Solved Max-HP Segments",
+            // Solved max HP per weapon set. Read-only listing: the equipment
+            // signature, best-fit M, which channel produced it, vote counts,
+            // and the time span the evidence covers.
+            if (ImGui::TreeNodeEx("Solved Max-HP by Weapon Set",
                                   ImGuiTreeNodeFlags_DefaultOpen))
             {
-                if (ard.solvedMaxHp.empty())
+                if (ard.solvedMaxHpByWeaponSet.empty())
                 {
-                    ImGui::TextDisabled("(no solved segments)");
+                    ImGui::TextDisabled("(no solved weapon sets)");
                 }
-                else if (ImGui::BeginTable("MaxHpSeg", 6,
+                else if (ImGui::BeginTable("MaxHpSet", 7,
                     ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
                     ImGuiTableFlags_SizingStretchProp))
                 {
-                    ImGui::TableSetupColumn("t-range");
+                    ImGui::TableSetupColumn("Weapon Set");
                     ImGui::TableSetupColumn("M");
-                    ImGui::TableSetupColumn("Events");
+                    ImGui::TableSetupColumn("Source");
+                    ImGui::TableSetupColumn("Votes");
                     ImGui::TableSetupColumn("Median Res");
                     ImGui::TableSetupColumn("Accepted");
-                    ImGui::TableSetupColumn("Camera@mid");
+                    ImGui::TableSetupColumn("Seen");
                     ImGui::TableHeadersRow();
 
-                    for (const auto& seg : ard.solvedMaxHp)
+                    auto sourceName = [](AgentReplayData::MaxHpSource s) -> const char* {
+                        switch (s) {
+                        case AgentReplayData::MaxHpSource::Lattice:         return "lattice";
+                        case AgentReplayData::MaxHpSource::SkillBreakpoint: return "skill-table";
+                        case AgentReplayData::MaxHpSource::DivineFavor:     return "divine-favor";
+                        default:                                           return "--";
+                        }
+                    };
+
+                    for (const auto& [key, rec] : ard.solvedMaxHpByWeaponSet)
                     {
-                        float endShown = (seg.tEnd >= FLT_MAX) ? m_replayCtx.maxReplayTime
-                                                               : seg.tEnd;
-                        float mid = (seg.tStart + endShown) * 0.5f;
                         ImGui::TableNextRow();
                         ImGui::TableSetColumnIndex(0);
-                        if (seg.tEnd >= FLT_MAX)
-                            ImGui::Text("%.1f - end", seg.tStart);
-                        else
-                            ImGui::Text("%.1f - %.1f", seg.tStart, seg.tEnd);
+                        // weapon id : offhand id : weapon type : offhand type
+                        ImGui::Text("%u:%u:%u:%u",
+                                    (unsigned)((key >> 32) & 0xFFFF),
+                                    (unsigned)((key >> 16) & 0xFFFF),
+                                    (unsigned)((key >> 8)  & 0xFF),
+                                    (unsigned)( key        & 0xFF));
                         ImGui::TableSetColumnIndex(1);
-                        ImGui::Text("%u", seg.maxHp);
+                        ImGui::Text("%u", rec.maxHp);
                         ImGui::TableSetColumnIndex(2);
-                        ImGui::Text("%d", seg.eventCount);
+                        ImGui::TextUnformatted(sourceName(rec.source));
                         ImGui::TableSetColumnIndex(3);
-                        ImGui::Text("%.4f", seg.medianResidual);
+                        ImGui::Text("%d/%d", rec.supporting, rec.observations);
                         ImGui::TableSetColumnIndex(4);
-                        ImGui::TextUnformatted(seg.accepted ? "yes" : "no");
+                        ImGui::Text("%.4f", rec.medianResidual);
                         ImGui::TableSetColumnIndex(5);
-                        ImGui::Text("%u", ard.maxHpAtTime(mid));
+                        ImGui::TextUnformatted(rec.accepted ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(6);
+                        ImGui::Text("%.0f-%.0f", rec.firstSeen, rec.lastSeen);
                     }
                     ImGui::EndTable();
                 }

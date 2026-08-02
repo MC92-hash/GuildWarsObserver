@@ -5140,11 +5140,14 @@ void ReplayWindow::Tick()
     {
         m_combatLog.clear();
 
+        // Recorded max_hp is the effective value the packet fractions are
+        // taken against; the solved per-weapon-set value is the fallback for
+        // legacy recordings. See ResolveMaxHp for the full rationale.
         auto findMaxHp = [&](int agentId, float t) -> uint32_t {
             auto it = m_replayCtx.agents.find(agentId);
             if (it == m_replayCtx.agents.end()) return 0;
-            if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
-            return it->second.maxHpAtTime(t);
+            if (uint32_t m = it->second.maxHpAtTime(t)) return m;
+            return it->second.solvedMaxHpAtTime(t);
         };
 
         // Pass 1: skill events -> primary rows
@@ -5431,8 +5434,36 @@ void ReplayWindow::Tick()
         m_combatLogBuilt = true;
     }
 
+    // Refine the per-weapon-set max HP using the skill and Divine Favor
+    // breakpoint tables, then restate the combat log's absolute values.
+    //
+    // This runs after the combat log because it needs skill attribution, but
+    // it consumes only row.valuePct -- the raw packet fraction, which does not
+    // depend on max HP -- so there is no circularity: the pass reads
+    // fractions, produces max HP, and the absolute values are recomputed from
+    // both afterwards.
+    if (m_combatLogBuilt && !m_maxHpBreakpointSolved)
+    {
+        SolveMaxHpFromSkillBreakpoints(m_replayCtx.agents, m_combatLog, m_skillView);
+
+        for (CombatLogRow& row : m_combatLog)
+        {
+            if (row.category != CombatLogCategory::Damage &&
+                row.category != CombatLogCategory::Heal)
+                continue;
+            auto it = m_replayCtx.agents.find(row.targetId);
+            if (it == m_replayCtx.agents.end()) continue;
+            uint32_t mhp = it->second.maxHpAtTime(row.time);
+            if (mhp == 0) mhp = it->second.solvedMaxHpAtTime(row.time);
+            if (mhp > 0) row.valueAbs = (int)(std::fabs(row.valuePct) * mhp);
+        }
+
+        m_meterAbsCacheBuilt = false; // meter cache was built from the old values
+        m_maxHpBreakpointSolved = true;
+    }
+
     // Deduce attributes from combat log
-    if (m_combatLogBuilt && !m_attributesDeduced)
+    if (m_combatLogBuilt && m_maxHpBreakpointSolved && !m_attributesDeduced)
     {
         auto resolveMaxHpLambda = [this](int agentId, float t) -> std::pair<uint32_t, bool> {
             auto it = m_replayCtx.agents.find(agentId);

@@ -318,6 +318,7 @@ private:
     bool m_skillUseTimelineBuilt = false;
     bool m_knockdownIntervalsBuilt = false;
     bool m_maxHpSolved             = false;
+    bool m_maxHpBreakpointSolved   = false;
 
     // --- Combat Log ---
     bool m_showCombatLog     = false;

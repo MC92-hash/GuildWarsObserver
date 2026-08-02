@@ -649,18 +649,68 @@ struct AgentReplayData
     struct KnockdownInterval { float start; float end; };
     std::vector<KnockdownInterval> knockdownIntervals;
 
-    // Max-HP segments solved from combat damage/heal decimals (MaxHpSolver).
-    // Each segment is a stable [tStart,tEnd) window with a single best-fit
-    // max_hp. Only accepted segments are served by solvedMaxHpAtTime().
-    struct MaxHpSegment {
-        float    tStart        = 0.f;
-        float    tEnd          = FLT_MAX;
-        uint32_t maxHp         = 0;
-        int      eventCount    = 0;
-        float    medianResidual = 0.f;
-        bool     accepted      = false;
+    // Max HP solved from combat damage/heal decimals (MaxHpSolver), keyed by
+    // the equipped weapon set rather than by a time window.
+    //
+    // Max HP is a property of the equipment, not of an interval: a player
+    // swaps between the same two or three sets all match long, and every swap
+    // back restores an earlier value. A time-segmented model has to re-solve
+    // from scratch after each swap and cannot reuse what it already knows,
+    // which fragments the evidence below the acceptance threshold. Keying by
+    // the set means every observation of a set -- whenever it happened --
+    // contributes to the same answer.
+    enum class MaxHpSource : uint8_t {
+        None,
+        Lattice,          // integer-fit sieve over damage/heal decimals
+        SkillBreakpoint,  // inverted skill attribute-rank table (exact)
+        DivineFavor,      // inverted Divine Favor bonus table (exact)
     };
-    std::vector<MaxHpSegment> solvedMaxHp;
+
+    struct SolvedMaxHp {
+        uint32_t    maxHp          = 0;
+        int         observations   = 0;   // observations in this weapon-set bucket
+        int         supporting     = 0;   // observations agreeing with maxHp
+        float       medianResidual = 0.f;
+        bool        accepted       = false;
+        MaxHpSource source         = MaxHpSource::None;
+        float       firstSeen      = 0.f;
+        float       lastSeen       = 0.f;
+    };
+    // weapon-set key (see WeaponSetKey) -> solved value
+    std::unordered_map<uint64_t, SolvedMaxHp> solvedMaxHpByWeaponSet;
+
+    // Packs the four equipment fields the recording carries into one key.
+    // Mirrors the signature gvg.report keys its max-HP table by
+    // (weapon/offhand item id + item type); item ids alone are not enough
+    // because two different shields can share an id slot across sessions.
+    static uint64_t WeaponSetKey(const AgentSnapshot& s)
+    {
+        return ((uint64_t)s.weapon_item_id   << 32)
+             | ((uint64_t)s.offhand_item_id  << 16)
+             | ((uint64_t)s.weapon_item_type << 8)
+             |  (uint64_t)s.offhand_item_type;
+    }
+
+    // Index of the last snapshot at or before t (0 if t precedes them all).
+    int snapshotIndexAtTime(float t) const
+    {
+        if (snapshots.empty()) return -1;
+        if (t >= snapshots.back().time) return (int)snapshots.size() - 1;
+        if (t <= snapshots.front().time) return 0;
+        int lo = 0, hi = (int)snapshots.size() - 1;
+        while (lo < hi) {
+            int mid = lo + (hi - lo + 1) / 2;
+            if (snapshots[mid].time <= t) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+    }
+
+    // Weapon set equipped at time t, or 0 when there is no snapshot.
+    uint64_t weaponSetKeyAtTime(float t) const
+    {
+        int idx = snapshotIndexAtTime(t);
+        return (idx < 0) ? 0ull : WeaponSetKey(snapshots[idx]);
+    }
 
     float knockdownTiltAtTime(float t) const
     {
@@ -730,16 +780,22 @@ struct AgentReplayData
         return (t <= it->end) ? &*it : nullptr;
     }
 
-    // Returns the solved max_hp active at time t, or 0 if none/unaccepted.
-    // Mirrors the upper_bound-on-start pattern used by knockdownIntervalAtTime.
+    // Returns the solved max_hp for the weapon set equipped at time t, or 0
+    // when that set was never solved or failed acceptance.
     uint32_t solvedMaxHpAtTime(float t) const
     {
-        if (solvedMaxHp.empty()) return 0;
-        auto it = std::upper_bound(solvedMaxHp.begin(), solvedMaxHp.end(), t,
-            [](float v, const MaxHpSegment& s) { return v < s.tStart; });
-        if (it == solvedMaxHp.begin()) return 0;
-        --it;
-        return (it->accepted && t < it->tEnd) ? it->maxHp : 0;
+        if (solvedMaxHpByWeaponSet.empty()) return 0;
+        auto it = solvedMaxHpByWeaponSet.find(weaponSetKeyAtTime(t));
+        if (it == solvedMaxHpByWeaponSet.end()) return 0;
+        return it->second.accepted ? it->second.maxHp : 0;
+    }
+
+    // Full solved record for the weapon set equipped at time t (provenance and
+    // vote counts included), or nullptr. Used by the debug window.
+    const SolvedMaxHp* solvedMaxHpRecordAtTime(float t) const
+    {
+        auto it = solvedMaxHpByWeaponSet.find(weaponSetKeyAtTime(t));
+        return (it == solvedMaxHpByWeaponSet.end()) ? nullptr : &it->second;
     }
 
     const CastInterval* castIntervalAtTime(float t) const

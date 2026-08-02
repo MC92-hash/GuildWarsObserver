@@ -74,7 +74,6 @@ void ReplayWindow::UpdateIncomingEffects()
     auto findAgentMaxHp = [&](int agentId, float t) -> uint32_t {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return 0;
-        if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
         const auto& snaps = it->second.snapshots;
         if (snaps.empty()) return 0;
         const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
@@ -83,7 +82,9 @@ void ReplayWindow::UpdateIncomingEffects()
             [](const AgentSnapshot& a, float b) { return a.time < b; });
         for (; sit != snaps.end(); ++sit)
             if (sit->max_hp > 0) return sit->max_hp;
-        return 0;
+        // Recorded value first (it is the effective max HP); solved per
+        // weapon set only when the recording carries none.
+        return it->second.solvedMaxHpAtTime(t);
     };
 
     const auto& combatVec = m_replayCtx.stocData.combat;
