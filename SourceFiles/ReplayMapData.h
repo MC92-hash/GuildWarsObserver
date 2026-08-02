@@ -679,6 +679,13 @@ struct AgentReplayData
     // weapon-set key (see WeaponSetKey) -> solved value
     std::unordered_map<uint64_t, SolvedMaxHp> solvedMaxHpByWeaponSet;
 
+    // Divine Favor rank solved for this agent as a CASTER (primary Monks
+    // only), -1 when unsolved. Produced by MaxHpSolver's Divine Favor channel
+    // and consumed by AttributeDeducer, so the rank is derived once and both
+    // passes agree on it by construction.
+    int solvedDivineFavorRank    = -1;
+    int solvedDivineFavorSupport = 0;   // packets backing that rank
+
     // Packs the four equipment fields the recording carries into one key.
     // Mirrors the signature gvg.report keys its max-HP table by
     // (weapon/offhand item id + item type); item ids alone are not enough

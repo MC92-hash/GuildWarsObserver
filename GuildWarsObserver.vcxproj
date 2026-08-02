@@ -305,6 +305,7 @@
     <ClInclude Include="SourceFiles\StoCParser.h" />
     <ClInclude Include="SourceFiles\AttributeDeducer.h" />
     <ClInclude Include="SourceFiles\MaxHpSolver.h" />
+    <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
     <ClInclude Include="SourceFiles\GuildBannerComposer.h" />

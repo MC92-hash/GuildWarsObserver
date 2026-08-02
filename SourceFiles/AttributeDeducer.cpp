@@ -2,6 +2,7 @@
 #include "AttributeDeducer.h"
 #include "ReplayMapData.h"
 #include "SkillDatabase.h"
+#include "DivineFavor.h"
 
 #include <unordered_set>
 #include <cmath>
@@ -47,13 +48,6 @@ namespace
         return kCumulative[rank];
     }
 
-    // Divine Favor flat companion-heal bonus per rank: round(3.2 * rank),
-    // r in [0..16] (source: GWW). The game logs this as its OWN separate HEAL
-    // combat event, co-timed with the spell, on every Monk spell cast on an
-    // ally target -- it is not baked into the spell's own heal value.
-    const int kDfBonus[17] = {
-        0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51
-    };
 
     // Nearest snapshot to time t (by absolute time distance).
     const AgentSnapshot* NearestSnapshot(const AgentReplayData& ard, float t)
@@ -284,13 +278,37 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
     // -----------------------------------------------------------------------
 
     // Step 1: Divine Favor detection.
-    // casterId -> detected DF-bonus absolute value (kDfBonus[rank]), used by
+    // casterId -> detected DF-bonus absolute value (kDivineFavorBonus[rank]), used by
     // step 2 to exclude bonus-event rows from the skill-heal alignment.
     std::unordered_map<int, int> dfBonusValue;
+
+    // Step 1a: adopt the rank MaxHpSolver already solved, where it has one.
+    //
+    // That pass scores every candidate rank by how many of the Monk's packets
+    // it turns into a whole-number health total, which is a sharper test than
+    // the frequency mode below -- and it ran against the raw fractions, before
+    // any max-HP resolution, so it cannot inherit an error from it. Deriving
+    // the rank twice from the same events risked the two disagreeing, with
+    // nothing to reconcile them.
+    for (const auto& [agentId, ard] : agents)
+    {
+        if (ard.solvedDivineFavorRank < 0) continue;
+        if (ard.type != AgentType::Player || ard.primaryProf != 3) continue;
+
+        const int rank = std::min(16, ard.solvedDivineFavorRank);
+        const int votes = std::max(1, ard.solvedDivineFavorSupport);
+
+        auto& casterAccepted = accepted[agentId];
+        for (int i = 0; i < votes; ++i)
+            casterAccepted[16].push_back(rank);
+
+        dfBonusValue[agentId] = kDivineFavorBonus[rank];
+    }
 
     for (auto& [casterId, roundedVals] : monkAllHealRounded)
     {
         if (roundedVals.empty()) continue;
+        if (dfBonusValue.count(casterId)) continue; // already solved above
 
         // Count occurrences of each rounded value, then fold each value into
         // the nearest Divine Favor rank (if within +/-1) to get a per-rank
@@ -305,7 +323,7 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
             int bestD = -1, bestDiff = 2;
             for (int d = 0; d <= 16; ++d)
             {
-                int diff = v - kDfBonus[d];
+                int diff = v - kDivineFavorBonus[d];
                 if (diff < 0) diff = -diff;
                 if (diff < bestDiff) { bestDiff = diff; bestD = d; }
             }
@@ -328,7 +346,7 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
             casterAccepted[16].push_back(bestDf);
         if (!confident) forcedLowConf[casterId].insert(16);
 
-        dfBonusValue[casterId] = kDfBonus[bestDf];
+        dfBonusValue[casterId] = kDivineFavorBonus[bestDf];
     }
 
     // Step 2: Healing / Protection alignment for this caster's deduction-

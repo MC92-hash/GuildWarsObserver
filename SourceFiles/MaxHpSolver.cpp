@@ -2,6 +2,7 @@
 #include "MaxHpSolver.h"
 #include "ReplayMapData.h"
 #include "SkillDatabase.h"
+#include "DivineFavor.h"
 
 #include <cmath>
 #include <algorithm>
@@ -170,12 +171,6 @@ void SolveMaxHpTimelines(
 
 namespace
 {
-    // Divine Favor flat companion-heal bonus per rank: round(3.2 * rank).
-    // Kept in sync with kDfBonus in AttributeDeducer.cpp.
-    const int kDfBonus[17] = {
-        0, 3, 6, 10, 13, 16, 19, 22, 26, 29, 32, 35, 38, 42, 45, 48, 51
-    };
-
     constexpr double kInvTolerance = 0.35; // HP; how close amount/f must sit to an integer
     constexpr int    kMinDfSupport = 6;    // packets needed to trust a DF rank
     constexpr int    kMinSetVotes  = 3;    // votes needed to accept a weapon set
@@ -322,7 +317,7 @@ void SolveMaxHpFromSkillBreakpoints(
             for (const HealObs& o : obs)
             {
                 uint32_t m = 0;
-                if (InvertToMaxHp(kDfBonus[r], o.f, m)) ++support;
+                if (InvertToMaxHp(kDivineFavorBonus[r], o.f, m)) ++support;
             }
             if (support > bestSupport) { runnerUp = bestSupport; bestSupport = support; bestRank = r; }
             else if (support > runnerUp) { runnerUp = support; }
@@ -333,10 +328,18 @@ void SolveMaxHpFromSkillBreakpoints(
         if (bestRank < 0 || bestSupport < kMinDfSupport) continue;
         if (bestSupport < runnerUp * 2) continue;
 
+        // Publish the rank so AttributeDeducer can consume it instead of
+        // deriving Divine Favor a second time from the same events.
+        if (auto casterIt = agents.find(casterId); casterIt != agents.end())
+        {
+            casterIt->second.solvedDivineFavorRank    = bestRank;
+            casterIt->second.solvedDivineFavorSupport = bestSupport;
+        }
+
         for (const HealObs& o : obs)
         {
             uint32_t m = 0;
-            if (InvertToMaxHp(kDfBonus[bestRank], o.f, m))
+            if (InvertToMaxHp(kDivineFavorBonus[bestRank], o.f, m))
                 dfVotes.push_back({ o.targetId, o.key, m, o.time });
         }
     }
