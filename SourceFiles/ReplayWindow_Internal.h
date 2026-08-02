@@ -35,6 +35,11 @@ std::string GetAgentLabel(const AgentReplayData& ard);
 // --- Icon / texture loaders (shared: CombatLog, LordDamage, PartyWindows,
 //     PlayerInfo, SkillAnalytics, EventTimeline, ...) ---
 ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
+// Ribbon art loader (mip-chained, cached). Path is relative to Textures/.
+// Shared with AnnotationManager's drawing strip so both use the same art
+// pipeline; outW/outH receive the source size for atlas sub-rects.
+ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
+                          float* outW, float* outH);
 ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
 // Minimap cursor / zoom-button textures: Textures/Game_UI/Cursor/<filename>
 ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename);

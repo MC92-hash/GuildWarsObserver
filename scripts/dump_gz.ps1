@@ -1,0 +1,6 @@
+param([string]$Path)
+$in = [System.IO.File]::OpenRead($Path)
+$gz = New-Object System.IO.Compression.GzipStream($in, [System.IO.Compression.CompressionMode]::Decompress)
+$sr = New-Object System.IO.StreamReader($gz)
+$sr.ReadToEnd()
+$sr.Close()

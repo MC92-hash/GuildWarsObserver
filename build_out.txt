@@ -1,0 +1,644 @@
+
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\CloudsPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(125,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(134,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(127,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(127,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(128,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(128,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\NewModelPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(129,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(129,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(130,50-54): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(130,43-47): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelPixelShader.hlsl(139,52-68): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(105,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(115,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(107,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(107,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(108,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\OldModelReflectionPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(108,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(109,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(109,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(110,50-54): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(110,43-47): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(111,51-55): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(111,44-48): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelReflectionPixelShader.hlsl(117,53-69): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(62,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(70,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(64,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(64,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(65,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\OldModelShadowMapPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(65,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(66,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(66,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelShadowMapPixelShader.hlsl(72,53-69): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(121,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(130,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(123,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(123,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(124,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\NewModelReflectionPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(124,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(125,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(125,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(126,50-54): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(126,43-47): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelReflectionPixelShader.hlsl(135,52-68): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(44,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(53,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(46,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(46,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(47,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\NewModelShadowMapPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(47,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(48,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(48,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(49,50-54): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(49,43-47): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\NewModelShadowMapPixelShader.hlsl(63,49-65): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\ShoreWaterPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\PickingPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\SkyPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\TerrainReflectionTexturedWithShadowsPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\TerrainRevPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TerrainTileCheckerPixelShader.hlsl(50,19-37): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\TerrainTileCheckerPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\TerrainShadowMapPixelShader.cso
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\WaterPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(147,21-44): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(157,17-34): warning X3203: signed/unsigned mismatch, unsigned assumed [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(149,47-51): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(149,40-44): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(150,53-57): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(150,46-50): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(151,46-50): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(151,39-43): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(152,50-54): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(152,43-47): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(153,51-55): warning X3556: integer modulus may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(153,44-48): warning X3556: integer divides may be much slower, try using uints if possible. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\OldModelPixelShader.hlsl(159,53-69): warning X3550: sampler array index must be a literal expression, forcing loop to unroll [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\OldModelPixelShader.cso
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\VertexShader.hlsl(89,5-41): warning X3206: implicit truncation of vector type [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  
+  compilation object save succeeded; see D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\VertexShader.cso
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(1119,5): warning MSB8027: Deux ou plusieurs fichiers avec le nom miniz_impl.cpp généreront des sorties vers le même emplacement. Cela peut entraîner une génération incorrecte. Les fichiers impliqués sont SourceFiles\miniz_impl.cpp, SourceFiles\ThirdParty\miniz\miniz_impl.cpp. [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  ReplayWindow.cpp
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(18,45): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(31,45): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(38,49): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(45,49): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(86,45): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(111,46): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(117,51): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(124,51): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshInstance.h(129,46): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\RenderBatch.h(105,37): warning C4114: même qualificateur de type utilisé plusieurs fois [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshManager.h(424,20): warning C4100: 'dt' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshManager.h(448,67): warning C4100: 'camera_position' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshManager.h(448,29): warning C4100: 'depth_stencil_state_manager' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MeshManager.h(509,40): warning C4100: 'depth_stencil_state_manager' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(108,22): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(132,23): warning C4244: '=' : conversion de 'double' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(133,37): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(153,37): warning C4267: 'argument' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(165,52): warning C4267: '=' : conversion de 'size_t' en 'UINT', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(313,52): warning C4018: '>=' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\TextureManager.h(313,73): warning C4018: '>=' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\VertexShader.h(178,41): warning C4100: 'shader_path' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\SkinnedVertexShader.h(292,34): warning C4459: la déclaration de 'inputLayoutDesc' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\Vertex.h(132,40):
+      voir la déclaration de 'inputLayoutDesc'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(10,10): warning C4471: 'ColorChoice' : une déclaration anticipée d'une énumération non délimitée doit avoir un type sous-jacent [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(47,45): warning C4244: '=' : conversion de 'float' en '_Ty', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(47,45): warning C4244:         with [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(47,45): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(47,45): warning C4244:             _Ty=uint8_t [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\CheckerboardTexture.h(47,45): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(130,74): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(632,44): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(643,53): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(656,34): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(666,34): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(676,34): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(687,42): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(697,34): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(699,29): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1619,18): warning C4189: 'expected_tag' : variable locale initialisée mais non référencée [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1761,35): warning C4267: '+=' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1881,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1889,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1897,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1905,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1913,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1921,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1929,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1937,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1945,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1953,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1961,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1969,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_MapFile.h(1856,22):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244: '=' : conversion de 'const _Ty' en '_Ty', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         with [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:             _Ty=std::_Vbase [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         and [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:             _Ty=uint8_t [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(520,85): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244: '=' : conversion de 'const _Ty' en '_Ty', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         with [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:             _Ty=std::_Vbase [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         and [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:             _Ty=uint8_t [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(521,94): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(992,31): warning C4244: 'argument' : conversion de 'const double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(1028,32): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(1037,70): warning C4805: '|' : mélange risqué de type 'uint32_t' et de type 'bool' dans l'opération [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(1076,32): warning C4244: 'argument' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\MapRenderer.h(1420,40): warning C4805: '|=' : mélange risqué de type 'uint32_t' et de type 'bool' dans l'opération [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(23,89): warning C4100: 'parsed_correctly' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(23,66): warning C4100: 'data_size_bytes' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(133,27): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(96,93): warning C4100: 'parsed_correctly' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(96,70): warning C4100: 'data_size_bytes' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(159,32): warning C4018: '>=' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(203,45): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(189,91): warning C4100: 'parsed_correctly' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(189,68): warning C4100: 'data_size_bytes' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(268,23): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(280,23): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(284,23): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(288,23): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\AMAT_file.h(294,36): warning C4018: '>' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(243,56): warning C4100: 'sub_1' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(369,45): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(387,47): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(602,43): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(417,47): warning C4100: 'chunk_size' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(722,50): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(731,41): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(740,40): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(749,47): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(758,40): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(767,40): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(779,44): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(806,36): warning C4267: '+=' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(921,34): warning C4553: '==' : résultat de l'expression non utilisé ; souhaitiez-vous utiliser '=' ? [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(952,57): warning C4267: 'initialisation' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1017,39): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1099,80): warning C4100: 'data_size_bytes' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1178,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1152,24):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1179,80): warning C4267: 'argument' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1186,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1152,24):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1188,73): warning C4267: 'argument' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1195,17): warning C4457: la déclaration de 'offset' masque le paramètre de fonction [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1152,24):
+      voir la déclaration de 'offset'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1197,73): warning C4267: 'argument' : conversion de 'size_t' en 'uint32_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1299,27): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1319,52): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1342,44): warning C4018: '<' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1411,90): warning C4244: '=' : conversion de 'uint32_t' en 'uint8_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1545,35): warning C4244: 'argument' : conversion de 'int' en '_Ty', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1545,35): warning C4244:         with [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1545,35): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1545,35): warning C4244:             _Ty=uint8_t [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1545,35): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1566,41): warning C4244: '=' : conversion de 'int' en '_Ty', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1566,41): warning C4244:         with [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1566,41): warning C4244:         [ [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1566,41): warning C4244:             _Ty=uint8_t [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1566,41): warning C4244:         ] [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile.h(1575,37): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(92,38): warning C4100: 'textures_parsed_correctly' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(573,22): warning C4456: la déclaration de 'debug_msg' masque la déclaration locale précédente [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(447,14):
+      voir la déclaration de 'debug_msg'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(590,35): warning C4018: '>=' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(883,26): warning C4189: 'submesh_flags' : variable locale initialisée mais non référencée [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1168,40): warning C4018: '>' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1214,40): warning C4018: '>' : incompatibilité signed/unsigned [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1310,26): warning C4456: la déclaration de 'count' masque la déclaration locale précédente [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1093,13):
+      voir la déclaration de 'count'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1344,26): warning C4456: la déclaration de 'count' masque la déclaration locale précédente [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1093,13):
+      voir la déclaration de 'count'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(930,40): warning C4100: 'header_offset' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1758,38): warning C4477: 'sprintf_s' : la chaîne de format '%d' nécessite un argument de type 'int', mais l'argument variadique 1 est de type 'size_t' [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1758,38):
+      utilisez '%zd' dans la chaîne de format
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1865,32): warning C4244: 'initialisation' : conversion de 'int' en 'uint8_t', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\FFNA_ModelFile_Other.h(1615,46): warning C4100: 'amat_file' : paramètre formel non référencé [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\Cache\AnimationDiscoveryCache.h(69,59): warning C4189: 'section' : variable locale initialisée mais non référencée [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(294,9): warning C4456: la déclaration de 'name' masque la déclaration locale précédente [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(267,8):
+      voir la déclaration de 'name'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1165,12): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1265,24): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1287,20): warning C4244: '=' : conversion de 'float' en 'unsigned int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1288,20): warning C4244: '=' : conversion de 'float' en 'unsigned int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1289,20): warning C4244: '=' : conversion de 'float' en 'unsigned int', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1487,12): warning C4244: 'initialisation' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1495,12): warning C4244: 'initialisation' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(1537,26): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(2631,29): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(2635,29): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(2639,30): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvg.h(2643,31): warning C4244: '=' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvgrast.h(334,65): warning C4244: 'argument' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\ThirdParty\nanosvg\nanosvgrast.h(334,82): warning C4244: 'argument' : conversion de 'double' en 'float', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\ReplayWindow.cpp(1630,35): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\ReplayWindow.cpp(1692,31): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\ReplayWindow.cpp(1970,35): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6419,65): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6419,65):
+      le contexte d’instanciation du modèle (le plus ancien) est
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6508,49):
+          voir la référence à l'instanciation de la fonction modèle 'iterator_input_adapter_factory<IteratorType,void>::adapter_type nlohmann::json_abi_v3_11_2::detail::input_adapter(IteratorType,IteratorType)' en cours de compilation
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6508,49):
+          voir la référence à l'instanciation classe modèle 'nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter_factory<const char *,void>' en cours de compilation
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6419,25):
+          pendant la compilation de la fonction membre classe modèle 'nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter<const char *> nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter_factory<const char *,void>::create(IteratorType,IteratorType)'
+          with
+          [
+              IteratorType=const char *
+          ]
+              D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6454,5):
+              voir la première référence à « nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter_factory<const char *,void>::create » dans « nlohmann::json_abi_v3_11_2::detail::input_adapter »
+  
+D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6213,61): warning C4459: la déclaration de 'last' masque la déclaration globale [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\chrono(176,44):
+      voir la déclaration de 'std::chrono::last'
+      D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6213,61):
+      le contexte d’instanciation du modèle (le plus ancien) est
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6559,36):
+          voir la référence à l'instanciation classe modèle 'nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter<const char *>' en cours de compilation
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6213,5):
+          pendant la compilation de la fonction membre classe modèle 'nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter<const char *>::iterator_input_adapter(IteratorType,IteratorType)'
+          with
+          [
+              IteratorType=const char *
+          ]
+              D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6421,9):
+              voir la première référence à « nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter<const char *>::iterator_input_adapter » dans « nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter_factory<const char *,void>::create »
+              D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\json.hpp(6454,5):
+              voir la première référence à « nlohmann::json_abi_v3_11_2::detail::iterator_input_adapter_factory<const char *,void>::create » dans « nlohmann::json_abi_v3_11_2::detail::input_adapter »
+  
+C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\xutility(4709,18): warning C4244: '=' : conversion de 'wchar_t' en 'char', perte possible de données [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+  (compiler le fichier source '/SourceFiles/ReplayWindow.cpp')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\xutility(4709,18):
+      le contexte d’instanciation du modèle (le plus ancien) est
+          D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\ReplayWindow.cpp(3951,34):
+          voir la référence à l'instanciation de la fonction modèle 'std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string<std::_String_iterator<std::_String_val<std::_Simple_types<_Elem>>>,0>(_Iter,_Iter,const _Alloc &)' en cours de compilation
+          with
+          [
+              _Elem=wchar_t,
+              _Iter=std::_String_iterator<std::_String_val<std::_Simple_types<wchar_t>>>,
+              _Alloc=std::allocator<char>
+          ]
+              D:\Guild Wars OBS\GW Observer 1.2.7 Fork\SourceFiles\ReplayWindow.cpp(3951,34):
+              voir la première référence à « std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string » dans « ReplayWindow::DrawImGuiOverlay »
+          C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\xstring(793,17):
+          voir la référence à l'instanciation de la fonction modèle 'void std::basic_string<char,std::char_traits<char>,std::allocator<char>>::_Construct_from_iter<wchar_t*,wchar_t*,_Size_type>(_Iter,const _Sent,_Size)' en cours de compilation
+          with
+          [
+              _Size_type=unsigned __int64,
+              _Iter=wchar_t *,
+              _Sent=wchar_t *,
+              _Size=unsigned __int64
+          ]
+          C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\xstring(949,18):
+          voir la référence à l'instanciation de la fonction modèle '_OutIt *std::_Copy_n_unchecked4<wchar_t*,_Size,char*>(_InIt,_SizeTy,_OutIt)' en cours de compilation
+          with
+          [
+              _OutIt=char *,
+              _Size=unsigned __int64,
+              _InIt=wchar_t *,
+              _SizeTy=unsigned __int64
+          ]
+  
+GuildWar.f754687f\x64\Release\miniz_impl.obj : warning LNK4042: objet spécifié plus d'une fois ; définitions supplémentaires ignorées [D:\Guild Wars OBS\GW Observer 1.2.7 Fork\GuildWarsObserver.vcxproj]
+     Création de la bibliothèque D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\GuildWarsObserver.lib et de l'objet D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\GuildWarsObserver.exp
+  Génération de code en cours
+  13 of 44777 functions (<0.1%) were compiled, the rest were copied from previous compilation.
+    0 functions were new in current compilation
+    251 functions had inline decision re-evaluated but remain unchanged
+  Fin de la génération du code
+  GuildWarsObserver.vcxproj -> D:\Guild Wars OBS\GW Observer 1.2.7 Fork\x64\Release\GuildWarsObserver.exe

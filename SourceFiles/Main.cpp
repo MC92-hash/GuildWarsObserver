@@ -625,6 +625,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         g_CursorInClientArea = (LOWORD(lParam) == HTCLIENT);
         if (g_CursorInClientArea && g_Cursors.loaded)
         {
+            if (g_AppBusy)
+            {
+                if (HCURSOR w = g_Cursors.Get(CursorMode::Wait))
+                { ::SetCursor(w); return TRUE; }
+            }
             if (g_DraggingWindow)
             {
                 ::SetCursor(g_Cursors.Get(CursorMode::Move));

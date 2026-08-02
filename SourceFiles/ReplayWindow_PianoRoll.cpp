@@ -298,7 +298,7 @@ void ReplayWindow::DrawPianoRollPanel()
                 dl->AddText(font, 12.f, ImVec2(cp.x + 26.f, rowTop + (kRowH - 12.f) * 0.5f), nameCol, pn);
 
                 if (rowHovered && ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + kNameColW, rowBot))
-                    && ImGui::IsMouseClicked(0) && !m_annotationMgr.draw_mode_active)
+                    && ImGui::IsMouseClicked(0) && !m_annotationMgr.IsDrawModeActive())
                 {
                     OpenPlayerInfoPanel(agentId);
                 }

@@ -10,6 +10,8 @@ struct ReplayHotkeys
 
     // Overlay toggles
     int toggleRangeRings    = ImGuiKey_R;
+    int toggleSkillLasers   = ImGuiKey_L;
+    int toggleDrawingBar    = ImGuiKey_K;
     int toggleMoralePanel   = ImGuiKey_M;
     int toggleEventTimeline = ImGuiKey_T;
     int toggleLordDamage    = ImGuiKey_G;

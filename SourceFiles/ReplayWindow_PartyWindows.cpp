@@ -234,7 +234,7 @@ void ReplayWindow::DrawPartyWindows()
             char btnId[32];
             snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
             ImGui::InvisibleButton(btnId, ImVec2(availW, barH));
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !m_annotationMgr.draw_mode_active)
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !m_annotationMgr.IsDrawModeActive())
             {
                 EnterFollowMode(agentId);
                 OpenPlayerInfoPanel(agentId);

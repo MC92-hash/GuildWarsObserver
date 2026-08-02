@@ -519,6 +519,7 @@
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Notepad.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_RibbonToolbar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FogOfWar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_LordDamage.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CombatLog.cpp" />

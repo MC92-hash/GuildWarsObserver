@@ -442,170 +442,12 @@ void ReplayWindow::DrawTimelineController()
         cx += loopW;
     }
 
-    // ── Add Bookmark ─────────────────────────────────────────────────────
-    cx += GDIV;
-    Divider(cx - GDIV * 0.5f);
-    {
-        float bkmW = BTN_H;
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        ImGui::InvisibleButton("##AddBkm", ImVec2(bkmW, BTN_H));
-        bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
+    // Bookmarks are driven entirely from the ribbon toolbar (Add Bookmark /
+    // Bookmarks) and the scrub track's right-click menu, so the play bar
+    // carries no bookmark buttons of its own.
 
-        ImU32 fg  = hov ? cGoldBright : cTextMid;
-        FillBtn(cx, cy, bkmW, BTN_H, hov, 0, 0);
-
-        float thick = 1.3f * sf;
-        float mx = cx + bkmW * 0.5f;
-        float my = cy + BTN_H * 0.5f;
-
-        // Flag/bookmark icon
-        float fw = 5.f * sf, fh = 7.f * sf;
-        float ftop = my - fh * 0.5f - 1.f * sf;
-        // Pole
-        dl->AddLine(ImVec2(mx - fw * 0.5f, ftop), ImVec2(mx - fw * 0.5f, ftop + fh + 3.f * sf), fg, thick);
-        // Flag shape (triangular pennant)
-        ImVec2 f1(mx - fw * 0.5f, ftop);
-        ImVec2 f2(mx + fw * 0.5f + 1.f * sf, ftop + fh * 0.35f);
-        ImVec2 f3(mx - fw * 0.5f, ftop + fh * 0.7f);
-        dl->AddTriangleFilled(f1, f2, f3, fg);
-
-        // Badge dot when bookmarks exist but drawer is hidden
-        if (!m_annotationMgr.bookmarks.empty() && !m_annotationMgr.bookmarks_visible)
-        {
-            float dotX = cx + bkmW - 4.f * sf;
-            float dotY = cy + 4.f * sf;
-            dl->AddCircleFilled(ImVec2(dotX, dotY), 2.5f * sf, cGold);
-        }
-
-        if (clk) m_annotationMgr.BeginAddBookmark();
-        const char* bkmKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().addBookmark);
-        if (hov) ImGui::SetTooltip("Add Bookmark (%s)", bkmKey);
-        cx += bkmW;
-    }
-
-    // ── Toggle Bookmark Drawer ───────────────────────────────────────────
-    {
-        float tbkW = BTN_H;
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        ImGui::InvisibleButton("##TogBkm", ImVec2(tbkW, BTN_H));
-        bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
-
-        bool on = m_annotationMgr.bookmarks_visible;
-        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
-        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
-        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
-        FillBtn(cx, cy, tbkW, BTN_H, hov, bg, bdr);
-
-        float thick = 1.3f * sf;
-        float mx = cx + tbkW * 0.5f;
-        float my = cy + BTN_H * 0.5f;
-
-        // Three horizontal lines (list icon)
-        for (int li = -1; li <= 1; li++)
-        {
-            float ly = my + (float)li * 3.5f * sf;
-            dl->AddLine(ImVec2(mx - 5.f * sf, ly), ImVec2(mx + 5.f * sf, ly), fg, thick);
-        }
-
-        if (clk) m_annotationMgr.bookmarks_visible = !m_annotationMgr.bookmarks_visible;
-        if (hov) ImGui::SetTooltip(on ? "Hide Bookmarks" : "Show Bookmarks");
-        cx += tbkW;
-    }
-
-    // ── Auto Camera toggle ───────────────────────────────────────────────
-    cx += GDIV;
-    Divider(cx - GDIV * 0.5f);
-    {
-        float acW = BTN_H;
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        ImGui::InvisibleButton("##AutoCam", ImVec2(acW, BTN_H));
-        bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
-
-        bool on   = m_autoCameraEnabled;
-        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
-        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
-        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
-        FillBtn(cx, cy, acW, BTN_H, hov, bg, bdr);
-
-        // Movie camera icon
-        float thick = 1.3f * sf;
-        float mx = cx + acW * 0.5f;
-        float my = cy + BTN_H * 0.5f;
-        // Camera body (rounded rect)
-        float bw = 7.f * sf, bh = 5.f * sf;
-        dl->AddRect(ImVec2(mx - bw*0.5f - 1.f*sf, my - bh*0.5f),
-                    ImVec2(mx + bw*0.5f - 1.f*sf, my + bh*0.5f), fg, 1.5f*sf, 0, thick);
-        // Lens triangle on the right
-        float lx = mx + bw*0.5f - 0.5f*sf;
-        dl->AddTriangleFilled(
-            ImVec2(lx, my - 3.f*sf),
-            ImVec2(lx + 4.f*sf, my),
-            ImVec2(lx, my + 3.f*sf), fg);
-
-        if (clk)
-        {
-            m_autoCameraEnabled = !m_autoCameraEnabled;
-            if (m_autoCameraEnabled)
-                m_autoCamState = AutoCameraState{};
-            else
-                ExitFollowMode();
-        }
-        if (hov) {
-            const char* acKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().toggleAutoCamera);
-            ImGui::SetTooltip(m_autoCameraEnabled ? "Auto Camera: ON (%s)" : "Auto Camera: OFF (%s)", acKey);
-        }
-        cx += acW;
-    }
-
-    // ── Top View toggle ──────────────────────────────────────────────────
-    cx += GDIV;
-    Divider(cx - GDIV * 0.5f);
-    {
-        float tvW = BTN_H;
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        ImGui::InvisibleButton("##TopView", ImVec2(tvW, BTN_H));
-        bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
-
-        bool on   = m_topViewActive;
-        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
-        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
-        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
-        FillBtn(cx, cy, tvW, BTN_H, hov, bg, bdr);
-
-        // Eye-looking-down icon
-        float thick = 1.3f * sf;
-        float mx = cx + tvW * 0.5f;
-        float my = cy + BTN_H * 0.5f;
-        // Eye outline (ellipse-like)
-        float ew = 6.f * sf, eh = 3.5f * sf;
-        dl->PathArcTo(ImVec2(mx, my + eh * 0.3f), ew, XM_PI, XM_2PI, 16);
-        dl->PathArcTo(ImVec2(mx, my - eh * 0.3f), ew, 0.f, XM_PI, 16);
-        dl->PathStroke(fg, true, thick);
-        // Pupil
-        dl->AddCircleFilled(ImVec2(mx, my), 2.f * sf, fg);
-        // Downward arrow below eye
-        float ay = my + eh + 2.f * sf;
-        dl->AddLine(ImVec2(mx, ay), ImVec2(mx, ay + 3.f * sf), fg, thick);
-        dl->AddLine(ImVec2(mx - 2.f * sf, ay + 1.f * sf), ImVec2(mx, ay + 3.f * sf), fg, thick);
-        dl->AddLine(ImVec2(mx + 2.f * sf, ay + 1.f * sf), ImVec2(mx, ay + 3.f * sf), fg, thick);
-
-        if (clk)
-        {
-            if (m_topViewActive)
-                ExitTopView();
-            else
-                EnterTopView();
-        }
-        if (hov) {
-            const char* tvKey = ImGui::GetKeyName((ImGuiKey)ReplayHotkeys::Get().toggleTopView);
-            ImGui::SetTooltip(m_topViewActive ? "Exit Top View (%s)" : "Top View (%s)", tvKey);
-        }
-        cx += tvW;
-    }
+    // Auto Camera and Top View live in the ribbon toolbar; the play bar
+    // keeps only transport and speed.
 
     // ── Speed (right-aligned) ────────────────────────────────────────────
     {
@@ -657,11 +499,10 @@ void ReplayWindow::DrawTimelineController()
 
     m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
 
-    // ── Bookmark floating panel (above the bar, left side) ─────────────
-    m_annotationMgr.RenderBookmarkDrawer(O.x, O.y, vpW, barH,
-                                         m_debugTimeline, m_debugTimeline,
-                                         m_replayCtx.isPlaying,
-                                         m_displayTimeOffset);
+    // ── Bookmark list (movable panel; also hosts the create/rename popups)
+    m_annotationMgr.RenderBookmarkList(m_debugTimeline, m_debugTimeline,
+                                       m_replayCtx.isPlaying,
+                                       &m_panelLayout);
 
     ImGui::End();
     ImGui::PopStyleColor(4);

@@ -536,8 +536,20 @@ void ReplayWindow::DrawRangeRingToolbar()
             if (!teamEnabled) ImGui::EndDisabled();
         };
 
-        DrawTeamRings("Red Team", m_team1PlayerIds, m_ringShowRed);
-        DrawTeamRings("Blue Team", m_team2PlayerIds, m_ringShowBlue);
+        // Side by side: two eight-player rosters stacked would make the panel
+        // taller than most screens.
+        if (ImGui::BeginTable("##RingTeams", 2,
+                              ImGuiTableFlags_SizingFixedFit |
+                              ImGuiTableFlags_BordersInnerV |
+                              ImGuiTableFlags_NoSavedSettings))
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            DrawTeamRings("Red Team", m_team1PlayerIds, m_ringShowRed);
+            ImGui::TableSetColumnIndex(1);
+            DrawTeamRings("Blue Team", m_team2PlayerIds, m_ringShowBlue);
+            ImGui::EndTable();
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar(2);

@@ -115,6 +115,8 @@ void ReplayHotkeys::Save() const
       << "  \"forward5s\": "           << forward5s           << ",\n"
       << "  \"playPause\": "           << playPause           << ",\n"
       << "  \"toggleRangeRings\": "    << toggleRangeRings    << ",\n"
+      << "  \"toggleSkillLasers\": "   << toggleSkillLasers   << ",\n"
+      << "  \"toggleDrawingBar\": "    << toggleDrawingBar    << ",\n"
       << "  \"toggleMoralePanel\": "   << toggleMoralePanel   << ",\n"
       << "  \"toggleEventTimeline\": " << toggleEventTimeline << ",\n"
       << "  \"toggleLordDamage\": "    << toggleLordDamage    << ",\n"
@@ -156,6 +158,8 @@ void ReplayHotkeys::Load()
         readKey("forward5s",           forward5s);
         readKey("playPause",           playPause);
         readKey("toggleRangeRings",    toggleRangeRings);
+        readKey("toggleSkillLasers",   toggleSkillLasers);
+        readKey("toggleDrawingBar",    toggleDrawingBar);
         readKey("toggleMoralePanel",   toggleMoralePanel);
         readKey("toggleEventTimeline", toggleEventTimeline);
         readKey("toggleLordDamage",    toggleLordDamage);
@@ -195,6 +199,7 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("lord_damage",     "Lord Damage",          &m_showLordDamagePanel,  false, true);
     m_panelLayout.RegisterPanel("event_timeline",  "Event Timeline",       &m_showEventTimeline,    false, false);
     m_panelLayout.RegisterPanel("range_rings",     "Range Rings",          &m_showRangeRings,       false, true);
+    m_panelLayout.RegisterPanel("skill_lasers",    "Skill Lasers",         &m_showLaserPanel,       false, true);
     m_panelLayout.RegisterPanel("auto_camera",     "Auto Camera",          &m_showAutoCameraPanel,  false, true);
     m_panelLayout.RegisterPanel("combat_log",      "Combat Log",           &m_showCombatLog,        false, true);
     m_panelLayout.RegisterPanel("skill_analytics", "Skill Analytics",      &m_showSkillAnalytics,   false, true);
@@ -204,6 +209,8 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("split_camera",    "Split Camera",         &m_pipEnabled,           false, true);
     m_panelLayout.RegisterPanel("minimap",         "Minimap",              &m_minimapEnabled,       false, true);
     m_panelLayout.RegisterPanel("notepad",         "Match Notepad",        &m_showNotepad,          false, true);
+    m_panelLayout.RegisterPanel("draw_toolbar",    "Drawing Toolbar",      &m_annotationMgr.toolbar_visible, false, true);
+    m_panelLayout.RegisterPanel("bookmarks",       "Bookmarks",            &m_annotationMgr.bookmarks_visible, false, true);
 }
 
 uint64_t ReplayWindow::ComputePanelStateHash() const
@@ -217,6 +224,9 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     for (int i = 0; i < kRingTypeCount; i++) hashBool(m_ringType[i]);
     hashBool(m_ringShowBlue);
     hashBool(m_ringShowRed);
+    for (int i = 0; i < kLaserProfCount; i++) hashBool(m_laserProf[i]);
+    hashBool(m_laserShowBlue);
+    hashBool(m_laserShowRed);
     hashBool(m_clFilterDamage);
     hashBool(m_clFilterHeals);
     hashBool(m_clFilterSkills);
@@ -301,6 +311,15 @@ void ReplayWindow::SaveUILayout()
     ps["ringShowBlue"]     = m_ringShowBlue;
     ps["ringShowRed"]      = m_ringShowRed;
 
+    // Skill Laser filters (per-agent toggles stay session-only, like the rings)
+    {
+        nlohmann::json lp = nlohmann::json::array();
+        for (int i = 0; i < kLaserProfCount; i++) lp.push_back(m_laserProf[i]);
+        ps["laserProfs"]   = lp;
+    }
+    ps["laserShowBlue"]    = m_laserShowBlue;
+    ps["laserShowRed"]     = m_laserShowRed;
+
     // Combat Log filters
     ps["clFilterDamage"]    = m_clFilterDamage;
     ps["clFilterHeals"]     = m_clFilterHeals;
@@ -343,6 +362,10 @@ void ReplayWindow::SaveUILayout()
     // Minimap state
     ps["minimapZoom"]         = m_minimapZoom;
     ps["minimapShowLabels"]   = m_minimapShowLabels;
+
+    // Ribbon toolbar
+    ps["ribbonPinned"]        = m_ribbonPinned;
+    ps["ribbonClosed"]        = m_ribbonClosed;
 
     j["panelState"] = ps;
 
@@ -412,6 +435,16 @@ void ReplayWindow::LoadUILayout()
                 std::swap(m_ringShowBlue, m_ringShowRed);
             }
 
+            // Skill Laser filters (added after teamColorSwapped, so no swap)
+            if (ps.contains("laserProfs") && ps["laserProfs"].is_array())
+            {
+                auto& lp = ps["laserProfs"];
+                for (int i = 0; i < kLaserProfCount && i < (int)lp.size(); i++)
+                    m_laserProf[i] = lp[i].get<bool>();
+            }
+            bv("laserShowBlue", m_laserShowBlue);
+            bv("laserShowRed",  m_laserShowRed);
+
             // Combat Log filters
             bv("clFilterDamage",    m_clFilterDamage);
             bv("clFilterHeals",     m_clFilterHeals);
@@ -454,6 +487,10 @@ void ReplayWindow::LoadUILayout()
             // Minimap state
             fv("minimapZoom",        m_minimapZoom);
             bv("minimapShowLabels",  m_minimapShowLabels);
+
+            // Ribbon toolbar
+            bv("ribbonPinned",       m_ribbonPinned);
+            bv("ribbonClosed",       m_ribbonClosed);
         }
     } catch (...) {}
 
@@ -5742,6 +5779,16 @@ void ReplayWindow::DrawImGuiOverlay()
 
         if (ImGui::BeginMenu("View"))
         {
+            // The ribbon's own close button sets m_ribbonClosed, so this is the
+            // only way back to it.
+            if (ImGui::MenuItem("Ribbon Toolbar", nullptr, !m_ribbonClosed))
+            {
+                m_ribbonClosed = !m_ribbonClosed;
+                if (!m_ribbonClosed) m_ribbonIdleTimer = 0.f;
+                SaveUILayout();
+            }
+            ImGui::Separator();
+
             ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
 
             if (ImGui::MenuItem("Stylized Agent Icons",
@@ -5760,6 +5807,8 @@ void ReplayWindow::DrawImGuiOverlay()
                 auto kn = [](int k) { return ImGui::GetKeyName((ImGuiKey)k); };
 
                 ImGui::MenuItem(std::format("Range Rings ({})", kn(hk.toggleRangeRings)).c_str(), nullptr, &m_showRangeRings);
+                ImGui::MenuItem(std::format("Skill Laser Filters ({})", kn(hk.toggleSkillLasers)).c_str(), nullptr, &m_showLaserPanel);
+                ImGui::MenuItem(std::format("Drawing Toolbar ({})", kn(hk.toggleDrawingBar)).c_str(), nullptr, &m_annotationMgr.toolbar_visible);
                 {
                     bool fogOn = (m_fogPerspective > 0);
                     if (ImGui::MenuItem(std::format("Fog of War ({})", kn(hk.toggleFogOfWar)).c_str(), nullptr, &fogOn)) {
@@ -5788,6 +5837,8 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::Separator();
             ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
             ImGui::MenuItem("Skill Analytics (BETA)", nullptr, &m_showSkillAnalytics);
+            ImGui::MenuItem("Damage Meter", nullptr, &m_showDamageMeter);
+            ImGui::MenuItem("Heal Meter",   nullptr, &m_showHealMeter);
             ImGui::MenuItem("Agent Names", nullptr, &m_showNameFilterPanel);
             ImGui::MenuItem("Split Camera", nullptr, &m_pipEnabled);
             ImGui::MenuItem("Minimap", nullptr, &m_minimapEnabled);
@@ -5841,6 +5892,8 @@ void ReplayWindow::DrawImGuiOverlay()
 
         ImGui::EndMainMenuBar();
     }
+
+    DrawRibbonToolbar();
 
     DrawTimelineController();
     DrawAgentModelLoadingBanner();
@@ -6045,7 +6098,9 @@ void ReplayWindow::DrawImGuiOverlay()
                                annViewport.Width, annViewport.Height,
                                cam->GetPosition3f(), m_debugTimeline);
     }
-    m_annotationMgr.RenderToolbar();
+    m_annotationMgr.SetIconDevice(m_deviceResources->GetD3DDevice());
+    m_annotationMgr.RenderToolbar(&m_panelLayout);
+    m_annotationMgr.RenderDrawModeIndicator();
     {
         Camera* cam = m_mapRenderer->GetCamera();
         XMMATRIX annVP = cam->GetView() * cam->GetProj();
@@ -6128,6 +6183,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSpiritRanges();
     DrawWurmsShrineCaptureRadius();
     DrawRangeRingToolbar();
+    DrawSkillLaserPanel();
     DrawFogOfWarToolbar();
     DrawMoralePanel();
     DrawLordDamagePanel();
@@ -6150,7 +6206,7 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     // Commit deferred left-click to pan if no agent was clicked
-    if (m_leftClickPending && !m_annotationMgr.draw_mode_active)
+    if (m_leftClickPending && !m_annotationMgr.IsDrawModeActive())
     {
         m_leftClickPending = false;
         m_leftMouseDown = true;
@@ -6169,18 +6225,29 @@ void ReplayWindow::DrawImGuiOverlay()
 
     // Keyboard shortcuts — uses GetAsyncKeyState directly so hotkeys work even
     // without Win32 keyboard focus.  Only active when our process is in the
-    // foreground and no text input / annotation mode is active.
+    // foreground and no text input is active.
     {
         DWORD fgPid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
         bool processActive = (fgPid == GetCurrentProcessId());
 
-        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused
-            && !m_annotationMgr.draw_mode_active)
+        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused)
         {
             const auto& hk = ReplayHotkeys::Get();
 
-            if (HotkeyPressed(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent)
+            // While a drawing tool is armed it claims a couple of letter keys.
+            // Everything else stays live, so the replay can still be scrubbed
+            // and paused mid-annotation. HotkeyPressed() must be called either
+            // way — it is what advances the rising-edge state.
+            auto HotkeyFired = [&](int key) {
+                bool fired = HotkeyPressed(key);
+                return fired && !m_annotationMgr.ClaimsKey(key);
+            };
+
+            // Escape doubles as "disarm the drawing tool"; if it was used for
+            // that this frame it must not also drop follow mode.
+            if (HotkeyFired(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent
+                && !m_annotationMgr.EscapeConsumedThisFrame())
                 ExitFollowMode();
 
             float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
@@ -6188,9 +6255,9 @@ void ReplayWindow::DrawImGuiOverlay()
             // Configurable 5s hotkeys (skip if bound to arrow keys — arrows are handled below)
             bool rew5isArrow = (hk.rewind5s  == ImGuiKey_LeftArrow  || hk.rewind5s  == ImGuiKey_RightArrow);
             bool fwd5isArrow = (hk.forward5s == ImGuiKey_LeftArrow  || hk.forward5s == ImGuiKey_RightArrow);
-            if (!rew5isArrow && HotkeyPressed(hk.rewind5s))
+            if (!rew5isArrow && HotkeyFired(hk.rewind5s))
                 m_debugTimeline = std::max(0.f, m_debugTimeline - 5.f);
-            if (!fwd5isArrow && HotkeyPressed(hk.forward5s))
+            if (!fwd5isArrow && HotkeyFired(hk.forward5s))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
 
             // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
@@ -6199,10 +6266,10 @@ void ReplayWindow::DrawImGuiOverlay()
             if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
 
-            if (HotkeyPressed(hk.playPause))
+            if (HotkeyFired(hk.playPause))
                 m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
 
-            if (HotkeyPressed(hk.toggleRangeRings))
+            if (HotkeyFired(hk.toggleRangeRings))
             {
                 m_showRangeRings = !m_showRangeRings;
                 if (!m_showRangeRings)
@@ -6212,16 +6279,24 @@ void ReplayWindow::DrawImGuiOverlay()
                 }
             }
 
-            if (HotkeyPressed(hk.toggleMoralePanel))
+            if (HotkeyFired(hk.toggleSkillLasers))
+                m_showLaserPanel = !m_showLaserPanel;
+
+            // Opening arms a tool and closing disarms it; AnnotationManager
+            // handles both off the visibility change.
+            if (HotkeyFired(hk.toggleDrawingBar))
+                m_annotationMgr.toolbar_visible = !m_annotationMgr.toolbar_visible;
+
+            if (HotkeyFired(hk.toggleMoralePanel))
                 m_showMoralePanel = !m_showMoralePanel;
 
-            if (HotkeyPressed(hk.toggleEventTimeline))
+            if (HotkeyFired(hk.toggleEventTimeline))
                 m_showEventTimeline = !m_showEventTimeline;
 
-            if (HotkeyPressed(hk.toggleLordDamage))
+            if (HotkeyFired(hk.toggleLordDamage))
                 m_showLordDamagePanel = !m_showLordDamagePanel;
 
-            if (HotkeyPressed(hk.toggleAutoCamera))
+            if (HotkeyFired(hk.toggleAutoCamera))
             {
                 m_autoCameraEnabled = !m_autoCameraEnabled;
                 if (m_autoCameraEnabled)
@@ -6230,7 +6305,7 @@ void ReplayWindow::DrawImGuiOverlay()
                     ExitFollowMode();
             }
 
-            if (HotkeyPressed(hk.toggleFogOfWar) && !m_topViewActive)
+            if (HotkeyFired(hk.toggleFogOfWar) && !m_topViewActive)
             {
                 if (m_fogPerspective > 0) {
                     m_fogLastActive = m_fogPerspective;
@@ -6241,7 +6316,7 @@ void ReplayWindow::DrawImGuiOverlay()
                 }
             }
 
-            if (HotkeyPressed(hk.toggleTopView))
+            if (HotkeyFired(hk.toggleTopView))
             {
                 if (m_topViewActive)
                     ExitTopView();
@@ -6249,19 +6324,19 @@ void ReplayWindow::DrawImGuiOverlay()
                     EnterTopView();
             }
 
-            if (HotkeyPressed(hk.togglePianoRoll))
+            if (HotkeyFired(hk.togglePianoRoll))
                 m_showPianoRoll = !m_showPianoRoll;
 
-            if (HotkeyPressed(hk.toggleHeatmap))
+            if (HotkeyFired(hk.toggleHeatmap))
             {
                 m_heatmapSettings.show = !m_heatmapSettings.show;
                 SaveHeatmapSettings();
             }
 
-            if (HotkeyPressed(hk.toggleMinimap))
+            if (HotkeyFired(hk.toggleMinimap))
                 m_minimapEnabled = !m_minimapEnabled;
 
-            if (HotkeyPressed(hk.addBookmark))
+            if (HotkeyFired(hk.addBookmark))
                 m_annotationMgr.BeginAddBookmark();
         }
     }
@@ -6275,15 +6350,49 @@ void ReplayWindow::DrawImGuiOverlay()
     if (m_panelLayout.IsDirty() || stateChanged)
         SaveUILayout();
 
-    // Determine cursor mode, then apply drag overrides before committing
+    // Determine cursor mode, then apply drag overrides before committing.
     UpdateCursorMode();
-    if (m_leftMouseDown)
+    if (m_annotationMgr.toolbar_visible)
+    {
+        // Annotation cursor set — only while the drawing toolbar is open, so
+        // normal replay use keeps the standard cursors. Panels and widgets
+        // still get the standard set even here.
+        if (m_annotationMgr.IsDrawingStroke())
+            g_CurrentCursor = CursorMode::DrawActive;
+        else if (m_rightMouseDown)
+            g_CurrentCursor = CursorMode::CameraLook;
+        else if (m_leftMouseDown)
+            g_CurrentCursor = CursorMode::Hidden;
+        else if (!ImGui::GetIO().WantCaptureMouse)
+        {
+            // Over the 3D view. This wins over whatever UpdateCursorMode()
+            // picked: ImGui reports a hover cursor for the scene too, and
+            // the tool state is what should decide here.
+            //
+            // Only the eraser gets its own cursors; the shape tools and the
+            // cursor tool all share the plain pointer.
+            if (m_annotationMgr.active_tool == AnnotationManager::ERASER)
+                g_CurrentCursor = m_annotationMgr.IsEraserOverTarget()
+                                ? CursorMode::EraseTarget
+                                : CursorMode::EraseIdle;
+            else
+                g_CurrentCursor = CursorMode::DrawPointer;
+        }
+    }
+    else if (m_leftMouseDown)
         g_CurrentCursor = CursorMode::Hidden;
     else if (m_rightMouseDown)
         g_CurrentCursor = CursorMode::Precision;
+
     // Minimap draws its own software cursor: hide the OS cursor while over it.
     if (m_minimapCursorActive)
         g_CurrentCursor = CursorMode::Hidden;
+
+    // Still building the map: the hourglass outranks everything above, since
+    // none of those interactions are available yet.
+    if (m_loadingPhase != LoadingPhase::Ready && m_loadingPhase != LoadingPhase::Error)
+        g_CurrentCursor = CursorMode::Wait;
+
     ApplyCursor();
 
     // Cache for next Update() — suppresses WASD camera polling while a text widget is active
@@ -9100,7 +9209,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
 
     case WM_LBUTTONDOWN:
         if (mouseAllowed && rw && rw->m_cameraMode != CameraMode::FollowAgent
-            && !rw->m_annotationMgr.draw_mode_active)
+            && !rw->m_annotationMgr.IsDrawModeActive())
         {
             rw->m_leftClickPending = true;
             GetCursorPos(&rw->m_mouseDragOrigin);
@@ -9212,6 +9321,14 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         g_CursorInClientArea = (LOWORD(lParam) == HTCLIENT);
         if (g_CursorInClientArea && g_Cursors.loaded)
         {
+            // Checked here rather than relying on g_CurrentCursor: that global
+            // is shared with the browser window, whose render loop runs after
+            // ours each frame and would overwrite whatever we set.
+            if (g_AppBusy || (rw && rw->IsLoading()))
+            {
+                if (HCURSOR w = g_Cursors.Get(CursorMode::Wait))
+                { ::SetCursor(w); return TRUE; }
+            }
             if (rw && rw->m_leftMouseDown)
                 return TRUE;  // cursor hidden during left-drag pan
             if (rw && rw->m_rightMouseDown)

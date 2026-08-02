@@ -263,6 +263,10 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     g_Cursors.Load();
 
+    // Everything below runs synchronously before the first real frame, so the
+    // hourglass has to be raised here and held for the rest of Initialize().
+    ScopedWaitCursor busyInit;
+
     static std::string iniFilePath;
     if (iniFilePath.empty()) {
         wchar_t exePath[MAX_PATH];
@@ -462,10 +466,28 @@ void MapBrowser::Tick()
     // Check if extraction is in progress; if so, don't skip frames
     bool is_extracting = !m_mft_indices_to_extract.empty() || !m_mft_indices_to_extract_textures.empty();
 
+    // Creating the replay window below blocks, so hold the hourglass across it
+    // rather than only re-evaluating once the window exists.
+    if (g_pendingReplay.requested)
+        g_AppBusy = true;
+
     // Always tick replay windows regardless of main window focus
     ProcessPendingReplayRequest();
     ProcessCloudDownloadResult();
     TickReplayWindows();
+
+    // Busy latch for the hourglass. Set here rather than during render so it
+    // still holds when this window's frame is skipped (a focused replay window
+    // makes Tick() return before Render()).
+    {
+        bool busy = !g_loadingScreenDone || g_pendingReplay.requested;
+        if (!busy)
+        {
+            for (const auto& rw : m_replay_windows)
+                if (rw && rw->IsAlive() && rw->IsLoading()) { busy = true; break; }
+        }
+        g_AppBusy = busy;
+    }
 
     // Check if cloud sync has new data
     if (m_syncEngine && m_syncEngine->HasNewData())
@@ -549,6 +571,10 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
 {
     if (gw_dat_path_set && m_dat_managers[0]->m_initialization_state == InitializationState::NotStarted)
     {
+        // Init() reads the .dat index synchronously, so the whole load happens
+        // inside this call and no frame is drawn until it returns. The cursor
+        // has to be set here rather than from the render loop.
+        ScopedWaitCursor busy;
         bool succeeded = m_dat_managers[0]->Init(gw_dat_path);
         if (!succeeded)
         {
@@ -1012,7 +1038,12 @@ void MapBrowser::Render()
     // --- Render ImGui ---
     m_deviceResources->PIXBeginEvent(L"Render ImGui");
     UpdateCursorMode();
-    ApplyCursor();
+    // A replay was just asked for in the UI pass above. Raise the latch now so
+    // the hourglass appears on this frame rather than after the next tick has
+    // created the window.
+    if (g_pendingReplay.requested)
+        g_AppBusy = true;
+    ApplyCursor();   // honours g_AppBusy
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_deviceResources->PIXEndEvent();

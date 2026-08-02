@@ -590,6 +590,8 @@ static void draw_settings_window()
 	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Overlay Toggles");
 	ImGui::Dummy(ImVec2(0, 2.f));
 	HotkeyInput("Range Rings",         &editingKeys.toggleRangeRings);
+	HotkeyInput("Skill Lasers",        &editingKeys.toggleSkillLasers);
+	HotkeyInput("Drawing Toolbar",     &editingKeys.toggleDrawingBar);
 	HotkeyInput("Morale Panel",        &editingKeys.toggleMoralePanel);
 	HotkeyInput("Event Timeline",      &editingKeys.toggleEventTimeline);
 	HotkeyInput("Lord Damage Panel",   &editingKeys.toggleLordDamage);
@@ -627,7 +629,8 @@ static void draw_settings_window()
 	{
 		int allKeys[] = {
 			editingKeys.rewind5s, editingKeys.forward5s, editingKeys.playPause,
-			editingKeys.toggleRangeRings, editingKeys.toggleMoralePanel,
+			editingKeys.toggleRangeRings, editingKeys.toggleSkillLasers,
+			editingKeys.toggleDrawingBar, editingKeys.toggleMoralePanel,
 			editingKeys.toggleEventTimeline, editingKeys.toggleLordDamage,
 			editingKeys.toggleAutoCamera, editingKeys.toggleFogOfWar,
 			editingKeys.toggleTopView, editingKeys.togglePianoRoll,

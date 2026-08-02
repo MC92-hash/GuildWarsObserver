@@ -1,15 +1,24 @@
 #include "pch.h"
 #include "AnnotationManager.h"
+#include "ReplayPanelLayout.h"
 #include "Terrain.h"
+
+// Declared in ReplayWindow_Internal.h, which cannot be included here: it
+// declares its own ProjectToScreen that would clash with the file-local one.
+ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
+                          float* outW, float* outH);
 #include <algorithm>
 #include <cmath>
 
 using namespace DirectX;
 
 namespace {
-    constexpr float kBtnSize       = 28.f;
-    constexpr float kIconSize      = 14.f;
+    constexpr float kBtnSize       = 32.f;
+    constexpr float kIconSize      = 16.f;   // extent of the vector fallbacks
     constexpr float kIconPad       = (kBtnSize - kIconSize) * 0.5f;
+    // Game art reads better filling more of the button than the stroked
+    // glyphs do, so it gets its own, larger extent.
+    constexpr float kArtExtent     = kBtnSize - 6.f;
     constexpr float kBtnSpacing    = 3.f;
     constexpr float kSepMargin     = 3.f;
     constexpr float kSwatchSize    = 18.f;
@@ -37,7 +46,6 @@ namespace {
     constexpr int   kCircleSegments   = 32;
     constexpr int   kMaxUndoDepth     = 50;
 
-    constexpr float kCheckboxH        = 20.f;
     constexpr float kBookmarkPanelW   = 160.f;
     constexpr float kBookmarkToastDur = 3.f;
 
@@ -194,13 +202,6 @@ namespace {
         dl->AddLine(Ic(2,12,o,s), Ic(12,12,o,s), col, 0.5f);
     }
 
-    void DrawIcon_Bookmark(ImDrawList* dl, ImVec2 o, float s, ImU32 col)
-    {
-        dl->AddLine(Ic(7,2,o,s), Ic(7,11,o,s), col, 1.0f);
-        ImVec2 flag[] = { Ic(7,2,o,s), Ic(11,4,o,s), Ic(7,6,o,s) };
-        dl->AddTriangleFilled(flag[0], flag[1], flag[2], col);
-    }
-
     void DrawIcon_Undo(ImDrawList* dl, ImVec2 o, float s, ImU32 col)
     {
         constexpr int N = 16;
@@ -231,34 +232,195 @@ namespace {
 
     using IconDrawFn = void(*)(ImDrawList*, ImVec2, float, ImU32);
 
+    // ── Drawing strip layout ──
+    //
+    // Each button is game art where a texture exists, with the hand-drawn
+    // glyph kept as the fallback. `rect` selects a sub-region of an atlas;
+    // all-zero means use the whole image.
     struct ToolEntry {
-        IconDrawFn  drawIcon;
-        const char* tooltip;
+        IconDrawFn  drawIcon;      // fallback when the art is missing
+        const char* title;
+        const char* desc;
         AnnotationManager::DrawingTool tool;
-        bool isSeparator;
-        bool isStub;
-        bool isBookmark;
+        const char* art;           // path relative to Textures/, or null
+        ImVec4      rect;          // atlas sub-rect, or all-zero for the lot
+        bool        isSeparator;
+        bool        isAction;      // momentary: never latches on
+        // Fraction of the standard art extent. Small atlas cells are drawn
+        // below full size rather than upscaled into a blur.
+        float       artScale;
     };
 
-    constexpr int kBookmarkEntryIdx = 8;
+    constexpr ImVec4 kWhole(0.f, 0.f, 0.f, 0.f);
 
     static const ToolEntry kToolEntries[] = {
-        { DrawIcon_Select,   "Select",           AnnotationManager::SELECT,   false, false, false },
-        { nullptr,           nullptr,            AnnotationManager::SELECT,   true,  false, false },
-        { DrawIcon_Arrow,    "Arrow",            AnnotationManager::ARROW,    false, false, false },
-        { DrawIcon_Circle,   "Circle (C)",       AnnotationManager::CIRCLE,   false, false, false },
-        { DrawIcon_Freehand, "Freehand (F)",     AnnotationManager::FREEHAND, false, false, false },
-        { nullptr,           nullptr,            AnnotationManager::SELECT,   true,  false, false },
-        { DrawIcon_Eraser,   "Eraser",           AnnotationManager::ERASER,   false, false, false },
-        { nullptr,           nullptr,            AnnotationManager::SELECT,   true,  false, false },
-        { DrawIcon_Bookmark, "Add bookmark",     AnnotationManager::SELECT,   false, false, true  },
-        { nullptr,           nullptr,            AnnotationManager::SELECT,   true,  false, false },
-        { DrawIcon_Undo,     "Undo (Ctrl+Z)",    AnnotationManager::SELECT,   false, false, false },
-        { DrawIcon_ClearAll, "Clear All",        AnnotationManager::SELECT,   false, false, false },
+        { DrawIcon_Select, "Cursor",
+          "Stop drawing and go back to moving the camera and clicking agents. "
+          "Escape does the same.",
+          AnnotationManager::SELECT, "Toolbar\\texture_8957.dds", kWhole, false, false, 1.f },
+        { nullptr, nullptr, nullptr, AnnotationManager::SELECT, nullptr, kWhole, true, false, 1.f },
+        { DrawIcon_Arrow, "Arrow",
+          "Drag on the map to draw an arrow from where you press to where you "
+          "release - for calling rotations and pushes.",
+          AnnotationManager::ARROW, "Toolbar\\Arrow.dds", kWhole, false, false, 1.f },
+        { DrawIcon_Circle, "Circle",
+          "Drag from the centre outwards to ring an area of the map. "
+          "Shortcut: C",
+          AnnotationManager::CIRCLE, "Toolbar\\Circle.png", kWhole, false, false, 1.f },
+        { DrawIcon_Freehand, "Freehand",
+          "Hold the left button and draw a free line on the map. Shortcut: F",
+          AnnotationManager::FREEHAND, "Toolbar\\Freehand.png", kWhole, false, false, 1.f },
+        { nullptr, nullptr, nullptr, AnnotationManager::SELECT, nullptr, kWhole, true, false, 1.f },
+        { DrawIcon_Eraser, "Eraser",
+          "Drag across drawings to delete the ones you touch.",
+          AnnotationManager::ERASER, "Toolbar\\Erraser.png", kWhole, false, false, 1.f },
+        { nullptr, nullptr, nullptr, AnnotationManager::SELECT, nullptr, kWhole, true, false, 1.f },
+        // The undo arrow is a 15px cell of a shared GW UI atlas, so it is
+        // drawn near its native size instead of being blown up.
+        { DrawIcon_Undo, "Undo",
+          "Remove the last drawing. Shortcut: Ctrl+Z",
+          AnnotationManager::SELECT, "Toolbar\\texture_277156.dds",
+          ImVec4(147.f, 51.f, 162.f, 66.f), false, true, 0.62f },
+        { DrawIcon_ClearAll, "Clear All",
+          "Delete every drawing on the map. Asks for confirmation first.",
+          AnnotationManager::SELECT, "Toolbar\\texture_122676.dds", kWhole, false, true, 1.f },
     };
 
-    constexpr int kUndoEntryIdx    = 10;
-    constexpr int kClearAllEntryIdx = 11;
+    constexpr int kUndoEntryIdx     = 8;
+    constexpr int kClearAllEntryIdx = 9;
+    constexpr int kToolEntryCount   =
+        (int)(sizeof(kToolEntries) / sizeof(kToolEntries[0]));
+
+    // Dye bottles recoloured to the five drawing colours.
+    static const char* const kSwatchArt[AnnotationManager::kSwatchCount] = {
+        "Toolbar\\dye_amber.png",
+        "Toolbar\\dye_red.png",
+        "Toolbar\\dye_blue.png",
+        "Toolbar\\dye_green.png",
+        "Toolbar\\dye_white.png",
+    };
+
+    static const char* const kSwatchName[AnnotationManager::kSwatchCount] = {
+        "Amber", "Red", "Blue", "Mint Green", "White"
+    };
+
+    // Matches DrawRibbonTooltip() in the ribbon toolbar.
+    void DrawToolTooltip(const char* title, const char* desc)
+    {
+        if (!title) return;
+        if (!ImGui::BeginTooltip()) return;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.85f));
+        ImGui::TextUnformatted(title);
+        ImGui::PopStyleColor();
+
+        if (desc && desc[0])
+        {
+            ImGui::SetWindowFontScale(0.88f);
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.81f, 0.86f, 1.f));
+            ImGui::TextUnformatted(desc);
+            ImGui::PopStyleColor();
+            ImGui::PopTextWrapPos();
+            ImGui::SetWindowFontScale(1.f);
+        }
+
+        ImGui::EndTooltip();
+    }
+
+    // Draws game art centred in a button box, letterboxed to keep its aspect.
+    // Returns false when the art is missing so the caller can fall back.
+    bool DrawArt(ImDrawList* dl, ID3D11Device* dev, const char* relative,
+                 const ImVec4& rect, ImVec2 centre, float extent, bool lit)
+    {
+        if (!dev || !relative) return false;
+        float tw = 0.f, th = 0.f;
+        ImTextureID id = LoadRibbonArt(dev, relative, &tw, &th);
+        if (!id || tw <= 0.f || th <= 0.f) return false;
+
+        float x0 = rect.x, y0 = rect.y, x1 = rect.z, y1 = rect.w;
+        if (x1 <= x0 || y1 <= y0) { x0 = y0 = 0.f; x1 = tw; y1 = th; }
+
+        const float sw = x1 - x0, sh = y1 - y0;
+        float rx = extent * 0.5f, ry = rx;
+        if (sw > sh)      ry = rx * sh / sw;
+        else if (sh > sw) rx = ry * sw / sh;
+
+        const int lum = lit ? 255 : 170;
+        dl->AddImage(id,
+                     ImVec2(centre.x - rx, centre.y - ry),
+                     ImVec2(centre.x + rx, centre.y + ry),
+                     ImVec2(x0 / tw, y0 / th), ImVec2(x1 / tw, y1 / th),
+                     IM_COL32(lum, lum, lum, 255));
+        return true;
+    }
+
+    // Confirm / cancel button shared by the modal dialogs. The glyph comes
+    // from a 2x2 atlas: top row is the green tick, bottom row the red
+    // no-entry sign, right-hand column the lit variant used on hover.
+    bool ConfirmButton(ID3D11Device* dev, const char* id, const char* label,
+                       bool negative, ImVec4 accent, float w, float h)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.12f, 0.12f, 0.15f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.18f, 0.22f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.25f, 0.25f, 0.30f, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        accent);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        bool clicked = ImGui::Button(id, ImVec2(w, h));
+        bool hovered = ImGui::IsItemHovered();
+
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(4);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float gy   = negative ? 32.f : 0.f;
+        const float gx   = hovered  ? 32.f : 0.f;
+        const float icon = h - 10.f;
+        ImVec2 ic(pos.x + 14.f + icon * 0.5f, pos.y + h * 0.5f);
+
+        if (!DrawArt(dl, dev, "Toolbar\\confirm_yesno.png",
+                     ImVec4(gx, gy, gx + 32.f, gy + 32.f), ic, icon, true))
+        {
+            dl->AddCircleFilled(ic, icon * 0.35f, ImGui::GetColorU32(accent), 20);
+        }
+
+        ImVec2 ts = ImGui::CalcTextSize(label);
+        dl->AddText(ImVec2(ic.x + icon * 0.5f + 8.f, pos.y + (h - ts.y) * 0.5f),
+                    IM_COL32(255, 255, 255, 255), label);
+        return clicked;
+    }
+
+    // Card chrome shared by the annotation modals.
+    void PushModalCard()
+    {
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.078f, 0.102f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg,  ImVec4(0.055f, 0.078f, 0.102f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(1.f, 1.f, 1.f, 0.08f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 24));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    }
+
+    void PopModalCard()
+    {
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(3);
+    }
+
+    void DrawModalTitle(const char* suffix)
+    {
+        ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "GW Observer");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.5f), "%s", suffix);
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0, 10.f));
+    }
+
+    constexpr ImVec4 kAccentYes(0.30f, 0.72f, 0.35f, 0.85f);
+    constexpr ImVec4 kAccentNo (0.82f, 0.28f, 0.28f, 0.85f);
 
     struct SwatchEntry { ImU32 color; };
     static const SwatchEntry kSwatches[] = {
@@ -315,25 +477,42 @@ void AnnotationManager::Update(const Terrain* terrain, XMMATRIX viewProj,
                                float vpW, float vpH, XMFLOAT3 camPos,
                                float currentTimeSec)
 {
+    m_escConsumed = false;
+
+    // Opening the strip is already the user saying "I want to draw", so arm
+    // the last tool straight away instead of making them find a checkbox.
     if (toolbar_visible && !m_prevToolbarVisible)
-    {
-        m_toastTimer     = kToastDuration;
-        m_toastTriggered = true;
-    }
+        active_tool = m_lastDrawTool;
+    else if (!toolbar_visible && m_prevToolbarVisible)
+        active_tool = SELECT;
     m_prevToolbarVisible = toolbar_visible;
 
-    if (toolbar_visible && draw_mode_active)
+    if (!toolbar_visible)
+        return;
+
+    // The OS cursor is chosen by the host from the tool state (see the
+    // annotation block in ReplayWindow::Update). Setting an ImGui cursor here
+    // would be mapped to the UI hover cursor and win over that choice.
+
+    HandleToolShortcuts();
+
+    // Does the eraser currently sit over something it would delete? Drives
+    // the cursor, so it is evaluated before input consumes the click.
+    m_eraserHover = false;
+    if (active_tool == ERASER && !ImGui::GetIO().WantCaptureMouse)
     {
-        if (m_drawing || m_eraserDragging)
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-        else
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        const ImVec2 m = ImGui::GetMousePos();
+        for (const auto& d : drawings)
+        {
+            if (EraserDistance(d, m.x, m.y, viewProj, vpW, vpH) < kEraserThreshold)
+            {
+                m_eraserHover = true;
+                break;
+            }
+        }
     }
 
-    if (draw_mode_active && toolbar_visible)
-        HandleToolShortcuts();
-
-    if (draw_mode_active && toolbar_visible)
+    if (IsDrawModeActive())
         HandleMouseInput(terrain, viewProj, vpW, vpH, camPos, currentTimeSec);
 }
 
@@ -341,15 +520,41 @@ void AnnotationManager::Update(const Terrain* terrain, XMMATRIX viewProj,
 // HandleToolShortcuts
 // ════════════════════════════════════════════════════════════════════════
 
+bool AnnotationManager::ClaimsKey(int imguiKey) const
+{
+    if (!toolbar_visible || !IsDrawModeActive()) return false;
+    return imguiKey == ImGuiKey_C || imguiKey == ImGuiKey_F;
+}
+
 void AnnotationManager::HandleToolShortcuts()
 {
     if (ImGui::GetIO().WantTextInput) return;
 
-    if (ImGui::IsKeyPressed(ImGuiKey_C)) active_tool = CIRCLE;
-    if (ImGui::IsKeyPressed(ImGuiKey_F)) active_tool = FREEHAND;
+    // Escape steps back to the cursor rather than closing the strip, so the
+    // tools stay one click away. The flag stops the same press also firing
+    // the replay's own Escape binding.
+    if (IsDrawModeActive() && ImGui::IsKeyPressed(ImGuiKey_Escape))
+    {
+        active_tool   = SELECT;
+        m_escConsumed = true;
+        return;
+    }
+
+    if (IsDrawModeActive())
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_C)) SetTool(CIRCLE);
+        if (ImGui::IsKeyPressed(ImGuiKey_F)) SetTool(FREEHAND);
+    }
 
     if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
         DoUndo();
+}
+
+void AnnotationManager::SetTool(DrawingTool t)
+{
+    active_tool = t;
+    if (t != SELECT)
+        m_lastDrawTool = t;
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -443,6 +648,45 @@ void AnnotationManager::HandleMouseInput(const Terrain* terrain, XMMATRIX viewPr
 // EraserHitTest
 // ════════════════════════════════════════════════════════════════════════
 
+float AnnotationManager::EraserDistance(const MapDrawing& d, float scrX, float scrY,
+                                        XMMATRIX viewProj, float vpW, float vpH) const
+{
+    float minDist = 1e9f;
+
+    if (d.type == DT_ARROW)
+    {
+        float sx1, sy1, sx2, sy2;
+        if (ProjectToScreen(viewProj, vpW, vpH, d.world_start, sx1, sy1) &&
+            ProjectToScreen(viewProj, vpW, vpH, d.world_end, sx2, sy2))
+            minDist = PointToSegmentDist(scrX, scrY, sx1, sy1, sx2, sy2);
+    }
+    else if (d.type == DT_CIRCLE)
+    {
+        float sx1, sy1, sx2, sy2;
+        if (ProjectToScreen(viewProj, vpW, vpH, d.world_start, sx1, sy1) &&
+            ProjectToScreen(viewProj, vpW, vpH, d.world_end, sx2, sy2))
+        {
+            float cx = (sx1 + sx2) * 0.5f;
+            float cy = (sy1 + sy2) * 0.5f;
+            float r = std::sqrt((sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1)) * 0.5f;
+            float dist = std::sqrt((scrX - cx) * (scrX - cx) + (scrY - cy) * (scrY - cy));
+            minDist = std::abs(dist - r);
+        }
+    }
+    else if (d.type == DT_FREEHAND)
+    {
+        for (size_t j = 0; j + 1 < d.points.size(); ++j)
+        {
+            float sx1, sy1, sx2, sy2;
+            if (ProjectToScreen(viewProj, vpW, vpH, d.points[j], sx1, sy1) &&
+                ProjectToScreen(viewProj, vpW, vpH, d.points[j + 1], sx2, sy2))
+                minDist = std::min(minDist, PointToSegmentDist(scrX, scrY, sx1, sy1, sx2, sy2));
+        }
+    }
+
+    return minDist;
+}
+
 void AnnotationManager::EraserHitTest(float scrX, float scrY,
                                       XMMATRIX viewProj, float vpW, float vpH)
 {
@@ -450,40 +694,8 @@ void AnnotationManager::EraserHitTest(float scrX, float scrY,
 
     for (int i = (int)drawings.size() - 1; i >= 0; --i)
     {
-        const auto& d = drawings[i];
-        float minDist = 1e9f;
-
-        if (d.type == DT_ARROW)
-        {
-            float sx1, sy1, sx2, sy2;
-            if (ProjectToScreen(viewProj, vpW, vpH, d.world_start, sx1, sy1) &&
-                ProjectToScreen(viewProj, vpW, vpH, d.world_end, sx2, sy2))
-                minDist = PointToSegmentDist(scrX, scrY, sx1, sy1, sx2, sy2);
-        }
-        else if (d.type == DT_CIRCLE)
-        {
-            float sx1, sy1, sx2, sy2;
-            if (ProjectToScreen(viewProj, vpW, vpH, d.world_start, sx1, sy1) &&
-                ProjectToScreen(viewProj, vpW, vpH, d.world_end, sx2, sy2))
-            {
-                float cx = (sx1 + sx2) * 0.5f;
-                float cy = (sy1 + sy2) * 0.5f;
-                float r = std::sqrt((sx2 - sx1) * (sx2 - sx1) + (sy2 - sy1) * (sy2 - sy1)) * 0.5f;
-                float dist = std::sqrt((scrX - cx) * (scrX - cx) + (scrY - cy) * (scrY - cy));
-                minDist = std::abs(dist - r);
-            }
-        }
-        else if (d.type == DT_FREEHAND)
-        {
-            for (size_t j = 0; j + 1 < d.points.size(); ++j)
-            {
-                float sx1, sy1, sx2, sy2;
-                if (ProjectToScreen(viewProj, vpW, vpH, d.points[j], sx1, sy1) &&
-                    ProjectToScreen(viewProj, vpW, vpH, d.points[j + 1], sx2, sy2))
-                    minDist = std::min(minDist, PointToSegmentDist(scrX, scrY, sx1, sy1, sx2, sy2));
-            }
-        }
-
+        const float minDist = EraserDistance(drawings[i], scrX, scrY,
+                                             viewProj, vpW, vpH);
         if (minDist < kEraserThreshold)
         {
             if (!snapshotTaken)
@@ -523,29 +735,55 @@ void AnnotationManager::RenderClearConfirmDialog()
     if (m_showClearConfirm)
         ImGui::OpenPopup("ClearAllConfirm");
 
-    if (ImGui::BeginPopupModal("ClearAllConfirm", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove))
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(360.f, 0.f), ImGuiCond_Always);
+
+    PushModalCard();
+    bool open = ImGui::BeginPopupModal("ClearAllConfirm", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize |
+                                       ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoTitleBar);
+    if (open)
     {
-        ImGui::Text("Clear all drawings?");
-        ImGui::Separator();
-        if (ImGui::Button("Yes", ImVec2(80, 0)))
+        DrawModalTitle(" - Clear Drawings");
+
+        ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+        ImGui::TextColored(ImVec4(0.78f, 0.81f, 0.86f, 1.f),
+                           "Delete all %d drawing%s from the map? This cannot be undone.",
+                           (int)drawings.size(), drawings.size() == 1 ? "" : "s");
+        ImGui::PopTextWrapPos();
+
+        ImGui::Dummy(ImVec2(0, 16.f));
+
+        const float btnW = (ImGui::GetContentRegionAvail().x - 10.f) * 0.5f;
+        const float btnH = 32.f;
+
+        if (ConfirmButton(m_iconDevice, "##yes", "Yes, clear", false,
+                          kAccentYes, btnW, btnH))
         {
             DoClearAll();
             m_showClearConfirm = false;
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
-        if (ImGui::Button("No", ImVec2(80, 0)))
+        ImGui::SameLine(0.f, 10.f);
+        if (ConfirmButton(m_iconDevice, "##no", "Cancel", true,
+                          kAccentNo, btnW, btnH)
+            || ImGui::IsKeyPressed(ImGuiKey_Escape))
         {
             m_showClearConfirm = false;
             ImGui::CloseCurrentPopup();
         }
+
         ImGui::EndPopup();
     }
     else
     {
         m_showClearConfirm = false;
     }
+
+    PopModalCard();
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -631,32 +869,42 @@ void AnnotationManager::RenderDrawings(XMMATRIX viewProj, float vpW, float vpH,
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// RenderToolbar — with draw-mode checkbox + bookmark action button
+// RenderToolbar — standalone horizontal strip, movable, under the ribbon.
+// The armed tool is the mode: there is no separate enable checkbox.
 // ════════════════════════════════════════════════════════════════════════
 
-void AnnotationManager::RenderToolbar()
+void AnnotationManager::RenderToolbar(ReplayPanelLayout* layout)
 {
     if (m_toastTimer > 0.f)
         DrawToast();
     if (m_bookmarkToastTimer > 0.f)
         DrawBookmarkToast();
 
-    if (!toolbar_visible) return;
+    if (!toolbar_visible)
+    {
+        RenderClearConfirmDialog();
+        return;
+    }
 
-    float totalH = kCheckboxH + kSepMargin * 2.f + 1.f;
+    // Width: buttons + separators + the swatch run, all on one row.
+    float contentW = 0.f;
     for (auto& e : kToolEntries)
-        totalH += e.isSeparator ? (kSepMargin * 2.f + 1.f) : (kBtnSize + kBtnSpacing);
-    float swatchSepH   = kSepMargin * 2.f + 1.f;
-    float swatchTotalH  = 5 * (kSwatchSize + kSwatchSpacing);
-    float windowPadY    = 6.f * 2.f;
-    float panelH = totalH + swatchSepH + swatchTotalH + windowPadY + 4.f;
+        contentW += e.isSeparator ? (kSepMargin * 2.f + 1.f)
+                                  : (kBtnSize + kBtnSpacing);
+    contentW += kSepMargin * 2.f + 1.f;                       // swatch separator
+    contentW += kSwatchCount * (kBtnSize + kBtnSpacing);
+    const float panelW = contentW + 12.f;
+    const float panelH = kBtnSize + 12.f;
 
-    ImVec2 display = ImGui::GetIO().DisplaySize;
-    float panelW   = kBtnSize + 12.f;
-    float panelX   = 4.f;
-    float panelY   = (display.y - panelH) * 0.5f;
-
-    ImGui::SetNextWindowPos(ImVec2(panelX, panelY), ImGuiCond_Always);
+    // Default berth is under the expanded ribbon, horizontally centred; once
+    // dragged, the saved position wins.
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    if (layout)
+        layout->ApplyPosition("draw_toolbar");
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + (vp->WorkSize.x - panelW) * 0.5f,
+               vp->WorkPos.y + 58.f),
+        ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(panelW, panelH), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.92f);
 
@@ -668,7 +916,6 @@ void AnnotationManager::RenderToolbar()
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar
                            | ImGuiWindowFlags_NoResize
-                           | ImGuiWindowFlags_NoMove
                            | ImGuiWindowFlags_NoScrollbar
                            | ImGuiWindowFlags_NoCollapse
                            | ImGuiWindowFlags_NoFocusOnAppearing
@@ -679,50 +926,34 @@ void AnnotationManager::RenderToolbar()
         ImGui::End();
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(2);
+        RenderClearConfirmDialog();
         return;
     }
 
-    // ── Draw-mode checkbox at the top ──
-    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.12f, 0.10f, 0.06f, 0.9f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.18f, 0.14f, 0.06f, 0.9f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.22f, 0.18f, 0.06f, 0.9f));
-
-    ImGui::Checkbox("##DrawMode", &draw_mode_active);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Enable drawing mode");
-
-    ImGui::PopStyleColor(4);
-
-    ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
-    {
-        ImDrawList* dlSep = ImGui::GetWindowDrawList();
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        dlSep->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + kBtnSize, p.y), kSepColor, 0.5f);
-    }
-    ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
+    if (layout)
+        layout->TrackWindow("draw_toolbar");
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float iconScale = 1.0f;
 
-    for (int idx = 0; idx < (int)(sizeof(kToolEntries)/sizeof(kToolEntries[0])); ++idx)
+    for (int idx = 0; idx < kToolEntryCount; ++idx)
     {
-        auto& entry = kToolEntries[idx];
+        const auto& entry = kToolEntries[idx];
 
         if (entry.isSeparator)
         {
-            ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
+            ImGui::SameLine(0.f, kSepMargin);
             ImVec2 p = ImGui::GetCursorScreenPos();
-            dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + kBtnSize, p.y),
-                        kSepColor, 0.5f);
-            ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
+            dl->AddLine(ImVec2(p.x, p.y + 3.f),
+                        ImVec2(p.x, p.y + kBtnSize - 3.f), kSepColor, 1.f);
+            ImGui::Dummy(ImVec2(1.f, kBtnSize));
+            ImGui::SameLine(0.f, kSepMargin);
             continue;
         }
 
-        bool isBookmarkBtn = entry.isBookmark;
-        bool isDrawingTool = !entry.isStub && !isBookmarkBtn && (entry.tool != SELECT || idx == 0);
-        bool isActive = isDrawingTool && (active_tool == entry.tool) && (idx != kUndoEntryIdx) && (idx != kClearAllEntryIdx);
-        bool isEraser = (entry.tool == ERASER);
+        if (idx > 0) ImGui::SameLine(0.f, kBtnSpacing);
+
+        const bool isActive = !entry.isAction && (active_tool == entry.tool);
+        const bool isEraser = (entry.tool == ERASER) && !entry.isAction;
 
         ImVec2 btnPos = ImGui::GetCursorScreenPos();
         ImVec2 iconOrigin(btnPos.x + kIconPad, btnPos.y + kIconPad);
@@ -733,18 +964,9 @@ void AnnotationManager::RenderToolbar()
 
         if (ImGui::IsItemClicked())
         {
-            if (isBookmarkBtn)
-            {
-                // Momentary action: open bookmark creation popup
-                m_bookmarkPopupOpen = true;
-                m_bookmarkPopupJustOpened = true;
-            }
-            else if (idx == kUndoEntryIdx)
-                DoUndo();
-            else if (idx == kClearAllEntryIdx)
-                m_showClearConfirm = true;
-            else if (!entry.isStub)
-                active_tool = entry.tool;
+            if (idx == kUndoEntryIdx)        DoUndo();
+            else if (idx == kClearAllEntryIdx) RequestClearAll();
+            else                             SetTool(entry.tool);
         }
         ImGui::PopID();
 
@@ -752,63 +974,77 @@ void AnnotationManager::RenderToolbar()
 
         if (isActive)
         {
-            ImU32 bg     = isEraser ? kEraserBg     : kGoldBg;
-            ImU32 border = isEraser ? kEraserBorder  : kGoldBorder;
-            dl->AddRectFilled(btnPos, btnMax, bg, 3.f);
-            dl->AddRect(btnPos, btnMax, border, 3.f, 0, 1.0f);
-
-            ImU32 iconCol = isEraser ? kIconEraserAct : kIconActive;
-            if (entry.drawIcon)
-                entry.drawIcon(dl, iconOrigin, iconScale, iconCol);
+            dl->AddRectFilled(btnPos, btnMax, isEraser ? kEraserBg : kGoldBg, 3.f);
+            dl->AddRect(btnPos, btnMax, isEraser ? kEraserBorder : kGoldBorder,
+                        3.f, 0, 1.0f);
         }
-        else
+        else if (hovered)
         {
-            if (hovered)
-                dl->AddRectFilled(btnPos, btnMax, IM_COL32(0x1a, 0x16, 0x0a, 0xC0), 3.f);
-
-            ImU32 iconCol = hovered ? kIconHover : kIconInactive;
-            if (entry.drawIcon)
-                entry.drawIcon(dl, iconOrigin, iconScale, iconCol);
+            dl->AddRectFilled(btnPos, btnMax, IM_COL32(0x1a, 0x16, 0x0a, 0xC0), 3.f);
         }
 
-        if (hovered && entry.tooltip)
-            ImGui::SetTooltip("%s", entry.tooltip);
+        ImVec2 gc(btnPos.x + kBtnSize * 0.5f, btnPos.y + kBtnSize * 0.5f);
+        if (!DrawArt(dl, m_iconDevice, entry.art, entry.rect, gc,
+                     kArtExtent * entry.artScale, isActive || hovered))
+        {
+            ImU32 iconCol = isActive ? (isEraser ? kIconEraserAct : kIconActive)
+                          : hovered  ? kIconHover
+                                     : kIconInactive;
+            if (entry.drawIcon)
+                entry.drawIcon(dl, iconOrigin, 1.0f, iconCol);
+        }
+
+        if (hovered)
+            DrawToolTooltip(entry.title, entry.desc);
     }
 
-    // Separator before swatches
-    ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
+    // Separator before the swatches
+    ImGui::SameLine(0.f, kSepMargin);
     {
         ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + kBtnSize, p.y),
-                    kSepColor, 0.5f);
+        dl->AddLine(ImVec2(p.x, p.y + 3.f),
+                    ImVec2(p.x, p.y + kBtnSize - 3.f), kSepColor, 1.f);
+        ImGui::Dummy(ImVec2(1.f, kBtnSize));
     }
-    ImGui::Dummy(ImVec2(kBtnSize, kSepMargin));
+    ImGui::SameLine(0.f, kSepMargin);
 
-    const float swatchR = kSwatchSize * 0.5f;
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < kSwatchCount; ++i)
     {
-        ImU32 col = kSwatches[i].color;
-        ImVec2 cursor = ImGui::GetCursorScreenPos();
-        float cx = cursor.x + kBtnSize * 0.5f;
-        float cy = cursor.y + swatchR;
+        if (i > 0) ImGui::SameLine(0.f, kBtnSpacing);
+
+        const bool on = IsSwatchActive(i);
+        ImVec2 btnPos = ImGui::GetCursorScreenPos();
 
         ImGui::PushID(i + 100);
-        float hitLeft = cx - swatchR;
-        ImGui::SetCursorScreenPos(ImVec2(hitLeft, cursor.y));
-        ImGui::InvisibleButton("##sw", ImVec2(kSwatchSize, kSwatchSize));
-        if (ImGui::IsItemClicked())
-            active_color = SwatchToABGR(col);
+        ImGui::InvisibleButton("##sw", ImVec2(kBtnSize, kBtnSize));
+        if (ImGui::IsItemClicked()) SetSwatch(i);
+        bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
 
-        dl->AddCircleFilled(ImVec2(cx, cy), swatchR, col, 24);
-
-        if (active_color == SwatchToABGR(col))
+        ImVec2 btnMax(btnPos.x + kBtnSize, btnPos.y + kBtnSize);
+        if (on)
         {
-            dl->AddCircle(ImVec2(cx, cy), swatchR + 2.5f,
-                          IM_COL32(255, 255, 255, 255), 24, 1.5f);
+            dl->AddRectFilled(btnPos, btnMax, kGoldBg, 3.f);
+            dl->AddRect(btnPos, btnMax, kGoldBorder, 3.f, 0, 1.0f);
+        }
+        else if (hovered)
+        {
+            dl->AddRectFilled(btnPos, btnMax, IM_COL32(0x1a, 0x16, 0x0a, 0xC0), 3.f);
         }
 
-        ImGui::SetCursorScreenPos(ImVec2(cursor.x, cursor.y + kSwatchSize + kSwatchSpacing));
+        ImVec2 gc(btnPos.x + kBtnSize * 0.5f, btnPos.y + kBtnSize * 0.5f);
+        if (!DrawArt(dl, m_iconDevice, kSwatchArt[i], kWhole, gc,
+                     kArtExtent, on || hovered))
+        {
+            // No dye art: fall back to a plain dot in the colour itself.
+            dl->AddCircleFilled(gc, kSwatchSize * 0.5f, kSwatchColorsIM[i], 24);
+            if (on)
+                dl->AddCircle(gc, kSwatchSize * 0.5f + 2.5f,
+                              IM_COL32(255, 255, 255, 255), 24, 1.5f);
+        }
+
+        if (hovered)
+            DrawToolTooltip(kSwatchName[i], "Colour used by new drawings.");
     }
 
     ImGui::End();
@@ -816,6 +1052,59 @@ void AnnotationManager::RenderToolbar()
     ImGui::PopStyleColor(2);
 
     RenderClearConfirmDialog();
+}
+
+// ── Actions driven by the drawing strip ──
+
+void AnnotationManager::Undo()
+{
+    DoUndo();
+}
+
+void AnnotationManager::RequestClearAll()
+{
+    if (!drawings.empty())
+        m_showClearConfirm = true;
+}
+
+const uint32_t AnnotationManager::kSwatchColorsIM[kSwatchCount] = {
+    IM_COL32(0xFF, 0xAA, 0x00, 0xFF),
+    IM_COL32(0xFF, 0x44, 0x44, 0xFF),
+    IM_COL32(0x44, 0xAA, 0xFF, 0xFF),
+    IM_COL32(0x44, 0xFF, 0x88, 0xFF),
+    IM_COL32(0xFF, 0xFF, 0xFF, 0xFF),
+};
+
+void AnnotationManager::SetSwatch(int idx)
+{
+    if (idx < 0 || idx >= kSwatchCount) return;
+    active_color = SwatchToABGR(kSwatchColorsIM[idx]);
+}
+
+bool AnnotationManager::IsSwatchActive(int idx) const
+{
+    if (idx < 0 || idx >= kSwatchCount) return false;
+    return active_color == SwatchToABGR(kSwatchColorsIM[idx]);
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// RenderDrawModeIndicator — accent frame so an armed tool is unmistakable
+// ════════════════════════════════════════════════════════════════════════
+
+void AnnotationManager::RenderDrawModeIndicator()
+{
+    if (!toolbar_visible || !IsDrawModeActive()) return;
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+
+    // Gentle breathing so it reads as a live state without pulling focus.
+    float pulse = 0.5f + 0.5f * std::sin((float)ImGui::GetTime() * 2.2f);
+    int   alpha = (int)(70.f + 50.f * pulse);
+
+    ImVec2 a(vp->Pos.x + 1.f, vp->Pos.y + 1.f);
+    ImVec2 b(vp->Pos.x + vp->Size.x - 1.f, vp->Pos.y + vp->Size.y - 1.f);
+    dl->AddRect(a, b, IM_COL32(0xc8, 0xa0, 0x20, alpha), 0.f, 0, 2.f);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -849,10 +1138,12 @@ void AnnotationManager::AddBookmarkDirect(uint32_t timestampMs)
     bookmarks.insert(it, bk);
     if (onBookmarksChanged) onBookmarksChanged();
 
+    // Show the list so the new entry is visible where it landed.
+    bookmarks_visible = true;
+
     if (!m_everCreatedBookmark)
     {
         m_everCreatedBookmark = true;
-        bookmarks_visible = true;
         m_bookmarkToastTimer = kBookmarkToastDur;
     }
 }
@@ -879,19 +1170,11 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
     }
 
     ImVec2 display = ImGui::GetIO().DisplaySize;
-    float popW = 240.f;
-    float popH = 100.f;
-    float toolbarRight = 4.f + kBtnSize + 12.f + 8.f;
-    float popX = toolbarRight;
-    float popY = (display.y - popH) * 0.5f;
+    ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(360.f, 0.f), ImGuiCond_Always);
 
-    ImGui::SetNextWindowPos(ImVec2(popX, popY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(popW, 0.f));
-
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.07f, 0.07f, 0.05f, 0.97f));
-    ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(0.5f, 0.4f, 0.1f, 0.8f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 8.f));
+    PushModalCard();
 
     bool open = true;
     if (ImGui::BeginPopupModal("##BookmarkCreate", &open,
@@ -901,11 +1184,13 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
         char timeBuf[16];
         FormatTimeMMSS(m_bookmarkPopupTimeMs, timeBuf, sizeof(timeBuf));
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
-        ImGui::Text("Bookmark at  %s", timeBuf);
-        ImGui::PopStyleColor();
+        DrawModalTitle(" - Add Bookmark");
 
-        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.78f, 0.81f, 0.86f, 1.f),
+                           "Name this bookmark at %s, or leave it blank for a "
+                           "default name.", timeBuf);
+        ImGui::Dummy(ImVec2(0, 10.f));
+
         ImGui::SetNextItemWidth(-1.f);
 
         static bool needFocus = false;
@@ -917,32 +1202,34 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
             needFocus = false;
         }
 
-        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.10f, 0.09f, 0.07f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,  ImVec4(0.15f, 0.13f, 0.08f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,   ImVec4(0.18f, 0.15f, 0.08f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,  ImVec4(0.78f, 0.63f, 0.13f, 0.3f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.f, 0.f, 0.f, 0.4f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.05f, 0.05f, 0.06f, 0.6f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.07f, 0.07f, 0.08f, 0.7f));
+        ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(1.f, 1.f, 1.f, 0.15f));
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(0.78f, 0.63f, 0.13f, 0.3f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         bool entered = ImGui::InputText("##bkTitle", m_bookmarkTitleBuf,
                                         sizeof(m_bookmarkTitleBuf),
                                         ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::PopStyleColor(4);
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
 
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(0, 16.f));
 
-        bool cancelled = false;
         bool confirmed = entered;
+        bool cancelled = false;
 
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.14f, 0.12f, 0.06f, 0.9f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.25f, 0.20f, 0.08f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.30f, 0.24f, 0.10f, 1.f));
-        if (ImGui::Button("Cancel", ImVec2(70, 0)))
-            cancelled = true;
+        const float btnW = (ImGui::GetContentRegionAvail().x - 10.f) * 0.5f;
+        const float btnH = 32.f;
 
-        ImGui::SameLine(240.f - 10.f * 2.f - 60.f);
-        if (ImGui::Button("Add", ImVec2(60, 0)))
+        if (ConfirmButton(m_iconDevice, "##bkAdd", "Add", false,
+                          kAccentYes, btnW, btnH))
             confirmed = true;
-        ImGui::PopStyleColor(3);
+        ImGui::SameLine(0.f, 10.f);
+        if (ConfirmButton(m_iconDevice, "##bkCancel", "Cancel", true,
+                          kAccentNo, btnW, btnH))
+            cancelled = true;
 
         if (ImGui::IsKeyPressed(ImGuiKey_Escape))
             cancelled = true;
@@ -965,10 +1252,12 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
             bookmarks.insert(it, bk);
             if (onBookmarksChanged) onBookmarksChanged();
 
+            // Show the list so the new entry is visible where it landed.
+            bookmarks_visible = true;
+
             if (!m_everCreatedBookmark)
             {
                 m_everCreatedBookmark = true;
-                bookmarks_visible = true;
                 m_bookmarkToastTimer = kBookmarkToastDur;
             }
 
@@ -1001,8 +1290,7 @@ void AnnotationManager::RenderBookmarkCreationPopup(bool& isPlayingRef)
         }
     }
 
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(2);
+    PopModalCard();
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1099,205 +1387,14 @@ void AnnotationManager::RenderBookmarkRenamePopup()
     ImGui::PopStyleColor(2);
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// Bookmark panel (right side, 160px wide)
-// ════════════════════════════════════════════════════════════════════════
 
-void AnnotationManager::RenderBookmarkPanel(float currentTimeSec, float& timelineOut,
-                                            bool& isPlayingRef)
-{
-    // Render bookmark creation popup (must run each frame regardless of panel)
-    m_bookmarkPopupTimeMs = (uint32_t)(currentTimeSec * 1000.f);
-    RenderBookmarkCreationPopup(isPlayingRef);
-    RenderBookmarkRenamePopup();
+// ---------------------------------------------------------------------------
+// Bookmark list — movable panel, remembers where it was dragged to.
+// ---------------------------------------------------------------------------
 
-    if (!bookmarks_visible) return;
-
-    ImVec2 display = ImGui::GetIO().DisplaySize;
-    float panelH = display.y - 80.f;
-    float panelX = display.x - kBookmarkPanelW - 4.f;
-    float panelY = 30.f;
-
-    ImGui::SetNextWindowPos(ImVec2(panelX, panelY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(kBookmarkPanelW, panelH), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.92f);
-
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
-    ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,  6.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.f, 6.f));
-
-    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar
-                        | ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags_NoMove
-                        | ImGuiWindowFlags_NoCollapse
-                        | ImGuiWindowFlags_NoFocusOnAppearing
-                        | ImGuiWindowFlags_NoNavInputs;
-
-    if (!ImGui::Begin("##BookmarkPanel", nullptr, wf))
-    {
-        ImGui::End();
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(2);
-        return;
-    }
-
-    // Header
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
-    ImGui::Text("Bookmarks");
-    ImGui::PopStyleColor();
-
-    ImGui::SameLine(kBookmarkPanelW - 30.f);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.4f, 0.2f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.15f, 0.05f, 0.6f));
-    if (ImGui::SmallButton("x##closeBk"))
-        bookmarks_visible = false;
-    ImGui::PopStyleColor(3);
-
-    ImGui::Separator();
-
-    // Find closest bookmark to current time for highlighting
-    int closestIdx = -1;
-    {
-        uint32_t curMs = (uint32_t)(currentTimeSec * 1000.f);
-        uint32_t bestDist = UINT32_MAX;
-        for (int i = 0; i < (int)bookmarks.size(); ++i)
-        {
-            uint32_t d = (bookmarks[i].timestamp_ms > curMs)
-                       ? (bookmarks[i].timestamp_ms - curMs)
-                       : (curMs - bookmarks[i].timestamp_ms);
-            if (d < bestDist) { bestDist = d; closestIdx = i; }
-        }
-    }
-
-    if (bookmarks.empty())
-    {
-        ImGui::Spacing(); ImGui::Spacing();
-        float w = ImGui::GetContentRegionAvail().x;
-
-        const char* msg1 = "No bookmarks yet";
-        ImVec2 ts1 = ImGui::CalcTextSize(msg1);
-        ImGui::SetCursorPosX((w - ts1.x) * 0.5f);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.43f, 0.3f, 1.f));
-        ImGui::TextUnformatted(msg1);
-        ImGui::PopStyleColor();
-
-        const char* msg2 = "Use the bookmark tool";
-        ImVec2 ts2 = ImGui::CalcTextSize(msg2);
-        ImGui::SetCursorPosX((w - ts2.x) * 0.5f);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.35f, 0.25f, 0.8f));
-        ImGui::TextUnformatted(msg2);
-        ImGui::PopStyleColor();
-
-        const char* msg3 = "in the drawing toolbar";
-        ImVec2 ts3 = ImGui::CalcTextSize(msg3);
-        ImGui::SetCursorPosX((w - ts3.x) * 0.5f);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.35f, 0.25f, 0.8f));
-        ImGui::TextUnformatted(msg3);
-        ImGui::PopStyleColor();
-    }
-    else
-    {
-        ImGui::BeginChild("##BkList", ImVec2(0, 0), false);
-
-        int removeIdx = -1;
-        for (int i = 0; i < (int)bookmarks.size(); ++i)
-        {
-            auto& bk = bookmarks[i];
-            char timeBuf[16];
-            FormatTimeMMSS(bk.timestamp_ms, timeBuf, sizeof(timeBuf));
-
-            bool isClosest = (i == closestIdx);
-
-            ImGui::PushID(i);
-
-            // Active bookmark highlight
-            if (isClosest)
-            {
-                ImVec2 p = ImGui::GetCursorScreenPos();
-                ImDrawList* dlP = ImGui::GetWindowDrawList();
-                float rowH = ImGui::GetFrameHeightWithSpacing() * 2.f + 4.f;
-                dlP->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + kBookmarkPanelW - 16.f, p.y + rowH),
-                                   IM_COL32(0x1a, 0x14, 0x00, 0x60), 3.f);
-                dlP->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + 3.f, p.y + rowH),
-                                   IM_COL32(0xc8, 0xa0, 0x20, 0xFF));
-            }
-
-            // Timestamp + title
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
-            ImGui::Text("[%s]", timeBuf);
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-
-            // Truncate title
-            const float availW = ImGui::GetContentRegionAvail().x;
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.68f, 0.58f, 1.f));
-            if (ImGui::CalcTextSize(bk.title.c_str()).x > availW)
-            {
-                char trunc[44];
-                snprintf(trunc, sizeof(trunc), "%.36s...", bk.title.c_str());
-                ImGui::TextUnformatted(trunc);
-            }
-            else
-            {
-                ImGui::TextUnformatted(bk.title.c_str());
-            }
-            ImGui::PopStyleColor();
-
-            // Action buttons
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.10f, 0.06f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.18f, 0.08f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.5f, 0.3f, 1.f));
-
-            if (ImGui::SmallButton("jump"))
-            {
-                timelineOut = bk.timestamp_ms / 1000.f;
-                isPlayingRef = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("rename"))
-            {
-                m_renamePopupOpen = true;
-                m_renameBookmarkIdx = i;
-                memset(m_renameTitleBuf, 0, sizeof(m_renameTitleBuf));
-                strncpy(m_renameTitleBuf, bk.title.c_str(), sizeof(m_renameTitleBuf) - 1);
-            }
-            ImGui::SameLine();
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.3f, 0.2f, 1.f));
-            if (ImGui::SmallButton("x"))
-                removeIdx = i;
-            ImGui::PopStyleColor();
-
-            ImGui::PopStyleColor(3);
-
-            ImGui::Spacing();
-            ImGui::PopID();
-        }
-
-        if (removeIdx >= 0)
-        {
-            bookmarks.erase(bookmarks.begin() + removeIdx);
-            if (onBookmarksChanged) onBookmarksChanged();
-        }
-
-        ImGui::EndChild();
-    }
-
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(2);
-}
-
-// ════════════════════════════════════════════════════════════════════════
-// Bookmark floating panel (compact, above the left of the timeline bar)
-// ════════════════════════════════════════════════════════════════════════
-
-void AnnotationManager::RenderBookmarkDrawer(float barX, float barY, float /*barW*/, float /*barH*/,
-                                             float currentTimeSec, float& timelineOut,
-                                             bool& isPlayingRef, float /*displayTimeOffset*/)
+void AnnotationManager::RenderBookmarkList(float currentTimeSec, float& timelineOut,
+                                           bool& isPlayingRef,
+                                           ReplayPanelLayout* layout)
 {
     m_bookmarkPopupTimeMs = (uint32_t)(currentTimeSec * 1000.f);
     RenderBookmarkCreationPopup(isPlayingRef);
@@ -1315,10 +1412,15 @@ void AnnotationManager::RenderBookmarkDrawer(float barX, float barY, float /*bar
     float listH = std::min(kMaxListH, std::max(kRowH, (float)bkCount * kRowH));
     float panelH = kHeaderH + listH + kPad;
 
-    float panelX = barX + 8.f;
-    float panelY = barY - panelH - 4.f;
-
-    ImGui::SetNextWindowPos(ImVec2(panelX, panelY), ImGuiCond_Always);
+    // Defaults to the right-hand side under the ribbon, clear of the Event
+    // Timeline's full-width strip along the bottom.
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    if (layout)
+        layout->ApplyPosition("bookmarks");
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x - kPanelW - 16.f,
+               vp->WorkPos.y + 70.f),
+        ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(kPanelW, panelH), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.94f);
 
@@ -1330,7 +1432,6 @@ void AnnotationManager::RenderBookmarkDrawer(float barX, float barY, float /*bar
 
     ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar
                         | ImGuiWindowFlags_NoResize
-                        | ImGuiWindowFlags_NoMove
                         | ImGuiWindowFlags_NoCollapse
                         | ImGuiWindowFlags_NoFocusOnAppearing
                         | ImGuiWindowFlags_NoNavInputs
@@ -1343,6 +1444,10 @@ void AnnotationManager::RenderBookmarkDrawer(float barX, float barY, float /*bar
         ImGui::PopStyleColor(2);
         return;
     }
+
+    if (layout)
+        layout->TrackWindow("bookmarks");
+
 
     // Header
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.63f, 0.13f, 1.f));
@@ -1570,7 +1675,7 @@ void AnnotationManager::DrawToast()
                 ? (m_toastTimer / kToastFadeTime)
                 : 1.f;
 
-    const char* msg = "Use the checkbox to enable drawing mode";
+    const char* msg = "Drawing is on - pick a tool, or Cursor / Escape to stop";
 
     ImVec2 display = ImGui::GetIO().DisplaySize;
     ImVec2 textSize = ImGui::CalcTextSize(msg);

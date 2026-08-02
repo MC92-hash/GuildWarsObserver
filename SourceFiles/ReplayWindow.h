@@ -56,6 +56,13 @@ public:
     bool IsAlive() const { return m_alive; }
     HWND GetHWND() const { return m_hwnd; }
 
+    // Still building the map: the window is not interactive yet.
+    bool IsLoading() const
+    {
+        return m_loadingPhase != LoadingPhase::Ready
+            && m_loadingPhase != LoadingPhase::Error;
+    }
+
     // IDeviceNotify
     void OnDeviceLost() override;
     void OnDeviceRestored() override;
@@ -644,7 +651,22 @@ private:
     bool m_showNameFilterPanel = false;
     std::unordered_set<int> m_hiddenNameAgents;   // agent IDs whose names are hidden
 
+    // --- Skill laser filters (panel toggled from the ribbon / hotkey) ---
+    // Professions are indexed by their in-game id (1..10); slot 0 covers agents
+    // with no known profession, so NPC casters stay filterable too.
+    static constexpr int kLaserProfCount = 11;
+    bool m_showLaserPanel  = false;
+    bool m_laserShowRed    = true;
+    bool m_laserShowBlue   = true;
+    bool m_laserProf[kLaserProfCount] = { true, true, true, true, true, true,
+                                          true, true, true, true, true };
+    std::unordered_set<int> m_laserHiddenAgents;  // casters whose lasers are hidden
+
+    // True when this caster passes the team / profession / per-agent filters.
+    bool LaserCasterVisible(int agentId, const AgentReplayData& ard) const;
+
     void DrawSkillLasers();
+    void DrawSkillLaserPanel();
     void DrawNameFilterPanel();
 
     ImTextureID m_deathIconTex = nullptr;
@@ -1151,6 +1173,15 @@ private:
     std::string m_notepadMatchId;
 
     void DrawNotepad();
+
+    // --- Ribbon toolbar (collapsible strip docked to the top edge) ---
+    bool  m_ribbonPinned    = false;            // persisted in ui_layout.json
+    bool  m_ribbonClosed    = false;            // hidden entirely; restore via View
+    float m_ribbonReveal    = 0.f;              // 0 = collapsed, 1 = expanded
+    float m_ribbonIdleTimer = 1e9f;             // starts collapsed until revealed
+    bool  m_ribbonMoreOpen  = false;            // overflow popup holds it open
+
+    void DrawRibbonToolbar();
 
     // --- Minimap ---
     bool  m_minimapEnabled       = false;

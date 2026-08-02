@@ -426,6 +426,8 @@ void ReplayWindow::DrawShortcutPreferences()
         ImGui::Dummy(ImVec2(0, 8.f));
         DrawPrefsSectionHeader("OVERLAY TOGGLES");
         HotkeyInput("Range Rings",         &editing.toggleRangeRings, true);
+        HotkeyInput("Skill Lasers",        &editing.toggleSkillLasers, true);
+        HotkeyInput("Drawing Toolbar",     &editing.toggleDrawingBar, true);
         HotkeyInput("Morale Panel",        &editing.toggleMoralePanel, true);
         HotkeyInput("Event Timeline",      &editing.toggleEventTimeline, true);
         HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage, true);

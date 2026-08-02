@@ -53,7 +53,7 @@ void ReplayWindow::DrawAgentOverlay()
 
     const bool canClickAgents = !ImGui::GetIO().WantCaptureMouse
                                 && !m_rightMouseDown
-                                && !m_annotationMgr.draw_mode_active;
+                                && !m_annotationMgr.IsDrawModeActive();
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
     const float clickRadius = 14.f;
     m_hoveredAgentId = -1;
@@ -802,6 +802,7 @@ void ReplayWindow::DrawSkillLasers()
     {
         if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
         if (ard.isDeadAtTime(m_debugTimeline)) continue;
+        if (!LaserCasterVisible(agentId, ard)) continue;
 
         auto laser = ard.skillLaserAtTime(m_debugTimeline);
         if (laser.targetId <= 0 || laser.alpha <= 0.f) continue;
@@ -933,6 +934,314 @@ void ReplayWindow::DrawSkillLasers()
             }
         }
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// Skill Laser filter panel — team / profession / per-caster toggles.
+// Styling mirrors DrawRangeRingToolbar() so the two overlays feel like a pair.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    const char* LaserProfName(int id)
+    {
+        switch (id)
+        {
+        case 1:  return "Warrior";
+        case 2:  return "Ranger";
+        case 3:  return "Monk";
+        case 4:  return "Necromancer";
+        case 5:  return "Mesmer";
+        case 6:  return "Elementalist";
+        case 7:  return "Assassin";
+        case 8:  return "Ritualist";
+        case 9:  return "Paragon";
+        case 10: return "Dervish";
+        default: return "No Profession";
+        }
+    }
+
+    // Short form keeps the pill grid narrow enough for two rows of five.
+    const char* LaserProfAbbrev(int id)
+    {
+        switch (id)
+        {
+        case 1:  return "W";
+        case 2:  return "R";
+        case 3:  return "Mo";
+        case 4:  return "N";
+        case 5:  return "Me";
+        case 6:  return "E";
+        case 7:  return "A";
+        case 8:  return "Rt";
+        case 9:  return "P";
+        case 10: return "D";
+        default: return "--";
+        }
+    }
+}
+
+bool ReplayWindow::LaserCasterVisible(int agentId, const AgentReplayData& ard) const
+{
+    if (m_laserHiddenAgents.count(agentId)) return false;
+
+    if (ard.teamId == 1 && !m_laserShowRed)  return false;
+    if (ard.teamId == 2 && !m_laserShowBlue) return false;
+
+    int prof = (ard.primaryProf > 0 && ard.primaryProf < kLaserProfCount)
+                 ? ard.primaryProf : 0;
+    return m_laserProf[prof];
+}
+
+void ReplayWindow::DrawSkillLaserPanel()
+{
+    if (!m_showLaserPanel) return;
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,        ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Separator,      ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+
+    auto* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(300.f, 0.f), ImVec2(vp->Size.x, vp->Size.y));
+    ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Always);
+    m_panelLayout.ApplyPosition("skill_lasers");
+    if (ImGui::Begin("Skill Lasers", &m_showLaserPanel,
+        ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        m_panelLayout.TrackWindow("skill_lasers");
+        ImVec2 pos = ImGui::GetWindowPos();
+        ImVec2 sz  = ImGui::GetWindowSize();
+        float cx = std::clamp(pos.x, vp->Pos.x, vp->Pos.x + vp->Size.x - sz.x);
+        float cy = std::clamp(pos.y, vp->Pos.y, vp->Pos.y + vp->Size.y - sz.y);
+        if (cx != pos.x || cy != pos.y)
+            ImGui::SetWindowPos(ImVec2(cx, cy));
+
+        auto LaserPill = [](const char* label, bool active) -> bool {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
+                tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
+                hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
+                bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        auto TeamPill = [](const char* label, bool active, int team) -> bool {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                if (team == 1) {
+                    bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
+                    tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                    hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
+                    bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
+                } else {
+                    bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
+                    tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                    hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
+                    bdr = ImVec4(0.29f, 0.78f, 1.f, 0.85f);
+                }
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
+            }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
+
+        // Master switch for the overlay itself; the filters below stay editable
+        // while it is off so a setup can be prepared before switching on.
+        ImGui::Checkbox("Show Skill Lasers", &m_showSkillLasers);
+
+        ImGui::Separator();
+
+        // --- Professions ---
+        ImGui::TextDisabled("Professions");
+        if (LaserPill("None##LaserProf", false))
+            for (int i = 0; i < kLaserProfCount; ++i) m_laserProf[i] = false;
+        ImGui::SameLine();
+        if (LaserPill("All##LaserProf", false))
+            for (int i = 0; i < kLaserProfCount; ++i) m_laserProf[i] = true;
+
+        ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+        const float iconSz = 16.f;
+
+        // Profession toggle drawn as the game's own profession icon. Active
+        // keeps the gold frame used by the pills; inactive dims the art so the
+        // row still reads as a set of toggles. Falls back to the abbreviation
+        // pill when the icon texture is unavailable.
+        const float profBtnSz = ImGui::GetTextLineHeight() + 4.f;
+        auto ProfIconToggle = [&](int p) -> bool
+        {
+            const bool  active  = m_laserProf[p];
+            ImTextureID profTex = (p > 0) ? LoadProfIcon(dev, p) : nullptr;
+            if (!profTex)
+                return LaserPill(LaserProfAbbrev(p), active);
+
+            ImVec4 bg  = active ? ImVec4(0.18f, 0.14f, 0.05f, 1.f)
+                                : ImVec4(1.f, 1.f, 1.f, 0.05f);
+            ImVec4 bdr = active ? ImVec4(1.f, 0.84f, 0.39f, 0.85f)
+                                : ImVec4(1.f, 1.f, 1.f, 0.08f);
+            ImVec4 tint = active ? ImVec4(1.f, 1.f, 1.f, 1.f)
+                                 : ImVec4(1.f, 1.f, 1.f, 0.32f);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.12f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.f, 1.f, 1.f, 0.18f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::ImageButton("##prof", profTex,
+                                              ImVec2(profBtnSz, profBtnSz),
+                                              ImVec2(0, 0), ImVec2(1, 1), bg, tint);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(4);
+            return clicked;
+        };
+
+        // Ids 1..10 in two rows of five, then the catch-all slot 0.
+        for (int p = 1; p < kLaserProfCount; ++p)
+        {
+            if (p != 1 && p != 6) ImGui::SameLine(0.f, 3.f);
+
+            ImGui::PushID(1000 + p);
+            if (ProfIconToggle(p))
+                m_laserProf[p] = !m_laserProf[p];
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", LaserProfName(p));
+            ImGui::PopID();
+        }
+
+        ImGui::PushID(1000);
+        if (LaserPill("Other", m_laserProf[0]))
+            m_laserProf[0] = !m_laserProf[0];
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Casters with no known profession (NPCs, henchmen)");
+        ImGui::PopID();
+
+        ImGui::Separator();
+
+        // --- Teams ---
+        ImGui::TextDisabled("Teams");
+        if (TeamPill("Red##Laser", m_laserShowRed, 1))
+            m_laserShowRed = !m_laserShowRed;
+        ImGui::SameLine();
+        if (TeamPill("Blue##Laser", m_laserShowBlue, 2))
+            m_laserShowBlue = !m_laserShowBlue;
+
+        ImGui::Separator();
+
+        // --- Individual casters ---
+        if (ImGui::SmallButton("Show All##Lasers"))
+            m_laserHiddenAgents.clear();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Hide All##Lasers"))
+        {
+            for (int id : m_playerIds)
+                m_laserHiddenAgents.insert(id);
+        }
+
+        auto DrawTeamLasers = [&](const char* header, const std::vector<int>& ids,
+                                  bool teamEnabled)
+        {
+            if (!teamEnabled) ImGui::BeginDisabled();
+            if (ImGui::TreeNodeEx(header, ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                for (int id : ids)
+                {
+                    auto it = m_replayCtx.agents.find(id);
+                    if (it == m_replayCtx.agents.end()) continue;
+                    const auto& ard = it->second;
+
+                    bool visible = !m_laserHiddenAgents.count(id);
+
+                    ImTextureID profTex = (ard.primaryProf > 0)
+                        ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
+                    if (profTex)
+                    {
+                        ImGui::Image(profTex, ImVec2(iconSz, iconSz));
+                        ImGui::SameLine(0, 4);
+                    }
+
+                    if (ImGui::Checkbox(("##laser_" + std::to_string(id)).c_str(), &visible))
+                    {
+                        if (visible)
+                            m_laserHiddenAgents.erase(id);
+                        else
+                            m_laserHiddenAgents.insert(id);
+                    }
+                    ImGui::SameLine(0, 4);
+
+                    // Greyed out when the profession filter already hides this
+                    // caster, so the checkbox state is not misread as "showing".
+                    int prof = (ard.primaryProf > 0 && ard.primaryProf < kLaserProfCount)
+                                 ? ard.primaryProf : 0;
+                    std::string label = ard.playerName.empty()
+                        ? ard.categoryName : ard.playerName;
+                    if (!m_laserProf[prof])
+                        ImGui::TextDisabled("%s", label.c_str());
+                    else
+                        ImGui::TextUnformatted(label.c_str());
+                }
+                ImGui::TreePop();
+            }
+            if (!teamEnabled) ImGui::EndDisabled();
+        };
+
+        // Side by side: two eight-player rosters stacked would make the panel
+        // taller than most screens.
+        if (ImGui::BeginTable("##LaserTeams", 2,
+                              ImGuiTableFlags_SizingFixedFit |
+                              ImGuiTableFlags_BordersInnerV |
+                              ImGuiTableFlags_NoSavedSettings))
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            DrawTeamLasers("Red Team",  m_team1PlayerIds, m_laserShowRed);
+            ImGui::TableSetColumnIndex(1);
+            DrawTeamLasers("Blue Team", m_team2PlayerIds, m_laserShowBlue);
+            ImGui::EndTable();
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(5);
 }
 
 
