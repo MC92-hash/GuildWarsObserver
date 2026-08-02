@@ -41,28 +41,15 @@
 
 void ReplayWindow::BuildMeterAbsCache()
 {
-    if (m_meterAbsCacheBuilt) return;
+    if (m_meterAbsCacheBuilt || !m_maxHpSolved) return;
     m_meterAbsCache.clear();
     m_meterAbsCache.reserve(m_replayCtx.stocData.combat.size());
 
     auto findMaxHp = [&](int agentId, float t) -> uint32_t {
         auto it = m_replayCtx.agents.find(agentId);
-        if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return 0;
-        auto& snaps = it->second.snapshots;
-        int idx = 0;
-        if (t >= snaps.back().time)
-            idx = (int)snaps.size() - 1;
-        else if (t > snaps.front().time) {
-            int lo = 0, hi = (int)snaps.size() - 1;
-            while (lo < hi) { int mid = lo + (hi - lo + 1) / 2; if (snaps[mid].time <= t) lo = mid; else hi = mid - 1; }
-            idx = lo;
-        }
-        if (snaps[idx].max_hp > 0) return snaps[idx].max_hp;
-        for (int i = idx + 1; i < (int)snaps.size(); ++i)
-            if (snaps[i].max_hp > 0) return snaps[i].max_hp;
-        for (int i = idx - 1; i >= 0; --i)
-            if (snaps[i].max_hp > 0) return snaps[i].max_hp;
-        return 0;
+        if (it == m_replayCtx.agents.end()) return 0;
+        if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
+        return it->second.maxHpAtTime(t);
     };
 
     for (auto& ce : m_replayCtx.stocData.combat)
@@ -77,6 +64,24 @@ void ReplayWindow::BuildMeterAbsCache()
     m_meterAbsCacheBuilt = true;
 }
 
+ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard, float t) const
+{
+    // (1) Solved from combat decimals (authoritative, works on legacy v1).
+    if (uint32_t solved = ard.solvedMaxHpAtTime(t))
+        return { solved, false };
+
+    // (2) Camera-observed max_hp (v2+ recordings carry this).
+    if (m_matchMeta.recording_version >= 2)
+    {
+        uint32_t maxHp = ard.maxHpAtTime(t);
+        if (maxHp > 0)
+            return { maxHp, false };
+    }
+
+    // (3) Fallback: estimate 20*level+100
+    uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 100) : 480;
+    return { estimated, true };
+}
 
 void ReplayWindow::AccumulateMeterData()
 {
@@ -249,11 +254,20 @@ void ReplayWindow::DrawPartyWindows()
             ImTextureID carriedFlagTex =
                 CarriedBundleIcon(m_deviceResources->GetD3DDevice(), agentId);
 
+            uint32_t absMaxHp = 0;
+            bool hpEstimated = false;
+            if (m_showAbsoluteHp)
+            {
+                auto sample = ResolveMaxHp(ard, m_debugTimeline);
+                absMaxHp = sample.value;
+                hpEstimated = sample.estimated;
+            }
+
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,
                                ard.partyBarLabel.c_str(), icons,
                                m_followedAgentId, agentId, isFogHidden,
-                               carriedFlagTex);
+                               carriedFlagTex, absMaxHp, hpEstimated);
 
             if (m_showDamageMeter || m_showHealMeter)
             {

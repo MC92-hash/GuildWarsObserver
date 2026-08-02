@@ -5,6 +5,8 @@
 #include <string>
 #include <filesystem>
 #include <algorithm>
+#include <cstdlib>
+#include <system_error>
 
 class GuiGlobalConstants
 {
@@ -288,15 +290,83 @@ public:
 	// Get the directory where the executable lives
 	static std::filesystem::path GetExeDir()
 	{
-		wchar_t exePath[MAX_PATH];
-		GetModuleFileNameW(NULL, exePath, MAX_PATH);
-		return std::filesystem::path(exePath).parent_path();
+		std::wstring buf(MAX_PATH, L'\0');
+		for (;;)
+		{
+			DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+			if (len == 0)
+				return std::filesystem::path(L".");
+			if (len < buf.size())
+			{
+				buf.resize(len);
+				break;
+			}
+			// Truncated (buffer too small and not null terminated) -- retry bigger.
+			if (buf.size() >= 32768)
+				return std::filesystem::path(L".");
+			buf.resize(buf.size() * 2, L'\0');
+		}
+		return std::filesystem::path(buf).parent_path();
 	}
 
-	// Get the match cache directory (next to executable)
+	// Per-user writable location, used when the exe directory is read-only.
+	static std::filesystem::path GetUserDataDir()
+	{
+		auto from_env = [](const wchar_t* name) -> std::filesystem::path
+		{
+			wchar_t* value = nullptr;
+			size_t len = 0;
+			std::filesystem::path result;
+			if (_wdupenv_s(&value, &len, name) == 0 && value && *value)
+				result = value;
+			free(value);
+			return result;
+		};
+
+		if (auto local = from_env(L"LOCALAPPDATA"); !local.empty())
+			return local / L"GWObserver";
+		if (auto tmp = from_env(L"TEMP"); !tmp.empty())
+			return tmp / L"GWObserver";
+		return GetExeDir() / L"UserData";
+	}
+
+	// Match cache directory, created on first use.
+	//
+	// Prefers "MatchCache" next to the executable. If that cannot be created
+	// (exe installed under Program Files, on read-only media, or blocked by
+	// Controlled Folder Access) it falls back to %LOCALAPPDATA%\GWObserver so
+	// the app stays usable. Never throws -- a failure here used to escape as an
+	// unhandled filesystem_error and kill the process during first-launch setup.
+	static const std::filesystem::path& GetMatchCachePath()
+	{
+		static const std::filesystem::path cached = []() -> std::filesystem::path
+		{
+			std::error_code ec;
+			auto preferred = GetExeDir() / L"MatchCache";
+			if (std::filesystem::is_directory(preferred, ec))
+				return preferred;
+
+			std::filesystem::create_directories(preferred, ec);
+			if (std::filesystem::is_directory(preferred, ec))
+				return preferred;
+
+			auto fallback = GetUserDataDir() / L"MatchCache";
+			std::filesystem::create_directories(fallback, ec);
+			return fallback;
+		}();
+		return cached;
+	}
+
+	// True when the cache had to be redirected away from the exe directory.
+	static bool IsMatchCacheRedirected()
+	{
+		std::error_code ec;
+		return !std::filesystem::equivalent(GetMatchCachePath(), GetExeDir() / L"MatchCache", ec);
+	}
+
 	static std::string GetMatchCacheDir()
 	{
-		return (GetExeDir() / "MatchCache").string();
+		return GetMatchCachePath().string();
 	}
 
 	// Get the settings file path (next to executable)

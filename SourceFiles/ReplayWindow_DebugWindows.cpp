@@ -247,6 +247,55 @@ void ReplayWindow::DrawAgentDataWindow()
         if (ard.type == AgentType::Player)
         {
             ImGui::Text("Player: %s", ard.playerName.c_str());
+
+            // Solved max-HP segments (from combat decimals). Read-only listing:
+            // t-range, best-fit M, event count, median residual, accepted, plus
+            // the camera-observed max_hp at each segment midpoint for comparison.
+            if (ImGui::TreeNodeEx("Solved Max-HP Segments",
+                                  ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                if (ard.solvedMaxHp.empty())
+                {
+                    ImGui::TextDisabled("(no solved segments)");
+                }
+                else if (ImGui::BeginTable("MaxHpSeg", 6,
+                    ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
+                    ImGuiTableFlags_SizingStretchProp))
+                {
+                    ImGui::TableSetupColumn("t-range");
+                    ImGui::TableSetupColumn("M");
+                    ImGui::TableSetupColumn("Events");
+                    ImGui::TableSetupColumn("Median Res");
+                    ImGui::TableSetupColumn("Accepted");
+                    ImGui::TableSetupColumn("Camera@mid");
+                    ImGui::TableHeadersRow();
+
+                    for (const auto& seg : ard.solvedMaxHp)
+                    {
+                        float endShown = (seg.tEnd >= FLT_MAX) ? m_replayCtx.maxReplayTime
+                                                               : seg.tEnd;
+                        float mid = (seg.tStart + endShown) * 0.5f;
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        if (seg.tEnd >= FLT_MAX)
+                            ImGui::Text("%.1f - end", seg.tStart);
+                        else
+                            ImGui::Text("%.1f - %.1f", seg.tStart, seg.tEnd);
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%u", seg.maxHp);
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::Text("%d", seg.eventCount);
+                        ImGui::TableSetColumnIndex(3);
+                        ImGui::Text("%.4f", seg.medianResidual);
+                        ImGui::TableSetColumnIndex(4);
+                        ImGui::TextUnformatted(seg.accepted ? "yes" : "no");
+                        ImGui::TableSetColumnIndex(5);
+                        ImGui::Text("%u", ard.maxHpAtTime(mid));
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::TreePop();
+            }
         }
         else if (ard.type == AgentType::Spirit)
         {

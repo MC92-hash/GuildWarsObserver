@@ -599,7 +599,24 @@ void ReplayWindow::DrawPlayerInfoPanel()
         {
             // HP text with shadow (inside bar, left-aligned)
             char hpBuf[32];
-            if (snap->max_hp > 0)
+            auto ait = m_replayCtx.agents.find(m_playerInfoAgentId);
+            if (ait != m_replayCtx.agents.end())
+            {
+                auto sample = ResolveMaxHp(ait->second, m_debugTimeline);
+                if (sample.value > 0)
+                {
+                    uint32_t displayHp = (uint32_t)(hpPct * sample.value);
+                    if (sample.estimated)
+                        snprintf(hpBuf, sizeof(hpBuf), "~%u / ~%u", displayHp, sample.value);
+                    else
+                        snprintf(hpBuf, sizeof(hpBuf), "%u / %u", displayHp, sample.value);
+                }
+                else if (snap->max_hp > 0)
+                    snprintf(hpBuf, sizeof(hpBuf), "%d / %d", (int)(hpPct * snap->max_hp), (int)snap->max_hp);
+                else
+                    snprintf(hpBuf, sizeof(hpBuf), "%d%%", (int)(hpPct * 100));
+            }
+            else if (snap->max_hp > 0)
                 snprintf(hpBuf, sizeof(hpBuf), "%d / %d", (int)(hpPct * snap->max_hp), (int)snap->max_hp);
             else
                 snprintf(hpBuf, sizeof(hpBuf), "%d%%", (int)(hpPct * 100));
@@ -2107,6 +2124,57 @@ void ReplayWindow::DrawPlayerInfoPanel()
     }
 
     // (Section 5 — Skill Cast Stats removed, replaced by skill icon grid + tooltip)
+
+    // ═══════════════════════════════════════════════════════════════
+    // SECTION 4B — ATTRIBUTES (DEDUCED)
+    // ═══════════════════════════════════════════════════════════════
+    {
+        float winX = ImGui::GetWindowPos().x;
+        ImVec2 attrPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
+        float innerW = contentW - 2 * kPadX;
+
+        dl->AddLine(ImVec2(attrPos.x, attrPos.y), ImVec2(attrPos.x + innerW, attrPos.y), kDivider);
+        attrPos.y += 8.f;
+
+        dl->AddText(nullptr, 10.f, attrPos, kGold, "ATTRIBUTES");
+        attrPos.y += 16.f;
+
+        auto it = m_attrProfiles.find(m_playerInfoAgentId);
+        if (it == m_attrProfiles.end() || it->second.attributes.empty())
+        {
+            dl->AddText(nullptr, 11.f, attrPos, IM_COL32(0x80, 0x80, 0x80, 0xFF), "Attributes: unknown");
+            attrPos.y += 16.f;
+        }
+        else
+        {
+            const auto& profile = it->second;
+            for (const auto& est : profile.attributes)
+            {
+                if (est.attributeId < 0) continue;
+                const char* attrName = GetSkillDatabase().GetAttributeName(est.attributeId);
+                if (!attrName) attrName = "Unknown";
+
+                char rankStr[32];
+                if (est.rank >= 0)
+                {
+                    if (est.observations == 0 || est.lowConfidence)
+                        snprintf(rankStr, sizeof(rankStr), "%d?", est.rank);
+                    else
+                        snprintf(rankStr, sizeof(rankStr), "%d", est.rank);
+                }
+                else
+                    snprintf(rankStr, sizeof(rankStr), "?");
+
+                ImU32 textCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+                char line[128];
+                snprintf(line, sizeof(line), "%s: %s", attrName, rankStr);
+                dl->AddText(nullptr, 11.f, attrPos, textCol, line);
+                attrPos.y += 16.f;
+            }
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + kPadX, attrPos.y));
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // SECTION 6 — CENTERED PLAYHEAD CAST TIMELINE (±10s)

@@ -66,6 +66,7 @@ void ReplayWindow::UpdatePiPIncomingEffects()
     auto findAgentMaxHp = [&](int agentId, float t) -> uint32_t {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return 0;
+        if (uint32_t m = it->second.solvedMaxHpAtTime(t)) return m;
         const auto& snaps = it->second.snapshots;
         if (snaps.empty()) return 0;
         const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);

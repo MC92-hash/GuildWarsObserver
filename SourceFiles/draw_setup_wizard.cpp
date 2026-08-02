@@ -978,10 +978,10 @@ bool draw_setup_wizard()
             {
                 // Cloud storage mode
                 SetupConfig::storage_mode = (s_cloudModeChoice == 0) ? "full_cache" : "online_only";
-                // Auto-set match folder to cache directory
-                std::string cacheDir = GuiGlobalConstants::GetMatchCacheDir();
-                std::filesystem::create_directories(cacheDir);
-                SetupConfig::match_data_folder = cacheDir;
+                // Auto-set match folder to cache directory.
+                // GetMatchCacheDir() creates the folder and falls back to a
+                // per-user location if the exe directory is not writable.
+                SetupConfig::match_data_folder = GuiGlobalConstants::GetMatchCacheDir();
             }
             else
             {

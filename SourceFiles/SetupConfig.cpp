@@ -5,29 +5,30 @@
 #include <filesystem>
 #include <shlobj.h>
 
-std::string SetupConfig::GetConfigDir()
+// Keep the path in wide form throughout: narrowing wchar_t -> char one code
+// unit at a time mangles any non-ASCII profile name, which then produced an
+// invalid path that made create_directories throw.
+std::filesystem::path SetupConfig::GetConfigDir()
 {
     wchar_t* appData = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)))
-    {
-        std::wstring wide(appData);
+    std::filesystem::path dir;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)) && appData)
+        dir = std::filesystem::path(appData) / L"GWObserver";
+    if (appData)
         CoTaskMemFree(appData);
-        std::string narrow(wide.begin(), wide.end());
-        return narrow + "\\GWObserver";
-    }
-    return "";
+    return dir;
 }
 
-std::string SetupConfig::GetConfigPath()
+std::filesystem::path SetupConfig::GetConfigPath()
 {
-    std::string dir = GetConfigDir();
-    if (dir.empty()) return "";
-    return dir + "\\config.ini";
+    auto dir = GetConfigDir();
+    if (dir.empty()) return {};
+    return dir / L"config.ini";
 }
 
 void SetupConfig::Load()
 {
-    std::string path = GetConfigPath();
+    auto path = GetConfigPath();
     if (path.empty()) return;
 
     std::ifstream file(path);
@@ -70,12 +71,14 @@ void SetupConfig::Load()
 
 void SetupConfig::Save()
 {
-    std::string dir = GetConfigDir();
+    auto dir = GetConfigDir();
     if (dir.empty()) return;
 
-    std::filesystem::create_directories(dir);
+    // error_code overload: a failure here must not throw out of the UI frame.
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
 
-    std::string path = GetConfigPath();
+    auto path = GetConfigPath();
     std::ofstream file(path);
     if (!file.is_open()) return;
 

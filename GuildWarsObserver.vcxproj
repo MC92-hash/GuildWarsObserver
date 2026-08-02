@@ -303,6 +303,8 @@
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
     <ClInclude Include="SourceFiles\miniz.h" />
     <ClInclude Include="SourceFiles\StoCParser.h" />
+    <ClInclude Include="SourceFiles\AttributeDeducer.h" />
+    <ClInclude Include="SourceFiles\MaxHpSolver.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
     <ClInclude Include="SourceFiles\GuildBannerComposer.h" />
@@ -554,6 +556,8 @@
     <ClCompile Include="SourceFiles\AnnotationManager.cpp" />
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp" />
     <ClCompile Include="SourceFiles\StoCParser.cpp" />
+    <ClCompile Include="SourceFiles\AttributeDeducer.cpp" />
+    <ClCompile Include="SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerComposer.cpp" />

@@ -28,6 +28,7 @@
 #include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
 #include "BitmapFont.h"
+#include "AttributeDeducer.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -316,6 +317,7 @@ private:
     bool m_castIntervalsBuilt  = false;
     bool m_skillUseTimelineBuilt = false;
     bool m_knockdownIntervalsBuilt = false;
+    bool m_maxHpSolved             = false;
 
     // --- Combat Log ---
     bool m_showCombatLog     = false;
@@ -333,6 +335,10 @@ private:
     bool m_clAutoScroll       = true;
     int  m_clSelectedRowIdx   = -1;
     bool m_clScrollToSelected = false;
+
+    // --- Attribute Deduction ---
+    bool m_attributesDeduced = false;
+    std::unordered_map<int, PlayerAttributeProfile> m_attrProfiles;
 
     // Skill name filter (multi-select with autocomplete)
     char m_clSkillSearchBuf[128] = {};
@@ -621,6 +627,7 @@ private:
     // --- Damage / Heal meter (party window bars) ---
     bool m_showDamageMeter = false;
     bool m_showHealMeter   = false;
+    bool m_showAbsoluteHp  = true;
 
     struct MeterEntry { int value = 0; };
     std::unordered_map<int, MeterEntry> m_meterDmg;
@@ -709,6 +716,10 @@ public:
     bool m_showMoralePanel = false;
     void DrawMoralePanel();
     int  ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount = nullptr, int* outBoostCount = nullptr) const;
+
+    // --- Max HP Resolver ---
+    struct MaxHpSample { uint32_t value = 0; bool estimated = true; };
+    MaxHpSample ResolveMaxHp(const AgentReplayData& ard, float t) const;
 
     // --- Lord Damage Panel ---
     struct LordAttackerRow {

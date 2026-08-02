@@ -97,7 +97,7 @@ void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const AgentSnapshot* snap, uint8_t teamId, bool isDead,
                         const char* name, const PartyIcons& icons,
                         int followedAgentId, int agentId, bool fogHidden = false,
-                        ImTextureID flagTex = nullptr);
+                        ImTextureID flagTex = nullptr, uint32_t absMaxHp = 0, bool hpEstimated = false);
 void DrawMeterBar(ImDrawList* dl, ImVec2 healthTL, float healthW, float slotY,
                   float barH, int value, int maxValue, int totalValue,
                   bool leftSide, float maxBarW, ImU32 barColor);
