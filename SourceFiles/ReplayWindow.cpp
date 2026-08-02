@@ -5468,6 +5468,11 @@ void ReplayWindow::Tick()
                 row.valueAbs = (int)std::lround(std::fabs((double)row.valuePct) * mhp);
         }
 
+        // Carry the corrected denominators across the gaps between packets, so
+        // anything that needs max HP without one -- the party bar above all --
+        // stops reading the near-static recorded field.
+        BuildEffectiveMaxHpTimelines(m_replayCtx.agents, m_combatLog);
+
         m_meterAbsCacheBuilt = false; // meter cache was built from the old values
         m_maxHpBreakpointSolved = true;
     }

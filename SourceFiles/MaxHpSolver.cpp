@@ -461,3 +461,98 @@ uint32_t CorrectMaxHpForPacket(uint32_t recorded, double fraction)
     // rather than inventing one.
     return recorded;
 }
+
+// ---------------------------------------------------------------------------
+// Effective max-HP timeline
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Half-width of the majority window, in samples. Wide enough that a lone
+    // spurious correction cannot move the result, narrow enough to still
+    // resolve a weapon swap, which players make hundreds of times per match.
+    constexpr int kSmoothHalf = 4;
+
+    // A step is only emitted once this many consecutive smoothed samples agree
+    // on the new value, which keeps swap jitter out of the timeline.
+    constexpr int kMinRun = 3;
+}
+
+void BuildEffectiveMaxHpTimelines(
+    std::unordered_map<int, AgentReplayData>& agents,
+    const std::vector<CombatLogRow>& combatLog)
+{
+    struct Sample { float time; uint32_t maxHp; };
+    std::unordered_map<int, std::vector<Sample>> perAgent;
+
+    for (const CombatLogRow& row : combatLog)
+    {
+        if (row.category != CombatLogCategory::Damage &&
+            row.category != CombatLogCategory::Heal)
+            continue;
+        if (row.valuePct == 0.f) continue;
+
+        auto it = agents.find(row.targetId);
+        if (it == agents.end() || it->second.type != AgentType::Player) continue;
+
+        const AgentReplayData& ard = it->second;
+        int idx = ard.snapshotIndexAtTime(row.time);
+        if (idx < 0) continue;
+        // Deep Wound packets would contribute a reduced value; the reduction
+        // is reapplied at lookup instead so the timeline stays one quantity.
+        if (ard.snapshots[idx].has_deep_wound) continue;
+
+        uint32_t recorded = ard.maxHpAtTime(row.time);
+        if (recorded == 0) recorded = ard.solvedMaxHpAtTime(row.time);
+        if (recorded == 0) continue;
+
+        perAgent[row.targetId].push_back(
+            { row.time, CorrectMaxHpForPacket(recorded, row.valuePct) });
+    }
+
+    for (auto& [agentId, samples] : perAgent)
+    {
+        auto ait = agents.find(agentId);
+        if (ait == agents.end()) continue;
+        AgentReplayData& ard = ait->second;
+        ard.effectiveMaxHp.clear();
+
+        const int n = (int)samples.size();
+        if (n < kMinRun) continue;
+
+        std::sort(samples.begin(), samples.end(),
+            [](const Sample& a, const Sample& b) { return a.time < b.time; });
+
+        // Majority over a sliding window.
+        std::vector<uint32_t> smoothed(n);
+        std::unordered_map<uint32_t, int> counts;
+        for (int i = 0; i < n; ++i)
+        {
+            counts.clear();
+            int lo = std::max(0, i - kSmoothHalf);
+            int hi = std::min(n - 1, i + kSmoothHalf);
+            for (int j = lo; j <= hi; ++j) counts[samples[j].maxHp]++;
+
+            uint32_t best = samples[i].maxHp;
+            int bestC = 0;
+            for (auto& [v, c] : counts)
+                if (c > bestC || (c == bestC && v == samples[i].maxHp))
+                { bestC = c; best = v; }
+            smoothed[i] = best;
+        }
+
+        // Run-length encode, holding a new value until it has persisted.
+        uint32_t current = smoothed[0];
+        ard.effectiveMaxHp.push_back({ samples[0].time, current });
+
+        int runStart = 0;
+        for (int i = 1; i < n; ++i)
+        {
+            if (smoothed[i] != smoothed[runStart]) { runStart = i; continue; }
+            if (smoothed[i] == current) continue;
+            if (i - runStart + 1 < kMinRun) continue;
+            current = smoothed[i];
+            ard.effectiveMaxHp.push_back({ samples[runStart].time, current });
+        }
+    }
+}

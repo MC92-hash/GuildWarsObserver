@@ -686,6 +686,53 @@ struct AgentReplayData
     int solvedDivineFavorRank    = -1;
     int solvedDivineFavorSupport = 0;   // packets backing that rank
 
+    // Effective max HP over time, reconstructed from the corrected packet
+    // denominators (see CorrectMaxHpForPacket).
+    //
+    // The recorded max_hp field is very nearly static: across the local
+    // archive it moved at 0.1% of 17992 weapon-set switches and 3.2% of 1128
+    // Deep Wound applications. Reading it directly is why the party bar does
+    // not respond to either. The per-packet correction already recovers the
+    // true denominator wherever a damage or heal lands, so this timeline is
+    // that answer carried across the gaps between packets.
+    //
+    // Built from non-Deep-Wound packets only, so entries are the UNREDUCED
+    // value and the Deep Wound reduction is applied on top at lookup.
+    struct EffectiveMaxHp { float time = 0.f; uint32_t maxHp = 0; };
+    std::vector<EffectiveMaxHp> effectiveMaxHp;   // sorted, step function
+
+    uint32_t effectiveMaxHpAtTime(float t) const
+    {
+        if (effectiveMaxHp.empty()) return 0;
+        if (t <= effectiveMaxHp.front().time) return effectiveMaxHp.front().maxHp;
+        auto it = std::upper_bound(effectiveMaxHp.begin(), effectiveMaxHp.end(), t,
+            [](float v, const EffectiveMaxHp& s) { return v < s.time; });
+        return (--it)->maxHp;
+    }
+
+    // Deep Wound reduces maximum health by 20%, capped at 100. Confirmed
+    // exactly against every recorded transition where the observer happened to
+    // capture the refreshed value (540->440, 565->465, 588->488, 550->450...).
+    static uint32_t ApplyDeepWound(uint32_t m)
+    {
+        if (m == 0) return m;
+        uint32_t cut = (uint32_t)std::min<long>(100, std::lround(0.2 * (double)m));
+        return (m > cut) ? (m - cut) : 1u;
+    }
+
+    // max_hp as it read just before the Deep Wound episode covering t began.
+    // Used to tell an unreduced value from one the recording already reduced,
+    // so the 20% is never applied twice.
+    uint32_t maxHpBeforeDeepWound(float t) const
+    {
+        int idx = snapshotIndexAtTime(t);
+        if (idx < 0 || !snapshots[idx].has_deep_wound) return 0;
+        for (int i = idx; i >= 0; --i)
+            if (!snapshots[i].has_deep_wound)
+                return snapshots[i].max_hp;
+        return 0;
+    }
+
     // Packs the four equipment fields the recording carries into one key.
     // Mirrors the signature gvg.report keys its max-HP table by
     // (weapon/offhand item id + item type); item ids alone are not enough

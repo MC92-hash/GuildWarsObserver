@@ -68,3 +68,20 @@ void SolveMaxHpFromSkillBreakpoints(
 // feeding random fractions through the same code scores 8.0%, so the gain is
 // signal rather than the candidate set absorbing anything put in front of it.
 uint32_t CorrectMaxHpForPacket(uint32_t recorded, double fraction);
+
+// Reconstructs each player's effective max HP over time from the corrected
+// packet denominators, into AgentReplayData::effectiveMaxHp.
+//
+// The correction above only fires where a packet exists. Anything that needs
+// max HP without one -- the party bar above all -- still reads the raw
+// recorded field, which is very nearly static and so does not respond to
+// weapon swaps, morale, or death penalty. This carries the corrected answer
+// across the gaps: sample at every packet, take a majority over a sliding
+// window so an isolated bad fit cannot move the result, and emit a step
+// function.
+//
+// Deep Wound packets are excluded, so entries are unreduced values and the
+// 20% is applied at lookup instead.
+void BuildEffectiveMaxHpTimelines(
+    std::unordered_map<int, AgentReplayData>& agents,
+    const std::vector<CombatLogRow>& combatLog);
