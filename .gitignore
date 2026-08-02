@@ -478,3 +478,8 @@ FodyWeavers.xsd
 !/Textures/Fonts/TB-Font.ttf
 !/Textures/Fonts/Lato-Regular.ttf
 !/Textures/Fonts/Lato-Bold.ttf
+
+# Screen recordings / capture scratch files (never commit - exceed GitHub 100MB limit)
+*.mov
+*.mkv
+*.mp4
