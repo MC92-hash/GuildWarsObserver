@@ -38,6 +38,10 @@
 #include <chrono>
 
 class SpatialAudioEngine;
+class SkillSoundTable;
+// Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
+// The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
+enum class SoundLogCategory : uint8_t;
 
 #include "ReplayHotkeys.h"
 
@@ -1193,6 +1197,12 @@ private:
     float m_ribbonIdleTimer = 1e9f;             // starts collapsed until revealed
     bool  m_ribbonMoreOpen  = false;            // overflow popup holds it open
 
+    // Bottom edge of the strip in screen space, republished every frame by
+    // DrawRibbonToolbar() (equal to the work-area top when the ribbon is
+    // closed). Top-anchored HUD elements read this so they can sit under the
+    // strip and follow its collapse animation instead of being overlapped.
+    float m_ribbonBottomY   = 0.f;
+
     void DrawRibbonToolbar();
 
     // --- Minimap ---
@@ -1385,21 +1395,61 @@ private:
     void  RenderSpeechBubbles();
 
     // --- Spatial Audio ---
+    // Background/UI/Music/Dialog/attack-hits play back from StoC/sound_events.txt directly: real
+    // captured file_id/position/timing. Skill-cast (Effects/SkillCue) sounds are synthesized from
+    // skillUseHistory + settings/skill_sounds.json instead, since the recording client only wrote
+    // a sound_events.txt line for skills that happened to be within earshot of the *recording*
+    // camera - most skill casts elsewhere on the map were never captured at all. See
+    // ReplayWindow_Audio.cpp (UpdateAudioPlayback / BuildSkillSoundTimeline).
     std::unique_ptr<SpatialAudioEngine> m_audioEngine;
+    std::unique_ptr<SkillSoundTable>    m_skillSoundTable;
     bool m_audioInitialized = false;
-    bool m_audioEnabled     = false;
-    bool m_showAudioDebug   = false;
-
-    // Per-agent cursors into skillUseHistory for caster (startTime) and target (endTime) sounds
-    std::unordered_map<int, size_t> m_audioSkillCursor;       // caster: tracks startTime
-    std::unordered_map<int, size_t> m_audioTargetCursor;      // target: tracks endTime
-    std::vector<std::pair<int, size_t>> m_targetEventOrder;   // (agentId, eventIdx) sorted by endTime
-    bool m_targetOrderBuilt = false;
-    size_t m_targetOrderCursor = 0;
+    // Sound is on unless muted. This is purely the mute state now - it used to double as the
+    // Sound FX panel's visibility, which meant you could not look at the mixer without the audio
+    // following it. Muting lives on the play bar's speaker; the panel has its own flag below.
+    bool m_audioEnabled     = true;
+    bool m_showSoundFxPanel = false;   // ribbon "Sound FX" button / File menu entry
+    // Keeps the play bar's volume slider up while it is being dragged, even once the pointer has
+    // left the hover zone.
+    bool m_volumeBarActive  = false;
     float m_audioLastTime = -1.f;
+    bool m_audioWasPlaying = true;     // last-seen m_replayCtx.isPlaying, to detect pause/resume
+
+    // Cursor into stocData.soundEvents (time-ordered).
+    size_t m_audioSoundEventCursor = 0;
+
+    // One scheduled skill-cast sound: a single layer of a single cast, already resolved to an
+    // absolute replay time and to the agent whose position it is emitted from.
+    struct ScheduledSkillSound {
+        float    time    = 0.f;   // absolute replay time (cast start + the cue's own offset)
+        uint32_t fileId  = 0;
+        int      agentId = 0;     // caster or target, whichever this cue is emitted from
+        int      casterId = 0;    // kept so "is this the followed agent's sound?" can be asked at
+        int      targetId = 0;    // playback time - the followed agent changes while playing
+        SoundLogCategory category{};   // which per-category budget/volume it plays under
+        float    gain    = 1.0f;       // ducking for stacked simultaneous layers of one cast
+    };
+
+    // Every skill sound for the whole match, flattened and sorted by time, so playback is the
+    // same single-cursor walk the StoC sound events use (and a seek is one binary search).
+    // Built lazily once skillUseHistory exists.
+    bool m_audioSkillTimelineBuilt = false;
+    std::vector<ScheduledSkillSound> m_audioSkillTimeline;
+    size_t m_audioSkillCursor = 0;
+
+    // One-off analysis of this match's StoC sound events, built lazily:
+    //  - which file ids are demonstrably attack sounds, so the ~70% of them the recorder failed
+    //    to correlate to an agent stop being misfiled as footsteps
+    //  - a per-event gain that ducks simultaneous layers and drops exact duplicates, the same
+    //    treatment the skill cues get
+    bool m_audioStocAnalysisBuilt = false;
+    std::unordered_set<uint32_t> m_audioAttackSoundIds;
+    std::vector<float> m_audioStocGain;
+    void BuildStocSoundAnalysis();
 
     void InitAudioEngine();
     void UpdateAudioPlayback(float currentTime, float dt);
+    void BuildSkillSoundTimeline();
 
     // --- Heatmap system ---
     HeatmapSettings       m_heatmapSettings;

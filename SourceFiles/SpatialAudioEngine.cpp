@@ -1,11 +1,12 @@
 #include "pch.h"
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
-#include "SkillSoundTable.h"
 #include "DATManager.h"
 
 #include <cmath>
 #include <algorithm>
+#include <fstream>
+#include <json.hpp>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -31,6 +32,108 @@ static void ZeroEmitter(X3DAUDIO_EMITTER& e)
     e.InnerRadiusAngle = 0.0f;
 }
 
+// ── Category profiles ─────────────────────────────────────────────────────
+// Derived from CategorySettings.ini (extracted from Gw.dat). Volume there is a base attenuation
+// in millibels (mB, 1/100 dB); gainLinear = 10^(mB/2000) converts that to a linear multiplier.
+// maxSounds is the category's concurrent-instance cap at the client's max audio quality setting
+// (MinSounds/MaxSounds interpolate by quality in-game; GW Observer has no such setting, so the
+// max-quality value is used - most permissive, matching "assume good hardware"). Values are the
+// non-"p"-prefixed (third-person/world) variant, since replay is never any one player's own
+// first-person audio. Categories the capture side can't distinguish (SkillCue blends
+// skillb/skills/skillx/woosh; Footstep uses "feet") are reasonable single-representative picks,
+// not exact per-sub-category fidelity - see SOUND_RECORDING_PLAYBACK_PLAN.md.
+// audibleRadius is the distance (in GW units) at which the category falls to silence, and is also
+// the cull distance - past it a sound is never voiced at all, so it cannot steal a slot from
+// nearer action. Values are anchored to the game's own distance vocabulary, the same constants the
+// range rings use: Touch 144, Nearby 240, In Area 322, Earshot 1000, Cast Range 1248,
+// Passive 2512, Compass 5020. CategorySettings.ini has no distance data of its own (it only
+// separates 3D behaviour coarsely via 3DMode), so these are chosen per category by what the sound
+// means: feet stay local, impacts carry to about where you can see them, big spell payoffs carry
+// furthest, and wind-ups stay intimate so they do not smear across the map.
+// Every category exists twice in CategorySettings.ini: a world variant and a "p"-prefixed player
+// variant used for the sounds the local player themselves makes or receives. The player variant is
+// 1-17 dB louder (a wind-up is -2000 out in the world but -300 for you) and has a much smaller
+// MaxSounds, because there is only ever one player - which also means the player's audio has its
+// own budget and can never be starved by a crowded fight. Following an agent in a replay puts the
+// viewer in exactly that position, so the followed agent's audio uses the player column.
+struct CategoryProfile {
+    float gainLinear;        // world  (e.g. [skills])
+    int   maxSounds;
+    float audibleRadius;
+    float playerGainLinear;  // player (e.g. [pskills])
+    int   playerMaxSounds;
+};
+
+static float MillibelToLinear(float mB) { return powf(10.0f, mB / 2000.0f); }
+
+// Shapes the master slider: gain = position^kMasterCurveExponent, chosen so 60% on the slider
+// lands on 30% gain. Loudness perception is roughly logarithmic, so a raw linear slider spends
+// most of its travel in a range that all sounds equally loud; this pushes the usable range out.
+// (A flat headroom multiplier used to sit here instead - it is gone because the per-category
+// CategorySettings.ini gains below are the correct place for that attenuation, and stacking both
+// simply attenuated everything twice.)
+static constexpr float kMasterCurveExponent = 2.36f;
+
+static float MasterGain(float sliderPosition)
+{
+    return powf(std::clamp(sliderPosition, 0.0f, 1.0f), kMasterCurveExponent);
+}
+
+// Fraction of full volume a positional sound keeps when it is directly behind the listener.
+// 0.0 would mute the rear hemisphere entirely (the old behaviour).
+static constexpr float kRearGainFloor = 0.35f;
+
+static const CategoryProfile& GetCategoryProfile(SoundLogCategory category)
+{
+    static const CategoryProfile kProfiles[static_cast<size_t>(SoundLogCategory::Count)] = {
+        //                 world gain                cap   radius     player gain              cap
+        /* Background */ { MillibelToLinear(-100.f), 20,   5020.f, MillibelToLinear(-100.f),  20 },
+        /* Ui         */ { MillibelToLinear(0.f),    16,      0.f, MillibelToLinear(0.f),     16 },
+        /* Music      */ { MillibelToLinear(-500.f),  1,      0.f, MillibelToLinear(-500.f),   1 },
+        /* Dialog     */ { MillibelToLinear(0.f),     4,   1248.f, MillibelToLinear(0.f),      4 },
+        /* HitBow     */ { MillibelToLinear(-300.f),  4,   1248.f, MillibelToLinear(0.f),      2 }, // arrhit/parrhit
+        /* HitAxe     */ { MillibelToLinear(-450.f), 16,   1248.f, MillibelToLinear(0.f),      4 }, // axehit/paxehit
+        /* HitHammer  */ { MillibelToLinear(-600.f),  8,   1248.f, MillibelToLinear(-200.f),   4 }, // hamhit/phamhit
+        /* HitDagger  */ { MillibelToLinear(-400.f), 16,   1000.f, MillibelToLinear(200.f),    4 }, // daghit/pdaghit
+        /* HitScythe  */ { MillibelToLinear(-400.f),  8,   1248.f, MillibelToLinear(0.f),      4 }, // scyhit/pscyhit
+        /* HitSpear   */ { MillibelToLinear(-400.f),  8,   1248.f, MillibelToLinear(0.f),      4 }, // sprhit/psprhit
+        /* HitSword   */ { MillibelToLinear(-750.f), 16,   1248.f, MillibelToLinear(-350.f),   4 }, // swohit/pswohit
+        /* HitMagic   */ { MillibelToLinear(-500.f), 16,   1248.f, MillibelToLinear(-400.f),   4 }, // maghit/pmaghit
+        /* HitMiss    */ { MillibelToLinear(-500.f),  8,   1000.f, MillibelToLinear(-100.f),   3 }, // miss/pmiss
+        // Skill layers, each taken verbatim from its own CategorySettings.ini section instead of
+        // sharing one averaged bucket. The warmup layer being 10x quieter than the rest is the
+        // single biggest difference between "a fight" and "a wall of noise": roughly half of all
+        // captured skill cues are warmups, and the game plays them at -2000mB.
+        // The wind-up gap is the widest in the whole table: -2000 out in the world against -300
+        // for the followed player. That single pairing is what makes a followed caster's spells
+        // announce themselves while the rest of the map stays a texture.
+        /* SkillWarmup*/ { MillibelToLinear(-2000.f), 4,   1000.f, MillibelToLinear(-300.f),   2 }, // wrmups/pwrmups
+        /* SkillEffect*/ { MillibelToLinear(-600.f),  8,   2512.f, MillibelToLinear(0.f),      4 }, // skills/pskills
+        /* SkillExtra */ { MillibelToLinear(-600.f),  8,   1600.f, MillibelToLinear(-50.f),    4 }, // skillx/pskillx
+        /* SkillWoosh */ { MillibelToLinear(-700.f), 12,   1248.f, MillibelToLinear(-200.f),   2 }, // woosh/pwoosh
+        /* Footstep   */ { MillibelToLinear(-1500.f),16,    500.f, MillibelToLinear(-1200.f),  2 }, // feet/pfeet
+    };
+    return kProfiles[static_cast<size_t>(category)];
+}
+
+// User-adjustable per-SND_TYPE slider (Sound FX panel) covering the category. All Effects-type
+// sub-categories (hits, skill cues, footsteps) share the single "Effects" slider, matching the
+// granularity the panel exposes - CategorySettings.ini's own per-category Volume (baked into
+// GetCategoryProfile above) is what distinguishes them from each other underneath that.
+static float TypeVolumeMultiplier(SoundLogCategory category, const AudioConfig& cfg)
+{
+    switch (category) {
+        case SoundLogCategory::Background: return cfg.background_volume;
+        case SoundLogCategory::Ui:         return cfg.ui_volume;
+        case SoundLogCategory::Music:      return cfg.music_volume;
+        case SoundLogCategory::Dialog:     return cfg.dialog_volume;
+        case SoundLogCategory::Footstep:   return cfg.ambient_volume;
+        default:
+            return IsSkillCategory(category) ? cfg.skills_volume   // Skill*
+                                             : cfg.attacks_volume; // Hit*
+    }
+}
+
 // ── SpatialAudioEngine ────────────────────────────────────────────────────
 
 SpatialAudioEngine::SpatialAudioEngine()
@@ -43,9 +146,7 @@ SpatialAudioEngine::~SpatialAudioEngine()
     Shutdown();
 }
 
-bool SpatialAudioEngine::Init(DATManager* datMgr,
-                               const std::unordered_map<int, std::vector<int>>* hashIndex,
-                               const std::string& skillSoundsJsonPath)
+bool SpatialAudioEngine::Init(DATManager* datMgr, const std::unordered_map<int, std::vector<int>>* hashIndex)
 {
     if (m_initialized) return true;
 
@@ -86,27 +187,51 @@ bool SpatialAudioEngine::Init(DATManager* datMgr,
     m_listener.OrientFront = { 0.f, 0.f, 1.f };
     m_listener.OrientTop   = { 0.f, 1.f, 0.f };
 
-    // Smooth logarithmic-style distance curve — audible from far away, gentle falloff
-    m_curvePoints[0] = { 0.00f, 1.00f };   // at emitter: full volume
-    m_curvePoints[1] = { 0.05f, 0.90f };   // very near: barely reduced
-    m_curvePoints[2] = { 0.15f, 0.60f };   // nearby: still prominent
-    m_curvePoints[3] = { 0.35f, 0.30f };   // mid-range: noticeable
-    m_curvePoints[4] = { 0.65f, 0.10f };   // far: ambient-level
-    m_curvePoints[5] = { 1.00f, 0.00f };   // max range: silent
-    m_distanceCurve.pPoints = m_curvePoints;
-    m_distanceCurve.PointCount = 6;
-
-    // Load skill sound table
-    m_skillTable = std::make_unique<SkillSoundTable>();
-    m_skillTable->Load(skillSoundsJsonPath);
+    RebuildDistanceCurve();
 
     // Init sound cache with shared hash index (same one used for textures/models)
     m_soundCache = std::make_unique<SoundCache>();
     m_soundCache->Init(datMgr, hashIndex);
 
+    LoadSoundOverrides();
+
     m_initialized = true;
     OutputDebugStringA(std::format("[SpatialAudio] Initialized with {} output channels\n", m_masterChannels).c_str());
     return true;
+}
+
+float SpatialAudioEngine::DistanceGain(float normalizedDistance) const
+{
+    const float x = std::clamp(normalizedDistance, 0.0f, 1.0f);
+
+    // Reference distance: full volume inside it. Clamped away from 0 because the inverse law
+    // divides by it, and away from 1 so there is always some falloff left to hear.
+    const float ref = std::clamp(m_config.near_field_fraction, 0.001f, 0.90f);
+    if (x <= ref) return 1.0f;
+
+    const float rolloff = std::max(0.01f, m_config.distance_rolloff);
+
+    // Inverse distance law: gain = ref / (ref + rolloff * (d - ref)). This is the model
+    // DirectSound3D and OpenAL use, and it is logarithmic in dB - a fixed drop per doubling of
+    // distance rather than a straight line - which is how loudness is actually perceived.
+    auto inverse = [ref, rolloff](float d) { return ref / (ref + rolloff * (d - ref)); };
+
+    // The bare law never reaches zero, so a sound would still be audible at the cull radius and
+    // cut off abruptly there. Rescaling by the value at the edge slides the whole curve down so
+    // it arrives at silence exactly at the radius, keeping the shape but removing the step.
+    const float atEdge = inverse(1.0f);
+    return std::clamp((inverse(x) - atEdge) / (1.0f - atEdge), 0.0f, 1.0f);
+}
+
+void SpatialAudioEngine::RebuildDistanceCurve()
+{
+    for (int i = 0; i < kCurvePointCount; ++i) {
+        const float x = static_cast<float>(i) / static_cast<float>(kCurvePointCount - 1);
+        m_curvePoints[i].Distance   = x;
+        m_curvePoints[i].DSPSetting = DistanceGain(x);
+    }
+    m_distanceCurve.pPoints    = m_curvePoints;
+    m_distanceCurve.PointCount = kCurvePointCount;
 }
 
 void SpatialAudioEngine::Shutdown()
@@ -134,7 +259,6 @@ void SpatialAudioEngine::Shutdown()
     }
 
     m_soundCache.reset();
-    m_skillTable.reset();
     m_initialized = false;
 
     MFShutdown();
@@ -162,53 +286,93 @@ void SpatialAudioEngine::UpdateListener(const XMFLOAT3& pos,
     m_lastListenerPos = pos;
     m_hasLastListenerPos = true;
 
+    // Keep the falloff in step with the sliders. 33 evaluations of a divide - far cheaper than
+    // tracking which control changed and risking a stale curve.
+    RebuildDistanceCurve();
+
     // Apply master volume
     if (m_masterVoice)
-        m_masterVoice->SetVolume(m_config.master_volume * m_config.sfx_volume);
+        m_masterVoice->SetVolume(MasterGain(m_config.master_volume));
 
     // Update 3D for all active voices
     std::lock_guard<std::mutex> lock(m_voiceMutex);
     for (auto& slot : m_voicePool) {
         if (!slot.inUse || !slot.voice) continue;
 
-        slot.emitter.Position = { slot.emitterX, slot.emitterY, slot.emitterZ };
-        slot.emitter.pVolumeCurve = &m_distanceCurve;
-        slot.emitter.CurveDistanceScaler = m_config.curve_distance_scaler * m_config.max_audible_radius;
+        // Re-apply category/type volume every frame rather than only at voice start, so moving
+        // a Sound FX slider while a sound is already playing takes effect immediately instead of
+        // only on the next sound that starts. baseGainLinear already carries the world-vs-player
+        // choice made when the voice was acquired.
+        slot.voice->SetVolume(slot.baseGainLinear * TypeVolumeMultiplier(slot.category, m_config));
 
-        slot.dspSettings.SrcChannelCount = 1;
-        slot.dspSettings.DstChannelCount = m_masterChannels;
-        slot.dspSettings.pMatrixCoefficients = slot.matrixCoeffs;
+        if (slot.positional) {
+            // Squash the emitter toward the listener's own height before X3DAudio sees it, so
+            // camera altitude stops dominating the distance. Done here rather than by editing the
+            // curve because it must affect the panning geometry too: a fight below an elevated
+            // camera should pan across the stereo field, not collapse to "far away and centred".
+            const float ey = m_listener.Position.y +
+                             (slot.emitterY - m_listener.Position.y) * m_config.vertical_distance_scale;
+            slot.emitter.Position = { slot.emitterX, ey, slot.emitterZ };
+            slot.emitter.pVolumeCurve = &m_distanceCurve;
+            // X3DAudio normalises distance by CurveDistanceScaler, so this must BE the radius at
+            // which the category goes silent. It used to be curve_distance_scaler(14) *
+            // max_audible_radius(2500) = 35000 units - several map widths - which is why a sound
+            // at the edge of the compass still played at ~62% and everything blurred together.
+            slot.emitter.CurveDistanceScaler =
+                std::max(1.0f, GetCategoryProfile(slot.category).audibleRadius *
+                               m_config.hearing_distance_scale);
 
-        X3DAudioCalculate(m_x3d, &m_listener, &slot.emitter,
-            X3DAUDIO_CALCULATE_MATRIX | X3DAUDIO_CALCULATE_DOPPLER | X3DAUDIO_CALCULATE_LPF_DIRECT,
-            &slot.dspSettings);
+            slot.dspSettings.SrcChannelCount = 1;
+            slot.dspSettings.DstChannelCount = m_masterChannels;
+            slot.dspSettings.pMatrixCoefficients = slot.matrixCoeffs;
 
-        // Front-hemisphere attenuation: mute sounds behind the camera,
-        // smooth fade through a ~60-degree transition zone at the sides.
-        float dx = slot.emitterX - m_listener.Position.x;
-        float dz = slot.emitterZ - m_listener.Position.z;
-        float dist2d = sqrtf(dx * dx + dz * dz);
-        float dotFront = 0.f;
-        if (dist2d > 0.01f)
-            dotFront = (dx * m_listener.OrientFront.x + dz * m_listener.OrientFront.z) / dist2d;
-        // dotFront: 1.0 = directly in front, 0.0 = 90 degrees, -1.0 = behind
-        // Map to volume: full at >30deg forward, fade to 0 at >30deg behind
-        float frontGain = std::clamp((dotFront + 0.5f) / 1.0f, 0.0f, 1.0f);
-        frontGain *= frontGain; // quadratic fade for smoother transition
+            X3DAudioCalculate(m_x3d, &m_listener, &slot.emitter,
+                X3DAUDIO_CALCULATE_MATRIX | X3DAUDIO_CALCULATE_DOPPLER | X3DAUDIO_CALCULATE_LPF_DIRECT,
+                &slot.dspSettings);
 
-        for (UINT32 ch = 0; ch < m_masterChannels; ch++)
-            slot.matrixCoeffs[ch] *= frontGain;
+            // Front-hemisphere attenuation: mute sounds behind the camera,
+            // smooth fade through a ~60-degree transition zone at the sides.
+            float dx = slot.emitterX - m_listener.Position.x;
+            float dz = slot.emitterZ - m_listener.Position.z;
+            float dist2d = sqrtf(dx * dx + dz * dz);
+            float dotFront = 0.f;
+            if (dist2d > 0.01f)
+                dotFront = (dx * m_listener.OrientFront.x + dz * m_listener.OrientFront.z) / dist2d;
+            // dotFront: 1.0 = directly in front, 0.0 = 90 degrees, -1.0 = behind
+            // Map to volume: full at >30deg forward, falling off towards the rear.
+            float frontGain = std::clamp((dotFront + 0.5f) / 1.0f, 0.0f, 1.0f);
+            frontGain *= frontGain; // quadratic fade for smoother transition
+            // Floor it rather than muting outright: a spike going off behind the camera should
+            // still be heard (quieter, and panned by the X3DAudio matrix), not vanish. Fully
+            // silencing the rear hemisphere is what made skill casts seem to only exist while
+            // the camera happened to face them.
+            frontGain = kRearGainFloor + (1.0f - kRearGainFloor) * frontGain;
 
-        slot.voice->SetOutputMatrix(m_masterVoice, 1, m_masterChannels, slot.matrixCoeffs);
-        slot.voice->SetFrequencyRatio(slot.dspSettings.DopplerFactor);
+            for (UINT32 ch = 0; ch < m_masterChannels; ch++)
+                slot.matrixCoeffs[ch] *= frontGain;
 
-        // Apply low-pass filter for sounds approaching the side/rear
-        float lpfCoeff = slot.dspSettings.LPFDirectCoefficient;
-        XAUDIO2_FILTER_PARAMETERS filterParams;
-        filterParams.Type = LowPassFilter;
-        filterParams.Frequency = 2.0f * sinf(X3DAUDIO_PI / 6.0f * lpfCoeff);
-        filterParams.OneOverQ = 1.0f;
-        slot.voice->SetFilterParameters(&filterParams);
+            if (m_config.swap_stereo && m_masterChannels >= 2)
+                std::swap(slot.matrixCoeffs[0], slot.matrixCoeffs[1]);
+
+            slot.voice->SetOutputMatrix(m_masterVoice, 1, m_masterChannels, slot.matrixCoeffs);
+            slot.voice->SetFrequencyRatio(slot.dspSettings.DopplerFactor);
+
+            // Apply low-pass filter for sounds approaching the side/rear
+            float lpfCoeff = slot.dspSettings.LPFDirectCoefficient;
+            XAUDIO2_FILTER_PARAMETERS filterParams;
+            filterParams.Type = LowPassFilter;
+            filterParams.Frequency = 2.0f * sinf(X3DAUDIO_PI / 6.0f * lpfCoeff);
+            filterParams.OneOverQ = 1.0f;
+            slot.voice->SetFilterParameters(&filterParams);
+        }
+        else {
+            // Non-spatial (music/dialog/UI, per the recorder's own Positional flag): flat
+            // equal-power matrix, no distance/direction attenuation, no Doppler/LPF.
+            float coeff = (m_masterChannels > 0) ? 1.0f / sqrtf(static_cast<float>(m_masterChannels)) : 1.0f;
+            for (UINT32 ch = 0; ch < m_masterChannels; ch++)
+                slot.matrixCoeffs[ch] = coeff;
+            slot.voice->SetOutputMatrix(m_masterVoice, 1, m_masterChannels, slot.matrixCoeffs);
+        }
 
         // Check if voice has finished playing
         XAUDIO2_VOICE_STATE state;
@@ -221,57 +385,160 @@ void SpatialAudioEngine::UpdateListener(const XMFLOAT3& pos,
     }
 }
 
-void SpatialAudioEngine::Post(const SoundEvent& evt, float agentX, float agentY, float agentZ)
+int SpatialAudioEngine::CountActiveVoicesInCategory(SoundLogCategory category, bool focusedPlayer) const
 {
-    if (!m_initialized) return;
-    if (!m_skillTable || !m_soundCache) return;
+    int count = 0;
+    for (const auto& slot : m_voicePool) {
+        if (slot.inUse && slot.category == category && slot.focusedPlayer == focusedPlayer)
+            count++;
+    }
+    return count;
+}
+
+void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, float x, float y, float z,
+                                    bool positional, float gainScale, bool focusedPlayer)
+{
+    if (!m_initialized || !m_soundCache) return;
 
     m_debugStats.eventsPosted++;
 
-    const SkillSoundEntry* entry = m_skillTable->Get(evt.skill_id);
-    if (!entry) {
-        if (m_warnedSkillIds.insert(evt.skill_id).second)
-            OutputDebugStringA(std::format("[SpatialAudio] No sound mapping for skill {}\n", evt.skill_id).c_str());
+    // Per-sample override (settings/sound_overrides.json). A muted sample is dropped here so it
+    // never occupies a voice slot.
+    if (!m_soundOverrides.empty()) {
+        auto ov = m_soundOverrides.find(fileId);
+        if (ov != m_soundOverrides.end()) {
+            if (ov->second <= 0.0f) return;
+            gainScale *= ov->second;
+        }
+    }
+
+    const auto& profile = GetCategoryProfile(category);
+
+    // A zero radius means the category is 2D (CategorySettings.ini 3DMode=0: ui, music). The
+    // recording still flags most of those events positional, but honouring that would run them
+    // through a distance curve with no meaningful radius and silence them outright.
+    if (profile.audibleRadius <= 0.f)
+        positional = false;
+
+    // Out of earshot: drop it before it can take a voice. Playing something inaudible is not just
+    // wasted work - it occupies one of the category's limited slots and can push a sound the
+    // viewer would actually have heard past the cap.
+    if (positional) {
+        const float radius = profile.audibleRadius * m_config.hearing_distance_scale;
+        const float dx = x - m_listener.Position.x;
+        const float dy = (y - m_listener.Position.y) * m_config.vertical_distance_scale;
+        const float dz = z - m_listener.Position.z;
+        if ((dx * dx + dy * dy + dz * dz) > (radius * radius)) {
+            m_debugStats.culledByDistance++;
+            return;
+        }
+    }
+
+    // Mirror the game's own per-category polyphony cap (CategorySettings.ini MaxSounds): if
+    // this category is already saturated, drop the new instance rather than voice it - the same
+    // throttling a crowded real fight would apply, just replicated here instead of (or in
+    // addition to) whatever already happened upstream at capture time.
+    const int cap = focusedPlayer ? profile.playerMaxSounds : profile.maxSounds;
+    std::unique_lock lock(m_voiceMutex);
+    if (CountActiveVoicesInCategory(category, focusedPlayer) >= cap) {
+        m_debugStats.droppedAtCap++;
         return;
     }
+    lock.unlock();
 
-    m_debugStats.lastSkillId = evt.skill_id;
-    m_debugStats.lastSkillName = entry->name;
+    const AudioBuffer* buf = m_soundCache->Get(fileId);
+    if (!buf) return;
 
-    // Determine which file list to play based on the event category
-    const std::vector<uint32_t>* fileIds = nullptr;
-    if (evt.category == SoundCategory::SKILL_CAST)
-        fileIds = &entry->caster_sounds;
-    else if (evt.category == SoundCategory::HIT)
-        fileIds = &entry->target_sounds;
+    VoiceSlot* slot = AcquireVoice();
+    if (!slot) return;
 
-    if (!fileIds || fileIds->empty()) return;
+    slot->positional = positional;
+    slot->category = category;
+    slot->focusedPlayer = focusedPlayer;
+    slot->emitterX = x;
+    slot->emitterY = y;
+    slot->emitterZ = z;
 
-    OutputDebugStringA(std::format("[SpatialAudio] Post: skill={} '{}' cat={} files={} pos=({:.0f},{:.0f},{:.0f})\n",
-        evt.skill_id, entry->name, (int)evt.category, fileIds->size(), agentX, agentY, agentZ).c_str());
+    slot->baseGainLinear = (focusedPlayer ? profile.playerGainLinear : profile.gainLinear) * gainScale;
+    SubmitBuffer(slot, buf, slot->baseGainLinear * TypeVolumeMultiplier(category, m_config));
+    m_lastPlayedFileId = fileId;
+    m_debugStats.soundsPlayed++;
+}
 
-    int soundsThisPost = 0;
-    for (uint32_t fileId : *fileIds) {
-        const AudioBuffer* buf = m_soundCache->Get(fileId);
-        if (!buf) {
-            OutputDebugStringA(std::format("[SpatialAudio]   fileId {} -> cache miss/fail\n", fileId).c_str());
-            continue;
+void SpatialAudioEngine::LoadSoundOverrides()
+{
+    m_soundOverrides.clear();
+
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    auto path = std::filesystem::path(exePath).parent_path() / "settings" / "sound_overrides.json";
+
+    std::ifstream f(path);
+    if (!f.is_open()) return;   // optional file - absence just means no overrides
+
+    try {
+        nlohmann::json j;
+        f >> j;
+        for (auto& [key, val] : j.items()) {
+            if (key.empty() || key[0] == '_' || !val.is_object() || !val.contains("gain"))
+                continue;   // "_comment" / "_candidates" and other prose entries
+            if (!val["gain"].is_number()) continue;
+            try {
+                m_soundOverrides[static_cast<uint32_t>(std::stoul(key))] =
+                    std::max(0.0f, val["gain"].get<float>());
+            }
+            catch (const std::exception&) { /* non-numeric key */ }
         }
-
-        VoiceSlot* slot = AcquireVoice();
-        if (!slot) {
-            OutputDebugStringA("[SpatialAudio] Voice pool exhausted\n");
-            break;
-        }
-
-        slot->emitterX = agentX;
-        slot->emitterY = agentY;
-        slot->emitterZ = agentZ;
-
-        SubmitBuffer(slot, buf, evt.volume);
-        soundsThisPost++;
+        OutputDebugStringA(std::format("[SpatialAudio] {} sound overrides loaded\n",
+                                       m_soundOverrides.size()).c_str());
     }
-    m_debugStats.soundsPlayed += soundsThisPost;
+    catch (const std::exception& ex) {
+        OutputDebugStringA(std::format("[SpatialAudio] sound_overrides.json parse error: {}\n",
+                                       ex.what()).c_str());
+    }
+}
+
+void SpatialAudioEngine::PlayDirectionalTest(TestDirection dir)
+{
+    if (!m_initialized) return;
+
+    // Reuse whatever last played so the probe can't be silent for a bad file id; 8901 (a common
+    // skill layer) is only the fallback for a session where nothing has played yet.
+    const uint32_t fileId = m_lastPlayedFileId ? m_lastPlayedFileId : 8901u;
+
+    const XMFLOAT3 pos   = { m_listener.Position.x, m_listener.Position.y, m_listener.Position.z };
+    const XMFLOAT3 front = { m_listener.OrientFront.x, m_listener.OrientFront.y, m_listener.OrientFront.z };
+    const XMFLOAT3 up    = { m_listener.OrientTop.x, m_listener.OrientTop.y, m_listener.OrientTop.z };
+
+    // X3DAudio is left-handed, so right = up x front.
+    XMVECTOR vFront = XMVector3Normalize(XMLoadFloat3(&front));
+    XMVECTOR vUp    = XMVector3Normalize(XMLoadFloat3(&up));
+    XMVECTOR vRight = XMVector3Normalize(XMVector3Cross(vUp, vFront));
+
+    XMVECTOR offset{};
+    switch (dir) {
+        case TestDirection::Left:  offset = XMVectorNegate(vRight); break;
+        case TestDirection::Right: offset = vRight;                 break;
+        case TestDirection::Front: offset = vFront;                 break;
+        case TestDirection::Back:  offset = XMVectorNegate(vFront); break;
+    }
+
+    // Close enough to stay well inside the distance curve, far enough to pan hard.
+    constexpr float kTestDistance = 300.0f;
+    XMFLOAT3 emitter;
+    XMStoreFloat3(&emitter, XMVectorAdd(XMLoadFloat3(&pos), XMVectorScale(offset, kTestDistance)));
+
+    PostFileId(fileId, SoundLogCategory::SkillEffect, emitter.x, emitter.y, emitter.z, true);
+}
+
+void SpatialAudioEngine::SetPaused(bool paused)
+{
+    std::lock_guard<std::mutex> lock(m_voiceMutex);
+    for (auto& slot : m_voicePool) {
+        if (!slot.inUse || !slot.voice) continue;
+        if (paused) slot.voice->Stop();
+        else slot.voice->Start();
+    }
 }
 
 void SpatialAudioEngine::StopAll()
@@ -293,6 +560,7 @@ SpatialAudioEngine::VoiceSlot* SpatialAudioEngine::AcquireVoice()
     for (auto& slot : m_voicePool) {
         if (!slot.inUse) {
             slot.inUse = true;
+            slot.positional = true;
             ZeroEmitter(slot.emitter);
             memset(slot.matrixCoeffs, 0, sizeof(slot.matrixCoeffs));
             memset(&slot.dspSettings, 0, sizeof(slot.dspSettings));
@@ -307,6 +575,7 @@ SpatialAudioEngine::VoiceSlot* SpatialAudioEngine::AcquireVoice()
         slot.voice->FlushSourceBuffers();
     }
     slot.inUse = true;
+    slot.positional = true;
     slot.pcmOwned.clear();
     ZeroEmitter(slot.emitter);
     memset(slot.matrixCoeffs, 0, sizeof(slot.matrixCoeffs));
@@ -533,8 +802,6 @@ SpatialAudioEngine::DebugStats SpatialAudioEngine::GetDebugStats() const
         }
     }
 
-    if (m_skillTable)
-        m_debugStats.skillTableSize = m_skillTable->IsLoaded() ? 1 : 0;
     if (m_soundCache) {
         m_debugStats.hashNotFound  = m_soundCache->GetHashNotFound();
         m_debugStats.notSoundType  = m_soundCache->GetNotSoundType();

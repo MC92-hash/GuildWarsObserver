@@ -265,8 +265,9 @@ void ReplayWindow::DrawTimelineController()
                           IM_COL32(0,0,0,76), 5.f);
         dl->AddRect(ImVec2(chipX, cy), ImVec2(chipX + chipW, cy + BTN_H), cBorder, 5.f);
 
+        // Playing blinks green; stopped holds a steady red so the state reads at a glance.
         bool blinkOn = ((int)(ImGui::GetTime() / 0.65) % 2 == 0);
-        ImU32 dotCol = ctx.isPlaying ? (blinkOn ? cGreen : cGreenDim) : cTextDim;
+        ImU32 dotCol = ctx.isPlaying ? (blinkOn ? cGreen : cGreenDim) : cDanger;
         dl->AddCircleFilled(ImVec2(chipX + 8.f, cy + BTN_H*0.5f), 2.5f, dotCol);
 
         const char* stLabel = ctx.isPlaying ? "PLAYING" : "STOPPED";
@@ -442,6 +443,85 @@ void ReplayWindow::DrawTimelineController()
         cx += loopW;
     }
 
+    // ── Volume (right of Loop) ───────────────────────────────────────────
+    // Click the speaker to mute, drag the track for master volume. The slider is always shown
+    // rather than revealed on hover: it has to reserve its width in the row anyway, and a
+    // visible track doubles as the mute indicator. The speaker is drawn as flat vector art in
+    // the same weight and colours as the transport glyphs rather than blitted from the ribbon
+    // sheet, so it sits in the row instead of on top of it.
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    {
+        const float volW = 20.f * sf;
+        const float trkW = 96.f * sf;
+        AudioConfig* acfg = m_audioEngine ? &m_audioEngine->GetConfig() : nullptr;
+
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##Mute", ImVec2(volW, BTN_H));
+        const bool hovIcon = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked())
+            m_audioEnabled = !m_audioEnabled;
+        FillBtn(cx, cy, volW, BTN_H, hovIcon, 0, 0);
+
+        const ImU32 vfg   = (hovIcon || m_audioEnabled) ? cGoldBright : cTextMid;
+        const float thick = 1.3f * sf;
+        const float ox    = cx + 4.f * sf, oy = cy + BTN_H * 0.5f;
+
+        dl->AddRectFilled(ImVec2(ox, oy - 2.f * sf), ImVec2(ox + 3.2f * sf, oy + 2.f * sf), vfg);
+        dl->AddTriangleFilled(ImVec2(ox + 7.2f * sf, oy - 4.6f * sf),
+                              ImVec2(ox + 7.2f * sf, oy + 4.6f * sf),
+                              ImVec2(ox + 1.6f * sf, oy), vfg);
+
+        if (m_audioEnabled)
+        {
+            // A single wave arc keeps the on-state readable without crowding the glyph.
+            dl->PathArcTo(ImVec2(ox + 7.2f * sf, oy), 3.4f * sf, -58.f * d2r, 58.f * d2r, 12);
+            dl->PathStroke(vfg, false, thick);
+        }
+        else
+        {
+            // Struck through rather than swapped for a second glyph, so the shape stays
+            // recognisable and the mute reads as a state on top of it.
+            dl->AddLine(ImVec2(ox, oy - 5.5f * sf), ImVec2(ox + 11.f * sf, oy + 5.5f * sf),
+                        vfg, thick);
+        }
+        cx += volW + 6.f * sf;
+
+        // Track, to the right of the icon.
+        {
+            const float trkX = cx;
+            ImGui::SetCursorScreenPos(ImVec2(trkX, cy));
+            ImGui::InvisibleButton("##Vol", ImVec2(trkW, BTN_H));
+            const bool hovTrk = ImGui::IsItemHovered();
+            const bool held   = ImGui::IsItemActive();
+            m_volumeBarActive = held;
+
+            if (held && acfg)
+            {
+                const float t = (ImGui::GetIO().MousePos.x - trkX) / trkW;
+                acfg->master_volume = std::clamp(t, 0.f, 1.f);
+                m_audioEnabled = true;      // grabbing the slider means you want to hear it
+            }
+
+            const float ty    = cy + BTN_H * 0.5f;
+            const float vol   = acfg ? std::clamp(acfg->master_volume, 0.f, 1.f) : 0.f;
+            const float frac  = m_audioEnabled ? vol : 0.f;
+            const float tthick = 3.f * sf;
+            dl->AddLine(ImVec2(trkX, ty), ImVec2(trkX + trkW, ty), cTextDim, tthick);
+            if (frac > 0.f)
+                dl->AddLine(ImVec2(trkX, ty), ImVec2(trkX + trkW * frac, ty), cGoldBright, tthick);
+            dl->AddCircleFilled(ImVec2(trkX + trkW * frac, ty),
+                                (hovTrk || held) ? 6.f * sf : 5.f * sf, cGoldBright);
+
+            if (hovTrk || held)
+                ImGui::SetTooltip("Master volume  %.0f%%", vol * 100.f);
+            cx += trkW;
+        }
+
+        if (hovIcon)
+            ImGui::SetTooltip(m_audioEnabled ? "Mute" : "Unmute");
+    }
+
     // Bookmarks are driven entirely from the ribbon toolbar (Add Bookmark /
     // Bookmarks) and the scrub track's right-click menu, so the play bar
     // carries no bookmark buttons of its own.
@@ -483,7 +563,9 @@ void ReplayWindow::DrawTimelineController()
         ImGui::SetNextWindowSizeConstraints(ImVec2(speedW, 0), ImVec2(speedW * 2.f, FLT_MAX));
         if (ImGui::BeginPopup("SpeedMenu"))
         {
-            for (int i = 0; i < speedCount; i++)
+            // Listed fastest-first: the popup opens upwards, so descending order puts the
+            // slow speeds nearest the button they drop out of.
+            for (int i = speedCount - 1; i >= 0; i--)
             {
                 bool sel = (i == ctx.speedIndex);
                 if (ImGui::Selectable(speedLabels[i], sel))

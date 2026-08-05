@@ -1293,6 +1293,24 @@ struct DoorEvent
     int      state = 0;
 };
 
+// One captured sound (auto-attack, footstep, skill cue, dialog, music) from
+// StoC/sound_events.txt. Position/timing/file_id are exactly what the recording
+// client's own audio engine used - no inference needed. See
+// GWToolboxpp's SOUND_RECORDING_PLAYBACK_PLAN.md / EXPORTS_CONVENTIONS.md.
+struct SoundLogEvent
+{
+    float    time = 0.f;
+    uint32_t file_id = 0;
+    uint8_t  sound_type = 0;   // SND_TYPE: 0=Background,1=Effects,2=UI,3=Music,4=Dialog
+    uint32_t flags = 0;        // raw SoundProps::flags bitfield
+    float    x = 0.f, y = 0.f, z = 0.f;
+    bool     positional = false; // (flags & 0x1400) == 0x1400; false => play non-spatialized
+    int      cause_agent_id = 0; // best-guess correlated actor, 0 if uncorrelated
+    int      cause_skill_id = 0;
+    // cam_dist/cam_angle intentionally not carried over: QA-only fields relative to the
+    // *recording* camera, meaningless for replay (which uses whatever camera is active now).
+};
+
 // ---------------------------------------------------------------------------
 // Flag events (from flag_events.txt — GvG flag StoC packets)
 // ---------------------------------------------------------------------------
@@ -1460,6 +1478,7 @@ struct StoCData
     std::vector<MapObjectEvent>         mapObject;
     std::vector<DoorEvent>              doorEvents;
     FlagEventData                       flagEvents;
+    std::vector<SoundLogEvent>          soundEvents;
 };
 
 struct StoCParseProgress

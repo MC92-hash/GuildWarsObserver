@@ -1,0 +1,14 @@
+{
+  "_comment": "Per-sound-file gain overrides, applied to every sound regardless of category. gain is a linear multiplier: 0 mutes the sound outright (it is dropped before taking a voice), 1 leaves it untouched, 0.25 makes it a quarter as loud. Use this for individual samples that are correct in isolation but grate through repetition. Edit and restart to apply.",
+
+  "35820": {
+    "gain": 0.0,
+    "note": "Mesmer generic cast-start layer. Present in 143 of 527 skills at ms 6-8, so it retriggers on nearly every Mesmer cast and drones."
+  },
+  "55261": {
+    "gain": 0.0,
+    "note": "Monk protection generic cast-start layer. Present in 20 skills (Aegis, Guardian, Protective Spirit, Mend/Restore) at ms 0-8."
+  },
+
+  "_candidates": "Other heavily repeated generic layers, left audible for now - lower these if they start to drone too: 121221 (Elementalist, 125 skills), 163037 (Assassin, 53), 8542/8543 (Necromancer, 49/45), 59138+77436 (Monk signets, 36/34), 19168 (Warrior, 28), 156307 (Ritualist, 27)."
+}

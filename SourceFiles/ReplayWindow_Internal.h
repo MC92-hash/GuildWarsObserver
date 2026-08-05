@@ -81,9 +81,8 @@ ImTextureID LoadNPCIcon(ID3D11Device* device, const char* filename);
 // DDS variant (Textures/NPC/<filename>.dds) for compressed game textures
 ImTextureID LoadNPCIconDDS(ID3D11Device* device, const char* filename);
 
-// --- Settings file paths (shared: core + Heatmap/Audio feature TUs) ---
+// --- Settings file paths (shared: core + Heatmap feature TUs) ---
 std::filesystem::path GetHeatmapSettingsPath();
-std::filesystem::path GetSkillSoundsFilePath();
 
 // --- Party window shared type + helpers (shared: PartyWindows, FollowedAgentHUD) ---
 struct PartyIcons {

@@ -16,6 +16,8 @@
 #include "CursorSystem.h"
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
+#include "SkillSoundTable.h"
+#include "draw_sound_fx_panel.h"
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
@@ -608,19 +610,6 @@ static std::wstring BuildWindowTitle(const MatchMeta& match)
         name1, tag1, name2, tag2);
 
     return std::wstring(title.begin(), title.end());
-}
-
-// ---------------------------------------------------------------------------
-// Spatial Audio
-// ---------------------------------------------------------------------------
-
-std::filesystem::path GetSkillSoundsFilePath()
-{
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    auto dir = std::filesystem::path(exePath).parent_path();
-    auto settingsDir = dir / "settings";
-    return settingsDir / "skill_sounds.json";
 }
 
 // ---------------------------------------------------------------------------
@@ -5895,7 +5884,7 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Split Camera", nullptr, &m_pipEnabled);
             ImGui::MenuItem("Minimap", nullptr, &m_minimapEnabled);
             ImGui::Separator();
-            ImGui::MenuItem("Sound FX (BETA)", nullptr, &m_audioEnabled);
+            ImGui::MenuItem("Sound FX (BETA)", nullptr, &m_showSoundFxPanel);
             ImGui::EndMenu();
         }
 
@@ -5909,7 +5898,6 @@ void ReplayWindow::DrawImGuiOverlay()
                 ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
                 ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
             }
-            ImGui::MenuItem("Audio Debug", nullptr, &m_showAudioDebug);
             if (GuiGlobalConstants::IsDeveloperMode())
             {
                 ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
@@ -6161,66 +6149,7 @@ void ReplayWindow::DrawImGuiOverlay()
                                        annViewport.Height, m_debugTimeline);
     }
 
-    // Audio debug panel
-    if (m_showAudioDebug && m_audioEngine) {
-        ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Audio Debug", &m_showAudioDebug)) {
-            auto stats = m_audioEngine->GetDebugStats();
-            ImGui::Text("Engine initialized: %s", m_audioInitialized ? "YES" : "NO");
-            ImGui::Text("Audio enabled:      %s", m_audioEnabled ? "YES" : "NO");
-            ImGui::Text("MFT size:           %d", m_datManager ? m_datManager->get_num_files() : -1);
-            if (m_datManager) {
-                auto wpath = m_datManager->get_filepath();
-                std::string path8(wpath.begin(), wpath.end());
-                ImGui::TextWrapped("DAT: %s", path8.c_str());
-            }
-            ImGui::Separator();
-            ImGui::Text("Events posted:      %d", stats.eventsPosted);
-            ImGui::Text("Sounds played:      %d", stats.soundsPlayed);
-            ImGui::Text("Voices active:      %d", stats.voicesActive);
-            if (stats.voicesActive > 0) {
-                float total = stats.panLeft + stats.panRight;
-                float pct = total > 0.001f ? stats.panLeft / total : 0.5f;
-                const char* dir = (pct > 0.55f) ? "LEFT" : (pct < 0.45f) ? "RIGHT" : "CENTER";
-                ImGui::Text("Pan L:%.2f R:%.2f  [%s]", stats.panLeft, stats.panRight, dir);
-            }
-            ImGui::Separator();
-            ImGui::Text("ID out of range:    %d", stats.hashNotFound);
-            ImGui::Text("Not SOUND type:     %d", stats.notSoundType);
-            ImGui::Text("Decode failures:    %d", stats.decodeFailures);
-            if (auto* sc = m_audioEngine->GetSoundCache()) {
-                auto& ll = sc->GetLastLoad();
-                ImGui::Separator();
-                ImGui::Text("Hash index entries: %d", sc->GetHashIndexSize());
-                ImGui::Text("Last fileId (json): %u", ll.fileId);
-                ImGui::Text("Resolved MFT idx:   %u", ll.resolvedIndex);
-                ImGui::Text("Resolve method:     %s", ll.resolveMethod.c_str());
-                ImGui::Text("Data size:          %d", ll.dataSize);
-                ImGui::Text("MFT type:           %d", ll.mftType);
-                ImGui::Text("Magic bytes:        %02X %02X %02X %02X",
-                    ll.magic[0], ll.magic[1], ll.magic[2], ll.magic[3]);
-                ImGui::Text("Load ok:            %s", ll.loaded ? "YES" : "NO");
-                if (!ll.rejectReason.empty())
-                    ImGui::TextColored(ImVec4(1,0.4f,0.4f,1), "Reject: %s", ll.rejectReason.c_str());
-            }
-            ImGui::Separator();
-            ImGui::Text("Last skill: %u '%s'", stats.lastSkillId, stats.lastSkillName.c_str());
-            ImGui::Text("Timeline: %.2f  LastAudio: %.2f", m_debugTimeline, m_audioLastTime);
-            ImGui::Separator();
-            auto& cfg = m_audioEngine->GetConfig();
-            ImGui::SliderFloat("Master Vol", &cfg.master_volume, 0.f, 1.f);
-            ImGui::SliderFloat("SFX Vol", &cfg.sfx_volume, 0.f, 1.f);
-            ImGui::SliderFloat("Dist Scale", &cfg.curve_distance_scaler, 1.f, 50.f);
-        }
-        ImGui::End();
-    }
-    else if (m_showAudioDebug && !m_audioEngine) {
-        if (ImGui::Begin("Audio Debug", &m_showAudioDebug)) {
-            ImGui::Text("Audio engine not created");
-            ImGui::Text("Initialized: %s", m_audioInitialized ? "YES" : "NO");
-        }
-        ImGui::End();
-    }
+    DrawSoundFxPanel(m_audioEngine.get(), m_showSoundFxPanel);
 
     DrawAgentOverlay();
     DrawFlags();

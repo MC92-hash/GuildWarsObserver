@@ -1087,11 +1087,17 @@ void ReplayWindow::DrawFollowedAgentHUD()
     constexpr float PAD     = 6.f;
     constexpr float TOP_Y   = 36.f;   // below the menu bar
     constexpr float PANEL_R = 5.f;
+    constexpr float RIBBON_GAP = 6.f; // breathing room under the ribbon strip
 
     float panelW = BAR_W + PAD * 2.f;
     float panelH = PAD + BAR_H + PAD;
     float panelX = (vpW - panelW) * 0.5f;
-    float panelY = TOP_Y;
+
+    // Slide clear of the ribbon toolbar instead of being drawn over it. The
+    // ribbon republishes its animated bottom edge each frame, so the bar rides
+    // the collapse/expand tween; once the strip is collapsed (or closed) the
+    // edge falls above TOP_Y and the bar settles back to its usual place.
+    float panelY = std::max(TOP_Y, m_ribbonBottomY + RIBBON_GAP);
 
     bool isDead = snap->is_dead;
     float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);

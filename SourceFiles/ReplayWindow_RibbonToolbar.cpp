@@ -679,7 +679,12 @@ ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
 
 void ReplayWindow::DrawRibbonToolbar()
 {
-    if (m_ribbonClosed) return;
+    if (m_ribbonClosed)
+    {
+        // Nothing occupies the top edge, so HUD elements can sit flush against it.
+        m_ribbonBottomY = ImGui::GetMainViewport()->WorkPos.y;
+        return;
+    }
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGuiIO&       io = ImGui::GetIO();
@@ -709,6 +714,7 @@ void ReplayWindow::DrawRibbonToolbar()
         m_ribbonReveal = target;
 
     const float h = kCollapsedH + (kExpandedH - kCollapsedH) * m_ribbonReveal;
+    m_ribbonBottomY = origin.y + h;
 
     ImGui::SetNextWindowPos(origin);
     ImGui::SetNextWindowSize(ImVec2(width, h));
@@ -830,18 +836,27 @@ void ReplayWindow::DrawRibbonToolbar()
               TexIcon{ "Toolbar\\[3] - Signet of Capture.jpg", ImVec4(0, 0, 0, 0),
                        1.16f, ImVec4(0, 0, 0, 0), nullptr, ImVec4(0, 0, 0, 0), true },
               "Show skill icons near agents when they cast."),
-            T(Ico::Lasers, "Skill Lasers", m_showLaserPanel,
-              TexIcon{ "Toolbar\\ui_template_actions.png", ImVec4(27, 23, 44, 46), 1.26f },
-              "Open the skill laser panel. Lasers draw a line from each "
-              "caster to the target of their skill. The panel filters which "
-              "lasers are drawn:\n"
-              "- By profession, so you can watch only the Monks or only the "
-              "Mesmers\n"
-              "- By team, red and/or blue\n"
-              "- Per player, ticking individual casters on or off\n"
-              "It also holds the master switch that turns the lasers "
-              "themselves on or off.",
-              hk.toggleSkillLasers),
+            // Lit by whether lasers are actually being drawn, not by whether the
+            // filter panel happens to be open - the button reports what is on
+            // screen, the same as every other Overlays toggle. Clicking it still
+            // opens the panel, which is where the master switch lives.
+            Item{ Ico::Lasers, "Skill Lasers",
+                  [this] { return m_showSkillLasers; },
+                  [this] { m_showLaserPanel = !m_showLaserPanel; },
+                  false, Ico::None, nullptr, nullptr,
+                  TexIcon{ "Toolbar\\ui_template_actions.png",
+                           ImVec4(27, 23, 44, 46), 1.26f },
+                  0,
+                  "Open the skill laser panel. Lasers draw a line from each "
+                  "caster to the target of their skill. The panel filters which "
+                  "lasers are drawn:\n"
+                  "- By profession, so you can watch only the Monks or only the "
+                  "Mesmers\n"
+                  "- By team, red and/or blue\n"
+                  "- Per player, ticking individual casters on or off\n"
+                  "It also holds the master switch that turns the lasers "
+                  "themselves on or off.",
+                  hk.toggleSkillLasers },
             Item{ Ico::Rings, "Range Rings",
                   [this] { return m_showRangeRings; },
                   [this] { m_showRangeRings = !m_showRangeRings; },
@@ -1021,17 +1036,22 @@ void ReplayWindow::DrawRibbonToolbar()
               TexIcon{ "Others_UI\\texture_283991.dds", ImVec4(32, 0, 48, 16), 1.14f },
               "Open the match notepad - a free-text panel for writing notes "
               "or commentary alongside the replay, saved with the match."),
-            T(Ico::Speaker, "Sound FX", m_audioEnabled,
-              TexIcon{ "Toolbar\\SpeakerON.png", ImVec4(9, 12, 47, 44), 1.18f,
-                       ImVec4(0, 0, 0, 0), "Toolbar\\SpeakerOFF.png",
-                       ImVec4(6, 6, 50, 50) },
-              "Toggle skill sound effects during playback: plays audio cues "
-              "mapped to skill casts as they happen in the replay (beta)."),
         } });
 
         // Own group, so the ribbon's group divider separates it from the
-        // panel toggles either side.
+        // panel toggles either side. Sound FX sits here rather than in Tools:
+        // it is a mixer, so it belongs with the other configuration buttons.
         groups.push_back({ "Settings", {
+            // One piece of art for both states. The button opens a panel rather than switching
+            // the sound on and off, so a crossed-out speaker would say the wrong thing - the
+            // active state is carried by the ribbon's own gold border. Passing rectOn identical
+            // to rect marks this as state-carrying art, which also stops the off state being
+            // dimmed: same icon, lit the same, border is the only difference.
+            T(Ico::Speaker, "Sound FX", m_showSoundFxPanel,
+              TexIcon{ "Toolbar\\SpeakerON.png", ImVec4(9, 12, 47, 44), 1.18f,
+                       ImVec4(9, 12, 47, 44) },
+              "Open the Sound FX mixer: levels, hearing distance and falloff "
+              "curve. Muting is on the play bar's speaker, not here."),
             Item{ Ico::More, "Settings", [this] { return m_ribbonMoreOpen; },
                   [] {}, true, Ico::None, nullptr, nullptr,
                   TexIcon{ "Others_UI\\texture_382152.dds",

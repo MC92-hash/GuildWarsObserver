@@ -883,6 +883,51 @@ static void ParseFlagEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Sound events (sound_events.txt — captured PlaySound/PlayMusic calls)
+// ---------------------------------------------------------------------------
+
+static void ParseSoundEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                // SOUND;file_id;sound_type;flags;pos_x;pos_y;pos_z;cause_agent_id;cause_skill_id;cam_dist;cam_angle
+                Token tok[11];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 11);
+                if (n >= 9)
+                {
+                    SoundLogEvent ev;
+                    ev.time           = li.time;
+                    ev.file_id        = static_cast<uint32_t>(ToInt(tok[1].begin, tok[1].end));
+                    ev.sound_type     = static_cast<uint8_t>(ToInt(tok[2].begin, tok[2].end));
+                    ev.flags          = static_cast<uint32_t>(ToInt(tok[3].begin, tok[3].end));
+                    ev.x              = ToFloat(tok[4].begin, tok[4].end);
+                    ev.y              = ToFloat(tok[5].begin, tok[5].end);
+                    ev.z              = ToFloat(tok[6].begin, tok[6].end);
+                    ev.cause_agent_id = ToInt(tok[7].begin, tok[7].end);
+                    ev.cause_skill_id = ToInt(tok[8].begin, tok[8].end);
+                    ev.positional     = (ev.flags & 0x1400u) == 0x1400u;
+                    data.soundEvents.push_back(std::move(ev));
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File dispatch table
 // ---------------------------------------------------------------------------
 
@@ -905,6 +950,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "manipulate_map_object_events",  ParseMapObjectEvents },
     { "door_events",                   ParseDoorEvents },
     { "flag_events",                   ParseFlagEvents },
+    { "sound_events",                  ParseSoundEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));
