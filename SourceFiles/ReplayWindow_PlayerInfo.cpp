@@ -12,6 +12,7 @@
 #include "GuiGlobalConstants.h"
 #include "MapBrowser.h"
 #include "TextureCache.h"
+#include "EquipmentIcons.h"
 #include "CursorSystem.h"
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
@@ -50,7 +51,7 @@ void ReplayWindow::OpenPlayerInfoPanel(int agentId)
     m_showPlayerInfoPanel = true;
 
     if (m_pipWeaponSets.agentId != agentId)
-        BuildWeaponSets(agentId);
+        BuildWeaponSets(agentId, m_pipWeaponSets);
 }
 
 
@@ -61,11 +62,11 @@ void ReplayWindow::ClosePlayerInfoPanel()
 }
 
 
-void ReplayWindow::BuildWeaponSets(int agentId)
+void ReplayWindow::BuildWeaponSets(int agentId, PlayerWeaponSets& out) const
 {
-    m_pipWeaponSets.agentId = agentId;
-    m_pipWeaponSets.sets.clear();
-    m_pipWeaponSets.built = true;
+    out.agentId = agentId;
+    out.sets.clear();
+    out.built = true;
 
     auto it = m_replayCtx.agents.find(agentId);
     if (it == m_replayCtx.agents.end()) return;
@@ -172,11 +173,11 @@ void ReplayWindow::BuildWeaponSets(int agentId)
         e.offType     = c.offType;
         e.firstSeen   = c.firstSeen;
         e.bundleType  = c.bundleType;
-        m_pipWeaponSets.sets.push_back(e);
+        out.sets.push_back(e);
     }
 
     // Sort by slot category (1→2→3→4), then by firstSeen within same category
-    std::stable_sort(m_pipWeaponSets.sets.begin(), m_pipWeaponSets.sets.end(),
+    std::stable_sort(out.sets.begin(), out.sets.end(),
         [&](const WeaponSetEntry& a, const WeaponSetEntry& b) {
             int sa = getSlotCategory(a);
             int sb = getSlotCategory(b);
@@ -185,22 +186,124 @@ void ReplayWindow::BuildWeaponSets(int agentId)
         });
 
     // Compute disambiguation subscripts for sets sharing the same icon appearance
-    for (size_t i = 0; i < m_pipWeaponSets.sets.size(); i++) {
-        auto& a = m_pipWeaponSets.sets[i];
+    for (size_t i = 0; i < out.sets.size(); i++) {
+        auto& a = out.sets[i];
         if (a.disambig > 0) continue;
         std::vector<size_t> dupes;
         dupes.push_back(i);
-        for (size_t j = i + 1; j < m_pipWeaponSets.sets.size(); j++) {
-            auto& b = m_pipWeaponSets.sets[j];
+        for (size_t j = i + 1; j < out.sets.size(); j++) {
+            auto& b = out.sets[j];
             if (b.weapCat == a.weapCat && b.mainType == a.mainType)
                 dupes.push_back(j);
         }
         if (dupes.size() > 1) {
             int sub = 1;
             for (size_t idx : dupes)
-                m_pipWeaponSets.sets[idx].disambig = sub++;
+                out.sets[idx].disambig = sub++;
         }
     }
+}
+
+
+// Main hand first, then offhand — the order the set is equipped in. Lives here rather than
+// inside DrawPlayerInfoPanel so the focused-player HUD's circles show the identical tooltip.
+void ReplayWindow::DrawWeaponSetTooltip(const WeaponSetEntry& ws)
+{
+    const auto& equipment = m_replayCtx.stocData.equipment;
+    if (!equipment.loaded) return;
+
+    const Equipment::ItemDef* mainItem = equipment.FindByAgentItemId(ws.mainId);
+    const Equipment::ItemDef* offItem  = equipment.FindByAgentItemId(ws.offId);
+    if (!mainItem && !offItem) return;
+
+    // Measured before BeginTooltip so the tooltip's own scaling does not compound.
+    // The tooltip runs half a point below the panel's font.
+    const float size = ImGui::GetFontSize();
+    const float fontScale = size > 1.f ? (size - 0.5f) / size : 1.f;
+
+    // Renders one recorded item: name in its rarity colour, the damage or armour line, then
+    // each upgrade as a gold effect with its grey condition.
+    auto DrawEquipItemBlock = [](const Equipment::ItemDef* item, const char* missingLabel,
+                                 const float scale)
+    {
+        const ImVec4 muted(124 / 255.f, 126 / 255.f, 126 / 255.f, 1.f);
+        if (!item)
+        {
+            ImGui::TextColored(muted, "%s", missingLabel);
+            return;
+        }
+
+        const auto toVec = [](Equipment::Rgb c) {
+            return ImVec4(c.r / 255.f, c.g / 255.f, c.b / 255.f, 1.f);
+        };
+        const auto tip = Equipment::BuildTooltip(*item);
+
+        for (const auto& line : tip.lines)
+        {
+            using Kind = Equipment::TooltipLine::Kind;
+            switch (line.kind)
+            {
+                case Kind::Name:
+                    ImGui::SetWindowFontScale(scale * 1.15f);
+                    ImGui::TextColored(toVec(Equipment::RarityColor(tip.rarity)), "%s", line.text.c_str());
+                    ImGui::SetWindowFontScale(scale);
+                    break;
+
+                case Kind::Stat:
+                    if (!line.text.empty())
+                    {
+                        ImGui::TextColored(toVec(Equipment::kStatColor), "%s", line.text.c_str());
+                        if (!line.condition.empty()) ImGui::SameLine(0.f, 6.f);
+                    }
+                    if (!line.condition.empty())
+                        ImGui::TextColored(muted, "%s", line.condition.c_str());
+                    break;
+
+                case Kind::Mod:
+                    ImGui::TextColored(toVec(Equipment::ModTextColor(tip.rarity)), "%s", line.text.c_str());
+                    if (!line.condition.empty())
+                    {
+                        ImGui::SameLine(0.f, 6.f);
+                        ImGui::TextColored(muted, "%s", line.condition.c_str());
+                    }
+                    break;
+
+                case Kind::Muted:
+                    if (!line.text.empty())
+                    {
+                        ImGui::TextColored(muted, "%s", line.text.c_str());
+                        if (!line.condition.empty()) ImGui::SameLine(0.f, 6.f);
+                    }
+                    if (!line.condition.empty())
+                        ImGui::TextColored(muted, "%s", line.condition.c_str());
+                    break;
+            }
+        }
+    };
+
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.039f, 0.055f, 0.071f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.83f, 0.63f, 0.13f, 0.3f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+    ImGui::BeginTooltip();
+    // No wrap position: every mod line has to stay on one line, so the tooltip is allowed to
+    // grow as wide as its longest entry.
+    ImGui::SetWindowFontScale(fontScale);
+
+    DrawEquipItemBlock(mainItem, "<no main hand recorded>", fontScale);
+    if (ws.offId)
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        DrawEquipItemBlock(offItem, "<no offhand recorded>", fontScale);
+    }
+
+    ImGui::SetWindowFontScale(1.f);
+
+    ImGui::EndTooltip();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
 }
 
 
@@ -2070,6 +2173,23 @@ void ReplayWindow::DrawPlayerInfoPanel()
             }
             ImTextureID offTex = wtr.offTex ? LoadWeaponTexture(dev, wtr.offTex) : nullptr;
 
+            // Prefer the item's real skin from Gw.dat; the category icons above stay as the
+            // fallback for bundles, unresolved slots and anything the dat has no image for.
+            if (!isBundle)
+            {
+                const auto& equipment = m_replayCtx.stocData.equipment;
+                if (const auto* mainItem = equipment.FindByAgentItemId(ws.mainId))
+                {
+                    if (ImTextureID skin = EquipmentIcons::Get(m_datManager, dev, mainItem->modelFileId))
+                        mainTex = skin;
+                }
+                if (const auto* offItem = equipment.FindByAgentItemId(ws.offId))
+                {
+                    if (ImTextureID skin = EquipmentIcons::Get(m_datManager, dev, offItem->modelFileId))
+                        offTex = skin;
+                }
+            }
+
             float iconArea = kWsBtnSz - 2 * kWsPad;
             if (mainTex && offTex)
             {
@@ -2115,6 +2235,14 @@ void ReplayWindow::DrawPlayerInfoPanel()
             dl->AddText(nullptr, 10.f,
                 ImVec2(btnTL.x + (kWsBtnSz - ls.x * lScale) * 0.5f, btnBR.y - 12.f),
                 IM_COL32(0x70, 0x7d, 0x88, 0xFF), setLabel);
+
+            // Drawn straight into the draw list rather than as an ImGui item, so hovering has
+            // to be tested against the rect directly.
+            if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup) &&
+                ImGui::IsMouseHoveringRect(btnTL, btnBR))
+            {
+                DrawWeaponSetTooltip(ws);
+            }
 
             wPos.x += kWsBtnSz + kWsGap;
         }

@@ -214,11 +214,15 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 void ReplayWindow::DrawEventTimeline()
 {
-    if (!m_showEventTimeline || !m_timeline.computed) return;
-
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float vpW = vp->Size.x;
     const float vpH = vp->Size.y;
+
+    // Republished every frame: viewport bottom means "nothing here", so a HUD reading it can
+    // just take the minimum against whatever else it has to clear.
+    m_eventTimelineTopY = vp->Pos.y + vpH;
+
+    if (!m_showEventTimeline || !m_timeline.computed) return;
 
     const float playbarH = 76.f;
     const float panelH   = 160.f;
@@ -235,6 +239,7 @@ void ReplayWindow::DrawEventTimeline()
     auto* dev = m_deviceResources->GetD3DDevice();
 
     ImVec2 panelPos(vp->Pos.x, vp->Pos.y + vpH - playbarH - panelH);
+    m_eventTimelineTopY = panelPos.y;
     ImGui::SetNextWindowPos(panelPos);
     ImGui::SetNextWindowSize(ImVec2(vpW, panelH));
 

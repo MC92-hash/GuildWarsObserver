@@ -301,6 +301,9 @@
     <ClInclude Include="SourceFiles\HeatmapMenu.h" />
     <ClInclude Include="SourceFiles\AnnotationManager.h" />
     <ClInclude Include="SourceFiles\ReplayMapData.h" />
+    <ClInclude Include="SourceFiles\EquipmentData.h" />
+    <ClInclude Include="SourceFiles\EquipmentComponents.h" />
+    <ClInclude Include="SourceFiles\EquipmentIcons.h" />
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
     <ClInclude Include="SourceFiles\miniz.h" />
     <ClInclude Include="SourceFiles\StoCParser.h" />
@@ -552,6 +555,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_LoadingScreen.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_AgentModels.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Preferences.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_FocusedPlayerHud.cpp" />
     <ClCompile Include="SourceFiles\CatapultLeverState.cpp" />
     <ClCompile Include="SourceFiles\HeatmapData.cpp" />
     <ClCompile Include="SourceFiles\HeatmapRenderer.cpp" />

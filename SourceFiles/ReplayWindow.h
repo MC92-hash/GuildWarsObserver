@@ -1202,6 +1202,12 @@ private:
     // closed). Top-anchored HUD elements read this so they can sit under the
     // strip and follow its collapse animation instead of being overlapped.
     float m_ribbonBottomY   = 0.f;
+    // Top edge of the event timeline strip, republished every frame (viewport bottom when the
+    // strip is down). Screen-anchored HUDs read it to stay clear of it, the way the followed
+    // agent's health bar rides m_ribbonBottomY at the top of the screen.
+    // FLT_MAX until the first publish, so a reader that runs before it sees "no obstruction"
+    // rather than an obstruction pinned to the top of the screen.
+    float m_eventTimelineTopY = FLT_MAX;
 
     void DrawRibbonToolbar();
 
@@ -1284,6 +1290,9 @@ private:
         bool built = false;
     };
     PlayerWeaponSets m_pipWeaponSets;
+    // The focused-player HUD follows the camera while the panel follows whatever was clicked,
+    // so the two need separate caches or they rebuild each other's sets every frame.
+    PlayerWeaponSets m_hudWeaponSets;
 
     struct PipSkillStat {
         int   skillId     = 0;
@@ -1302,8 +1311,17 @@ private:
     void OpenPlayerInfoPanel(int agentId);
     void ClosePlayerInfoPanel();
     void DrawPlayerInfoPanel();
-    void BuildWeaponSets(int agentId);
+    void BuildWeaponSets(int agentId, PlayerWeaponSets& out) const;
+    // Item tooltip for one set — shared with the focused-player HUD so both read identically.
+    void DrawWeaponSetTooltip(const WeaponSetEntry& ws);
     std::vector<PipSkillStat> BuildSkillStats(int agentId, float currentTime) const;
+
+    // --- Focused-player HUD (ReplayWindow_FocusedPlayerHud.cpp) ---
+    // Screen-space overlay shown only while the camera follows a player, alongside
+    // DrawFollowedAgentHUD's health/cast bars. Weapon sets are the first element.
+    bool m_showFocusHud = true;
+    void DrawFocusedPlayerHud();
+    void DrawFocusHudWeaponSets(int agentId);
 
     // --- Skill Analytics Panel ---
     struct SkillAnalyticsStat {

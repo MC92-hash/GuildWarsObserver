@@ -1001,6 +1001,15 @@ void ReplayWindow::DrawRibbonToolbar()
               "HP (dead players count as 0), so it reads as \"percentage of "
               "the team's total health pool remaining\".",
               hk.toggleEventTimeline),
+            // First cell of the sheet: the shield-and-sword pair, without the swap arrows
+            // the second cell carries.
+            T(Ico::Shield, "Weapon Sets", m_showFocusHud,
+              TexIcon{ "Toolbar\\texture_283989.dds", ImVec4(7, 4, 61, 60), 1.18f },
+              "Show or hide the weapon sets HUD - the row of weapon slots in the "
+              "bottom-right corner, listing every set the followed player used and "
+              "highlighting the one currently equipped. It only appears while the "
+              "camera is following a player, and does not affect the weapon sets "
+              "shown in the player info panel."),
         } });
 
         groups.push_back({ "Tools", {

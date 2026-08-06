@@ -214,6 +214,9 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("notepad",         "Match Notepad",        &m_showNotepad,          false, true);
     m_panelLayout.RegisterPanel("draw_toolbar",    "Drawing Toolbar",      &m_annotationMgr.toolbar_visible, false, true);
     m_panelLayout.RegisterPanel("bookmarks",       "Bookmarks",            &m_annotationMgr.bookmarks_visible, false, true);
+    // trackPosition false: the HUD anchors itself to the viewport each frame, so there is no
+    // position worth remembering — only whether it is shown.
+    m_panelLayout.RegisterPanel("focus_hud",       "Focused Player HUD",   &m_showFocusHud,         true,  false);
 }
 
 uint64_t ReplayWindow::ComputePanelStateHash() const
@@ -6160,6 +6163,7 @@ void ReplayWindow::DrawImGuiOverlay()
     UpdateSpeechBubbles();
     RenderSpeechBubbles();
     DrawFollowedAgentHUD();
+    DrawFocusedPlayerHud();
     DrawRangeRings();
     DrawSpiritRanges();
     DrawWurmsShrineCaptureRadius();
