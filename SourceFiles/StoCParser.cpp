@@ -928,6 +928,15 @@ static void ParseSoundEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Equipment (weapon/armour skins, dyes and raw mod words)
+// ---------------------------------------------------------------------------
+
+static void ParseEquipmentEvents(const std::string& content, StoCData& data)
+{
+    Equipment::ParseContent(content, data.equipment);
+}
+
+// ---------------------------------------------------------------------------
 // File dispatch table
 // ---------------------------------------------------------------------------
 
@@ -951,6 +960,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "door_events",                   ParseDoorEvents },
     { "flag_events",                   ParseFlagEvents },
     { "sound_events",                  ParseSoundEvents },
+    { "equipment_events",              ParseEquipmentEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

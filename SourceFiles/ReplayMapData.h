@@ -8,6 +8,8 @@
 #include <atomic>
 #include <mutex>
 
+#include "EquipmentData.h"
+
 // map_id (from match metadata infos.json) -> FFNA file ID inside gw.dat
 // Isle of Wurms (metadata map_id 532 / 534): South Health Shrine capture radius (game units).
 inline constexpr float kWurmsShrineCaptureRadius = 1010.f;
@@ -1479,6 +1481,7 @@ struct StoCData
     std::vector<DoorEvent>              doorEvents;
     FlagEventData                       flagEvents;
     std::vector<SoundLogEvent>          soundEvents;
+    Equipment::Data                     equipment;
 };
 
 struct StoCParseProgress
