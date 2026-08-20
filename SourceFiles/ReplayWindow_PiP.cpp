@@ -436,6 +436,7 @@ void ReplayWindow::RenderPiP()
 
     DrawAgentModels();
     DrawSkinnedAgentModels();
+    DrawWeaponModels();
     DrawAgentCylinders();
 
     // --- Restore main camera ---

@@ -556,6 +556,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_AgentModels.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Preferences.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FocusedPlayerHud.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Weapons.cpp" />
     <ClCompile Include="SourceFiles\CatapultLeverState.cpp" />
     <ClCompile Include="SourceFiles\HeatmapData.cpp" />
     <ClCompile Include="SourceFiles\HeatmapRenderer.cpp" />

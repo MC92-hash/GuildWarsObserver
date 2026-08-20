@@ -1,5 +1,6 @@
 #pragma once
 
+#include "build_config.h"   // GWO_DEVELOPER — gates the weapon diagnostics panel
 #include "DeviceResources.h"
 #include "StepTimer.h"
 #include "InputManager.h"
@@ -22,6 +23,7 @@
 #include "Animation/AnimationController.h"
 #include "Animation/AnimationClip.h"
 #include "Animation/Skeleton.h"
+#include "Animation/WeaponSocket.h"
 #include "AnimatedMeshInstance.h"
 #include "animation_state.h"
 #include "Cache/AnimationDiscoveryCache.h"
@@ -996,6 +998,10 @@ private:
         std::vector<std::vector<uint32_t>> perVertexBoneGroups;
         std::unordered_map<uint32_t, SegmentRef> animCodeToSegment;
         bool hasAnimation = false;
+
+        // Where a weapon would attach on this rig. Resolved once from allClips[0] and cached in
+        // animation_cache.ini; unresolved on non-humanoid rigs.
+        GW::Animation::WeaponSocket weaponSocket;
     };
 
     // file hash -> parsed model template (shared geometry, one AddProp per unique model)
@@ -1034,9 +1040,128 @@ private:
         int   currentMovementDirIndex = -1;
         bool  isPlayingMovementAnim = false;
         bool  isPlayingIdleAnim = false;
+
+        // Snapshot index DrawAgentModels resolved for this agent this frame. DrawWeaponModels
+        // runs straight after it and reuses the result rather than repeating the binary search.
+        int   lastSnapIdx = -1;
     };
     std::unordered_map<int, AgentAnimState> m_agentAnimStates;
     void DrawSkinnedAgentModels();
+
+    // --- Weapon models ---
+    // Design notes: gwobserver-private/docs/WeaponModelRendering.md
+
+    // The equipped item in one hand at one instant. Resolved from the agent snapshot, which
+    // carries the item ids directly and joins against the recorded equipment stream with full
+    // coverage; the EQUIP_SET/EQUIP_CLEAR walk is only a fallback for agents that have none.
+    struct EquippedWeapon {
+        const Equipment::ItemDef* item = nullptr;
+        uint32_t modelFileId = 0;
+        uint32_t itemType    = 0;
+        bool     fromEventStream = false;  // true => came from EQUIP_SET, not the snapshot
+
+        bool Valid() const { return item != nullptr && modelFileId != 0; }
+    };
+
+    EquippedWeapon ResolveEquippedWeapon(const AgentReplayData& ard, int snapIdx, uint8_t slot) const;
+
+    // Equipment::Data::FindAtTime scans the whole event list, which is fine for a tooltip but
+    // not for every agent and slot every frame. This indexes the same events by (agent, slot)
+    // so the per-frame path is a binary search. Built lazily on first use.
+    using EquipSlotKey = uint64_t;  // agentId << 8 | slot
+    mutable std::unordered_map<EquipSlotKey, std::vector<std::pair<float, int>>> m_equipSlotTimeline;
+    mutable bool m_equipSlotTimelineBuilt = false;
+    void BuildEquipSlotTimeline() const;
+
+    // One GPU resource set per distinct model_file_id, drawn once per (agent, slot) with its own
+    // PerObjectCB. Weapons attach rigidly, so they need no bone palette and must not be
+    // duplicated per agent the way character models are.
+    struct WeaponModelTemplate {
+        // Produced on the IO thread.
+        std::vector<Mesh> meshes;
+        std::vector<ParsedTextureEntry> parsedTextures_;
+        PixelShaderType pixelShaderType = PixelShaderType::OldModel;
+        bool texturesOk = false;
+
+        // Produced on the main thread from the above, which is then released.
+        std::vector<std::shared_ptr<MeshInstance>> gpuMeshes;
+        std::vector<PerObjectCB> templateCBs;
+        bool gpuReady = false;
+    };
+
+    std::unordered_map<uint32_t, WeaponModelTemplate> m_weaponModelTemplates;
+    std::vector<uint32_t>  m_weaponModelOrder;
+    int                    m_weaponModelCreateIndex = 0;
+    std::thread            m_weaponModelLoadThread;
+    std::atomic<bool>      m_weaponBgLoadDone{ false };
+    bool                   m_weaponModelsLoading = false;
+    bool                   m_weaponModelsLoaded  = false;
+
+    // Every model_file_id the match ever puts in a hand. Main thread only — it reads the
+    // equipment stream and the agent snapshots.
+    void CollectHandHeldModelFileIds(std::vector<uint32_t>& out) const;
+
+    void LoadWeaponModelsAsync();
+    void LoadWeaponModelsIO();
+    void StepCreateWeaponModelResources();
+    void ProgressiveWeaponModelPump();
+    void DrawWeaponModels();
+
+    bool m_showWeaponModels = true;
+
+    // How one class of weapon attaches. Keyed by item_type, because which hand a weapon uses is
+    // a property of the weapon and not of the slot it occupies: a bow is a slot-0 main-hand
+    // weapon that an archer holds in the *off* hand and draws with the other.
+    //
+    // Rotation and scale came out identity for a sword in Phase 1 — GW authors weapon models
+    // with their local origin at the grip and their axes aligned to the hand bone's frame — so
+    // the correction is normally just a translation seating the hilt in the fist. They are kept
+    // per type because long two-handed weapons are not guaranteed to share that.
+    struct WeaponGrip {
+        bool              forceOffHand = false;
+        // Dual-wielded: one item record, one skin, but a blade in each hand. The off-hand slot
+        // stays empty for these, so the main-hand model is drawn a second time on the other bone.
+        bool              mirrorToOffHand = false;
+        DirectX::XMFLOAT3 offset   { -1.f, -3.f, 0.f };
+        DirectX::XMFLOAT3 rotation { 0.f, 0.f, 0.f };   // degrees, pitch/yaw/roll
+        float             scale = 1.f;
+    };
+
+    WeaponGrip m_weaponGripDefault;
+    std::unordered_map<uint32_t, WeaponGrip> m_weaponGrips;   // item_type -> grip
+#if GWO_DEVELOPER
+    uint32_t   m_weaponGripEditType = 27;                     // type shown in the editor
+#endif
+
+    void SeedWeaponGrips();
+    const WeaponGrip& GripFor(uint32_t itemType) const;
+
+    // Which bind-pose side holds the main-hand weapon. The two hand bones are mirror images, so
+    // this cannot be derived from the rig. Settled visually in Phase 1: +x is the weapon hand,
+    // confirmed by the shield landing in the off hand.
+    bool m_weaponHandIsPositiveX = true;
+
+#if GWO_DEVELOPER
+    // Developer-only diagnostics. Compiled out entirely of public builds — the panel exists to
+    // calibrate attachment against the render, which is not something a released build needs.
+    bool m_showWeaponSocketWindow = false;
+    void DrawWeaponSocketWindow();
+
+    struct WeaponPreloadStats {
+        int  distinctModels = 0;
+        int  resolvedModels = 0;
+        int  parsedOk       = 0;
+        double parseSeconds = 0.0;
+        bool ran = false;
+    };
+    WeaponPreloadStats m_weaponPreloadStats;
+
+    // Main thread only. This model loader runs on m_agentModelLoadThread, which is started as
+    // soon as agents are classified — before StoC parsing has necessarily published
+    // m_replayCtx.stocData. Reading the equipment stream from that thread races the move-assign
+    // in PollStoCParseCompletion, so the measurement is taken on demand instead.
+    void ProbeWeaponModels();
+#endif
 
     // --- Loading overlay GPU resources ---
     struct OverlayVertex { float x, y, r, g, b, a; };

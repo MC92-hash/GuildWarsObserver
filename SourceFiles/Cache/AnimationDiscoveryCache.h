@@ -19,11 +19,20 @@ struct CachedModelAnimInfo {
     uint32_t modelHash0 = 0;
     uint32_t modelHash1 = 0;
     std::vector<AnimSourceEntry> animSources;
+
+    // Weapon attachment points, resolved once per rig from the skeleton topology (see
+    // Animation/WeaponSocket.h). Stored by bind-pose side, not by main/off hand: which side
+    // carries the weapon is a render-time choice. Unresolved on a rig with no hands, which is a
+    // real answer and not a miss - those agents carry no weapon.
+    int32_t negativeXBone = -1;
+    int32_t positiveXBone = -1;
+    bool    socketResolved = false;
 };
 
 class AnimationDiscoveryCache
 {
-    static constexpr int kCacheVersion = 2;
+    // v3: added hand_bones
+    static constexpr int kCacheVersion = 3;
 public:
     void SetDatIdentity(const std::wstring& datPath, uintmax_t datFileSize)
     {
@@ -45,6 +54,28 @@ public:
     void SetModel(uint32_t modelFileHash, CachedModelAnimInfo info)
     {
         m_models[modelFileHash] = std::move(info);
+        m_dirty = true;
+    }
+
+    // Records a resolved weapon socket against a model already in the cache. Kept separate from
+    // SetModel because the socket needs a parsed clip, which only exists after the anim sources
+    // have been discovered and written. Does not dirty the cache when nothing changed, so a
+    // cache-hit load stays a read.
+    void SetSocket(uint32_t modelFileHash, int32_t negativeXBone, int32_t positiveXBone, bool resolved)
+    {
+        auto it = m_models.find(modelFileHash);
+        if (it == m_models.end())
+            return;
+
+        auto& info = it->second;
+        if (info.socketResolved == resolved &&
+            info.negativeXBone == negativeXBone &&
+            info.positiveXBone == positiveXBone)
+            return;
+
+        info.negativeXBone  = negativeXBone;
+        info.positiveXBone  = positiveXBone;
+        info.socketResolved = resolved;
         m_dirty = true;
     }
 
@@ -108,6 +139,21 @@ public:
             else if (key == "model_hash1") {
                 try { currentInfo.modelHash1 = static_cast<uint32_t>(std::stoul(val, nullptr, 0)); } catch (...) {}
             }
+            // "negX,posX" on a rig with hands, "none" on one without. A missing key means the
+            // rig predates this field; both it and "none" simply re-resolve, which is a walk
+            // over an already-parsed skeleton and costs nothing.
+            else if (key == "hand_bones" && val != "none") {
+                std::istringstream ss(val);
+                std::string token;
+                int32_t negX = -1, posX = -1;
+                if (std::getline(ss, token, ','))
+                    try { negX = std::stoi(token); } catch (...) {}
+                if (std::getline(ss, token, ','))
+                    try { posX = std::stoi(token); } catch (...) {}
+                currentInfo.negativeXBone = negX;
+                currentInfo.positiveXBone = posX;
+                currentInfo.socketResolved = (negX >= 0 && posX >= 0);
+            }
             else if (key == "anim_src") {
                 AnimSourceEntry entry;
                 std::istringstream ss(val);
@@ -149,6 +195,10 @@ public:
             file << "model=0x" << std::hex << modelFileHash << std::dec << "\n";
             file << "model_hash0=0x" << std::hex << info.modelHash0 << std::dec << "\n";
             file << "model_hash1=0x" << std::hex << info.modelHash1 << std::dec << "\n";
+            if (info.socketResolved)
+                file << "hand_bones=" << info.negativeXBone << "," << info.positiveXBone << "\n";
+            else
+                file << "hand_bones=none\n";
             for (const auto& src : info.animSources)
                 file << "anim_src=" << src.mftIndex << ",0x" << std::hex << src.fileHash << std::dec << "\n";
         }

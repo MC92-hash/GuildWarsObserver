@@ -716,6 +716,8 @@ ReplayWindow::~ReplayWindow()
 {
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
+    if (m_weaponModelLoadThread.joinable())
+        m_weaponModelLoadThread.join();
     if (m_audioEngine) m_audioEngine->Shutdown();
     ShutdownImGui();
     if (m_hwnd)
@@ -5650,11 +5652,13 @@ void ReplayWindow::Tick()
 
     case LoadingPhase::FadingOut:
         ProgressiveAgentModelPump();
+        ProgressiveWeaponModelPump();
         RenderLoadingScreen();
         break;
 
     case LoadingPhase::Ready:
         ProgressiveAgentModelPump();
+        ProgressiveWeaponModelPump();
         Render();
         break;
 
@@ -5755,6 +5759,7 @@ void ReplayWindow::Render()
 
     DrawAgentModels();
     DrawSkinnedAgentModels();
+    DrawWeaponModels();
 
     DrawAgentCylinders();
 
@@ -5906,6 +5911,9 @@ void ReplayWindow::DrawImGuiOverlay()
                 ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
                 ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
                 ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
+#if GWO_DEVELOPER
+                ImGui::MenuItem("Weapon Sockets", nullptr, &m_showWeaponSocketWindow);
+#endif
             }
             ImGui::EndMenu();
         }
@@ -5959,6 +5967,11 @@ void ReplayWindow::DrawImGuiOverlay()
 
     if (m_showAssetInspector)
         DrawAssetInspectorWindow();
+
+#if GWO_DEVELOPER
+    if (m_showWeaponSocketWindow)
+        DrawWeaponSocketWindow();
+#endif
 
     if (m_showAgentModelWindow)
     {

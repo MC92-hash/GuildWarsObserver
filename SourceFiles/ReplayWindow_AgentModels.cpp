@@ -1040,6 +1040,31 @@ void ReplayWindow::LoadAgentModelsIO()
             wi.tmpl.clip = wi.tmpl.allClips[0].clip;
             wi.tmpl.skeleton = wi.tmpl.allClips[0].skeleton;
 
+            // Weapon attachment points. Bone ordering is consistent across every clip belonging
+            // to one rig (verified: all 14 male-human clips agree on 86 bones and the same
+            // indices), so resolving against clip 0 covers the whole rig. Re-validated at use
+            // against whichever clip the controller currently holds.
+            {
+                const auto* cachedSocket = m_animDiscoveryCache.GetModel(wi.fileHash);
+                if (cachedSocket && cachedSocket->socketResolved &&
+                    cachedSocket->negativeXBone >= 0 && cachedSocket->positiveXBone >= 0 &&
+                    static_cast<size_t>(cachedSocket->negativeXBone) < wi.tmpl.clip->boneTracks.size() &&
+                    static_cast<size_t>(cachedSocket->positiveXBone) < wi.tmpl.clip->boneTracks.size())
+                {
+                    wi.tmpl.weaponSocket.negativeXBone = cachedSocket->negativeXBone;
+                    wi.tmpl.weaponSocket.positiveXBone = cachedSocket->positiveXBone;
+                    wi.tmpl.weaponSocket.resolved      = true;
+                }
+                else
+                {
+                    wi.tmpl.weaponSocket = GW::Animation::ResolveWeaponSocket(*wi.tmpl.clip);
+                    m_animDiscoveryCache.SetSocket(wi.fileHash,
+                                                   wi.tmpl.weaponSocket.negativeXBone,
+                                                   wi.tmpl.weaponSocket.positiveXBone,
+                                                   wi.tmpl.weaponSocket.resolved);
+                }
+            }
+
             for (size_t si = 0; si < wi.geoModels.size(); si++) {
                 auto boneData = AnimationPanelState::ExtractBoneData(
                     wi.geoModels[si].extra_data, wi.geoModels[si].u0, wi.geoModels[si].u1);
@@ -1775,6 +1800,9 @@ void ReplayWindow::DrawAgentModels()
                 animState.perMeshCBs[si2].mesh_alpha = baseAlpha;
                 animState.perMeshCBs[si2].highlight_state = hovered ? 5 : 0;
             }
+
+            // Consumed by DrawWeaponModels, which runs after this pass.
+            animState.lastSnapIdx = snapIdx;
 
             m_agentModelRenderStatus[agentId] = m_showAgentModelWindow
                 ? std::format("skinned{}: submeshes={} pos=({:.0f},{:.0f},{:.0f}) anim=0x{:X}",
