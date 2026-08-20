@@ -394,8 +394,19 @@ FodyWeavers.xsd
 /scripts/upload_status.json
 /scripts/logs/
 
-# Private documentation (pushed to gwobserver-private only)
-/Docs/AgentModelReference.md
+# Private documentation and reverse-engineering tooling.
+# These live in the adjacent gwobserver-private repo, never here: they describe Gw.dat
+# internals, rig hashes and asset tables in detail.
+#
+# The previous rule spelled this "/Docs/AgentModelReference.md" with a capital D, which never
+# matched, so the file it meant to exclude was tracked and public. Note that ignoring a path
+# does not untrack a file that is already committed — the deletions have to be committed too,
+# and the content stays in history regardless.
+/docs/*.md
+/scripts/gw_dat_index.py
+/SourceFiles/OVERLAY_DESIGN.md
+/TODO_unicode_extraction.md
+/match_analysis_report.md
 
 # ============================================================
 # Unused textures, fonts, and build artifacts

@@ -70,7 +70,7 @@ msbuild GuildWarsObserver.sln /p:Configuration=Release /p:Platform=x64
 - **FFNA** — Guild Wars asset format (maps and models), parsed in header-only files (~400KB)
 - **ATEX** — custom texture format with dedicated decompressor (AtexReader/AtexDecompress/AtexAsm)
 - **StoC** — server-to-client binary protocol for match replay data
-- **agents.json** — JSON marker overlay format (see `SourceFiles/OVERLAY_DESIGN.md`)
+- **agents.json** — JSON marker overlay format (see `docs/OVERLAY_DESIGN.md` in gwobserver-private)
 
 ### UI
 All UI is Dear ImGui immediate-mode. ~28 modular panels live in separate `draw_*.cpp` files (e.g., `draw_replay_browser.cpp`, `draw_right_panel.cpp`, `draw_timeline.cpp`, `draw_dat_browser.cpp`, `draw_setup_wizard.cpp`, `draw_file_info_editor_panel.cpp`). Panel visibility is toggled via `GuiGlobalConstants`. Default hotkeys: Space = play/pause, Left/Right arrows = seek ±5s. The replay browser is always visible as the default background. Settings window (File > Settings) consolidates Data Source, File Paths, and Font configuration.
