@@ -304,29 +304,23 @@ void ReplayWindow::DrawFogOfWar()
     ctx->VSSetConstantBuffers(0, 1, prevVSCB0.GetAddressOf());
 }
 
-bool ReplayWindow::IsAgentInFog(int agentId) const
+// Core vision test: is this spot outside compass range of everything the current
+// perspective can see through? Split out of IsAgentInFog so world markers that
+// own no agent - flags, dropped seeds and repair kits - can ask the same
+// question about a bare position. x/y are game coordinates.
+bool ReplayWindow::IsPositionInFog(float x, float y) const
 {
     if (m_fogPerspective == 0) return false;
 
-    auto eit = m_replayCtx.agents.find(agentId);
-    if (eit == m_replayCtx.agents.end()) return true;
-    const auto& enemyArd = eit->second;
-
-    if (m_fogPlayerAgent < 0 && enemyArd.teamId == m_fogPerspective) return false;
-
-    float ex, ey, ez;
-    InterpolateAgentPosition(enemyArd, m_debugTimeline, m_replayCtx.interpSettings, ex, ey, ez);
-
     if (m_fogPlayerAgent >= 0)
     {
-        if (agentId == m_fogPlayerAgent) return false;
         auto pit = m_replayCtx.agents.find(m_fogPlayerAgent);
         if (pit == m_replayCtx.agents.end()) return true;
         if (pit->second.snapshots.empty() || pit->second.isDeadAtTime(m_debugTimeline))
             return true;
         float fx, fy, fz;
         InterpolateAgentPosition(pit->second, m_debugTimeline, m_replayCtx.interpSettings, fx, fy, fz);
-        float dx = ex - fx, dy = ey - fy;
+        float dx = x - fx, dy = y - fy;
         return (dx * dx + dy * dy > kFogCompassRadius * kFogCompassRadius);
     }
 
@@ -340,11 +334,29 @@ bool ReplayWindow::IsAgentInFog(int agentId) const
         float fx, fy, fz;
         InterpolateAgentPosition(fard, m_debugTimeline, m_replayCtx.interpSettings, fx, fy, fz);
 
-        float dx = ex - fx, dy = ey - fy;
+        float dx = x - fx, dy = y - fy;
         if (dx * dx + dy * dy <= kFogCompassRadius * kFogCompassRadius)
             return false;
     }
     return true;
+}
+
+bool ReplayWindow::IsAgentInFog(int agentId) const
+{
+    if (m_fogPerspective == 0) return false;
+
+    auto eit = m_replayCtx.agents.find(agentId);
+    if (eit == m_replayCtx.agents.end()) return true;
+    const auto& enemyArd = eit->second;
+
+    // In team mode your own side is never fogged; in single-agent mode the agent
+    // you are seeing through is never fogged from itself.
+    if (m_fogPlayerAgent < 0 && enemyArd.teamId == m_fogPerspective) return false;
+    if (m_fogPlayerAgent >= 0 && agentId == m_fogPlayerAgent) return false;
+
+    float ex, ey, ez;
+    InterpolateAgentPosition(enemyArd, m_debugTimeline, m_replayCtx.interpSettings, ex, ey, ez);
+    return IsPositionInFog(ex, ey);
 }
 
 

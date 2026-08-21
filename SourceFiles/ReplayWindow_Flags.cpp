@@ -215,8 +215,14 @@ void ReplayWindow::DrawFlags()
     ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
     const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);
 
+    // Fog of war: a marker the chosen perspective has no vision on is dropped
+    // outright, or dimmed to the same 0.3 the 3D agent models fade to when
+    // ghost mode is on.
+    constexpr float kFogGhostAlpha = 0.3f;
+
     auto DrawFlagAt = [&](float worldX, float worldY, float worldZ,
-                          ImTextureID tex, int teamIdx, const char* label)
+                          ImTextureID tex, int teamIdx, const char* label,
+                          float alphaMul)
     {
         XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
         float scrX, scrY;
@@ -225,15 +231,18 @@ void ReplayWindow::DrawFlags()
         constexpr float kFlagDotRadius = 5.f;
         ImU32 dotColor = (teamIdx == 0) ? IM_COL32(255, 100, 90, 200)
                                         : IM_COL32(100, 160, 255, 200);
-        dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius, dotColor);
-        dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+        dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius,
+                            ScaleColorAlpha(dotColor, alphaMul));
+        dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius,
+                      ScaleColorAlpha(IM_COL32(0, 0, 0, 180), alphaMul), 0, 1.5f);
 
         if (tex)
         {
             float offsetY = iconSz * 0.8f;
             ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
             ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-            dl->AddImage(tex, iconTL, iconBR);
+            dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                         ScaleColorAlpha(IM_COL32_WHITE, alphaMul));
         }
 
         if (label)
@@ -244,8 +253,10 @@ void ReplayWindow::DrawFlags()
             float tx = scrX - textSz.x * 0.5f;
             float offsetY = iconSz * 0.8f;
             float ty = scrY - offsetY - iconSz - fontSize - 2.f;
-            dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
-            dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
+            dl->AddText(ImVec2(tx + 1.f, ty + 1.f),
+                        ScaleColorAlpha(IM_COL32(0, 0, 0, 200), alphaMul), label);
+            dl->AddText(ImVec2(tx, ty),
+                        ScaleColorAlpha(IM_COL32(255, 255, 255, 230), alphaMul), label);
         }
     };
 
@@ -353,7 +364,19 @@ void ReplayWindow::DrawFlags()
                 label = "Flag (Dropped)";
         }
 
-        DrawFlagAt(worldX, worldY, worldZ, tex, ti, label);
+        // Fog of war: an enemy flag you have no vision on would not be on your
+        // compass, whether a runner is carrying it or it is lying in their base.
+        // teams[] is [0]=red,[1]=blue, so the owning team id is ti + 1; your own
+        // flag is never hidden from you.
+        float flagAlpha = 1.f;
+        if (m_fogPerspective > 0 && (ti + 1) != m_fogPerspective
+            && IsPositionInFog(worldX, worldY))
+        {
+            if (!m_fogGhostMode) continue;
+            flagAlpha = kFogGhostAlpha;
+        }
+
+        DrawFlagAt(worldX, worldY, worldZ, tex, ti, label, flagAlpha);
     }
 
     // --- Vine seeds and repair kits ---
@@ -372,21 +395,34 @@ void ReplayWindow::DrawFlags()
         float worldX = 0, worldY = 0, worldZ = 0;
         bundle.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
 
+        // Fog of war: seeds and repair kits are neutral world items, so there is
+        // no owning team to exempt - it comes down purely to whether anyone on
+        // the chosen perspective can see the spot they are lying on.
+        float bundleAlpha = 1.f;
+        if (m_fogPerspective > 0 && IsPositionInFog(worldX, worldY))
+        {
+            if (!m_fogGhostMode) continue;
+            bundleAlpha = kFogGhostAlpha;
+        }
+
         XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
         float scrX, scrY;
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
 
         constexpr float kBundleDotRadius = 5.f;
         ImU32 dotCol = isSeed ? IM_COL32(120, 220, 120, 200) : IM_COL32(210, 180, 120, 200);
-        dl->AddCircleFilled(ImVec2(scrX, scrY), kBundleDotRadius, dotCol);
-        dl->AddCircle(ImVec2(scrX, scrY), kBundleDotRadius, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+        dl->AddCircleFilled(ImVec2(scrX, scrY), kBundleDotRadius,
+                            ScaleColorAlpha(dotCol, bundleAlpha));
+        dl->AddCircle(ImVec2(scrX, scrY), kBundleDotRadius,
+                      ScaleColorAlpha(IM_COL32(0, 0, 0, 180), bundleAlpha), 0, 1.5f);
 
         float offsetY = iconSz * 0.8f;
         if (ImTextureID tex = LoadNPCIcon(dev, isSeed ? "Vine Seed.png" : "RepairKit.png"))
         {
             ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
             ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-            dl->AddImage(tex, iconTL, iconBR);
+            dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                         ScaleColorAlpha(IM_COL32_WHITE, bundleAlpha));
         }
 
         const char* label;
@@ -398,8 +434,10 @@ void ReplayWindow::DrawFlags()
         ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label);
         float tx = scrX - textSz.x * 0.5f;
         float ty = scrY - offsetY - iconSz - fontSize - 2.f;
-        dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
-        dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
+        dl->AddText(ImVec2(tx + 1.f, ty + 1.f),
+                    ScaleColorAlpha(IM_COL32(0, 0, 0, 200), bundleAlpha), label);
+        dl->AddText(ImVec2(tx, ty),
+                    ScaleColorAlpha(IM_COL32(255, 255, 255, 230), bundleAlpha), label);
     }
 
     // --- Ritualist urns ---

@@ -1365,7 +1365,14 @@ void ReplayWindow::DrawAgentModels()
                 ard.isDeadAtTime(m_debugTimeline) ||
                 !ard.isAliveAtTime(m_debugTimeline)) {
                 for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-                if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
+                // Must clear the render status unconditionally (not only when the
+                // debug window is open): spirit models are skinned, so hiding the
+                // rigid meshes above does nothing for them, and the skinned render
+                // pass draws any agent whose status still starts with "skinned".
+                // Leaving a stale "skinned" status here keeps the spirit's 3D model
+                // on screen after it dies, despawns, or is overwritten by a newer
+                // spirit of the same type - frozen at its last pose and position.
+                m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
                 continue;
             }
         }
@@ -1402,7 +1409,11 @@ void ReplayWindow::DrawAgentModels()
         bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
         if (inFog && !m_fogGhostMode) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: fog";
+            // Unconditional, like the spirit/minion branches above: skinned agents
+            // are drawn from this status alone, so a conditional write would leave
+            // players, NPCs and spirits rendering after they walk into the fog.
+            // The status is rewritten to "skinned" as soon as they leave it again.
+            m_agentModelRenderStatus[agentId] = "hidden: fog";
             continue;
         }
 

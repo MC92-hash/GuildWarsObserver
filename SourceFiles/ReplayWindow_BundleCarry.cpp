@@ -578,6 +578,9 @@ void ReplayWindow::DrawBundleItems()
 
     const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);
 
+    // Fog of war: matches the 0.3 the 3D agent models fade to in ghost mode.
+    constexpr float kFogGhostAlpha = 0.3f;
+
     // 1. Draw carried repair kits and vine seeds above the carrier
     auto allPlayers = m_team1PlayerIds;
     allPlayers.insert(allPlayers.end(), m_team2PlayerIds.begin(), m_team2PlayerIds.end());
@@ -589,6 +592,17 @@ void ReplayWindow::DrawBundleItems()
 
         auto it = m_replayCtx.agents.find(pid);
         if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+
+        // Fog of war: the carried-bundle icon inherits the carrier's own
+        // visibility, so it goes with them instead of marking out a runner the
+        // chosen perspective cannot see.
+        float carryAlpha = 1.f;
+        if (m_fogPerspective > 0 && it->second.teamId != m_fogPerspective
+            && IsAgentInFog(pid))
+        {
+            if (!m_fogGhostMode) continue;
+            carryAlpha = kFogGhostAlpha;
+        }
 
         float cx, cy, cz;
         InterpolateAgentPosition(it->second, m_debugTimeline, m_replayCtx.interpSettings, cx, cy, cz);
@@ -604,15 +618,18 @@ void ReplayWindow::DrawBundleItems()
         float offsetY = iconSz * 0.8f;
         ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
         ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-        dl->AddImage(tex, iconTL, iconBR);
+        dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                     ScaleColorAlpha(IM_COL32_WHITE, carryAlpha));
 
         const char* label = (bt == BundleType::RepairKit) ? "Repair Kit" : "Vine Seed";
         ImFont* font = ImGui::GetFont();
         ImVec2 textSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label);
         float tx = scrX - textSz.x * 0.5f;
         float ty = iconBR.y + 2.f;
-        dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
-        dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
+        dl->AddText(ImVec2(tx + 1.f, ty + 1.f),
+                    ScaleColorAlpha(IM_COL32(0, 0, 0, 200), carryAlpha), label);
+        dl->AddText(ImVec2(tx, ty),
+                    ScaleColorAlpha(IM_COL32(255, 255, 255, 230), carryAlpha), label);
     }
 
     // 2. Draw capped lever indicators (permanent after capping)

@@ -718,6 +718,7 @@ public:
     void DrawFogOfWar();
     void DrawFogOfWarToolbar();
     bool IsAgentInFog(int agentId) const;
+    bool IsPositionInFog(float x, float y) const;
 
     // --- Morale Panel ---
     bool m_showMoralePanel = false;

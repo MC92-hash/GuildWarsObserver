@@ -18,6 +18,15 @@
 // --- Shared enums (originally file-scope in ReplayWindow.cpp) ---
 enum class AgentIconState { Alive, Dead, Knockdown };
 
+// Scales an ImU32's alpha channel, leaving RGB alone. Used to dim world
+// markers that sit inside the fog of war while ghost mode is on.
+inline ImU32 ScaleColorAlpha(ImU32 col, float mul)
+{
+    if (mul >= 1.f) return col;
+    const ImU32 a = static_cast<ImU32>(((col >> IM_COL32_A_SHIFT) & 0xFF) * mul);
+    return (col & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+}
+
 // --- Agent position / map-space transform (shared: FogOfWar, AgentModels,
 //     AgentOverlay, Props, BundleCarry, ...) ---
 DirectX::XMFLOAT3 ApplyMapTransformToPos(float snapX, float snapY, float snapZ,
