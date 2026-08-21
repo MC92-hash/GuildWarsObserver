@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FlagTimelineBuilder.h"
+#include "RitualistAshes.h"
 #include <algorithm>
 #include <unordered_map>
 
@@ -317,6 +318,180 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         }
     }
 
+    // Phase 3b: Ritualist urns. Ashes enter a player's hands only by casting an
+    // item spell, never by picking anything up, so each hold is matched back to
+    // the cast that created it. Only the *start* of the hold is matched: casting
+    // takes up to six seconds and other skills stretch it, but how long the urn
+    // is then carried is unbounded, so the end comes from the carrier's own
+    // snapshots instead of any timer.
+    // Every ashes cast, kept whether or not a hold was ever seen for it. Ashes are
+    // routinely cast and dropped again inside a single snapshot interval — that is
+    // the whole point of Kaolai — so the hold leaves no trace in the carrier's
+    // snapshots and only the cast itself remains as evidence.
+    std::vector<std::pair<float, int>> ashesCasts;   // (time, caster)
+
+    if (input.skills && input.agents)
+    {
+        // Generous enough for the longest item spell plus whatever is slowing the
+        // caster down; a cast is consumed once matched, so a single one cannot
+        // account for two holds.
+        constexpr float kMaxCastSeconds = 10.f;
+
+        std::unordered_map<int, std::vector<std::pair<float, int>>> castsByCaster;
+        for (const auto& ev : *input.skills) {
+            if (!LookupAshesSkill(ev.skill_id)) continue;
+            castsByCaster[ev.caster_id].emplace_back(ev.time, ev.skill_id);
+            ashesCasts.emplace_back(ev.time, ev.caster_id);
+        }
+        std::sort(ashesCasts.begin(), ashesCasts.end());
+
+        for (auto& [casterId, casts] : castsByCaster)
+        {
+            auto ait = input.agents->find(casterId);
+            if (ait == input.agents->end()) continue;
+            const auto& snaps = ait->second.snapshots;
+            if (snaps.size() < 2) continue;
+
+            std::sort(casts.begin(), casts.end());
+            std::vector<char> used(casts.size(), 0);
+
+            auto holdsBundle = [](const AgentSnapshot& s) {
+                return s.weapon_type == 0 && s.weapon_item_type == kBundleHeldItemType;
+            };
+
+            int   heldSkill = 0;
+            float heldSince = 0.f;
+            for (size_t i = 1; i < snaps.size(); i++)
+            {
+                const bool was = holdsBundle(snaps[i - 1]);
+                const bool now = holdsBundle(snaps[i]);
+
+                if (!was && now) {
+                    // Newest unconsumed cast that could still be this hold.
+                    heldSkill = 0;
+                    heldSince = snaps[i].time;
+                    for (size_t c = casts.size(); c-- > 0; ) {
+                        if (used[c]) continue;
+                        if (casts[c].first > snaps[i].time) continue;
+                        if (casts[c].first < snaps[i].time - kMaxCastSeconds) break;
+                        used[c] = 1;
+                        heldSkill = casts[c].second;
+                        break;
+                    }
+                }
+                else if (was && !now && heldSkill) {
+                    AshesHold hold;
+                    hold.startTime      = heldSince;
+                    hold.endTime        = snaps[i].time;
+                    hold.skillId        = heldSkill;
+                    hold.carrierAgentId = casterId;
+                    result.ashesHolds.push_back(hold);
+                    heldSkill = 0;
+                }
+            }
+
+            // Still holding when the recording stopped.
+            if (heldSkill) {
+                AshesHold hold;
+                hold.startTime      = heldSince;
+                hold.endTime        = -1.f;
+                hold.skillId        = heldSkill;
+                hold.carrierAgentId = casterId;
+                result.ashesHolds.push_back(hold);
+            }
+        }
+
+        std::sort(result.ashesHolds.begin(), result.ashesHolds.end(),
+                  [](const AshesHold& a, const AshesHold& b) { return a.startTime < b.startTime; });
+    }
+
+    // True for the world item an urn leaves behind for the instant it is on the
+    // ground. Measured against the recordings: a dropped urn appears within 80
+    // units of its carrier and inside a tenth of a second, while the nearest
+    // unrelated item to show up near a ritualist was 1800 units away.
+    //
+    // The carrier's position is resampled at the item's own timestamp rather than
+    // read off the drop: the release is only seen at whatever snapshot follows it,
+    // by which point a running carrier can be hundreds of units past the spot
+    // where the urn actually landed.
+    //
+    // A carryable dropped by that same ritualist is unaffected — its hold began
+    // with a pickup, so no cast was ever matched to it and it produces no drop.
+    // Match the world items those urns leave behind. Measured against the
+    // recordings: a dropped urn appears within 80 units of its carrier and inside
+    // a tenth of a second, while the nearest unrelated item to show up near a
+    // ritualist was 1800 units away.
+    //
+    // The carrier's position is resampled at the item's own timestamp rather than
+    // read off the release: the release is only seen at whatever snapshot follows
+    // it, by which point a running carrier can be hundreds of units past the spot
+    // where the urn actually landed.
+    //
+    // A carryable dropped by that same ritualist is unaffected — its hold began
+    // with a pickup, so no cast was ever matched to it and it produces no hold.
+    //
+    // Runs for every map, not just the ones handing out bundles: the urn has to be
+    // recognised anywhere for it to be drawn and named as one.
+    std::unordered_set<int> ashesItemAgents;
+    if (input.agents && !(result.ashesHolds.empty() && ashesCasts.empty()))
+    {
+        constexpr float kDropWindow  = 3.f;
+        constexpr float kDropRadius  = 400.f;
+        // Cast to urn-on-the-ground when the hold was never sampled: the longest
+        // item spell plus a moment to put it down. A hold that outlasts this is
+        // long enough to be sampled, and is caught by its release instead.
+        constexpr float kCastToDropWindow = 10.f;
+
+        for (const auto& [aid, ard] : *input.agents)
+        {
+            if (ard.snapshots.empty()) continue;
+            const auto& s0 = ard.snapshots.front();
+            if (s0.item_id == 0) continue;
+
+            auto nearCarrier = [&](int carrierId) {
+                float px, py, pz;
+                if (!GetAgentPosition(carrierId, input.agents, s0.time, px, py, pz)) return false;
+                const float dx = px - s0.x, dy = py - s0.y;
+                return dx * dx + dy * dy <= kDropRadius * kDropRadius;
+            };
+
+            int matchedSkill = 0, matchedCarrier = -1;
+            for (const auto& h : result.ashesHolds) {
+                if (h.endTime < 0.f) continue;
+                if (std::abs(h.endTime - s0.time) > kDropWindow) continue;
+                if (!nearCarrier(h.carrierAgentId)) continue;
+                matchedSkill = h.skillId; matchedCarrier = h.carrierAgentId;
+                break;
+            }
+            if (!matchedSkill) {
+                for (const auto& [castTime, casterId] : ashesCasts) {
+                    if (s0.time < castTime || s0.time > castTime + kCastToDropWindow) continue;
+                    if (!nearCarrier(casterId)) continue;
+                    matchedCarrier = casterId;
+                    // The cast's own skill, since no hold was ever seen for it.
+                    for (const auto& ev : *input.skills)
+                        if (ev.caster_id == casterId && ev.time == castTime &&
+                            LookupAshesSkill(ev.skill_id)) { matchedSkill = ev.skill_id; break; }
+                    break;
+                }
+            }
+            if (!matchedSkill) continue;
+
+            ashesItemAgents.insert(aid);
+
+            AshesDrop drop;
+            drop.startTime      = s0.time;
+            drop.endTime        = ard.snapshots.back().time;
+            drop.x = s0.x; drop.y = s0.y; drop.z = s0.z;
+            drop.skillId        = matchedSkill;
+            drop.carrierAgentId = matchedCarrier;
+            result.ashesDrops.push_back(drop);
+        }
+
+        std::sort(result.ashesDrops.begin(), result.ashesDrops.end(),
+                  [](const AshesDrop& a, const AshesDrop& b) { return a.startTime < b.startTime; });
+    }
+
     // Phase 3c: Resolve non-flag bundles (vine seeds, repair kits). They travel
     // through the same pickup/drop packets as flags, so they have to be
     // reconstructed here or they would be mistaken for flag carries.
@@ -336,6 +511,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             const auto& s0 = ard.snapshots.front();
             if (s0.item_id == 0) continue;
             if (itemReg.IsFlagAt(s0.item_id, s0.time)) continue;
+            if (ashesItemAgents.count(aid)) continue;
 
             int itemId = static_cast<int>(s0.item_id);
             auto it = std::find_if(found.begin(), found.end(),
@@ -345,6 +521,57 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             else if (s0.time < it->firstSeen)
                 *it = { itemId, s0.time, s0.x, s0.y, s0.z };
         }
+
+        // Killing the Guild Lord ends the match and spills the guild's strongboxes:
+        // half a dozen or more items hit the ground in the same instant, each with its
+        // own fresh id, and none of them is ever picked up. Nothing in the item record
+        // marks them as loot — their ids look exactly like a bundle's, so each one
+        // otherwise becomes its own "Repair Kit" marker for the whole replay. What sets
+        // them apart is that they arrive together and they arrive late.
+        //
+        // The burst is timed off the lifecycle stream, not off the agents: every drop
+        // shares one AGENT_ADD timestamp there, whereas the agents' own first snapshots
+        // scatter over a couple of seconds around it and cannot be grouped reliably.
+        // Real carryables trickle in one or two at a time; the closest genuine case is
+        // Druid's Isle, whose four vine seeds spawn together at match start, so the
+        // burst has to be bigger than that *and* land near the end of the recording.
+        //
+        // Matched per sighting rather than per id: the server recycles ids, so a
+        // strongbox can carry the same id as a real bundle from earlier in the match,
+        // and discarding that id outright would take the genuine kit with it.
+        constexpr int   kItemTypeCode       = 4;
+        constexpr int   kStrongboxMinBurst  = 5;
+        constexpr float kStrongboxEndWindow = 15.f;
+        constexpr float kStrongboxNearDrop  = 3.f;
+
+        float recordingEnd = 0.f;
+        for (auto& [aid, ard] : *input.agents)
+            if (!ard.snapshots.empty())
+                recordingEnd = std::max(recordingEnd, ard.snapshots.back().time);
+
+        std::vector<float> itemAddTimes;
+        if (input.lifecycle)
+            for (const auto& ev : *input.lifecycle)
+                if (ev.isAdd && ev.type_code == kItemTypeCode)
+                    itemAddTimes.push_back(ev.time);
+        std::sort(itemAddTimes.begin(), itemAddTimes.end());
+
+        std::vector<float> strongboxDrops;
+        for (size_t i = 0; i < itemAddTimes.size(); ) {
+            size_t j = i;
+            while (j < itemAddTimes.size() && itemAddTimes[j] == itemAddTimes[i]) j++;
+            if (static_cast<int>(j - i) >= kStrongboxMinBurst &&
+                itemAddTimes[i] >= recordingEnd - kStrongboxEndWindow)
+                strongboxDrops.push_back(itemAddTimes[i]);
+            i = j;
+        }
+
+        if (!strongboxDrops.empty())
+            std::erase_if(found, [&](const Candidate& c) {
+                for (float t : strongboxDrops)
+                    if (std::abs(c.firstSeen - t) <= kStrongboxNearDrop) return true;
+                return false;
+            });
 
         std::sort(found.begin(), found.end(),
             [](const Candidate& a, const Candidate& b) { return a.itemId < b.itemId; });
@@ -538,6 +765,8 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                 // Once this id has been handed to a flag it is no longer this
                 // bundle, however many times it lands on the ground afterwards.
                 if (itemReg.IsFlagAt(s0.item_id, s0.time)) continue;
+                // Nor is a ritualist urn that borrowed the id for an instant.
+                if (ashesItemAgents.count(aid)) continue;
                 spans.push_back({ s0.time, ard.snapshots.back().time,
                                   s0.x, s0.y, s0.z, aid });
             }

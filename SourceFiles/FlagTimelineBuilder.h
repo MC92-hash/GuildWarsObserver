@@ -119,6 +119,27 @@ struct StandTimeline {
     StandOwner ownerAtTime(float t) const;
 };
 
+// A ritualist urn in its carrier's hands, from the cast that created it until it
+// is put down. endTime is -1 when the recording ends with it still held.
+struct AshesHold {
+    float startTime = 0.f;
+    float endTime   = -1.f;
+    int   skillId        = 0;
+    int   carrierAgentId = -1;
+};
+
+// The world item an urn leaves behind for the moment it is on the ground. Ashes
+// are destroyed on landing, so the span is very short — under two seconds, and
+// usually a single snapshot. Kept so the item can be told apart from a carryable
+// and named where it fell.
+struct AshesDrop {
+    float startTime = 0.f;
+    float endTime   = 0.f;
+    float x = 0, y = 0, z = 0;
+    int   skillId        = 0;
+    int   carrierAgentId = -1;
+};
+
 // Top-level output
 struct FlagTimeline {
     FlagTeamTimeline teams[2];  // [0]=red, [1]=blue
@@ -128,6 +149,10 @@ struct FlagTimeline {
     std::unordered_set<int> allFlagItemIds;   // all item_ids from FLAG_ITEM events
     // Vine seeds / repair kits; empty on maps without them.
     std::vector<BundleTimeline> bundles;
+    // Ritualist urns, on every map — they are not carryables, but they have to
+    // be recognised here or they are reconstructed as one.
+    std::vector<AshesHold> ashesHolds;
+    std::vector<AshesDrop> ashesDrops;
     bool valid = false;
 };
 
@@ -142,6 +167,9 @@ public:
         // growing, a catapult being repaired) from one merely dropped on the ground.
         const std::vector<DoorEvent>*                   doorEvents = nullptr;
         const std::unordered_map<int, AgentReplayData>* agents     = nullptr;
+        // Ritualist item spells are the only way ashes reach a player's hands, so
+        // this is what separates a dropped urn from a dropped carryable.
+        const std::vector<SkillActivationEvent>*        skills     = nullptr;
         // Tells flags from map bundles. Item ids are recycled between the two, so
         // without this every classification here is a coin flip.
         const FlagItemRegistry*                         flagItems  = nullptr;

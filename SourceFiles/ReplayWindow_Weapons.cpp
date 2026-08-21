@@ -6,6 +6,7 @@
 #include "MapBrowser.h"
 #include "Parsers/BB9AnimationParser.h"
 #include "ReplayWindow_Internal.h"
+#include "RitualistAshes.h"
 #include "MeshInstance.h"
 #include "AMAT_file.h"
 #include <algorithm>
@@ -24,9 +25,44 @@
 // ---------------------------------------------------------------------------
 
 
+// Ritualist urns are not equipment and never appear in the equipment stream, so they are
+// preloaded by model id rather than discovered from one. They still need a grip, which is
+// tuned under this synthetic item type — that is what lists "Ashes" in the editor below.
+constexpr uint32_t kAshesItemType = 200;
+
 // The 12 item types that reach a hand, in the order the editor lists them. Bundles (6) are out
 // of scope; item_type 28 appears once in the sampled matches and is folded into the default.
-static constexpr uint32_t kWeaponItemTypes[] = { 27, 2, 15, 32, 35, 36, 5, 26, 22, 12, 24, 28 };
+static constexpr uint32_t kWeaponItemTypes[] = { 27, 2, 15, 32, 35, 36, 5, 26, 22, 12, 24, 28,
+                                                 kAshesItemType };
+
+// Guild Wars' own generic "item info not yet resolved" placeholder mesh — a flat grey diamond,
+// used by the client whenever it draws an item before the server's appearance data for that
+// specific instance has arrived. The recorder logs whatever model_file_id the client had cached
+// at the instant it captured an ITEM_DEF, so a flag or bundle item that was captured before its
+// info packet landed is stuck pointing at this placeholder for the rest of the replay — there is
+// no later, better record to fall back to. Flags and repair kits both have one fixed, known skin,
+// so patch the placeholder for those rather than rendering the diamond.
+//
+// Item type is not a reliable discriminator between the two: sampled repair kits report Bundle
+// (6), sampled flags report 28, and the flag's own name never resolves ("Unknown") since it is
+// picked up long before a normal item's tooltip would ever be requested. Both are folded in here
+// and the actual Flag/RepairKit distinction is left to FlagItemRegistry::Classify, which reads
+// the map id and FLAG_ITEM packets instead of anything on the item record.
+constexpr uint32_t kUnresolvedItemPlaceholderModelId = 111902;
+constexpr uint32_t kFlagModelFileId                  = 94192;
+constexpr uint32_t kRepairKitModelFileId             = 31976;
+constexpr uint32_t kBundleItemType                   = 6;
+constexpr uint32_t kFlagItemType                     = 28;
+
+// Several of these models carry a submesh that is not part of the item and must never
+// be drawn — the repair kit's stand, and the urns' own extra piece.
+static int HiddenSubmeshFor(uint32_t modelFileId)
+{
+    if (modelFileId == kRepairKitModelFileId) return 1;
+    for (AshesKind kind : { AshesKind::Offensive, AshesKind::Defensive, AshesKind::Resurrect })
+        if (modelFileId == AshesModelFileId(kind)) return AshesHiddenSubmesh(kind);
+    return -1;
+}
 
 #if GWO_DEVELOPER
 static const char* WeaponItemTypeName(uint32_t itemType)
@@ -46,6 +82,7 @@ static const char* WeaponItemTypeName(uint32_t itemType)
         case 32: return "Daggers";
         case 35: return "Scythe";
         case 36: return "Spear";
+        case kAshesItemType: return "Ashes";
         default: return "?";
     }
 }
@@ -68,6 +105,25 @@ void ReplayWindow::SeedWeaponGrips()
     // Daggers are recorded as a single item but worn as a pair, and the off-hand slot is empty
     // while they are equipped, so the same skin is drawn on both hands.
     m_weaponGrips[32].mirrorToOffHand = true;
+
+    // An urn is cradled in the hand that does not hold a weapon, the same way a bow is.
+    m_weaponGrips[kAshesItemType] = WeaponGrip{};
+    m_weaponGrips[kAshesItemType].forceOffHand = true;
+}
+
+
+// Ashes are not equipment: they arrive by cast and leave when dropped, so the
+// answer comes from the reconstructed holds rather than from any item slot.
+const AshesSkill* ReplayWindow::AshesHeldAt(int agentId, float time) const
+{
+    for (const auto& h : m_flagTimeline.ashesHolds)
+    {
+        if (h.carrierAgentId != agentId) continue;
+        if (time < h.startTime) continue;
+        if (h.endTime >= 0.f && time > h.endTime) continue;
+        return LookupAshesSkill(h.skillId);
+    }
+    return nullptr;
 }
 
 
@@ -147,6 +203,17 @@ ReplayWindow::EquippedWeapon ReplayWindow::ResolveEquippedWeapon(const AgentRepl
     {
         out.modelFileId = out.item->modelFileId;
         out.itemType    = out.item->itemType;
+
+        if ((out.itemType == kBundleItemType || out.itemType == kFlagItemType) &&
+            (out.modelFileId == 0 || out.modelFileId == kUnresolvedItemPlaceholderModelId))
+        {
+            switch (m_flagItems.Classify(out.item->itemId, snap.time))
+            {
+                case BundleType::Flag:      out.modelFileId = kFlagModelFileId;      break;
+                case BundleType::RepairKit: out.modelFileId = kRepairKitModelFileId; break;
+                default: break;
+            }
+        }
     }
     return out;
 }
@@ -159,11 +226,20 @@ void ReplayWindow::CollectHandHeldModelFileIds(std::vector<uint32_t>& out) const
 {
     out.clear();
 
-    const auto& equipment = m_replayCtx.stocData.equipment;
-    if (!equipment.loaded)
-        return;
-
     std::unordered_set<uint32_t> unique;
+
+    // Urns come from the skill stream, so they are collected even when the match has
+    // no equipment stream at all.
+    if (!m_flagTimeline.ashesHolds.empty())
+        for (AshesKind kind : { AshesKind::Offensive, AshesKind::Defensive, AshesKind::Resurrect })
+            unique.insert(AshesModelFileId(kind));
+
+    const auto& equipment = m_replayCtx.stocData.equipment;
+    if (!equipment.loaded) {
+        out.assign(unique.begin(), unique.end());
+        return;
+    }
+
     for (const auto& ev : equipment.events)
     {
         if (ev.slot != Equipment::Slot_Weapon && ev.slot != Equipment::Slot_Offhand) continue;
@@ -196,6 +272,11 @@ void ReplayWindow::LoadWeaponModelsAsync()
 {
     if (m_weaponModelsLoaded || m_weaponModelsLoading) return;
     if (!m_replayCtx.stocLoaded || !m_agentsClassified) return;
+    // The urn models are collected from the reconstructed ashes holds, so the set to
+    // preload is not complete until the flag timeline has been built. Both are gated
+    // on the same two flags above, and the timeline is built earlier in the same
+    // update, so this only ever waits a frame.
+    if (!m_flagTimelineBuilt) return;
     if (!m_datManager || !m_hashIndex) return;
 
     CollectHandHeldModelFileIds(m_weaponModelOrder);
@@ -266,6 +347,9 @@ void ReplayWindow::LoadWeaponModelsIO()
         // out of the model's table, and without it the weapon renders untextured.
         for (size_t j = 0; j < geoModels.size(); j++)
         {
+            if (static_cast<int>(j) == HiddenSubmeshFor(modelFileId))
+                continue;
+
             AMAT_file amat;
             if (!isOtherFormat && !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
             {
@@ -583,12 +667,30 @@ void ReplayWindow::DrawWeaponModels()
         const int32_t mainBone = socket.MainHand(m_weaponHandIsPositiveX);
         const int32_t offBone  = socket.OffHand(m_weaponHandIsPositiveX);
 
-        auto templateFor = [&](const EquippedWeapon& w) -> WeaponModelTemplate*
+        auto templateForModel = [&](uint32_t modelFileId) -> WeaponModelTemplate*
         {
-            if (!w.Valid()) return nullptr;
-            auto it = m_weaponModelTemplates.find(w.modelFileId);
+            if (!modelFileId) return nullptr;
+            auto it = m_weaponModelTemplates.find(modelFileId);
             return (it != m_weaponModelTemplates.end() && it->second.gpuReady) ? &it->second : nullptr;
         };
+        auto templateFor = [&](const EquippedWeapon& w) -> WeaponModelTemplate*
+        {
+            return w.Valid() ? templateForModel(w.modelFileId) : nullptr;
+        };
+
+        // An urn replaces whatever was in the agent's hands. It also has to be asked
+        // about before the equipment slots: while ashes are held the recorded item is
+        // an unresolved bundle, which the placeholder patch above would otherwise turn
+        // into a flag or a repair kit and put a banner in the ritualist's hands.
+        if (const AshesSkill* ashes = AshesHeldAt(agentId, m_debugTimeline))
+        {
+            if (WeaponModelTemplate* urn = templateForModel(AshesModelFileId(ashes->kind)))
+            {
+                const WeaponGrip& gripDef = GripFor(kAshesItemType);
+                drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *urn, gripDef);
+                continue;
+            }
+        }
 
         if (WeaponModelTemplate* mainTmpl = templateFor(mainItem))
         {

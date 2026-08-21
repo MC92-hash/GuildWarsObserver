@@ -7,6 +7,7 @@
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
+#include "RitualistAshes.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -47,6 +48,7 @@ void ReplayWindow::BuildFlagTimeline()
     input.mapObject  = &m_replayCtx.stocData.mapObject;
     input.doorEvents = &m_replayCtx.stocData.doorEvents;
     input.agents     = &m_replayCtx.agents;
+    input.skills     = &m_replayCtx.stocData.skill;
     input.flagItems  = &m_flagItems;
     input.mapId      = m_replayCtx.mapId;
     m_flagTimeline = FlagTimelineBuilder::Build(input);
@@ -398,6 +400,39 @@ void ReplayWindow::DrawFlags()
         float ty = scrY - offsetY - iconSz - fontSize - 2.f;
         dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), label);
         dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), label);
+    }
+
+    // --- Ritualist urns ---
+    // The urn itself is gone almost as soon as it lands, so there is nothing to
+    // mark on the ground for more than a frame or two. Name it instead, and hold
+    // the name up long enough to be read before fading it out.
+    for (const auto& drop : m_flagTimeline.ashesDrops)
+    {
+        const AshesSkill* skill = LookupAshesSkill(drop.skillId);
+        if (!skill) continue;
+
+        constexpr float kMinVisible = 2.5f;
+        constexpr float kFadeTail   = 0.7f;
+        const float until = std::max(drop.endTime, drop.startTime + kMinVisible);
+        if (m_debugTimeline < drop.startTime || m_debugTimeline > until) continue;
+
+        const float remaining = until - m_debugTimeline;
+        const float fade = std::clamp(remaining / kFadeTail, 0.f, 1.f);
+
+        XMFLOAT3 pos = ApplyMapTransformToPos(drop.x, drop.y, drop.z, t);
+        float scrX, scrY;
+        if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
+
+        ImFont* font = ImGui::GetFont();
+        const float fontSize = font->FontSize;
+        ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, skill->droppedName);
+        const float tx = scrX - textSz.x * 0.5f;
+        const float ty = scrY - fontSize - 2.f;
+
+        const ImU8 a = static_cast<ImU8>(fade * 255.f);
+        dl->AddText(ImVec2(tx + 1.f, ty + 1.f), IM_COL32(0, 0, 0, (ImU8)(fade * 200.f)),
+                    skill->droppedName);
+        dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, a), skill->droppedName);
     }
 }
 

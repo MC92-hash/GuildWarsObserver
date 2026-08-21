@@ -1136,6 +1136,10 @@ private:
     void SeedWeaponGrips();
     const WeaponGrip& GripFor(uint32_t itemType) const;
 
+    // The urn this agent is holding at the given moment, or nullptr. Ashes replace
+    // whatever the agent was carrying, so this is asked before the equipment slots.
+    const struct AshesSkill* AshesHeldAt(int agentId, float time) const;
+
     // Which bind-pose side holds the main-hand weapon. The two hand bones are mirror images, so
     // this cannot be derived from the rig. Settled visually in Phase 1: +x is the weapon hand,
     // confirmed by the shield landing in the off hand.

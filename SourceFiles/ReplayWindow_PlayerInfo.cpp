@@ -290,7 +290,21 @@ void ReplayWindow::DrawWeaponSetTooltip(const WeaponSetEntry& ws)
     // grow as wide as its longest entry.
     ImGui::SetWindowFontScale(fontScale);
 
-    DrawEquipItemBlock(mainItem, "<no main hand recorded>", fontScale);
+    // A flag or repair kit's item record never resolves — the client picks it up long before it
+    // would ever request that item's info, so BuildTooltip would otherwise show its raw item name
+    // ("Unknown") instead of what it actually is. GetPlayerBundleType already knows which bundle
+    // this carry interval is from the flag/lifecycle timeline, which is more reliable than
+    // anything on the item record, so name it from that instead of the item block.
+    if (ws.bundleType != BundleType::Unknown)
+    {
+        ImGui::SetWindowFontScale(fontScale * 1.15f);
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", BundleTypeName(ws.bundleType));
+        ImGui::SetWindowFontScale(fontScale);
+    }
+    else
+    {
+        DrawEquipItemBlock(mainItem, "<no main hand recorded>", fontScale);
+    }
     if (ws.offId)
     {
         ImGui::Spacing();
