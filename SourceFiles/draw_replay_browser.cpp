@@ -872,6 +872,7 @@ struct BrowserThemeColors {
     ImVec4 titleBgAct, scrollBg, scrollGrab, scrollGrabHov;
     ImVec4 button, buttonHov;
     ImVec4 tableHeaderBg, tableBorderStrong, tableBorderLight, tableRowBgAlt;
+    ImVec4 rowHoverBg, rowSelectedBg;
     ImU32 splitterIdle, splitterActive, splitterHover;
     ImVec4 detailPanelBg;
     ImVec4 replayBtnBg, replayBtnHov, replayBtnAct;
@@ -930,7 +931,9 @@ static void ApplyBrowserTheme(int theme)
         s_themeColors.tableHeaderBg = ImVec4(0.12f, 0.12f, 0.13f, 0.95f);
         s_themeColors.tableBorderStrong = ImVec4(0.247f, 0.247f, 0.275f, 0.65f);
         s_themeColors.tableBorderLight  = ImVec4(0.247f, 0.247f, 0.275f, 0.30f);
-        s_themeColors.tableRowBgAlt = ImVec4(0.094f, 0.094f, 0.106f, 0.25f);
+        s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
+        s_themeColors.rowHoverBg    = ImVec4(0.340f, 0.340f, 0.360f, 0.90f);
+        s_themeColors.rowSelectedBg = ImVec4(0.961f, 0.620f, 0.043f, 0.20f);
         s_themeColors.splitterIdle  = IM_COL32(63, 63, 70, 115);    // border soft
         s_themeColors.splitterActive = IM_COL32(245, 158, 11, 255); // amber
         s_themeColors.splitterHover = IM_COL32(251, 191, 36, 180);  // amber hover
@@ -950,16 +953,16 @@ static void ApplyBrowserTheme(int theme)
     }
     else // Theme 0: GW Observer - warm near-black, desaturated gold
     {
-        kColorBg         = ImVec4(0.078f, 0.075f, 0.067f, 1.00f);
-        kColorPanel      = ImVec4(0.106f, 0.098f, 0.082f, 1.00f);
-        kColorPanelLight = ImVec4(0.137f, 0.129f, 0.110f, 1.00f);
-        kColorBorder     = ImVec4(0.180f, 0.157f, 0.118f, 1.00f);
-        kColorAccent     = ImVec4(0.769f, 0.663f, 0.416f, 1.00f); // #C4A96A
-        kColorAccentDim  = ImVec4(0.541f, 0.478f, 0.353f, 0.70f);
-        kColorText       = ImVec4(0.902f, 0.902f, 0.902f, 1.00f);
-        kColorTextDim    = ImVec4(0.541f, 0.478f, 0.353f, 1.00f); // #8A7A5A
-        kColorSelected   = ImVec4(0.200f, 0.175f, 0.120f, 0.90f);
-        kColorHover      = ImVec4(0.175f, 0.155f, 0.110f, 0.70f);
+        kColorBg         = ImVec4(0.075f, 0.075f, 0.075f, 1.00f); // #131313
+        kColorPanel      = ImVec4(0.102f, 0.102f, 0.102f, 1.00f); // #1A1A1A
+        kColorPanelLight = ImVec4(0.141f, 0.133f, 0.125f, 1.00f); // #242220
+        kColorBorder     = ImVec4(0.239f, 0.227f, 0.200f, 1.00f); // #3D3A33
+        kColorAccent     = ImVec4(0.878f, 0.710f, 0.388f, 1.00f); // #E0B563
+        kColorAccentDim  = ImVec4(0.878f, 0.710f, 0.388f, 0.70f);
+        kColorText       = ImVec4(0.941f, 0.937f, 0.914f, 1.00f); // #F0EFE9
+        kColorTextDim    = ImVec4(0.612f, 0.580f, 0.533f, 1.00f); // #9C9488
+        kColorSelected   = ImVec4(0.228f, 0.185f, 0.101f, 0.90f);
+        kColorHover      = ImVec4(0.202f, 0.163f, 0.089f, 0.70f);
 
         kCardMapName     = IM_COL32(175, 172, 165, 255);
         kCardDate        = IM_COL32(130, 127, 120, 255);
@@ -974,10 +977,10 @@ static void ApplyBrowserTheme(int theme)
         kCardMatchupBg   = IM_COL32( 14,  13,  10, 255);
         kCardMatchupRule = IM_COL32(196, 169, 106,  30);
 
-        s_themeColors.popupBg       = ImVec4(0.06f, 0.05f, 0.04f, 0.95f);
-        s_themeColors.frameBg       = ImVec4(0.10f, 0.09f, 0.07f, 0.70f);
-        s_themeColors.frameBgHov    = ImVec4(0.18f, 0.16f, 0.11f, 0.70f);
-        s_themeColors.frameBgAct    = ImVec4(0.22f, 0.19f, 0.13f, 0.80f);
+        s_themeColors.popupBg       = ImVec4(0.055f, 0.055f, 0.055f, 0.97f);
+        s_themeColors.frameBg       = ImVec4(0.078f, 0.078f, 0.078f, 0.85f); // #141414 well
+        s_themeColors.frameBgHov    = ImVec4(0.110f, 0.106f, 0.098f, 0.90f);
+        s_themeColors.frameBgAct    = ImVec4(0.145f, 0.133f, 0.108f, 0.95f);
         s_themeColors.titleBgAct    = ImVec4(0.08f, 0.07f, 0.06f, 0.95f);
         s_themeColors.scrollBg      = ImVec4(0.05f, 0.04f, 0.03f, 0.50f);
         s_themeColors.scrollGrab    = ImVec4(0.28f, 0.24f, 0.16f, 0.60f);
@@ -987,7 +990,9 @@ static void ApplyBrowserTheme(int theme)
         s_themeColors.tableHeaderBg = ImVec4(0.16f, 0.14f, 0.09f, 0.95f);
         s_themeColors.tableBorderStrong = ImVec4(0.20f, 0.17f, 0.10f, 1.00f);
         s_themeColors.tableBorderLight  = ImVec4(0.25f, 0.22f, 0.15f, 0.40f);
-        s_themeColors.tableRowBgAlt = ImVec4(0.12f, 0.10f, 0.06f, 0.30f);
+        s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
+        s_themeColors.rowHoverBg    = ImVec4(0.340f, 0.300f, 0.220f, 0.90f);
+        s_themeColors.rowSelectedBg = ImVec4(0.878f, 0.710f, 0.388f, 0.22f);
         s_themeColors.splitterIdle  = IM_COL32(46, 40, 30, 255);
         s_themeColors.splitterActive = IM_COL32(196, 169, 106, 255);
         s_themeColors.splitterHover = IM_COL32(196, 169, 106, 140);
@@ -1100,28 +1105,37 @@ static void PopGlassTheme(int count)
 
 // ─── Flux description lookup ─────────────────────────────────────────────────
 
+struct FluxTableEntry { const char* name; const char* desc; };
+static const FluxTableEntry kFluxTable[] = {
+    { "Odran's Razor",          "PvP combat is unmodified." },
+    { "Amateur Hour",           "Your secondary profession skills deal 30% more damage to foes with that primary profession." },
+    { "Hidden Talent",          "You have a +2 bonus to all of the secondary attributes of your secondary profession." },
+    { "There Can Be Only One",  "You deal +30% damage to foes of the same primary profession. Each time you kill one of these foes, you regain all Health and Energy and receive a 5% morale boost." },
+    { "Meek Shall Inherit",     "If you do not equip an elite skill, you have +2 to all attributes, +2 Health regeneration, and +1 Energy regeneration." },
+    { "Jack of All Trades",     "If your attributes are all between 8-11 before buffs, your skills deal 15% additional damage, activate 25% faster, and cost 20% less Energy." },
+    { "Chain Combo",            "Gain a stacking 5% damage bonus (max 30%) whenever you use a skill of a different attribute than the last skill used. Bonus resets if your next skill has the same attribute." },
+    { "Xinrae's Revenge",       "Whenever you successfully activate a skill, it is disabled (3 seconds) for all party and opposing party members in the area who have it on their skill bars." },
+    { "Like a Boss",            "Kill the boss (or any player if there is no boss); now you're the boss: -20 armor, +33% attack speed, +33% movement speed, -33% skill activation time, +3 Health regeneration, and +1 Energy regeneration. If you die, you're not the boss anymore. If a player killed you, they're the boss now." },
+    { "Minion Apocalypse",      "Each player death deals 50 damage to all nearby creatures and spawns a masterless bone horror (level 20)." },
+    { "All In",                 "If all your skills use one attribute, gain +3 Health regeneration and +100 max Health; your skills also cost 25% less Energy." },
+    { "Parting Gift",           "If you die, you drop a bundle on the ground that grants bonuses to whoever picks it up." },
+};
+
 static const char* GetFluxDescription(const std::string& fluxName)
 {
-    static const struct { const char* name; const char* desc; } kFluxTable[] = {
-        { "Odran's Razor",          "PvP combat is unmodified." },
-        { "Amateur Hour",           "Your secondary profession skills deal 30% more damage to foes with that primary profession." },
-        { "Hidden Talent",          "You have a +2 bonus to all of the secondary attributes of your secondary profession." },
-        { "There Can Be Only One",  "You deal +30% damage to foes of the same primary profession. Each time you kill one of these foes, you regain all Health and Energy and receive a 5% morale boost." },
-        { "Meek Shall Inherit",     "If you do not equip an elite skill, you have +2 to all attributes, +2 Health regeneration, and +1 Energy regeneration." },
-        { "Jack of All Trades",     "If your attributes are all between 8-11 before buffs, your skills deal 15% additional damage, activate 25% faster, and cost 20% less Energy." },
-        { "Chain Combo",            "Gain a stacking 5% damage bonus (max 30%) whenever you use a skill of a different attribute than the last skill used. Bonus resets if your next skill has the same attribute." },
-        { "Xinrae's Revenge",       "Whenever you successfully activate a skill, it is disabled (3 seconds) for all party and opposing party members in the area who have it on their skill bars." },
-        { "Like a Boss",            "Kill the boss (or any player if there is no boss); now you're the boss: -20 armor, +33% attack speed, +33% movement speed, -33% skill activation time, +3 Health regeneration, and +1 Energy regeneration. If you die, you're not the boss anymore. If a player killed you, they're the boss now." },
-        { "Minion Apocalypse",      "Each player death deals 50 damage to all nearby creatures and spawns a masterless bone horror (level 20)." },
-        { "All In",                 "If all your skills use one attribute, gain +3 Health regeneration and +100 max Health; your skills also cost 25% less Energy." },
-        { "Parting Gift",           "If you die, you drop a bundle on the ground that grants bonuses to whoever picks it up." },
-    };
-
     for (const auto& entry : kFluxTable)
         if (fluxName == entry.name)
             return entry.desc;
 
     return nullptr;
+}
+
+static std::vector<std::string> GetAllKnownFluxNames()
+{
+    std::vector<std::string> names;
+    for (const auto& entry : kFluxTable)
+        names.push_back(entry.name);
+    return names;
 }
 
 static void DrawFluxWithTooltip(const std::string& flux, float infoIconH)
@@ -1243,7 +1257,6 @@ struct BrowserState
     // Auto-complete search buffers
     char mapSearchBuf[128] = "";
     char fluxSearchBuf[128] = "";
-    char occasionSearchBuf[128] = "";
 
     // Date range
     DateVal dateFrom;
@@ -1272,6 +1285,21 @@ struct BrowserState
     std::set<std::string> selectedBuilds;
     char buildSearchBuf[128] = {};
     std::vector<std::string> buildNames;
+
+    // Skill filter
+    std::set<int> selectedSkills;           // canonical skill IDs
+    char skillSearchBuf[128] = {};
+    int  skillMatchMode = 0;                // 0 = All, 1 = Any
+    int  skillScope     = 2;                // 0 = Same player, 1 = Same team, 2 = Either team
+
+    // Matchup filter (guild A vs guild B, side-agnostic)
+    char matchupBufA[128] = {};
+    char matchupBufB[128] = {};
+    std::string matchupDisplayA, matchupNameA, matchupTagA;
+    std::string matchupDisplayB, matchupNameB, matchupTagB;
+
+    // Which multi-select filter currently has its "browse all" list open ("" = none)
+    std::string browseOpenId;
 
     bool filtersBuilt = false;
     int  lastMatchCount = -1;
@@ -1433,6 +1461,167 @@ static const char* kMonthNames[] = {
 
 static bool DateValValid(const DateVal& d) { return d.day > 0 && d.month > 0 && d.year > 0; }
 
+// ─── Skill filter index ──────────────────────────────────────────────────────
+
+struct SkillOption
+{
+    int         id = 0;          // canonical skill ID
+    std::string name;
+    std::string nameLower;
+    bool        isElite = false;
+    int         profession = 0;
+};
+
+// One entry per match, index-aligned with ReplayLibrary::GetMatches().
+struct MatchSkillIndex
+{
+    std::vector<std::vector<int>> teamPlayers[2]; // canonical IDs per player, per team
+    std::vector<int>              teamUnion[2];   // sorted, de-duplicated
+    std::vector<int>              allUnion;       // sorted, de-duplicated
+};
+
+static std::vector<SkillOption>     s_skillOptions;    // sorted by display name
+static std::vector<MatchSkillIndex> s_matchSkillIndex;
+static std::unordered_map<int, int> s_skillCanonical;  // raw ID -> canonical ID
+
+static int CanonicalSkillId(int rawId)
+{
+    auto it = s_skillCanonical.find(rawId);
+    return it == s_skillCanonical.end() ? rawId : it->second;
+}
+
+// PvP/PvE skill splits share a name but carry different IDs; collapse each such
+// group onto its lowest ID so one chip matches every variant.
+static void BuildSkillIndex(const std::vector<MatchMeta>& matches)
+{
+    s_skillOptions.clear();
+    s_matchSkillIndex.clear();
+    s_skillCanonical.clear();
+
+    std::set<int> rawIds;
+    for (const auto& m : matches)
+        for (const auto& [pid, party] : m.parties)
+            for (const auto& p : party.players)
+                for (int sk : p.used_skills)
+                    if (sk > 0) rawIds.insert(sk);
+
+    if (rawIds.empty()) return;
+
+    const SkillDatabase& db = GetSkillDatabase();
+
+    // Group by skill name; the lowest ID of a group becomes its canonical ID.
+    std::map<std::string, std::vector<int>> byName;
+    for (int id : rawIds)
+    {
+        const SkillInfo* si = db.Get(id);
+        std::string key = (si && !si->name.empty())
+            ? ToLower(si->name)
+            : ("#" + std::to_string(id));
+        byName[key].push_back(id);
+    }
+
+    for (auto& [key, ids] : byName)
+    {
+        int canonical = *std::min_element(ids.begin(), ids.end());
+        for (int id : ids) s_skillCanonical[id] = canonical;
+
+        const SkillInfo* si = db.Get(canonical);
+        if (!si || si->name.empty()) continue;  // unnamed skills stay unselectable
+
+        SkillOption opt;
+        opt.id         = canonical;
+        opt.name       = si->name;
+        opt.nameLower  = ToLower(si->name);
+        opt.isElite    = si->is_elite;
+        opt.profession = si->profession;
+        s_skillOptions.push_back(std::move(opt));
+    }
+
+    std::sort(s_skillOptions.begin(), s_skillOptions.end(),
+        [](const SkillOption& a, const SkillOption& b) { return a.nameLower < b.nameLower; });
+
+    // Per-match canonical skill sets, so filtering never touches the raw metadata.
+    s_matchSkillIndex.resize(matches.size());
+    for (size_t mi = 0; mi < matches.size(); mi++)
+    {
+        const auto& m = matches[mi];
+        MatchSkillIndex& idx = s_matchSkillIndex[mi];
+
+        for (int team = 0; team < 2; team++)
+        {
+            auto pit = m.parties.find(team == 0 ? "1" : "2");
+            if (pit == m.parties.end()) continue;
+
+            for (const auto& p : pit->second.players)
+            {
+                std::vector<int> skills;
+                skills.reserve(p.used_skills.size());
+                for (int sk : p.used_skills)
+                    if (sk > 0) skills.push_back(CanonicalSkillId(sk));
+                std::sort(skills.begin(), skills.end());
+                skills.erase(std::unique(skills.begin(), skills.end()), skills.end());
+                if (skills.empty()) continue;
+
+                idx.teamUnion[team].insert(idx.teamUnion[team].end(), skills.begin(), skills.end());
+                idx.teamPlayers[team].push_back(std::move(skills));
+            }
+
+            auto& tu = idx.teamUnion[team];
+            std::sort(tu.begin(), tu.end());
+            tu.erase(std::unique(tu.begin(), tu.end()), tu.end());
+            idx.allUnion.insert(idx.allUnion.end(), tu.begin(), tu.end());
+        }
+
+        std::sort(idx.allUnion.begin(), idx.allUnion.end());
+        idx.allUnion.erase(std::unique(idx.allUnion.begin(), idx.allUnion.end()),
+                           idx.allUnion.end());
+    }
+}
+
+static bool HasSkill(const std::vector<int>& sortedSkills, int id)
+{
+    return std::binary_search(sortedSkills.begin(), sortedSkills.end(), id);
+}
+
+// Match/Any x Same player / Same team / Either team.
+static bool MatchPassesSkillFilter(size_t matchIndex)
+{
+    if (s_state.selectedSkills.empty()) return true;
+    if (matchIndex >= s_matchSkillIndex.size()) return false;
+
+    const MatchSkillIndex& idx = s_matchSkillIndex[matchIndex];
+    const bool matchAll = (s_state.skillMatchMode == 0);
+
+    auto setSatisfies = [&](const std::vector<int>& skills) {
+        if (matchAll)
+        {
+            for (int want : s_state.selectedSkills)
+                if (!HasSkill(skills, want)) return false;
+            return true;
+        }
+        for (int want : s_state.selectedSkills)
+            if (HasSkill(skills, want)) return true;
+        return false;
+    };
+
+    switch (s_state.skillScope)
+    {
+    case 0: // Same player
+        for (int team = 0; team < 2; team++)
+            for (const auto& bar : idx.teamPlayers[team])
+                if (setSatisfies(bar)) return true;
+        return false;
+
+    case 1: // Same team
+        for (int team = 0; team < 2; team++)
+            if (setSatisfies(idx.teamUnion[team])) return true;
+        return false;
+
+    default: // Either team — anywhere in the match
+        return setSatisfies(idx.allUnion);
+    }
+}
+
 static void BuildFilterLists(const std::vector<MatchMeta>& matches)
 {
     if (g_invalidateFilters)
@@ -1446,6 +1635,10 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
 
     std::set<std::string> maps, guilds, fluxes, occasions;
     std::set<std::string> teams, players, tags;
+
+    // Seed with every known flux so the filter can offer all of them, even
+    // ones that have not shown up in the currently loaded matches yet.
+    for (auto& fn : GetAllKnownFluxNames()) fluxes.insert(fn);
 
     for (const auto& m : matches)
     {
@@ -1502,6 +1695,8 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
         s_state.buildNames = ToVec(builds);
     }
 
+    BuildSkillIndex(matches);
+
     s_state.filtersBuilt = true;
     s_state.lastMatchCount = (int)matches.size();
 }
@@ -1531,6 +1726,22 @@ static bool ComboFromVec(const char* label, int& current, const std::vector<std:
 }
 
 // ─── Auto-complete & chip helpers ────────────────────────────────────────────
+
+// Make the "browse all" arrow button read as part of its adjoining search
+// field (same frame colors) instead of the generic, mismatched button chrome
+// it would otherwise inherit.
+static void PushDropdownArrowStyle()
+{
+    ImGui::PushStyleColor(ImGuiCol_Button,        s_themeColors.frameBg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, s_themeColors.frameBgHov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  s_themeColors.frameBgAct);
+    ImGui::PushStyleColor(ImGuiCol_Text,          kColorTextDim);
+}
+
+static void PopDropdownArrowStyle()
+{
+    ImGui::PopStyleColor(4);
+}
 
 static bool HighlightedSelectable(const char* text, const char* query,
                                   const char* uid, bool fuzzy)
@@ -1593,12 +1804,79 @@ static bool HighlightedSelectable(const char* text, const char* query,
     return clicked;
 }
 
+enum class MsRowStyle { Plain, Flux };
+
+static std::string TruncateToWidth(const std::string& text, float maxW)
+{
+    if (maxW <= 0.0f) return std::string();
+    if (ImGui::CalcTextSize(text.c_str()).x <= maxW) return text;
+
+    const float ellW = ImGui::CalcTextSize("...").x;
+    size_t n = text.size();
+    while (n > 0 &&
+           ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + ellW > maxW)
+        n--;
+    return text.substr(0, n) + "...";
+}
+
+// Flux dropdown row: icon + name + a one-line preview of the effect, full text on hover.
+static bool DrawFluxRow(const std::string& name, const char* query,
+                        const char* uid, bool fuzzy)
+{
+    const float iconH = 18.0f;
+    const float lineH = ImGui::GetTextLineHeight();
+    const char* desc  = GetFluxDescription(name);
+    const float rowH  = desc ? (lineH * 2.0f + 3.0f) : std::max(iconH, lineH);
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::Selectable((std::string("##fxr_") + uid).c_str(),
+                                     false, 0, ImVec2(0, rowH));
+    bool hovered = ImGui::IsItemHovered();
+    float rowRight = ImGui::GetItemRectMax().x;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float x = pos.x + 4.0f;
+
+    if (ImTextureID ico = GetFluxIcon())
+    {
+        dl->AddImage(ico, ImVec2(x, pos.y + 1.0f), ImVec2(x + iconH, pos.y + 1.0f + iconH));
+        x += iconH + 6.0f;
+    }
+
+    dl->AddText(ImVec2(x, pos.y), ImGui::GetColorU32(kColorText), name.c_str());
+    if (desc)
+    {
+        std::string line = TruncateToWidth(desc, rowRight - x - 6.0f);
+        dl->AddText(ImVec2(x, pos.y + lineH + 2.0f),
+                    ImGui::GetColorU32(kColorTextDim), line.c_str());
+    }
+
+    if (hovered && desc)
+    {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(320.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.82f, 0.75f, 1.0f));
+        ImGui::TextWrapped("%s", desc);
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    (void)query; (void)fuzzy;
+    return clicked;
+}
+
 static bool DrawMultiSelectFilter(
     const char* label, const char* hint,
     char* searchBuf, size_t searchBufSize,
     const std::vector<std::string>& allItems,
     std::set<std::string>& selectedItems,
-    const char* id, bool useFuzzy)
+    const char* id, bool useFuzzy,
+    MsRowStyle rowStyle = MsRowStyle::Plain)
 {
     bool changed = false;
 
@@ -1632,21 +1910,37 @@ static bool DrawMultiSelectFilter(
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.40f, 0.15f, 0.10f, 0.90f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.50f, 0.18f, 0.12f, 1.00f));
 
-            if (ImGui::Button(chipId.c_str()))
+            bool erase = ImGui::Button(chipId.c_str());
+            lineX += (lineX > 0.0f ? chipGap : 0.0f) + ImGui::GetItemRectSize().x;
+            ImGui::PopStyleColor(3);
+
+            if (rowStyle == MsRowStyle::Flux && ImGui::IsItemHovered())
+            {
+                if (const char* d = GetFluxDescription(*it))
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(320.0f);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.82f, 0.75f, 1.0f));
+                    ImGui::TextWrapped("%s", d);
+                    ImGui::PopStyleColor();
+                    ImGui::PopTextWrapPos();
+                    ImGui::EndTooltip();
+                }
+            }
+
+            if (erase)
             {
                 it = selectedItems.erase(it);
                 changed = true;
             }
             else
                 ++it;
-
-            lineX += (lineX > 0.0f ? chipGap : 0.0f) + ImGui::GetItemRectSize().x;
-            ImGui::PopStyleColor(3);
         }
 
         ImGui::PopStyleVar(2);
 
         ImGui::SameLine(0, 8.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
@@ -1656,69 +1950,106 @@ static bool DrawMultiSelectFilter(
             changed = true;
         }
         ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
         ImGui::Spacing();
     }
 
-    ImGui::SetNextItemWidth(-1);
+    // Search field + "browse all" arrow
+    const float arrowW = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(-(arrowW + 4.0f));
     ImGui::InputTextWithHint(
         (std::string("##ms_") + id).c_str(),
         hint, searchBuf, searchBufSize);
+    ImVec2 inputMin = ImGui::GetItemRectMin();
+    ImVec2 inputMax = ImGui::GetItemRectMax();
+    bool inputActive = ImGui::IsItemActive();
 
-    if (searchBuf[0] != '\0')
+    ImGui::SameLine(0, 2.0f);
+    bool browsing = (s_state.browseOpenId == id);
+    PushDropdownArrowStyle();
+    bool arrowClicked = ImGui::ArrowButton((std::string("##msarrow_") + id).c_str(),
+                           browsing ? ImGuiDir_Up : ImGuiDir_Down);
+    PopDropdownArrowStyle();
+    if (arrowClicked)
     {
-        ImVec2 inputMin = ImGui::GetItemRectMin();
-        ImVec2 inputMax = ImGui::GetItemRectMax();
+        s_state.browseOpenId = browsing ? std::string() : std::string(id);
+        browsing = !browsing;
+        searchBuf[0] = '\0';
+    }
+    bool arrowHovered = ImGui::IsItemHovered();
+    if (arrowHovered && !browsing)
+        ImGui::SetTooltip("Show all %s options", label);
+    float rowRight = ImGui::GetItemRectMax().x;
 
-        std::string query(searchBuf);
-        std::vector<const std::string*> suggestions;
+    const bool hasQuery = (searchBuf[0] != '\0');
+    if (!hasQuery && !browsing)
+        return changed;
 
-        for (size_t i = 1; i < allItems.size(); i++)
+    std::string query(searchBuf);
+    std::vector<const std::string*> suggestions;
+    for (size_t k = 1; k < allItems.size(); k++)
+    {
+        const auto& item = allItems[k];
+        if (selectedItems.count(item)) continue;
+        bool match = !hasQuery || (useFuzzy
+            ? FuzzyMatch(query, item)
+            : (ToLower(item).find(ToLower(query)) != std::string::npos));
+        if (match) suggestions.push_back(&item);
+    }
+
+    if (suggestions.empty() && !browsing)
+        return changed;
+
+    float dropW = rowRight - inputMin.x;
+    float rowH  = (rowStyle == MsRowStyle::Flux)
+        ? ImGui::GetTextLineHeight() * 2.0f + 3.0f + ImGui::GetStyle().ItemSpacing.y
+        : ImGui::GetTextLineHeightWithSpacing();
+    float maxH  = std::min(browsing ? 300.0f : 200.0f,
+                           std::max(1.0f, (float)suggestions.size()) * rowH + 12.0f);
+
+    ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMax.y));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(dropW, 0), ImVec2(dropW, maxH));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+
+    bool ddHovered = false;
+    std::string ddWinId = std::string("##ddw_") + id;
+    if (ImGui::Begin(ddWinId.c_str(), nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ddHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows |
+                                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (suggestions.empty())
+            ImGui::TextColored(kColorTextDim, "No match");
+
+        for (size_t si = 0; si < suggestions.size(); si++)
         {
-            const auto& item = allItems[i];
-            if (selectedItems.count(item)) continue;
-            bool match = useFuzzy
-                ? FuzzyMatch(query, item)
-                : (ToLower(item).find(ToLower(query)) != std::string::npos);
-            if (match) suggestions.push_back(&item);
-        }
-
-        if (!suggestions.empty())
-        {
-            float dropW = inputMax.x - inputMin.x;
-            float itemH = ImGui::GetTextLineHeightWithSpacing();
-            float maxH = std::min(200.0f, (float)suggestions.size() * itemH + 8.0f);
-
-            ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMax.y));
-            ImGui::SetNextWindowSizeConstraints(ImVec2(dropW, 0), ImVec2(dropW, maxH));
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 0.98f));
-            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-
-            std::string ddWinId = std::string("##ddw_") + id;
-            if (ImGui::Begin(ddWinId.c_str(), nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize))
+            std::string selId = std::string(id) + "_" + std::to_string(si);
+            bool picked = (rowStyle == MsRowStyle::Flux)
+                ? DrawFluxRow(*suggestions[si], searchBuf, selId.c_str(), useFuzzy)
+                : HighlightedSelectable(suggestions[si]->c_str(),
+                                        searchBuf, selId.c_str(), useFuzzy);
+            if (picked)
             {
-                for (size_t si = 0; si < suggestions.size(); si++)
-                {
-                    std::string selId = std::string(id) + "_" + std::to_string(si);
-                    if (HighlightedSelectable(suggestions[si]->c_str(),
-                            searchBuf, selId.c_str(), useFuzzy))
-                    {
-                        selectedItems.insert(*suggestions[si]);
-                        searchBuf[0] = '\0';
-                        changed = true;
-                    }
-                }
+                selectedItems.insert(*suggestions[si]);
+                searchBuf[0] = '\0';
+                changed = true;
             }
-            ImGui::End();
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor(2);
         }
     }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+
+    // Dismiss the browse list on a click that lands outside it
+    if (browsing && !ddHovered && !arrowHovered && !inputActive &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        s_state.browseOpenId.clear();
 
     return changed;
 }
@@ -1951,6 +2282,580 @@ static bool DrawCalendarPicker(const char* id, DateVal& date, int& browseMonth, 
     return changed;
 }
 
+static int GetOccasionOrder(const std::string& occasion);  // defined with the sort helpers
+
+// ─── Skill filter ────────────────────────────────────────────────────────────
+
+// Selected skills show as icons only; the dropdown shows icon + name.
+static void DrawSkillFilter()
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("Skills");
+    ImGui::PopStyleColor();
+
+    if (s_skillOptions.empty())
+    {
+        ImGui::TextColored(kColorTextDim, "No skill data loaded");
+        return;
+    }
+
+    if (!s_state.selectedSkills.empty())
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
+        if (ImGui::SmallButton("Clear##clr_skills"))
+            s_state.selectedSkills.clear();
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+
+        const float chipSz = 28.0f;
+        const float chipGap = 4.0f;
+        float wrapW = ImGui::GetContentRegionAvail().x;
+        float lineX = 0.0f;
+        int removeId = -1;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
+        for (int skillId : s_state.selectedSkills)
+        {
+            float chipW = chipSz + 4.0f;
+            if (lineX > 0.0f && lineX + chipGap + chipW > wrapW)
+                lineX = 0.0f;
+            else if (lineX > 0.0f)
+                ImGui::SameLine(0, chipGap);
+
+            std::string btnId = "##skchip_" + std::to_string(skillId);
+            ImTextureID tex = GetSkillIcon(skillId);
+            bool clicked = tex
+                ? ImGui::ImageButton(btnId.c_str(), tex, ImVec2(chipSz, chipSz))
+                : ImGui::Button(btnId.c_str(), ImVec2(chipSz + 4.0f, chipSz + 4.0f));
+
+            if (ImGui::IsItemHovered())
+            {
+                DrawSkillTooltip(skillId);
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            if (clicked) removeId = skillId;
+
+            lineX += (lineX > 0.0f ? chipGap : 0.0f) + ImGui::GetItemRectSize().x;
+        }
+        ImGui::PopStyleVar();
+
+        if (removeId >= 0) s_state.selectedSkills.erase(removeId);
+        ImGui::Spacing();
+    }
+
+    // Match mode + scope
+    if (!s_state.selectedSkills.empty())
+    {
+        ImGui::Spacing();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 2));
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(kColorTextDim, "Match");
+        ImGui::SameLine(0, 6);
+        const char* modes[2] = { "All", "Any" };
+        for (int i = 0; i < 2; i++)
+        {
+            if (i) ImGui::SameLine(0, 2);
+            bool on = (s_state.skillMatchMode == i);
+            ImGui::PushStyleColor(ImGuiCol_Button, on ? kColorSelected : s_themeColors.frameBg);
+            ImGui::PushStyleColor(ImGuiCol_Text, on ? kColorAccent : kColorTextDim);
+            if (ImGui::SmallButton((std::string(modes[i]) + "##skmode" + std::to_string(i)).c_str()))
+                s_state.skillMatchMode = i;
+            ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(i == 0
+                    ? "Every selected skill must be present"
+                    : "At least one selected skill must be present");
+        }
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(kColorTextDim, "Scope");
+        ImGui::SameLine(0, 6);
+        const char* scopes[3] = { "Player", "Team", "Match" };
+        const char* scopeTips[3] = {
+            "One player's skill bar must satisfy the selection",
+            "One team must satisfy the selection (across its 8 bars)",
+            "Anywhere in the match, either team"
+        };
+        for (int i = 0; i < 3; i++)
+        {
+            if (i) ImGui::SameLine(0, 2);
+            bool on = (s_state.skillScope == i);
+            ImGui::PushStyleColor(ImGuiCol_Button, on ? kColorSelected : s_themeColors.frameBg);
+            ImGui::PushStyleColor(ImGuiCol_Text, on ? kColorAccent : kColorTextDim);
+            if (ImGui::SmallButton((std::string(scopes[i]) + "##skscope" + std::to_string(i)).c_str()))
+                s_state.skillScope = i;
+            ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", scopeTips[i]);
+        }
+
+        ImGui::PopStyleVar();
+    }
+
+    // Search field + browse arrow
+    const float arrowW = ImGui::GetFrameHeight();
+    ImGui::SetNextItemWidth(-(arrowW + 4.0f));
+    ImGui::InputTextWithHint("##ms_skill", "Search skills...",
+        s_state.skillSearchBuf, sizeof(s_state.skillSearchBuf));
+    ImVec2 inputMin = ImGui::GetItemRectMin();
+    ImVec2 inputMax = ImGui::GetItemRectMax();
+    bool inputActive = ImGui::IsItemActive();
+
+    ImGui::SameLine(0, 2.0f);
+    bool browsing = (s_state.browseOpenId == "skill");
+    PushDropdownArrowStyle();
+    bool arrowClicked = ImGui::ArrowButton("##msarrow_skill", browsing ? ImGuiDir_Up : ImGuiDir_Down);
+    PopDropdownArrowStyle();
+    if (arrowClicked)
+    {
+        s_state.browseOpenId = browsing ? std::string() : std::string("skill");
+        browsing = !browsing;
+        s_state.skillSearchBuf[0] = '\0';
+    }
+    bool arrowHovered = ImGui::IsItemHovered();
+    if (arrowHovered && !browsing)
+        ImGui::SetTooltip("Show all skills used in the library");
+    float rowRight = ImGui::GetItemRectMax().x;
+
+    const bool hasQuery = (s_state.skillSearchBuf[0] != '\0');
+    if (!hasQuery && !browsing) return;
+
+    std::string qLow = ToLower(std::string(s_state.skillSearchBuf));
+    std::vector<const SkillOption*> suggestions;
+    for (const auto& opt : s_skillOptions)
+    {
+        if (s_state.selectedSkills.count(opt.id)) continue;
+        if (hasQuery && opt.nameLower.find(qLow) == std::string::npos) continue;
+        suggestions.push_back(&opt);
+    }
+
+    if (suggestions.empty() && !browsing) return;
+
+    const float iconH = 22.0f;
+    float rowH  = std::max(iconH + 2.0f, ImGui::GetTextLineHeightWithSpacing());
+    float dropW = std::max(rowRight - inputMin.x, 240.0f);
+    float maxH  = std::min(320.0f, std::max(1.0f, (float)suggestions.size()) * rowH + 12.0f);
+
+    ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMax.y));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(dropW, 0), ImVec2(dropW, maxH));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+
+    bool ddHovered = false;
+    if (ImGui::Begin("##ddw_skill", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ddHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows |
+                                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        if (suggestions.empty())
+            ImGui::TextColored(kColorTextDim, "No skill matches");
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)suggestions.size(), rowH);
+        int pickedId = -1;
+        while (clipper.Step())
+        {
+            for (int si = clipper.DisplayStart; si < clipper.DisplayEnd; si++)
+            {
+                const SkillOption* opt = suggestions[si];
+                ImVec2 pos = ImGui::GetCursorScreenPos();
+
+                if (ImGui::Selectable(("##skrow_" + std::to_string(opt->id)).c_str(),
+                                      false, 0, ImVec2(0, rowH)))
+                    pickedId = opt->id;
+                bool hovered = ImGui::IsItemHovered();
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                float x = pos.x + 4.0f;
+                if (ImTextureID tex = GetSkillIcon(opt->id))
+                {
+                    dl->AddImage(tex, ImVec2(x, pos.y + 1.0f),
+                                 ImVec2(x + iconH, pos.y + 1.0f + iconH));
+                }
+                x += iconH + 6.0f;
+
+                ImU32 nameCol = opt->isElite
+                    ? ImGui::GetColorU32(ImVec4(1.0f, 0.85f, 0.3f, 1.0f))
+                    : ImGui::GetColorU32(kColorText);
+                float ty = pos.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+                dl->AddText(ImVec2(x, ty), nameCol, opt->name.c_str());
+
+                if (hovered) DrawSkillTooltip(opt->id);
+            }
+        }
+        clipper.End();
+
+        if (pickedId >= 0)
+        {
+            s_state.selectedSkills.insert(pickedId);
+            s_state.skillSearchBuf[0] = '\0';
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+
+    if (browsing && !ddHovered && !arrowHovered && !inputActive &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        s_state.browseOpenId.clear();
+}
+
+// ─── Occasion filter (two-level tree) ────────────────────────────────────────
+
+// Occasion strings come straight from infos.json, so groups are derived by shape.
+// Matching is per word, not by substring: "Automated Tournament" contains "mat" but
+// is not an mAT stage.
+static const char* OccasionGroupOf(const std::string& occasion)
+{
+    std::vector<std::string> words;
+    std::string cur;
+    for (char c : occasion)
+    {
+        if (isalnum((unsigned char)c))
+            cur += (char)tolower((unsigned char)c);
+        else if (!cur.empty())
+        {
+            words.push_back(cur);
+            cur.clear();
+        }
+    }
+    if (!cur.empty()) words.push_back(cur);
+
+    auto has = [&words](const char* w) {
+        return std::find(words.begin(), words.end(), w) != words.end();
+    };
+
+    if (has("mat"))                          return "Monthly AT (mAT)";
+    if (has("scrim") || has("scrimmage"))    return "Scrimmage";
+    if (has("at") || has("tournament"))      return "Automated Tournament";
+    return "Other";
+}
+
+static ImVec4 WithMinAlpha(ImVec4 c, float minA) { c.w = std::max(c.w, minA); return c; }
+
+static void PushTreeCheckboxStyle()
+{
+    // Per-checkbox fill/border (on vs. off vs. mixed) is pushed separately
+    // via PushCheckboxState below, since Dear ImGui's FrameBg alone doesn't
+    // vary with checked state. This just sets up hover/active feedback and
+    // shape - rounding, a visible border, and a slightly tighter box than
+    // the rest of the UI's frame widgets.
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, WithMinAlpha(kColorHover,    0.85f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  WithMinAlpha(kColorSelected, 0.90f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.0f, 2.0f));
+}
+
+static void PopTreeCheckboxStyle()
+{
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+}
+
+enum class CheckboxVisual { Off, Mixed, On };
+
+// Solid accent fill + dark mark when fully checked; a muted well when not;
+// mixed keeps the well fill but picks up the accent border/mark so a
+// partially-selected group still reads as "something in here is on".
+static void PushCheckboxState(CheckboxVisual v)
+{
+    static const ImVec4 kOffBorder = ImVec4(0.361f, 0.337f, 0.282f, 0.85f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,   v == CheckboxVisual::On ? kColorAccent : kColorPanelLight);
+    ImGui::PushStyleColor(ImGuiCol_Border,    v == CheckboxVisual::Off ? kOffBorder : kColorAccent);
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, v == CheckboxVisual::On ? kColorBg : kColorAccent);
+}
+
+static void PopCheckboxState()
+{
+    ImGui::PopStyleColor(3);
+}
+
+static void DrawOccasionTreeFilter(const std::unordered_map<std::string, int>& occasionCounts)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("Occasion");
+    ImGui::PopStyleColor();
+
+    if (!s_state.selectedOccasions.empty())
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
+        if (ImGui::SmallButton("Clear##clr_occ"))
+            s_state.selectedOccasions.clear();
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+    }
+
+    // Fixed group order keeps the tree stable regardless of what the library holds
+    static const char* kGroupOrder[] = {
+        "Monthly AT (mAT)", "Automated Tournament", "Scrimmage", "Other"
+    };
+
+    std::map<std::string, std::vector<const std::string*>> groups;
+    for (size_t i = 1; i < s_state.occasionNames.size(); i++)
+    {
+        const std::string& occ = s_state.occasionNames[i];
+        groups[OccasionGroupOf(occ)].push_back(&occ);
+    }
+
+    for (const char* groupName : kGroupOrder)
+    {
+        auto git = groups.find(groupName);
+        if (git == groups.end() || git->second.empty()) continue;
+
+        // Order stages within a group the same way the Date column sorts them
+        std::vector<const std::string*> items = git->second;
+        std::sort(items.begin(), items.end(),
+            [](const std::string* a, const std::string* b) {
+                int oa = GetOccasionOrder(*a), ob = GetOccasionOrder(*b);
+                if (oa != ob) return oa < ob;
+                return *a < *b;
+            });
+
+        int selCount = 0;
+        int groupMatchCount = 0;
+        for (const auto* occ : items)
+        {
+            if (s_state.selectedOccasions.count(*occ)) selCount++;
+            auto cit = occasionCounts.find(*occ);
+            if (cit != occasionCounts.end()) groupMatchCount += cit->second;
+        }
+
+        bool allOn  = (selCount == (int)items.size());
+        bool someOn = (selCount > 0 && !allOn);
+
+        ImGui::PushID(groupName);
+        PushTreeCheckboxStyle();
+
+        if (someOn)
+            ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
+        PushCheckboxState(allOn ? CheckboxVisual::On : someOn ? CheckboxVisual::Mixed : CheckboxVisual::Off);
+        bool parentState = allOn;
+        if (ImGui::Checkbox("##grp", &parentState))
+        {
+            for (const auto* occ : items)
+            {
+                if (parentState) s_state.selectedOccasions.insert(*occ);
+                else             s_state.selectedOccasions.erase(*occ);
+            }
+        }
+        PopCheckboxState();
+        if (someOn)
+            ImGui::PopItemFlag();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s all %d occasions in this group",
+                              allOn ? "Deselect" : "Select", (int)items.size());
+
+        ImGui::SameLine(0, 4);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+            (allOn || someOn) ? kColorAccent : kColorText);
+        bool open = ImGui::TreeNodeEx("##grpnode",
+            ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding |
+            ImGuiTreeNodeFlags_DefaultOpen,
+            "%s (%d)", groupName, groupMatchCount);
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%d match%s in this group under the current filters",
+                              groupMatchCount, groupMatchCount == 1 ? "" : "es");
+
+        if (open)
+        {
+            for (const auto* occ : items)
+            {
+                bool on = s_state.selectedOccasions.count(*occ) > 0;
+                auto cit = occasionCounts.find(*occ);
+                int leafCount = (cit != occasionCounts.end()) ? cit->second : 0;
+
+                std::string label = *occ + "  (" + std::to_string(leafCount) + ")";
+                if (leafCount == 0) ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+                PushCheckboxState(on ? CheckboxVisual::On : CheckboxVisual::Off);
+                bool changed = ImGui::Checkbox(label.c_str(), &on);
+                PopCheckboxState();
+                if (leafCount == 0) ImGui::PopStyleColor();
+
+                if (changed)
+                {
+                    if (on) s_state.selectedOccasions.insert(*occ);
+                    else    s_state.selectedOccasions.erase(*occ);
+                }
+            }
+            ImGui::TreePop();
+        }
+
+        PopTreeCheckboxStyle();
+        ImGui::PopID();
+    }
+}
+
+// ─── Matchup filter (guild A vs guild B) ─────────────────────────────────────
+
+static void SplitGuildDisplay(const std::string& display,
+                              std::string& outName, std::string& outTag)
+{
+    auto open = display.rfind('[');
+    auto close = display.rfind(']');
+    if (open != std::string::npos && close != std::string::npos && close > open)
+    {
+        outName = display.substr(0, open);
+        while (!outName.empty() && outName.back() == ' ') outName.pop_back();
+        outTag = display.substr(open + 1, close - open - 1);
+    }
+    else
+    {
+        outName = display;
+        outTag.clear();
+    }
+}
+
+// One autocomplete slot; returns true when the selection changed.
+static bool DrawMatchupSlot(const char* slotId, const char* hint,
+                            char* buf, size_t bufSize,
+                            std::string& display, std::string& name, std::string& tag)
+{
+    bool changed = false;
+    const bool slotFilled = !display.empty();
+
+    const float clearW = slotFilled ? (ImGui::GetFrameHeight() + 4.0f) : 0.0f;
+    ImGui::SetNextItemWidth(clearW > 0.0f ? -clearW : -1.0f);
+    bool enterPressed = ImGui::InputTextWithHint(
+        (std::string("##mu_") + slotId).c_str(), hint, buf, bufSize,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImVec2 inputMin = ImGui::GetItemRectMin();
+    ImVec2 inputMax = ImGui::GetItemRectMax();
+
+    if (slotFilled)
+    {
+        ImGui::SameLine(0, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
+        if (ImGui::Button((std::string("x##muclr_") + slotId).c_str(),
+                          ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight())))
+        {
+            buf[0] = '\0';
+            display.clear(); name.clear(); tag.clear();
+            changed = true;
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+    }
+
+    std::string qLow = ToLower(std::string(buf));
+    if (qLow.empty() || s_state.guildNames.size() <= 1)
+        return changed;
+
+    // Already showing the exact selection — no need to re-open the list
+    if (!display.empty() && ToLower(display) == qLow)
+        return changed;
+
+    std::vector<const std::string*> hits;
+    for (size_t i = 1; i < s_state.guildNames.size() && hits.size() < 40; i++)
+        if (ToLower(s_state.guildNames[i]).find(qLow) != std::string::npos)
+            hits.push_back(&s_state.guildNames[i]);
+
+    if (hits.empty()) return changed;
+
+    auto pick = [&](const std::string& picked) {
+        display = picked;
+        SplitGuildDisplay(display, name, tag);
+        snprintf(buf, bufSize, "%s", display.c_str());
+        changed = true;
+    };
+
+    if (enterPressed)
+    {
+        pick(*hits[0]);
+        return changed;
+    }
+
+    float dropW = inputMax.x - inputMin.x;
+    float maxH  = std::min(220.0f, hits.size() * ImGui::GetTextLineHeightWithSpacing() + 8.0f);
+
+    ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMax.y));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(dropW, 0), ImVec2(dropW, maxH));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+
+    if (ImGui::Begin((std::string("##ddw_mu_") + slotId).c_str(), nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        for (size_t i = 0; i < hits.size(); i++)
+        {
+            std::string uid = std::string("mu_") + slotId + "_" + std::to_string(i);
+            if (HighlightedSelectable(hits[i]->c_str(), buf, uid.c_str(), false))
+                pick(*hits[i]);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+
+    return changed;
+}
+
+static bool MatchupSlotSet(const std::string& name, const std::string& tag)
+{
+    return !name.empty() || !tag.empty();
+}
+
+static void DrawMatchupFilter()
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("Matchup");
+    ImGui::PopStyleColor();
+
+    bool anySet = MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
+                  MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB);
+
+    if (anySet)
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
+        if (ImGui::SmallButton("Clear##clr_matchup"))
+        {
+            s_state.matchupBufA[0] = '\0';
+            s_state.matchupBufB[0] = '\0';
+            s_state.matchupDisplayA.clear(); s_state.matchupNameA.clear(); s_state.matchupTagA.clear();
+            s_state.matchupDisplayB.clear(); s_state.matchupNameB.clear(); s_state.matchupTagB.clear();
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+    }
+
+    DrawMatchupSlot("a", "Team A...", s_state.matchupBufA, sizeof(s_state.matchupBufA),
+                    s_state.matchupDisplayA, s_state.matchupNameA, s_state.matchupTagA);
+
+    // "vs" divider
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+    ImGui::TextUnformatted("vs");
+    ImGui::PopStyleColor();
+
+    DrawMatchupSlot("b", "Team B...", s_state.matchupBufB, sizeof(s_state.matchupBufB),
+                    s_state.matchupDisplayB, s_state.matchupNameB, s_state.matchupTagB);
+}
+
 static void DrawDateRangeFilter()
 {
     ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
@@ -1960,6 +2865,7 @@ static void DrawDateRangeFilter()
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo))
     {
         ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
@@ -1969,6 +2875,7 @@ static void DrawDateRangeFilter()
             s_state.dateTo = {};
         }
         ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
     }
 
     float labelCol = ImGui::CalcTextSize("From:").x + 8.0f;
@@ -2389,6 +3296,10 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 continue;
         }
 
+        // Skill filter (pre-indexed, so this is a handful of binary searches)
+        if (!MatchPassesSkillFilter((size_t)i))
+            continue;
+
         // Date range filter
         if (DateValValid(s_state.dateFrom))
         {
@@ -2415,6 +3326,29 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
         ParseFolderTags(m.folder_name, ft1, ft2);
         GuildLabel g1 = GetPartyGuild(m, "1", ft1);
         GuildLabel g2 = GetPartyGuild(m, "2", ft2);
+
+        // Matchup filter — side-agnostic; with only one slot filled it degrades
+        // to "this guild played in the match".
+        {
+            bool hasA = MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA);
+            bool hasB = MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB);
+            if (hasA || hasB)
+            {
+                auto sideIs = [](const GuildLabel& g,
+                                 const std::string& name, const std::string& tag) {
+                    if (name.empty() && tag.empty()) return true;   // unset slot matches anything
+                    if (!tag.empty() && ToLower(g.tag) == ToLower(tag)) return true;
+                    if (!name.empty() && ToLower(g.name) == ToLower(name)) return true;
+                    return false;
+                };
+                bool ok =
+                    (sideIs(g1, s_state.matchupNameA, s_state.matchupTagA) &&
+                     sideIs(g2, s_state.matchupNameB, s_state.matchupTagB)) ||
+                    (sideIs(g2, s_state.matchupNameA, s_state.matchupTagA) &&
+                     sideIs(g1, s_state.matchupNameB, s_state.matchupTagB));
+                if (!ok) continue;
+            }
+        }
 
         // Search filter — chip-based (OR logic) or text-based fallback
         if (!s_state.selectedSearchTerms.empty())
@@ -2555,6 +3489,137 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
     return result;
 }
 
+// For each occasion string, count matches that pass every OTHER active filter
+// (map, flux, skill, date, rating, matchup, search, build) - the Occasion
+// filter itself is deliberately skipped so the tree can show "how many
+// matches would this bucket add", independent of what is already ticked.
+static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
+    const std::vector<MatchMeta>& matches)
+{
+    std::unordered_map<std::string, int> counts;
+
+    std::string searchLower = ToLower(std::string(s_state.searchDebounced));
+    bool hasMatchup = MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
+                       MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB);
+    bool needGuildLabels = hasMatchup || !s_state.selectedSearchTerms.empty() || !searchLower.empty();
+    bool needBuild = !s_state.selectedBuilds.empty();
+
+    for (int i = 0; i < (int)matches.size(); i++)
+    {
+        const auto& m = matches[i];
+
+        const char* mn = GetMapName(m.map_id);
+        std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+        if (!s_state.selectedMaps.empty() &&
+            s_state.selectedMaps.find(mapName) == s_state.selectedMaps.end())
+            continue;
+
+        if (!s_state.selectedFluxes.empty() &&
+            s_state.selectedFluxes.find(m.flux) == s_state.selectedFluxes.end())
+            continue;
+
+        if (!MatchPassesSkillFilter((size_t)i))
+            continue;
+
+        if (DateValValid(s_state.dateFrom) &&
+            CompareDate(m.day, m.month, m.year,
+                s_state.dateFrom.day, s_state.dateFrom.month, s_state.dateFrom.year) < 0)
+            continue;
+        if (DateValValid(s_state.dateTo) &&
+            CompareDate(m.day, m.month, m.year,
+                s_state.dateTo.day, s_state.dateTo.month, s_state.dateTo.year) > 0)
+            continue;
+
+        if (s_state.minRatingFilter > 0 &&
+            MatchRatings::Get().GetRating(m.folder_name) < s_state.minRatingFilter)
+            continue;
+
+        GuildLabel g1, g2;
+        if (needGuildLabels)
+        {
+            std::string ft1, ft2;
+            ParseFolderTags(m.folder_name, ft1, ft2);
+            g1 = GetPartyGuild(m, "1", ft1);
+            g2 = GetPartyGuild(m, "2", ft2);
+        }
+
+        if (hasMatchup)
+        {
+            auto sideIs = [](const GuildLabel& g,
+                             const std::string& name, const std::string& tag) {
+                if (name.empty() && tag.empty()) return true;
+                if (!tag.empty() && ToLower(g.tag) == ToLower(tag)) return true;
+                if (!name.empty() && ToLower(g.name) == ToLower(name)) return true;
+                return false;
+            };
+            bool ok =
+                (sideIs(g1, s_state.matchupNameA, s_state.matchupTagA) &&
+                 sideIs(g2, s_state.matchupNameB, s_state.matchupTagB)) ||
+                (sideIs(g2, s_state.matchupNameA, s_state.matchupTagA) &&
+                 sideIs(g1, s_state.matchupNameB, s_state.matchupTagB));
+            if (!ok) continue;
+        }
+
+        if (!s_state.selectedSearchTerms.empty())
+        {
+            bool anyMatch = false;
+            for (const auto& term : s_state.selectedSearchTerms)
+            {
+                std::string tLow = ToLower(term);
+                bool found = false;
+                found |= ToLower(g1.name).find(tLow) != std::string::npos;
+                found |= ToLower(g1.tag).find(tLow) != std::string::npos;
+                found |= ToLower(g1.display).find(tLow) != std::string::npos;
+                found |= ToLower(g2.name).find(tLow) != std::string::npos;
+                found |= ToLower(g2.tag).find(tLow) != std::string::npos;
+                found |= ToLower(g2.display).find(tLow) != std::string::npos;
+                for (const auto& [pid, party] : m.parties)
+                {
+                    for (const auto& p : party.players)
+                        if (ToLower(p.encoded_name).find(tLow) != std::string::npos)
+                        { found = true; break; }
+                    if (found) break;
+                }
+                if (found) { anyMatch = true; break; }
+            }
+            if (!anyMatch) continue;
+        }
+        else if (!searchLower.empty())
+        {
+            bool found = false;
+            found |= ToLower(g1.name).find(searchLower) != std::string::npos;
+            found |= ToLower(g1.tag).find(searchLower) != std::string::npos;
+            found |= ToLower(g1.display).find(searchLower) != std::string::npos;
+            found |= ToLower(g2.name).find(searchLower) != std::string::npos;
+            found |= ToLower(g2.tag).find(searchLower) != std::string::npos;
+            found |= ToLower(g2.display).find(searchLower) != std::string::npos;
+            for (const auto& [pid, party] : m.parties)
+            {
+                for (const auto& p : party.players)
+                    if (ToLower(p.encoded_name).find(searchLower) != std::string::npos)
+                    { found = true; break; }
+                if (found) break;
+            }
+            if (!found) continue;
+        }
+
+        if (needBuild)
+        {
+            std::string b1, b2;
+            auto pit1 = m.parties.find("1");
+            auto pit2 = m.parties.find("2");
+            if (pit1 != m.parties.end()) b1 = ComputeTeamBuild(pit1->second);
+            if (pit2 != m.parties.end()) b2 = ComputeTeamBuild(pit2->second);
+            if (!s_state.selectedBuilds.count(b1) && !s_state.selectedBuilds.count(b2))
+                continue;
+        }
+
+        counts[m.occasion]++;
+    }
+
+    return counts;
+}
+
 // ─── Left filter panel ──────────────────────────────────────────────────────
 
 static int CountActiveFilters()
@@ -2565,6 +3630,9 @@ static int CountActiveFilters()
     if (!s_state.selectedFluxes.empty()) n++;
     if (!s_state.selectedOccasions.empty()) n++;
     if (!s_state.selectedBuilds.empty()) n++;
+    if (!s_state.selectedSkills.empty()) n++;
+    if (MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
+        MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB)) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
     if (s_state.tournamentMode) n++;
     return n;
@@ -2617,7 +3685,7 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     if (ImGui::Button("<", ImVec2(24, 24)))
         s_state.sidebarExpanded = false;
     ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
     ImGui::TextUnformatted("FILTERS");
     ImGui::PopStyleColor();
     ImGui::Separator();
@@ -2692,6 +3760,13 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     ImGui::Separator();
     ImGui::Spacing();
 
+    // ── Matchup filter (guild A vs guild B) ──
+    DrawMatchupFilter();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     // ── Map filter (multi-select) ──
     DrawMultiSelectFilter("Map", "Search maps...",
         s_state.mapSearchBuf, sizeof(s_state.mapSearchBuf),
@@ -2704,23 +3779,31 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     // ── Flux filter (multi-select, fuzzy) ──
     DrawMultiSelectFilter("Flux", "Search flux...",
         s_state.fluxSearchBuf, sizeof(s_state.fluxSearchBuf),
-        s_state.fluxNames, s_state.selectedFluxes, "flux", true);
+        s_state.fluxNames, s_state.selectedFluxes, "flux", true,
+        MsRowStyle::Flux);
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── Occasion filter (multi-select) ──
-    DrawMultiSelectFilter("Occasion", "Search occasions...",
-        s_state.occasionSearchBuf, sizeof(s_state.occasionSearchBuf),
-        s_state.occasionNames, s_state.selectedOccasions, "occasion", false);
+    // ── Occasion filter (two-level tree: group + individual stages) ──
+    DrawOccasionTreeFilter(ComputeOccasionMatchCounts(matches));
 
+    ImGui::Spacing();
+    ImGui::Separator();
     ImGui::Spacing();
 
     // ── Build composition filter (multi-select) ──
     DrawMultiSelectFilter("Build", "Search builds...",
         s_state.buildSearchBuf, sizeof(s_state.buildSearchBuf),
         s_state.buildNames, s_state.selectedBuilds, "build", true);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── Skill filter ──
+    DrawSkillFilter();
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -2745,10 +3828,22 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.selectedFluxes.clear();
         s_state.selectedOccasions.clear();
         s_state.selectedBuilds.clear();
+        s_state.selectedSkills.clear();
         s_state.mapSearchBuf[0] = '\0';
         s_state.fluxSearchBuf[0] = '\0';
-        s_state.occasionSearchBuf[0] = '\0';
         s_state.buildSearchBuf[0] = '\0';
+        s_state.skillSearchBuf[0] = '\0';
+        s_state.skillMatchMode = 0;
+        s_state.skillScope = 2;
+        s_state.browseOpenId.clear();
+        s_state.matchupBufA[0] = '\0';
+        s_state.matchupBufB[0] = '\0';
+        s_state.matchupDisplayA.clear();
+        s_state.matchupNameA.clear();
+        s_state.matchupTagA.clear();
+        s_state.matchupDisplayB.clear();
+        s_state.matchupNameB.clear();
+        s_state.matchupTagB.clear();
         s_state.dateFrom = {};
         s_state.dateTo = {};
         s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
@@ -4619,12 +5714,14 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     }
     else
     {
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
         if (ImGui::SmallButton("Refresh"))
             g_refreshMatchIndex = true;
         ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Re-fetch match list from cloud");
     }
@@ -4714,9 +5811,14 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
                 char dateBuf[16];
                 snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
-                if (ImGui::Selectable(dateBuf, isSelected,
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, s_themeColors.rowHoverBg);
+                ImGui::PushStyleColor(ImGuiCol_Header,        s_themeColors.rowSelectedBg);
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  s_themeColors.rowSelectedBg);
+                bool rowClicked = ImGui::Selectable(dateBuf, isSelected,
                     ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap
-                    | ImGuiSelectableFlags_AllowDoubleClick))
+                    | ImGuiSelectableFlags_AllowDoubleClick);
+                ImGui::PopStyleColor(3);
+                if (rowClicked)
                 {
                     if (ImGui::IsMouseDoubleClicked(0) && !g_cloudDownloadInProgress)
                     {
@@ -5782,12 +6884,14 @@ static void DrawNotificationBar()
     float btnW = ImGui::CalcTextSize("X").x + 12.f;
     ImGui::SetCursorScreenPos(ImVec2(p.x + availW - btnW - 4.f, p.y + (barH - ImGui::GetTextLineHeight()) * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f * alpha));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.1f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.f, 1.f, 1.f, 0.2f));
     if (ImGui::SmallButton("X##notif_dismiss"))
         s_state.notifyDismissed = true;
     ImGui::PopStyleColor(4);
+    ImGui::PopStyleVar();
 
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + barH + 2.f));
 }
@@ -5871,6 +6975,7 @@ void draw_replay_browser(ReplayLibrary& library)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(sp, sp));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
 
     ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -5880,7 +6985,7 @@ void draw_replay_browser(ReplayLibrary& library)
     if (!ImGui::Begin("##replay_browser", nullptr, flags))
     {
         ImGui::End();
-        ImGui::PopStyleVar(3);
+        ImGui::PopStyleVar(4);
         PopGlassTheme(themeColors);
         return;
     }
@@ -6028,6 +7133,6 @@ void draw_replay_browser(ReplayLibrary& library)
     }
 
     ImGui::End();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
     PopGlassTheme(themeColors);
 }
