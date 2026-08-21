@@ -71,6 +71,17 @@ public:
     // dragged to, like the other replay panels.
     void RenderToolbar(ReplayPanelLayout* layout = nullptr);
 
+    // Screen-space box the strip occupied this frame; empty while the toolbar
+    // is hidden. Republished every frame so HUD elements can step out from
+    // under a strip the user has parked over them, and keep following it when
+    // it is dragged somewhere else.
+    struct ScreenRect
+    {
+        float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+        bool valid() const { return x1 > x0 && y1 > y0; }
+    };
+    ScreenRect ToolbarRect() const { return m_toolbarRect; }
+
     // Accent frame drawn around the viewport while a tool is armed.
     void RenderDrawModeIndicator();
 
@@ -113,6 +124,7 @@ private:
     float m_toastTimer     = 0.f;
     bool  m_toastTriggered = false;
     bool  m_prevToolbarVisible = false;
+    ScreenRect m_toolbarRect{};
     bool  m_escConsumed        = false;
     ID3D11Device* m_iconDevice = nullptr;
     // Re-armed when the toolbar is reopened, so the strip comes back to the

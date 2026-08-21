@@ -1339,6 +1339,14 @@ private:
     // rather than an obstruction pinned to the top of the screen.
     float m_eventTimelineTopY = FLT_MAX;
 
+    // Extra drop, in pixels, applied to the followed agent's HUD so it clears the
+    // drawing strip when that has been parked over it. Tweened rather than snapped,
+    // so the bar slides the way it already does under the ribbon's collapse
+    // animation. m_followedHudLastFrame lets the first frame of a newly shown HUD
+    // start settled instead of sliding into place.
+    float m_followedHudDropY     = 0.f;
+    int   m_followedHudLastFrame = -1;
+
     void DrawRibbonToolbar();
 
     // --- Minimap ---

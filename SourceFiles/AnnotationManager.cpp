@@ -880,6 +880,10 @@ void AnnotationManager::RenderToolbar(ReplayPanelLayout* layout)
     if (m_bookmarkToastTimer > 0.f)
         DrawBookmarkToast();
 
+    // Cleared up front and republished below, so a reader that runs after this
+    // sees an obstruction only while the strip is genuinely on screen.
+    m_toolbarRect = {};
+
     if (!toolbar_visible)
     {
         RenderClearConfirmDialog();
@@ -932,6 +936,11 @@ void AnnotationManager::RenderToolbar(ReplayPanelLayout* layout)
 
     if (layout)
         layout->TrackWindow("draw_toolbar");
+
+    const ImVec2 stripPos  = ImGui::GetWindowPos();
+    const ImVec2 stripSize = ImGui::GetWindowSize();
+    m_toolbarRect = { stripPos.x, stripPos.y,
+                      stripPos.x + stripSize.x, stripPos.y + stripSize.y };
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 

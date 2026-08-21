@@ -1097,7 +1097,42 @@ void ReplayWindow::DrawFollowedAgentHUD()
     // ribbon republishes its animated bottom edge each frame, so the bar rides
     // the collapse/expand tween; once the strip is collapsed (or closed) the
     // edge falls above TOP_Y and the bar settles back to its usual place.
-    float panelY = std::max(TOP_Y, m_ribbonBottomY + RIBBON_GAP);
+    float baseY = std::max(TOP_Y, m_ribbonBottomY + RIBBON_GAP);
+
+    // The drawing strip is a movable window and by default sits exactly where the
+    // bar rests under an expanded ribbon, so drop below it when it covers the bar.
+    // Tested against baseY, not the animated position, so clearing the strip
+    // cannot make the test flip back and leave the bar oscillating.
+    float dropTarget = 0.f;
+    const auto strip = m_annotationMgr.ToolbarRect();
+    if (strip.valid() &&
+        strip.x1 > panelX && strip.x0 < panelX + panelW &&
+        strip.y1 > baseY  && strip.y0 < baseY + panelH)
+    {
+        dropTarget = strip.y1 + RIBBON_GAP - baseY;
+    }
+
+    // Same exponential tween the ribbon uses for its own reveal, so the bar moves
+    // at one speed whichever strip it is dodging.
+    constexpr float DROP_RATE = 12.f;
+    const int  hudFrame  = ImGui::GetFrameCount();
+    const bool justShown = (m_followedHudLastFrame != hudFrame - 1);
+    m_followedHudLastFrame = hudFrame;
+
+    if (justShown)
+    {
+        m_followedHudDropY = dropTarget;
+    }
+    else
+    {
+        const float dt = ImGui::GetIO().DeltaTime;
+        m_followedHudDropY += (dropTarget - m_followedHudDropY) *
+                              std::min(1.f, dt * DROP_RATE);
+        if (std::abs(dropTarget - m_followedHudDropY) < 0.5f)
+            m_followedHudDropY = dropTarget;
+    }
+
+    float panelY = baseY + m_followedHudDropY;
 
     bool isDead = snap->is_dead;
     float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
