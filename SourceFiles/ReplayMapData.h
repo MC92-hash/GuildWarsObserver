@@ -712,13 +712,18 @@ struct AgentReplayData
         return (--it)->maxHp;
     }
 
-    // Deep Wound reduces maximum health by 20%, capped at 100. Confirmed
-    // exactly against every recorded transition where the observer happened to
-    // capture the refreshed value (540->440, 565->465, 588->488, 550->450...).
+    // Deep Wound reduces maximum health by 20%, capped at 100. Confirmed exactly against every
+    // recorded transition where the observer captured the refreshed value (540->440, 565->465,
+    // 588->488, 550->450...).
+    //
+    // The 20% is TRUNCATED, not rounded. Settled on two camera-fresh transitions that separate the
+    // two: 458 -> 367 (cut 91, not 92) and 488 -> 391 (cut 97, not 98). Rounding was 1 HP high
+    // whenever m < 500 and m mod 5 is 3 or 4. Integer division is the exact truncation, so no
+    // floating point is involved.
     static uint32_t ApplyDeepWound(uint32_t m)
     {
         if (m == 0) return m;
-        uint32_t cut = (uint32_t)std::min<long>(100, std::lround(0.2 * (double)m));
+        uint32_t cut = std::min<uint32_t>(100, m / 5);
         return (m > cut) ? (m - cut) : 1u;
     }
 
