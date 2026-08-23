@@ -91,7 +91,16 @@ HLSL shaders are compiled to C++ headers. Multiple pixel/vertex shaders: NewMode
 
 ## Branch Naming
 
-`fix/description` or `feat/description`
+`dev` is the integration branch for all new work. The latest working state always lives
+there. `master` is the public/release line and only receives merges from `dev` at a
+release, or hotfixes.
+
+- Branch off `dev`, never off `master`: `feat/description` or `fix/description`
+- Merge finished work back into `dev`, then delete the feature branch
+- Keep the branch list short. Long-lived stacks of feature branches on the remote are
+  redundant once their work is in `dev`
+- Archive an abandoned branch as a tag (`archive/name`) before deleting it, so the
+  commit stays reachable
 
 ## Release Workflow
 
