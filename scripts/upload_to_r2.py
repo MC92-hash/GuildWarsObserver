@@ -10,6 +10,11 @@ Usage:
     python upload_to_r2.py                  # upload new matches
     python upload_to_r2.py --dry-run        # show what would be uploaded
     python upload_to_r2.py --list-remote    # list matches in the R2 bucket
+    python upload_to_r2.py --source-dir <dir> --include-scrimmage --dry-run
+                                             # publish a manually-recorded
+                                             # guild scrim to the public feed
+                                             # (bypasses the private-scrim guard;
+                                             # always dry-run first)
 
 Configuration via scripts/r2_config.env or environment variables:
     R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY, MATCH_SOURCE_DIR
@@ -180,7 +185,7 @@ def is_scrim_recording(infos: dict | None) -> bool:
     return "scrimmage" in occasion
 
 
-def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
+def collect_recordings(recording_dir: Path, staging_dir: Path, include_scrimmage: bool = False) -> int:
     """Move completed recordings from GWToolbox output to the upload staging directory.
 
     Only moves match folders that:
@@ -189,7 +194,9 @@ def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
     - Don't already exist in the staging directory
     - Are NOT private scrim recordings (those are handled by the
       orchestrator's scrim_upload pipeline; never let them into the
-      public AT staging area).
+      public AT staging area) — unless ``include_scrimmage`` is True,
+      which is an explicit operator opt-in to publish a manually-recorded
+      scrim to the public feed.
     """
     STALENESS_SECONDS = 300  # 5 minutes
     now = time.time()
@@ -219,8 +226,11 @@ def collect_recordings(recording_dir: Path, staging_dir: Path) -> int:
         except Exception:
             scrim_infos = None
         if is_scrim_recording(scrim_infos):
-            print(f"  Skipping (private scrim, occasion={scrim_infos.get('occasion','?')!r}): {entry.name}")
-            continue
+            if include_scrimmage:
+                print(f"  ⚠ INCLUDING scrimmage match (private-scrim guard bypassed): {entry.name}")
+            else:
+                print(f"  Skipping (private scrim, occasion={scrim_infos.get('occasion','?')!r}): {entry.name}")
+                continue
 
         dest = staging_dir / entry.name
         if dest.exists():
@@ -438,6 +448,9 @@ def match_fingerprint(infos: dict) -> str:
 
     Uses date + map_id + sorted team tags (from the two match parties only)
     so that the same match is identified regardless of folder naming.
+    The occasion is also part of the identity, so a Swiss round and a
+    playoff game between the same two guilds on the same map and day are
+    treated as distinct matches instead of colliding.
     """
     year = infos.get("year", 0)
     month = infos.get("month", 0)
@@ -450,18 +463,25 @@ def match_fingerprint(infos: dict) -> str:
         g.get("tag", "") for gid, g in guilds.items()
         if isinstance(g, dict) and g.get("tag") and gid in party_ids
     )
-    return f"{year:04d}-{month:02d}-{day:02d}_{map_id}_{'_vs_'.join(tags)}"
+    occasion = (infos.get("occasion", "") or "").strip()
+    return f"{year:04d}-{month:02d}-{day:02d}_{map_id}_{'_vs_'.join(tags)}_{occasion}"
 
 
 def index_entry_fingerprint(entry: dict) -> str:
-    """Build a content fingerprint from an index.json entry for dedup."""
+    """Build a content fingerprint from an index.json entry for dedup.
+
+    The occasion is included in the identity to stay consistent with
+    match_fingerprint, so a Swiss round and a playoff game between the
+    same two guilds on the same map and day are treated as distinct matches.
+    """
     party_ids = set(entry.get("parties", {}).keys())
     guilds = entry.get("guilds", {})
     tags = sorted(
         g.get("tag", "") for gid, g in guilds.items()
         if isinstance(g, dict) and g.get("tag") and gid in party_ids
     )
-    return f"{entry.get('date', '')}_{entry.get('map_id', 0)}_{'_vs_'.join(tags)}"
+    occasion = (entry.get("occasion", "") or "").strip()
+    return f"{entry.get('date', '')}_{entry.get('map_id', 0)}_{'_vs_'.join(tags)}_{occasion}"
 
 
 def sanitize_folder_name(name: str) -> str:
@@ -597,25 +617,28 @@ def cmd_upload(args, config: dict) -> dict:
     print(f"R2 bucket: {bucket}")
     print()
 
-    # Collect completed recordings from GWToolbox output
-    recording_source = config.get("RECORDING_SOURCE_DIR", "")
-    if recording_source:
-        rec_dir = Path(os.path.expandvars(os.path.expanduser(recording_source)))
-        if rec_dir.is_dir():
-            print("Collecting new recordings...")
-            collected = collect_recordings(rec_dir, source_dir)
-            if collected:
-                print(f"  Collected {collected} recording(s).\n")
-            else:
-                print("  No new recordings to collect.\n")
-
-    # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
-    print("Checking for archives to extract...")
-    extracted = extract_archives(source_dir)
-    if extracted:
-        print(f"  Extracted {extracted} archive(s).\n")
+    if args.dry_run:
+        print("Dry run: skipping recording collection + archive extraction (no files will be moved).\n")
     else:
-        print("  No new archives found.\n")
+        # Collect completed recordings from GWToolbox output
+        recording_source = config.get("RECORDING_SOURCE_DIR", "")
+        if recording_source:
+            rec_dir = Path(os.path.expandvars(os.path.expanduser(recording_source)))
+            if rec_dir.is_dir():
+                print("Collecting new recordings...")
+                collected = collect_recordings(rec_dir, source_dir, include_scrimmage=args.include_scrimmage)
+                if collected:
+                    print(f"  Collected {collected} recording(s).\n")
+                else:
+                    print("  No new recordings to collect.\n")
+
+        # Auto-extract any archives (.tar, .tar.gz, .tar.gz.zip)
+        print("Checking for archives to extract...")
+        extracted = extract_archives(source_dir)
+        if extracted:
+            print(f"  Extracted {extracted} archive(s).\n")
+        else:
+            print("  No new archives found.\n")
 
     # Fetch existing index
     print("Fetching remote index.json...")
@@ -638,18 +661,26 @@ def cmd_upload(args, config: dict) -> dict:
     # the one with the most player position files, not the first by name.
     from collections import defaultdict
     local_by_fp: dict[str, list[tuple[Path, dict, int]]] = defaultdict(list)
+    included_scrimmage_count = 0
     for m in local_matches:
         if m.name in remote_folders or sanitize_folder_name(m.name) in remote_folders:
             continue
         infos = read_infos_json(m)
         if is_scrim_recording(infos):
-            print(f"  Skipping (private scrim, occasion={(infos.get('occasion') or '?')!r}): {m.name}")
-            continue
+            if args.include_scrimmage:
+                print(f"  ⚠ INCLUDING scrimmage match (private-scrim guard bypassed): {m.name}")
+                included_scrimmage_count += 1
+            else:
+                print(f"  Skipping (private scrim, occasion={(infos.get('occasion') or '?')!r}): {m.name}")
+                continue
         if not infos:
             continue
         fp = match_fingerprint(infos)
         rp = count_recorded_players(m, infos)
         local_by_fp[fp].append((m, infos, rp))
+
+    if args.include_scrimmage and included_scrimmage_count:
+        print(f"⚠ {included_scrimmage_count} scrimmage-occasion match(es) will be published to the PUBLIC feed (guard bypassed).")
 
     # Second pass: for each fingerprint, pick the best local copy and
     # decide whether it beats whatever is already in R2.
@@ -1103,6 +1134,15 @@ def main():
         "--dry-run",
         action="store_true",
         help="Show what would be uploaded without actually uploading",
+    )
+    parser.add_argument(
+        "--include-scrimmage",
+        action="store_true",
+        default=False,
+        help="Also publish matches whose occasion is a scrimmage (bypasses the "
+             "private-scrim guard). For manually-recorded games you intend to "
+             "make PUBLIC. Always --dry-run first and point --source-dir at "
+             "the specific folder(s).",
     )
     parser.add_argument(
         "--list-remote",
