@@ -8,6 +8,8 @@
 #include "StoCParser.h"
 #include "SkillDatabase.h"
 #include "MaxHpSolver.h"
+#include "HealthModel.h"
+#include "EquipmentHealth.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -5471,6 +5473,18 @@ void ReplayWindow::Tick()
         m_maxHpBreakpointSolved = true;
     }
 
+    // Solve each player's armour health once the equipment stream is in, so the forward model can
+    // state a maximum at any instant instead of only where a packet happens to land. Morale has to
+    // be folded first: it is a term of the same equation.
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_armourSolved)
+    {
+        if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+        m_healthInputs = BuildHealthModelInputs();
+        m_healthInputsBuilt = true;
+        HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
+        m_armourSolved = true;
+    }
+
     // Deduce attributes from combat log
     if (m_combatLogBuilt && m_maxHpBreakpointSolved && !m_attributesDeduced)
     {
@@ -5913,6 +5927,7 @@ void ReplayWindow::DrawImGuiOverlay()
                 ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
 #if GWO_DEVELOPER
                 ImGui::MenuItem("Weapon Sockets", nullptr, &m_showWeaponSocketWindow);
+                ImGui::MenuItem("Health Model",   nullptr, &m_showHealthModelWindow);
 #endif
             }
             ImGui::EndMenu();
@@ -5971,6 +5986,7 @@ void ReplayWindow::DrawImGuiOverlay()
 #if GWO_DEVELOPER
     if (m_showWeaponSocketWindow)
         DrawWeaponSocketWindow();
+    DrawHealthModelWindow();
 #endif
 
     if (m_showAgentModelWindow)
@@ -6184,6 +6200,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSkillLaserPanel();
     DrawFogOfWarToolbar();
     DrawMoralePanel();
+    DrawCharacterPanels();
     DrawLordDamagePanel();
     DrawAutoCameraPanel();
     DrawAutoCameraDebugPanel();

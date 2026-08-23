@@ -1010,6 +1010,18 @@ void ReplayWindow::DrawRibbonToolbar()
               "highlighting the one currently equipped. It only appears while the "
               "camera is following a player, and does not affect the weapon sets "
               "shown in the player info panel."),
+            // Momentary rather than a toggle: each press opens another panel, because comparing
+            // two players side by side is the whole point of it.
+            Item{ Ico::Shield, "Character Panel",
+                  [] { return false; },
+                  [this] { OpenCharacterPanel(); },
+                  false, Ico::None, nullptr, nullptr,
+                  TexIcon{ "Toolbar\\texture_9125.dds", ImVec4(0, 0, 16, 16), 1.18f },
+                  0,
+                  "Open a character panel: one player's weapons and armour laid out like the "
+                  "in-game inventory, with the skin and dye of every piece and the runes and "
+                  "insignias his armour health implies. Press it again for a second panel to "
+                  "compare two players side by side." },
         } });
 
         groups.push_back({ "Tools", {

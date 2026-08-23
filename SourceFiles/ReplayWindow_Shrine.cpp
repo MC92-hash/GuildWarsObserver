@@ -55,6 +55,32 @@ static float ShrinePipRate(int effectivePips)
 
 } // namespace
 
+// Wires this window's morale and shrine timelines into the forward max-HP model. They live here
+// rather than in the agent data, so the model takes them as callbacks the same way AttributeDeducer
+// takes its max-HP lookup.
+HealthModel::Inputs ReplayWindow::BuildHealthModelInputs() const
+{
+    HealthModel::Inputs in;
+    in.equipment = &m_replayCtx.stocData.equipment;
+
+    in.moralePercent = [this](const AgentReplayData& ard, float t) {
+        return MoralePercentAtTime(ard, t);
+    };
+
+    in.shrineBonus = [this](const AgentReplayData& ard, float t) -> int {
+        // Isle of Wurms only, and it is a team-wide effect: holding the shrine grants the whole
+        // party the bonus wherever they happen to be standing.
+        if (m_wurmsShrineSamples.empty()) return 0;
+        if (ard.teamId != 1 && ard.teamId != 2) return 0;
+
+        const int idx = std::clamp((int)(t / m_wurmsShrineSampleDt), 0,
+                                   (int)m_wurmsShrineSamples.size() - 1);
+        return m_wurmsShrineSamples[idx].ownerTeam == ard.teamId ? kWurmsShrineHealthBonus : 0;
+    };
+
+    return in;
+}
+
 void ReplayWindow::PrecomputeShrineTimeline()
 {
     m_wurmsShrineSamples.clear();

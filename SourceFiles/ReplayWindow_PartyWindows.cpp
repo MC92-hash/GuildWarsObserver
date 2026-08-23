@@ -74,17 +74,27 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
     const AgentSnapshot* snap = FindSnapshotAtTime(ard, t);
     const bool deepWounded = snap && snap->has_deep_wound;
 
-    // (1) Effective timeline reconstructed from corrected packet denominators.
+    // (0) Forward model: base + armour + weapon set + shrine, then morale, then Deep Wound.
     //
-    // Preferred over the raw recorded field because that field is very nearly
-    // static -- it moved at 0.1% of weapon-set switches and 3.2% of Deep Wound
-    // applications across the local archive, which is why the bar used to sit
-    // still through both. Timeline entries exclude Deep Wound by construction,
-    // so the reduction is applied here.
-    if (uint32_t eff = ard.effectiveMaxHpAtTime(t))
-        return { deepWounded ? AgentReplayData::ApplyDeepWound(eff) : eff, false };
+    // Preferred over everything below because it is the only source that follows a weapon swap the
+    // instant it happens. The recorded max_hp does not: the server pushes it rarely, and in one
+    // measured match a player's value was pushed exactly once and then held for five minutes while
+    // he swapped sets dozens of times. The packet-corrected timeline does not either -- it settles
+    // on whichever value explains the most packets, which is a player's most common set rather
+    // than his current one. That is why a player known to have 570 with his shield out was being
+    // shown 540.
+    //
+    // Deep Wound is already applied inside the model, so it is not reapplied here.
+    if (m_healthInputsBuilt && ard.armourSolved)
+    {
+        const HealthModel::Breakdown b = HealthModel::At(ard, t, m_healthInputs);
+        if (b.source != HealthModel::Source::Fallback && b.total > 0)
+            return { b.total, false };
+    }
 
-    // (2) Camera-observed max_hp (v2+ recordings carry this).
+    // (1) Camera-observed max_hp. A number the server actually sent, which is worth more than any
+    // reconstruction of it -- even though it may be stale for the current weapon set, since the
+    // server pushes it rarely.
     if (m_matchMeta.recording_version >= 2)
     {
         uint32_t maxHp = ard.maxHpAtTime(t);
@@ -104,14 +114,24 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
         }
     }
 
-    // (3) Solved per weapon set from combat decimals and skill breakpoints.
-    // The only authoritative source on legacy v1 recordings, which carry no
-    // max_hp at all.
-    if (uint32_t solved = ard.solvedMaxHpAtTime(t))
-        return { deepWounded ? AgentReplayData::ApplyDeepWound(solved) : solved, false };
+    // Everything below is inferred from packet decimals rather than measured, and is reported as
+    // estimated so the party bar prefixes it with a tilde. These are last-resort methods: they
+    // search for whichever number makes the most damage fractions land on whole health, with no
+    // notion of what a maximum can be made of. One player with no camera reading at all was shown
+    // 697 that way -- a value that explains none of his packets and that no combination of runes,
+    // weapon mods and morale can produce.
 
-    // (4) Fallback: base health is 100 at level 1 and rises 20 per level, so
-    // 20*level + 80 -- which is the documented 480 at level 20, not 500.
+    // (2) Effective timeline reconstructed from corrected packet denominators. Entries exclude
+    // Deep Wound by construction, so the reduction is applied here.
+    if (uint32_t eff = ard.effectiveMaxHpAtTime(t))
+        return { deepWounded ? AgentReplayData::ApplyDeepWound(eff) : eff, true };
+
+    // (3) Solved per weapon set from combat decimals and skill breakpoints.
+    if (uint32_t solved = ard.solvedMaxHpAtTime(t))
+        return { deepWounded ? AgentReplayData::ApplyDeepWound(solved) : solved, true };
+
+    // (4) Last of all: base health is 100 at level 1 and rises 20 per level, so 20*level + 80 --
+    // the documented 480 at level 20, not 500.
     uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 80) : 480;
     if (deepWounded) estimated = AgentReplayData::ApplyDeepWound(estimated);
     return { estimated, true };

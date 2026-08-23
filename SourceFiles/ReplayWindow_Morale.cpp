@@ -39,112 +39,168 @@
 // Morale computation (shared by Morale Panel + Player Info Panel)
 // ---------------------------------------------------------------------------
 
-int ReplayWindow::ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount, int* outBoostCount) const
+// Morale as a step function per player, folded once at load.
+//
+// A death costs 15, a morale boost gives 10 and cancels death penalty before it adds anything, and
+// killing an enemy player claws back 2 for every teammate still alive. Percentages are of the level
+// health -- 480 at level 20 -- so a point is 4.8 health.
+//
+// Checked against camera-recorded maximum health: two readings taken on the same weapon set must
+// differ by exactly the morale that moved between them, whatever the player's armour and weapon
+// mods are, because those cancel. Across six matches 33 such pairs exist; 30 agreed to the health
+// point and the three that did not were all the Death Pact Signet case below.
+namespace
 {
-    constexpr int kDPS_Normal = 5413;
-    constexpr int kDPS_PvP    = 8059;
+    // Death Pact Signet strikes the caster down when the ally they resurrected dies. That death is
+    // the signet's price rather than a defeat: it carries no death penalty for the caster, and it
+    // pays the enemy team no kill. Dropping it from the death list does both at once, since enemy
+    // kills are read from the same list.
+    //
+    // The ids here were wrong for the whole life of this code -- 5413 and 8059 appear nowhere in
+    // the skill database, so the rule never fired once. The signature is unmistakable in the data:
+    // two players died at 90% and 97% health, each in the same frame as the ally they had just
+    // resurrected, and each left a Dervish reading 13% better than the model predicted -- one on
+    // either team. Correcting the ids reconciles all three outliers in the sample.
+    constexpr int kDeathPactSignet    = 1481;
+    constexpr int kDeathPactSignetPvP = 2872;
+
+    // How long the caster stays bound to the ally. The skill sets no limit of its own, so this only
+    // stops a link outliving the fight it belongs to; the real test is that the two die together.
+    constexpr float kDeathPactLinkSeconds = 120.f;
+    constexpr float kDeathPactDeathGap    = 1.5f;
+
+    // A resurrection and the death that follows it arrive on separate packets, and for a moment the
+    // agent can read dead again. Anything this soon after standing up is that echo, not a death.
+    constexpr float kResurrectEchoSeconds = 5.f;
+}
+
+void ReplayWindow::BuildMoraleTimelines() const
+{
+    m_moraleTimeline.clear();
+    m_moraleDeaths.clear();
+    m_moraleBoosts.clear();
 
     struct DPSLink { int casterId; int targetId; float linkStart; float linkEnd; };
     std::vector<DPSLink> dpsLinks;
-    for (auto& [aid, agentData] : m_replayCtx.agents) {
+    for (const auto& [aid, agentData] : m_replayCtx.agents) {
         if (agentData.type != AgentType::Player) continue;
-        for (auto& ev : agentData.skillUseHistory) {
-            if (ev.skillId != kDPS_Normal && ev.skillId != kDPS_PvP) continue;
-            if (ev.wasCancelled || ev.wasInterrupted) continue;
-            if (ev.endTime > curTime || ev.targetId <= 0) continue;
-            dpsLinks.push_back({ aid, ev.targetId, ev.endTime, ev.endTime + 120.f });
+        for (const auto& ev : agentData.skillUseHistory) {
+            if (ev.skillId != kDeathPactSignet && ev.skillId != kDeathPactSignetPvP) continue;
+            if (ev.wasCancelled || ev.wasInterrupted || ev.targetId <= 0) continue;
+            dpsLinks.push_back({ aid, ev.targetId, ev.endTime, ev.endTime + kDeathPactLinkSeconds });
         }
     }
 
-    auto isDPSLinkedDeath = [&](int agentId, float deathTime) -> bool {
-        for (auto& link : dpsLinks) {
-            if (link.casterId != agentId) continue;
-            if (deathTime < link.linkStart || deathTime > link.linkEnd) continue;
-            auto tit = m_replayCtx.agents.find(link.targetId);
-            if (tit == m_replayCtx.agents.end()) continue;
-            const auto& trd = tit->second;
-            for (size_t i = 1; i < trd.snapshots.size(); ++i) {
-                if (trd.snapshots[i].time > deathTime + 1.5f) break;
-                if (trd.snapshots[i].is_dead && !trd.snapshots[i - 1].is_dead) {
-                    if (std::abs(trd.snapshots[i].time - deathTime) < 1.5f) return true;
-                }
-            }
-        }
-        return false;
-    };
-
-    std::vector<float> deathTimes;
-    {
+    // Every player's death-penalty-carrying deaths, once, so each team can read the other team's
+    // as kills and neither side counts a signet backfire.
+    for (const auto& [aid, ard] : m_replayCtx.agents) {
+        if (ard.type != AgentType::Player) continue;
+        auto& times = m_moraleDeaths[aid];
         float lastResTime = -999.f;
         for (size_t i = 1; i < ard.snapshots.size(); ++i) {
-            if (ard.snapshots[i].time > curTime) break;
             if (!ard.snapshots[i].is_dead && ard.snapshots[i - 1].is_dead)
                 lastResTime = ard.snapshots[i].time;
-            if (ard.snapshots[i].is_dead && !ard.snapshots[i - 1].is_dead) {
-                float dt = ard.snapshots[i].time;
-                if (dt - lastResTime < 5.f) continue;
-                if (isDPSLinkedDeath(ard.agent_id, dt)) continue;
-                deathTimes.push_back(dt);
+            if (!ard.snapshots[i].is_dead || ard.snapshots[i - 1].is_dead) continue;
+            const float dt = ard.snapshots[i].time;
+            if (dt - lastResTime < kResurrectEchoSeconds) continue;
+
+            bool dpsLinked = false;
+            for (const auto& link : dpsLinks) {
+                if (link.casterId != aid) continue;
+                if (dt < link.linkStart || dt > link.linkEnd) continue;
+                auto tit = m_replayCtx.agents.find(link.targetId);
+                if (tit == m_replayCtx.agents.end()) continue;
+                const auto& trd = tit->second;
+                for (size_t j = 1; j < trd.snapshots.size(); ++j) {
+                    if (trd.snapshots[j].time > dt + kDeathPactDeathGap) break;
+                    if (trd.snapshots[j].is_dead && !trd.snapshots[j - 1].is_dead &&
+                        std::abs(trd.snapshots[j].time - dt) < kDeathPactDeathGap) { dpsLinked = true; break; }
+                }
+                if (dpsLinked) break;
             }
+            if (!dpsLinked) times.push_back(dt);
         }
     }
 
-    int partyValue = (ard.teamId == 1) ? 1635021873 : 1635021874;
-    std::vector<float> boostTimes;
-    for (auto& ev : m_replayCtx.stocData.jumbo) {
-        if (ev.time > curTime) break;
-        if (ev.message == "MORALE_BOOST" && ev.party_value == partyValue)
-            boostTimes.push_back(ev.time);
+    for (const auto& ev : m_replayCtx.stocData.jumbo) {
+        if (ev.message != "MORALE_BOOST") continue;
+        if (ev.party_value == 1635021873) m_moraleBoosts[1].push_back(ev.time);
+        else if (ev.party_value == 1635021874) m_moraleBoosts[2].push_back(ev.time);
     }
 
-    const auto& enemyIds = (ard.teamId == 1) ? m_team2PlayerIds : m_team1PlayerIds;
-    std::vector<float> enemyKillTimes;
-    for (int id : enemyIds) {
-        auto it = m_replayCtx.agents.find(id);
-        if (it == m_replayCtx.agents.end()) continue;
-        if (it->second.type != AgentType::Player) continue;
-        const auto& snaps = it->second.snapshots;
-        for (size_t i = 1; i < snaps.size(); ++i) {
-            if (snaps[i].time > curTime) break;
-            if (snaps[i].is_dead && !snaps[i - 1].is_dead)
-                enemyKillTimes.push_back(snaps[i].time);
+    for (const auto& [aid, ard] : m_replayCtx.agents) {
+        if (ard.type != AgentType::Player) continue;
+        if (ard.teamId != 1 && ard.teamId != 2) continue;
+
+        enum class MET : uint8_t { Death, Boost, EnemyKill };
+        struct ME { float time; MET type; };
+        std::vector<ME> events;
+
+        for (float t : m_moraleDeaths[aid]) events.push_back({ t, MET::Death });
+        for (float t : m_moraleBoosts[ard.teamId]) events.push_back({ t, MET::Boost });
+        for (const auto& [otherId, times] : m_moraleDeaths) {
+            auto oit = m_replayCtx.agents.find(otherId);
+            if (oit == m_replayCtx.agents.end()) continue;
+            if (oit->second.teamId == ard.teamId) continue;
+            for (float t : times) events.push_back({ t, MET::EnemyKill });
+        }
+        std::sort(events.begin(), events.end(),
+                  [](const ME& a, const ME& b) { return a.time < b.time; });
+
+        auto& steps = m_moraleTimeline[aid];
+        steps.push_back({ 0.f, 0 });
+        int morale = 0;
+        for (const auto& ev : events) {
+            const int before = morale;
+            switch (ev.type) {
+            case MET::Death:     morale = std::max(morale - 15, -60); break;
+            case MET::Boost:     morale = std::min(morale + 10, 10);  break;
+            case MET::EnemyKill:
+                if (morale < 0 && ard.isAliveAtTime(ev.time)) morale = std::min(morale + 2, 0);
+                break;
+            }
+            if (morale != before) steps.push_back({ ev.time, morale });
         }
     }
-    std::sort(enemyKillTimes.begin(), enemyKillTimes.end());
 
-    enum class MET : uint8_t { Death, Boost, EnemyKill };
-    struct ME { float time; MET type; };
+    m_moraleTimelineBuilt = true;
+}
 
-    std::vector<ME> events;
-    events.reserve(deathTimes.size() + boostTimes.size() + enemyKillTimes.size());
-    for (float t : deathTimes)      events.push_back({ t, MET::Death });
-    for (float t : boostTimes)      events.push_back({ t, MET::Boost });
-    for (float t : enemyKillTimes)  events.push_back({ t, MET::EnemyKill });
-    std::sort(events.begin(), events.end(),
-              [](const ME& a, const ME& b) { return a.time < b.time; });
+int ReplayWindow::MoralePercentAtTime(const AgentReplayData& ard, float t) const
+{
+    if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
 
-    int morale = 0;
-    int deaths = 0;
-    int boosts = 0;
-    for (auto& ev : events) {
-        switch (ev.type) {
-        case MET::Death:
-            morale = std::max(morale - 15, -60);
-            ++deaths;
-            break;
-        case MET::Boost:
-            morale = std::min(morale + 10, 10);
-            ++boosts;
-            break;
-        case MET::EnemyKill:
-            if (morale < 0 && ard.isAliveAtTime(ev.time))
-                morale = std::min(morale + 2, 0);
-            break;
-        }
+    auto it = m_moraleTimeline.find(ard.agent_id);
+    if (it == m_moraleTimeline.end() || it->second.empty()) return 0;
+    const auto& steps = it->second;
+    auto s = std::upper_bound(steps.begin(), steps.end(), t,
+        [](float v, const std::pair<float, int>& e) { return v < e.first; });
+    return s == steps.begin() ? 0 : (--s)->second;
+}
+
+// Panel-facing view of the same fold. It used to replay the whole match on every call with its own
+// copy of the rules, which is how the two drifted apart: the panel counted a signet backfire as an
+// enemy kill while the model did not. There is now one set of rules and one pass over the match.
+int ReplayWindow::ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount, int* outBoostCount) const
+{
+    if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+
+    if (outDeathCount) {
+        int deaths = 0;
+        auto it = m_moraleDeaths.find(ard.agent_id);
+        if (it != m_moraleDeaths.end())
+            for (float t : it->second) if (t <= curTime) ++deaths;
+        *outDeathCount = deaths;
     }
-    if (outDeathCount) *outDeathCount = deaths;
-    if (outBoostCount) *outBoostCount = boosts;
-    return std::clamp(morale, -60, 10);
+    if (outBoostCount) {
+        int boosts = 0;
+        auto it = m_moraleBoosts.find(static_cast<int>(ard.teamId));
+        if (it != m_moraleBoosts.end())
+            for (float t : it->second) if (t <= curTime) ++boosts;
+        *outBoostCount = boosts;
+    }
+
+    return std::clamp(MoralePercentAtTime(ard, curTime), -60, 10);
 }
 
 

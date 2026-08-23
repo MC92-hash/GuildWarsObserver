@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -304,11 +304,14 @@
     <ClInclude Include="SourceFiles\EquipmentData.h" />
     <ClInclude Include="SourceFiles\EquipmentComponents.h" />
     <ClInclude Include="SourceFiles\EquipmentIcons.h" />
+    <ClInclude Include="SourceFiles\EquipmentHealth.h" />
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
     <ClInclude Include="SourceFiles\miniz.h" />
     <ClInclude Include="SourceFiles\StoCParser.h" />
     <ClInclude Include="SourceFiles\AttributeDeducer.h" />
     <ClInclude Include="SourceFiles\MaxHpSolver.h" />
+    <ClInclude Include="SourceFiles\ArmourNames.h" />
+    <ClInclude Include="SourceFiles\HealthModel.h" />
     <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
@@ -566,6 +569,9 @@
     <ClCompile Include="SourceFiles\StoCParser.cpp" />
     <ClCompile Include="SourceFiles\AttributeDeducer.cpp" />
     <ClCompile Include="SourceFiles\MaxHpSolver.cpp" />
+    <ClCompile Include="SourceFiles\HealthModel.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_CharacterPanel.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_HealthDebug.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerComposer.cpp" />

@@ -61,8 +61,15 @@ ID3D11ShaderResourceView* TextureCache::LoadFromFile(const std::wstring& wpath)
     const auto& meta = image.GetMetadata();
     if (meta.width == 0 || meta.height == 0) return nullptr;
 
+    // Block-compressed sources have to be decompressed, not converted: Convert refuses a BC
+    // format outright, so a DXT1/3/5 .dds used to fail here and load as nothing at all.
     DirectX::ScratchImage converted;
-    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    if (DirectX::IsCompressed(meta.format))
+    {
+        hr = DirectX::Decompress(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, converted);
+        if (FAILED(hr)) return nullptr;
+    }
+    else if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
     {
         hr = DirectX::Convert(*image.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM,
             DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted);

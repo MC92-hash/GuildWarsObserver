@@ -253,6 +253,9 @@ static bool ParseSnapshotLine(const char* lineBegin, const char* lineEnd,
     if (i < nFields) snap.item_id              = FieldToU32  (fields[i++]);
     if (i < nFields) snap.item_extra_type      = FieldToU32  (fields[i++]);
     if (i < nFields) snap.gadget_extra_type    = FieldToU32  (fields[i++]);
+    if (i < nFields) snap.is_moving            = FieldToBool (fields[i++]);
+    if (i < nFields) snap.is_attacking         = FieldToBool (fields[i++]);
+    if (i < nFields) snap.max_hp_is_live       = FieldToBool (fields[i++]);
 
     return true;
 }

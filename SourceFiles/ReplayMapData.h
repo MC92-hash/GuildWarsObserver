@@ -14,6 +14,10 @@
 // Isle of Wurms (metadata map_id 532 / 534): South Health Shrine capture radius (game units).
 inline constexpr float kWurmsShrineCaptureRadius = 1010.f;
 
+// Holding the South Health Shrine grants the whole team this much maximum health, wherever its
+// members are standing. Isle of Wurms only.
+inline constexpr int kWurmsShrineHealthBonus = 120;
+
 inline bool IsIsleOfWurmsMap(int metadataMapId)
 {
     return metadataMapId == 532 || metadataMapId == 534;
@@ -553,6 +557,15 @@ struct AgentSnapshot
     uint32_t item_id = 0;
     uint32_t item_extra_type = 0;
     uint32_t gadget_extra_type = 0;
+    bool is_moving = false;
+    bool is_attacking = false;
+
+    // Whether the client was actually being told this agent's max_hp at this instant, i.e. whether
+    // the recorder's camera was on them. Without it a stale value is indistinguishable from a live
+    // one: max_hp is sticky, so once known it is stamped on every later line, long after the player
+    // has swapped sets, died or taken a morale boost. Only present in recordings made from
+    // 2026-08-22; older ones leave it false, which is the safe reading.
+    bool max_hp_is_live = false;
 
     std::string raw_line;
 };
@@ -687,6 +700,22 @@ struct AgentReplayData
     // passes agree on it by construction.
     int solvedDivineFavorRank    = -1;
     int solvedDivineFavorSupport = 0;   // packets backing that rank
+
+    // Health granted by this player's armour: runes and insignias summed. The one term of the
+    // max-HP recipe the game never sends, and the only one that has to be solved -- but it is a
+    // single integer for the whole match, because nobody changes armour mid-GvG. Solved by
+    // HealthModel::SolveArmour from camera-fresh readings; see HealthModel.h.
+    int  solvedArmourHealth  = 0;
+    bool armourSolved        = false;
+    int  armourSupport       = 0;   // readings agreeing with the solved value
+    int  armourObservations  = 0;   // readings the solve had to work with
+
+    // Per snapshot: does the recorded max_hp here describe the state here? The field is sticky --
+    // the server pushes it when it feels like it and the camera flag only says where the camera
+    // was, not that the number was refreshed -- so a reading can be minutes old and describe a
+    // weapon set, a morale level or a Deep Wound that has since gone. Filled by the armour solve;
+    // empty until then, which callers read as "unknown, do not trust the reading".
+    std::vector<uint8_t> maxHpDescribesNow;
 
     // Effective max HP over time, reconstructed from the corrected packet
     // denominators (see CorrectMaxHpForPacket).

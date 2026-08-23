@@ -45,6 +45,10 @@ namespace Equipment
         uint32_t itemId       = 0;
         uint16_t agentItemId  = 0;  // matches agent snapshot fields 28/29
         uint32_t modelFileId  = 0;  // the skin; resolves against Gw.dat
+        // Gw.dat file holding the inventory icon. Same as modelFileId for a weapon, but armour is
+        // a composite item whose icon can only be resolved inside the game client, so the recorder
+        // does it and writes the answer here. 0 in recordings made before that change.
+        uint32_t iconFileId   = 0;
         uint32_t itemType     = 0;
         uint32_t interaction  = 0;
         uint8_t  dyes[4]      = {};
@@ -372,6 +376,30 @@ namespace Equipment
     // Single-magnitude mods disagree about which byte carries the value, and only ever populate
     // one of the two, so taking whichever is non-zero is correct for both layouts.
     inline uint8_t SingleValue(uint8_t a1, uint8_t a2) { return a1 ? a1 : a2; }
+
+    // "Health +30" / "Health -20" -- a maximum-health line with a magnitude in it. Deliberately
+    // strict: "Health regeneration -1" and "Armor +5 (while Health is below 50%)" both mention
+    // health and neither is one of these.
+    inline bool IsHealthMagnitudeLine(std::string_view line)
+    {
+        constexpr std::string_view kPrefix = "Health ";
+        if (!line.starts_with(kPrefix)) return false;
+        size_t i = kPrefix.size();
+        if (i >= line.size() || (line[i] != '+' && line[i] != '-')) return false;
+        return i + 1 < line.size() && line[i + 1] >= '0' && line[i + 1] <= '9';
+    }
+
+    // Replaces the magnitude in such a line with the value the item actually rolled, keeping
+    // whatever follows it. No-op on anything that is not a health magnitude line.
+    inline void RewriteHealthMagnitude(std::string& effect, int rolled)
+    {
+        if (!IsHealthMagnitudeLine(effect)) return;
+        constexpr size_t kNumberStart = 7; // strlen("Health ")
+        size_t end = kNumberStart + 1;
+        while (end < effect.size() && effect[end] >= '0' && effect[end] <= '9') end++;
+        const char sign = effect[kNumberStart];
+        effect = std::format("Health {}{}{}", sign, rolled, effect.substr(end));
+    }
 
     inline ModText DecodeMod(uint16_t id, uint8_t arg1, uint8_t arg2)
     {
@@ -887,12 +915,53 @@ namespace Equipment
             }
         };
 
-        auto emitGroup = [&tip, &emitDecoded](const ModGroup& group) {
+        // The component table stores each mod's MAXIMUM roll, because that is the name the game
+        // gives it: a "Sword Pommel of Fortitude" is always called Health +30. The item in hand may
+        // have rolled lower, and the effect word carries what it actually rolled.
+        //
+        // That difference is real health, not a display detail. One measured player's Fortitude
+        // sword granted 29 and his Bronze Shield 28, which is why his maximum read 519 where two
+        // full mods would have given 520 -- and why the model must read the word, not the table.
+        auto rolledHealthFor = [](const ModGroup& group) -> int {
+            int rolled = -1;
+            for (const Mod& m : group.effects)
+            {
+                switch (m.id)
+                {
+                case ModId::Health_extra:
+                case ModId::Health_extra_when_enchanted:
+                case ModId::Health_extra_when_hexed:
+                case ModId::Health_extra_when_in_stance:
+                    rolled = SingleValue(m.arg1, m.arg2);
+                    break;
+                default: break;
+                }
+            }
+            if (rolled < 0 || !group.info) return -1;
+
+            // Only safe when the component grants health on exactly one line. The Survivor
+            // insignia describes three (15 chest / 10 legs / 5 elsewhere) against a single word,
+            // so rewriting them all with one value would be worse than leaving them alone.
+            const std::string_view desc = group.info->description;
+            int healthLines = 0;
+            for (size_t start = 0; start <= desc.size();)
+            {
+                const size_t nl = desc.find('\n', start);
+                const std::string_view line = desc.substr(start, nl == std::string_view::npos ? nl : nl - start);
+                if (IsHealthMagnitudeLine(line)) healthLines++;
+                if (nl == std::string_view::npos) break;
+                start = nl + 1;
+            }
+            return healthLines == 1 ? rolled : -1;
+        };
+
+        auto emitGroup = [&tip, &emitDecoded, &rolledHealthFor](const ModGroup& group) {
             if (!group.info)
             {
                 emitDecoded(group);
                 return;
             }
+            const int rolledHealth = rolledHealthFor(group);
 
             // Inscriptions are named in game (Inscription: "I have the power!"); prefixes and
             // suffixes are already spelled out by the item's own name, so only their effects show.
@@ -910,6 +979,7 @@ namespace Equipment
                 {
                     std::string effect, condition;
                     SplitCondition(line, effect, condition);
+                    if (rolledHealth >= 0) RewriteHealthMagnitude(effect, rolledHealth);
                     tip.lines.push_back({Kind::Mod, std::move(effect), std::move(condition)});
                 }
                 if (nl == std::string_view::npos) break;
@@ -1050,6 +1120,10 @@ namespace Equipment
                     }
                 }
                 if (n >= 13) item.name.assign(f[12].b, f[12].e);
+                if (n >= 14) item.iconFileId = toU32(f[13].b, f[13].e);
+                // Older recordings stop at the name. A weapon's icon is its skin, so fall back to
+                // that and leave armour without one rather than pointing it at the wrong file.
+                if (!item.iconFileId && !(item.interaction & 4u)) item.iconFileId = item.modelFileId;
                 item.firstSeen = time;
 
                 if (item.ref >= out.items.size()) out.items.resize(item.ref + 1);

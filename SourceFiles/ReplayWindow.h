@@ -31,6 +31,7 @@
 #include "ReplayPanelLayout.h"
 #include "BitmapFont.h"
 #include "AttributeDeducer.h"
+#include "HealthModel.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -325,6 +326,42 @@ private:
     bool m_knockdownIntervalsBuilt = false;
     bool m_maxHpSolved             = false;
     bool m_maxHpBreakpointSolved   = false;
+    bool m_armourSolved            = false;
+
+    // Inputs the forward max-HP model needs from this window: the equipment stream, plus the
+    // morale and shrine timelines, which live here rather than in the agent data. Built once and
+    // cached, because ResolveMaxHp runs per agent per frame.
+    HealthModel::Inputs BuildHealthModelInputs() const;
+    HealthModel::Inputs m_healthInputs;
+    bool m_healthInputsBuilt = false;
+
+    // Morale as a step function per player, folded once over the match. Both the health model and
+    // the morale panel read it, so the rules exist in exactly one place; the panel used to carry
+    // its own copy and the two disagreed about which deaths count.
+    //
+    // Mutable because the panel can draw before the load path reaches the fold, and asking a
+    // const accessor to build its own cache is cheaper than ordering the two.
+    // Character panels: one player's equipment laid out like the in-game inventory. Several can
+    // be open at once because the question is nearly always comparative, so this is a list of
+    // independent instances rather than a single visibility flag. `uid` keeps each window's ImGui
+    // identity stable while its title follows whichever player it is pointed at.
+    struct CharacterPanelInstance
+    {
+        int  uid     = 0;
+        int  agentId = -1;
+        bool open    = true;
+    };
+    std::vector<CharacterPanelInstance> m_characterPanels;
+    int  m_nextCharacterPanelUid = 1;
+    void OpenCharacterPanel(int agentId = -1);
+    void DrawCharacterPanels();
+
+    mutable std::unordered_map<int, std::vector<std::pair<float, int>>> m_moraleTimeline;
+    mutable std::unordered_map<int, std::vector<float>> m_moraleDeaths; // by agent, signet backfires removed
+    mutable std::unordered_map<int, std::vector<float>> m_moraleBoosts; // by team id
+    mutable bool m_moraleTimelineBuilt = false;
+    void BuildMoraleTimelines() const;
+    int  MoralePercentAtTime(const AgentReplayData& ard, float t) const;
 
     // --- Combat Log ---
     bool m_showCombatLog     = false;
@@ -1151,6 +1188,11 @@ private:
     // calibrate attachment against the render, which is not something a released build needs.
     bool m_showWeaponSocketWindow = false;
     void DrawWeaponSocketWindow();
+
+    // Term-by-term view of how each player's maximum health is arrived at, so a disagreement with
+    // reality can be traced to the term that caused it rather than guessed at.
+    bool m_showHealthModelWindow = false;
+    void DrawHealthModelWindow();
 
     struct WeaponPreloadStats {
         int  distinctModels = 0;
