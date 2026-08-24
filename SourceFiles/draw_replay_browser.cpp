@@ -3085,6 +3085,34 @@ static std::string FindGuildParty(const MatchMeta& m,
     return "";
 }
 
+// Scout Mode's filter window: the map chips in its own toolbar, plus the
+// sidebar's date range.
+//
+// The date range used to be silently ignored here. DrawReplayBrowser passes
+// this aggregation the UNFILTERED match list (the filtered one backs the
+// table), so the calendar reached every view except the one where "what have
+// they run lately" is the actual question -- a guild's numbers always spanned
+// the whole archive no matter what the sidebar said.
+static bool ScoutWindowAllows(const MatchMeta& m)
+{
+    if (!s_state.tournamentMaps.empty())
+    {
+        const char* mn = GetMapName(m.map_id);
+        std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+        if (s_state.tournamentMaps.find(mapName) == s_state.tournamentMaps.end())
+            return false;
+    }
+    if (DateValValid(s_state.dateFrom) &&
+        CompareDate(m.day, m.month, m.year,
+            s_state.dateFrom.day, s_state.dateFrom.month, s_state.dateFrom.year) < 0)
+        return false;
+    if (DateValValid(s_state.dateTo) &&
+        CompareDate(m.day, m.month, m.year,
+            s_state.dateTo.day, s_state.dateTo.month, s_state.dateTo.year) > 0)
+        return false;
+    return true;
+}
+
 static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
     const std::vector<MatchMeta>& matches)
 {
@@ -3094,14 +3122,7 @@ static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
     {
         const auto& m = matches[i];
 
-        // Optional map filter
-        if (!s_state.tournamentMaps.empty())
-        {
-            const char* mn = GetMapName(m.map_id);
-            std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
-            if (s_state.tournamentMaps.find(mapName) == s_state.tournamentMaps.end())
-                continue;
-        }
+        if (!ScoutWindowAllows(m)) continue;
 
         std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
                                               s_state.tournamentGuildName);
@@ -3165,13 +3186,7 @@ static std::vector<TournamentBuildStats> AggregateLostToBuilds(
     {
         const auto& m = matches[i];
 
-        if (!s_state.tournamentMaps.empty())
-        {
-            const char* mn = GetMapName(m.map_id);
-            std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
-            if (s_state.tournamentMaps.find(mapName) == s_state.tournamentMaps.end())
-                continue;
-        }
+        if (!ScoutWindowAllows(m)) continue;
 
         std::string partyId = FindGuildParty(m, s_state.tournamentGuildTag,
                                               s_state.tournamentGuildName);
@@ -3230,6 +3245,12 @@ static const std::vector<TournamentBuildStats>& GetTournamentStats(
 {
     std::string key = s_state.tournamentGuildTag + "|" + s_state.tournamentGuildName + "|";
     for (const auto& m : s_state.tournamentMaps) key += m + ",";
+    // The date range is part of the answer, so it has to be part of the key --
+    // otherwise moving the calendar reuses the previous window's numbers.
+    key += "|" + std::to_string(s_state.dateFrom.year * 10000
+                              + s_state.dateFrom.month * 100 + s_state.dateFrom.day)
+         + "|" + std::to_string(s_state.dateTo.year * 10000
+                              + s_state.dateTo.month * 100 + s_state.dateTo.day);
 
     if (key == s_tournamentCacheKey &&
         s_tournamentCacheMatchCount == (int)matches.size() &&
@@ -4776,17 +4797,17 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
-        if (ImGui::Button("Bounty"))
+        if (ImGui::Button("Scout"))
         {
             s_state.tournamentMode = !s_state.tournamentMode;
         }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Bounty - scout opponent builds");
+            ImGui::SetTooltip("Scout - what they run, and what beats them");
     }
 
-    // ── Opponent guild search + map filter (inline in top bar when Bounty is active) ──
+    // ── Opponent guild search + map filter (inline in top bar when Scout is active) ──
     if (s_state.tournamentMode)
     {
         ImGui::SameLine(0, 16);
@@ -5023,7 +5044,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
         if (boldFnt) ImGui::PushFont(boldFnt);
-        ImGui::TextUnformatted("BOUNTY");
+        ImGui::TextUnformatted("SCOUT");
         if (boldFnt) ImGui::PopFont();
         ImGui::PopStyleColor();
         ImGui::Spacing();
@@ -5041,7 +5062,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
     {
         ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
         if (boldFnt) ImGui::PushFont(boldFnt);
-        ImGui::TextUnformatted("BOUNTY");
+        ImGui::TextUnformatted("SCOUT");
         if (boldFnt) ImGui::PopFont();
         ImGui::PopStyleColor();
 
@@ -5677,14 +5698,14 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, btnPadY));
-        if (ImGui::Button("Bounty"))
+        if (ImGui::Button("Scout"))
         {
             s_state.tournamentMode = !s_state.tournamentMode;
         }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Bounty - scout opponent builds");
+            ImGui::SetTooltip("Scout - what they run, and what beats them");
     }
 
     ImGui::SameLine(0, 8);
