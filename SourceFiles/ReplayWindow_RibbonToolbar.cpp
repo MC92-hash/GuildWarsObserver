@@ -1026,7 +1026,7 @@ void ReplayWindow::DrawRibbonToolbar()
 
         groups.push_back({ "Tools", {
             T(Ico::Brush, "Drawing Toolbar", m_annotationMgr.toolbar_visible,
-              TexIcon{ "Toolbar\\brush.png", ImVec4(14, 13, 55, 50), 1.18f },
+              TexIcon{ "Toolbar\\texture_144803.dds", ImVec4(0, 0, 0, 0), 1.18f },
               "Show the drawing toolbar for annotations on the map - arrows, "
               "circles and freehand lines for marking up rotations or plays "
               "when reviewing or casting a replay. It opens as its own strip, "

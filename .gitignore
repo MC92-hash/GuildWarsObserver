@@ -494,3 +494,10 @@ FodyWeavers.xsd
 *.mov
 *.mkv
 *.mp4
+
+# The max-HP model lives in the private repo (gwobserver-private/SourceFiles) and is compiled in
+# from there via the project's include path. It must never be committed here.
+SourceFiles/HealthModel.h
+SourceFiles/HealthModel.cpp
+SourceFiles/EquipmentHealth.h
+SourceFiles/ReplayWindow_HealthDebug.cpp
