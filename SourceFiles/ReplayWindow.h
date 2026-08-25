@@ -48,6 +48,44 @@ enum class SoundLogCategory : uint8_t;
 
 #include "ReplayHotkeys.h"
 
+// ---------------------------------------------------------------------------
+// Agent model slots
+//
+// An agent shows one model at a time, but a Dervish who uses an avatar form swaps model
+// mid-match and back again. Both models are built up front and live in the mesh manager
+// together; every per-agent model map (mesh ids, file hash, animation state, render status)
+// is keyed by a slot rather than by the agent id, and each frame exactly one of an agent's
+// slots is drawn. The base skin keeps the agent id as its key, so agents that never
+// transform - which is all of them in most matches - are laid out exactly as before.
+//
+// Agent ids are the recording's own, below kSyntheticIdBase (1'000'000) for real agents and
+// just above it for split incarnations; the bases here leave that whole range alone.
+// ---------------------------------------------------------------------------
+
+inline constexpr int kAvatarSlotBase = 100'000'000;
+inline constexpr int kAvatarSlotSpan =  10'000'000;
+
+inline int AvatarSlotKey(int agentId, uint32_t avatarModelId)
+{
+    return kAvatarSlotBase + static_cast<int>(avatarModelId) * kAvatarSlotSpan + agentId;
+}
+
+inline bool IsAvatarSlot(int slotKey) { return slotKey >= kAvatarSlotBase; }
+
+// The agent a slot belongs to. Identity for a base slot.
+inline int SlotOwnerAgentId(int slotKey)
+{
+    return IsAvatarSlot(slotKey) ? (slotKey - kAvatarSlotBase) % kAvatarSlotSpan : slotKey;
+}
+
+// The avatar model id a slot renders, 0 for a base slot.
+inline uint32_t SlotAvatarModelId(int slotKey)
+{
+    return IsAvatarSlot(slotKey)
+        ? static_cast<uint32_t>((slotKey - kAvatarSlotBase) / kAvatarSlotSpan)
+        : 0u;
+}
+
 class ReplayWindow final : public DX::IDeviceNotify
 {
 public:
@@ -321,6 +359,7 @@ private:
     bool m_replayTimeConsolidated = false;
     float m_displayTimeOffset  = 0.f;
     bool m_moveEventsBuilt     = false;
+    bool m_modelChangesBuilt   = false;
     bool m_castIntervalsBuilt  = false;
     bool m_skillUseTimelineBuilt = false;
     bool m_knockdownIntervalsBuilt = false;
@@ -1045,13 +1084,14 @@ private:
     // file hash -> parsed model template (shared geometry, one AddProp per unique model)
     std::unordered_map<uint32_t, AgentModelInstance> m_agentModelTemplates;
 
-    // agent_id -> per-agent mesh IDs (each agent gets its own AddProp so transforms are independent)
+    // model slot -> mesh IDs (each slot gets its own AddProp so transforms are independent)
     std::unordered_map<int, std::vector<int>> m_agentMeshIds;
 
-    // agent_id -> file hash (cached so we don't re-lookup every frame)
+    // model slot -> file hash (cached so we don't re-lookup every frame)
     std::unordered_map<int, uint32_t> m_agentFileHashCache;
 
-    // Per-frame diagnostic: why each agent's model was shown/hidden
+    // Per-frame diagnostic: why each model slot was shown/hidden. Also the gate the skinned
+    // and weapon passes read, so a slot that must not draw has to be written here every frame.
     std::unordered_map<int, std::string> m_agentModelRenderStatus;
 
     // --- Per-agent animation state ---
@@ -1085,6 +1125,9 @@ private:
     };
     std::unordered_map<int, AgentAnimState> m_agentAnimStates;
     void DrawSkinnedAgentModels();
+
+    // Top of the model an agent is wearing at `time`, for overlays that anchor above the head.
+    float AgentModelTopY(int agentId, const AgentReplayData& ard, float groundY, float time) const;
 
     // --- Weapon models ---
     // Design notes: gwobserver-private/docs/WeaponModelRendering.md

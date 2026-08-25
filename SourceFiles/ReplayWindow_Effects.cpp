@@ -712,19 +712,7 @@ void ReplayWindow::RenderIncomingEffects()
 
     // Compute model-top Y using the same logic as the profession icon in DrawAgentOverlay,
     // so the floating numbers anchor just above the icon regardless of camera zoom/angle.
-    float modelTopY = worldPos.y;
-    if (m_useAgentModels && m_agentModelsLoaded) {
-        auto hashIt = m_agentFileHashCache.find(focused);
-        if (hashIt != m_agentFileHashCache.end()) {
-            auto tmplIt = m_agentModelTemplates.find(hashIt->second);
-            if (tmplIt != m_agentModelTemplates.end()) {
-                AgentModelInfo minfo = LookupAgentModelInfo(
-                    ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
-                float scale = minfo.npcAdjustment * m_agentModelScale;
-                modelTopY += tmplIt->second.nativeHeight * scale;
-            }
-        }
-    }
+    float modelTopY = AgentModelTopY(focused, ard, worldPos.y, now);
     if (modelTopY <= worldPos.y)
         modelTopY = worldPos.y + 120.f;
 
@@ -985,19 +973,7 @@ void ReplayWindow::RenderSpeechBubbles()
         InterpolateAgentPosition(ard, now, is, sx, sy, sz);
         XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, mt);
 
-        float modelTopY = worldPos.y;
-        if (m_useAgentModels && m_agentModelsLoaded) {
-            auto hashIt = m_agentFileHashCache.find(agentId);
-            if (hashIt != m_agentFileHashCache.end()) {
-                auto tmplIt = m_agentModelTemplates.find(hashIt->second);
-                if (tmplIt != m_agentModelTemplates.end()) {
-                    AgentModelInfo minfo = LookupAgentModelInfo(
-                        ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
-                    float scale = minfo.npcAdjustment * m_agentModelScale;
-                    modelTopY += tmplIt->second.nativeHeight * scale;
-                }
-            }
-        }
+        float modelTopY = AgentModelTopY(agentId, ard, worldPos.y, now);
         if (modelTopY <= worldPos.y)
             modelTopY = worldPos.y + 120.f;
 
