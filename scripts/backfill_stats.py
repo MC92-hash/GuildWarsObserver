@@ -53,6 +53,7 @@ from upload_to_r2 import (  # noqa: E402  (same directory, run as a script)
     month_of_entry,
     sanitize_folder_name,
     upload_stats,
+    STATS_SCHEMA,
 )
 
 LOCAL_DIR_KEYS = ("MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR")
@@ -226,7 +227,9 @@ def main(argv: list[str] | None = None) -> int:
             unreadable += 1
             continue
 
-        stats = build_stats_entry(infos)
+        stats = build_stats_entry(
+            infos, local[folder].parent if source == "local" else None,
+        )
         if not stats:
             # An older capture with no per-player stat block. Expected, not an
             # error -- and it must not be written as a row of zeroes.
@@ -240,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nprepared {sum(len(v) for v in shards.values()):,} row(s) "
           f"across {len(shards)} month(s)")
     for month in sorted(shards):
-        body = json.dumps({"schema": 1, "month": month,
+        body = json.dumps({"schema": STATS_SCHEMA, "month": month,
                            "matches": shards[month]},
                           ensure_ascii=False, separators=(",", ":"))
         print(f"  {month}: {len(shards[month]):5} match(es)  "
@@ -266,7 +269,14 @@ def main(argv: list[str] | None = None) -> int:
             # landing mid-backfill is merged rather than lost.
             existing = fetch_remote_stats(s3, bucket, month)
             before = len(existing)
-            existing.update(shards[month])
+            for folder, row in shards[month].items():
+                prior = existing.get(folder)
+                if isinstance(prior, dict) and "combat_analytics" in prior:
+                    from combat_analytics import merge_preserving_richer
+                    row["combat_analytics"] = merge_preserving_richer(
+                        prior["combat_analytics"], row.get("combat_analytics", {}),
+                    )
+                existing[folder] = row
             upload_stats(s3, bucket, month, existing)
             print(f"  {month}: {before} -> {len(existing)} match(es)")
         except Exception as e:

@@ -477,7 +477,7 @@ STATS_PLAYER_FIELDS = (
     "team_id", "guild_id",
 )
 
-STATS_SCHEMA = 1
+STATS_SCHEMA = 2
 
 
 def stats_key(month: str) -> str:
@@ -485,7 +485,7 @@ def stats_key(month: str) -> str:
     return f"stats/{month}.json"
 
 
-def build_stats_entry(infos: dict) -> dict:
+def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
     """Per-match combat stats, or {} when this recording carries none.
 
     Every field is optional. Older captures predate the per-player stat block
@@ -529,6 +529,20 @@ def build_stats_entry(infos: dict) -> dict:
     # index.json publishes team_kills and team_damage but not team_healing.
     if isinstance(infos.get("team_healing"), dict):
         out["team_healing"] = infos["team_healing"]
+    if match_dir is not None:
+        # Imported lazily so listing/deleting remote objects does not depend on
+        # the event parser. A missing StoC stream is normal for legacy captures
+        # and stays absent rather than becoming a page full of zeroes.
+        try:
+            from combat_analytics import build_from_match_dir
+            analytics = build_from_match_dir(infos, match_dir)
+        except Exception as exc:
+            # Analytics are optional; an event-parser defect must never leave
+            # a successfully uploaded archive without its index entry.
+            print(f"  Warning: combat analytics unavailable: {type(exc).__name__}: {exc}")
+            analytics = {}
+        if analytics:
+            out["combat_analytics"] = analytics
     return out
 
 
@@ -953,7 +967,7 @@ def cmd_upload(args, config: dict) -> dict:
             new_entries.append(entry)
             # Combat stats go to a per-month sidecar, keyed by the same folder
             # name the index entry uses so the two join without a new identity.
-            stats_entry = build_stats_entry(infos)
+            stats_entry = build_stats_entry(infos, match_dir)
             if stats_entry:
                 month = month_of_entry(entry)
                 if month:
