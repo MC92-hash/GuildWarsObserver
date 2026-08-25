@@ -443,6 +443,132 @@ def build_index_entry(
     return entry
 
 
+# ── Combat stats sidecar ────────────────────────────────────────────────────
+#
+# infos.json carries far more per-player detail than build_index_entry above
+# publishes, and the rest was simply being dropped. It is not folded into
+# index.json because that object is downloaded by every desktop client on
+# every refresh: as named JSON keys these fields cost ~528 bytes per player
+# against a 194-byte published object, which would take index.json from
+# 24 MB to 46 MB. So they go to a website-only sidecar instead, sharded by
+# month to keep any single fetch bounded.
+#
+# An allowlist rather than "everything build_index_entry skipped": id,
+# gadget_id and model_id are per-match agent identifiers with no meaning
+# across matches, and gender/level say nothing about a GvG. Naming the wanted
+# fields also means a new field appearing upstream cannot silently change the
+# shape of a published object.
+STATS_PLAYER_FIELDS = (
+    # Interrupts, in both directions.
+    "interrupted_count", "interrupted_skills_count",
+    # Casts started and not completed -- "fake casts".
+    "cancelled_skills_count", "cancelled_attacks_count",
+    # Denominators for every cast-completion ratio.
+    "skills_activated", "skills_finished", "skills_stopped",
+    "attacks_started", "attacks_finished", "attacks_stopped",
+    "attack_skills_activated", "attack_skills_finished", "attack_skills_stopped",
+    "crits_dealt", "crits_received",
+    # total_damage, kills and deaths are already in index.json; these are the
+    # other three sides of the same story.
+    "total_damage_received", "total_healing_dealt", "total_healing_received",
+    # team_id ties a player to a side; guild_id is the player's *home* guild,
+    # which is what distinguishes a guild's own member from a guest -- a
+    # player is a member iff guild_id equals their party's key in `guilds`.
+    "team_id", "guild_id",
+)
+
+STATS_SCHEMA = 1
+
+
+def stats_key(month: str) -> str:
+    """R2 key for one month's stats shard, beside the tournaments/ prefix."""
+    return f"stats/{month}.json"
+
+
+def build_stats_entry(infos: dict) -> dict:
+    """Per-match combat stats, or {} when this recording carries none.
+
+    Every field is optional. Older captures predate the per-player stat block
+    entirely (`recording_version` is absent on those, 2 on newer ones), so a
+    missing key is a normal state and is omitted rather than written as 0 --
+    "we did not record this" and "this happened zero times" are different
+    facts, and collapsing them is the same class of bug as reading only
+    `winner_party_id` and scoring every match a loss.
+    """
+    parties_raw = infos.get("parties")
+    if not isinstance(parties_raw, dict):
+        return {}
+
+    parties_out: dict[str, list] = {}
+    for party_id, party_obj in parties_raw.items():
+        if not isinstance(party_obj, dict):
+            continue
+        players_out = []
+        for player in party_obj.get("PLAYER", []):
+            if not isinstance(player, dict):
+                continue
+            # The join key back to index.json's player list. Carried
+            # explicitly so the two objects do not have to agree on array
+            # order -- they are written by different code paths.
+            row = {"player_number": player.get("player_number", 0)}
+            for field in STATS_PLAYER_FIELDS:
+                if field in player:
+                    row[field] = player[field]
+            # A row holding nothing but its join key is noise.
+            if len(row) > 1:
+                players_out.append(row)
+        if players_out:
+            parties_out[party_id] = players_out
+
+    if not parties_out:
+        return {}
+
+    out: dict = {"players": parties_out}
+    if "recording_version" in infos:
+        out["recording_version"] = infos["recording_version"]
+    # index.json publishes team_kills and team_damage but not team_healing.
+    if isinstance(infos.get("team_healing"), dict):
+        out["team_healing"] = infos["team_healing"]
+    return out
+
+
+def fetch_remote_stats(s3, bucket: str, month: str) -> dict:
+    """One month's stats shard, or an empty shard if it does not exist yet."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=stats_key(month))
+        data = json.loads(resp["Body"].read().decode("utf-8-sig"))
+        matches = data.get("matches")
+        if isinstance(matches, dict):
+            return matches
+        return {}
+    except Exception as e:
+        if "NoSuchKey" in str(type(e).__name__) or "NoSuchKey" in str(e):
+            return {}
+        # Any other failure must not be mistaken for "no stats yet": merging
+        # onto {} would silently erase the month.
+        raise
+
+
+def upload_stats(s3, bucket: str, month: str, matches: dict):
+    """Write one month's stats shard."""
+    body = json.dumps(
+        {"schema": STATS_SCHEMA, "month": month, "matches": matches},
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    s3.put_object(
+        Bucket=bucket,
+        Key=stats_key(month),
+        Body=body,
+        ContentType="application/json",
+    )
+
+
+def month_of_entry(entry: dict) -> str:
+    """The `YYYY-MM` shard an index entry belongs to, or "" if undatable."""
+    date_str = entry.get("date") or ""
+    return date_str[:7] if len(date_str) >= 7 else ""
+
+
 def match_fingerprint(infos: dict) -> str:
     """Build a content-based fingerprint from match metadata for dedup.
 
@@ -742,6 +868,7 @@ def cmd_upload(args, config: dict) -> dict:
 
     # Upload each new match
     new_entries = []
+    new_stats: dict[str, dict] = {}      # month -> {folder: stats entry}
     with tempfile.TemporaryDirectory() as tmp_dir:
         for i, match_dir in enumerate(new_matches, 1):
             folder_name = match_dir.name
@@ -824,6 +951,18 @@ def cmd_upload(args, config: dict) -> dict:
             # Build index entry with safe folder name but real guild data from infos.json
             entry = build_index_entry(safe_name, infos, archive_size, recorded_players)
             new_entries.append(entry)
+            # Combat stats go to a per-month sidecar, keyed by the same folder
+            # name the index entry uses so the two join without a new identity.
+            stats_entry = build_stats_entry(infos)
+            if stats_entry:
+                month = month_of_entry(entry)
+                if month:
+                    new_stats.setdefault(month, {})[safe_name] = stats_entry
+                else:
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": "No usable date; combat stats not published",
+                    })
             report["uploaded"] += 1
 
             # Clean up temp archive
@@ -869,6 +1008,39 @@ def cmd_upload(args, config: dict) -> dict:
             print(f"ERROR: {msg}")
             report["errors"].append({"match": "", "error": msg})
             report["status"] = "error"
+
+    # Combat stats sidecar, one shard per month touched. Written *after* the
+    # index on purpose: index.json is what the client and the website read, so
+    # a stats failure must leave a complete index behind rather than the other
+    # way round. A superseded folder is dropped from its shard for the same
+    # reason the index rebuild drops it -- a stale stats row keyed to an
+    # archive that no longer exists would be joined onto nothing.
+    if new_stats or folders_to_replace:
+        replace_by_month: dict[str, set] = {}
+        for e in remote_entries:
+            if e["folder"] in folders_to_replace:
+                month = month_of_entry(e)
+                if month:
+                    replace_by_month.setdefault(month, set()).add(e["folder"])
+
+        for month in sorted(set(new_stats) | set(replace_by_month)):
+            additions = new_stats.get(month, {})
+            removals = replace_by_month.get(month, set())
+            try:
+                shard = fetch_remote_stats(s3, bucket, month)
+                for folder in removals:
+                    shard.pop(folder, None)
+                shard.update(additions)
+                upload_stats(s3, bucket, month, shard)
+                print(f"  Stats {month}: +{len(additions)} match(es), "
+                      f"{len(shard)} total.")
+            except Exception as e:
+                # Not fatal. The stats sidecar feeds website analytics; the
+                # recordings and the index are already safely uploaded, and a
+                # missing shard degrades those pages rather than the archive.
+                msg = f"Failed to update {stats_key(month)}: {e}"
+                print(f"  Warning: {msg}")
+                report["warnings"].append({"match": "", "warning": msg})
 
     print(f"\nUpload complete: {report['uploaded']} new match(es) uploaded.")
 
