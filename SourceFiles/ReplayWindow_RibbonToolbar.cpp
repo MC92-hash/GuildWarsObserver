@@ -813,7 +813,7 @@ void ReplayWindow::DrawRibbonToolbar()
                       if (!m_useAgentModels && m_agentModelsLoaded)
                       {
                           auto* meshMgr = m_mapRenderer->GetMeshManager();
-                          for (auto& [agentId, meshIds] : m_agentMeshIds)
+                          for (auto& [slotKey, meshIds] : m_agentMeshIds)
                               for (int mid : meshIds)
                                   meshMgr->SetMeshShouldRender(mid, false);
                       }

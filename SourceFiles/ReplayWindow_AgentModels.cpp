@@ -456,6 +456,9 @@ void ReplayWindow::LoadAgentModelsAsync()
 {
     if (m_agentModelsLoaded || m_agentModelsLoading) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    // Avatar slots are decided here, once, from the per-agent model timelines. Starting before
+    // those are distributed would build the match without any of its avatar models.
+    if (!m_modelChangesBuilt) return;
     if (!m_datManager || !m_hashIndex) return;
 
     // 1. Collect unique file hashes and cache per-agent hash (main thread)
@@ -509,6 +512,23 @@ void ReplayWindow::LoadAgentModelsAsync()
         if (fileHash == 0) continue;
         m_agentFileHashCache[agentId] = fileHash;
         uniqueHashes.insert(fileHash);
+    }
+
+    // Give every avatar form a player wears during the match its own model slot. The models are
+    // built once here rather than on the fly, because a form goes up mid-fight and a DAT read on
+    // that frame would stall the replay; an avatar that is never used costs nothing.
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player) continue;
+        for (const auto& change : ard.modelChanges)
+        {
+            uint32_t avatarHash = LookupAvatarFileHash(change.modelId);
+            if (avatarHash == 0) continue;   // base skin, costume or unknown transmog
+            int slot = AvatarSlotKey(agentId, change.modelId);
+            if (m_agentFileHashCache.count(slot)) continue;
+            m_agentFileHashCache[slot] = avatarHash;
+            uniqueHashes.insert(avatarHash);
+        }
     }
 
     if (uniqueHashes.empty()) { m_agentModelsLoaded = true; return; }
@@ -1205,12 +1225,16 @@ void ReplayWindow::StepCreateAgentModelResources()
         tmpl.templateCBs = templateCBs;
 
         // ---- Create props and skinned meshes per agent ----
-        for (auto& [agentId, cachedHash] : m_agentFileHashCache)
+        for (auto& [slotKey, cachedHash] : m_agentFileHashCache)
         {
             if (cachedHash != fileHash) continue;
 
+            // Picking addresses the agent, not the slot: clicking a transformed player has to
+            // select the player, the same as clicking their base skin would.
+            const uint32_t pickId = 0x80000000u | (uint32_t)SlotOwnerAgentId(slotKey);
+
             std::vector<PerObjectCB> agentCBs = templateCBs;
-            auto meshIds = map_renderer->AddProp(propMeshes, agentCBs, 0x80000000u | (uint32_t)agentId, tmpl.pixelShaderType);
+            auto meshIds = map_renderer->AddProp(propMeshes, agentCBs, pickId, tmpl.pixelShaderType);
 
             if (tmpl.texturesOk) {
                 for (size_t l = 0; l < meshIds.size() && l < perMeshTexIds.size(); l++) {
@@ -1222,7 +1246,7 @@ void ReplayWindow::StepCreateAgentModelResources()
             for (int mid : meshIds)
                 map_renderer->GetMeshManager()->SetMeshShouldRender(mid, false);
 
-            m_agentMeshIds[agentId] = meshIds;
+            m_agentMeshIds[slotKey] = meshIds;
 
             if (tmpl.hasAnimation && tmpl.clip && device) {
                 AgentAnimState animState;
@@ -1259,7 +1283,7 @@ void ReplayWindow::StepCreateAgentModelResources()
                 animState.controller->Play();
 
                 animState.hasSkinning = !animState.animMeshes.empty();
-                m_agentAnimStates[agentId] = std::move(animState);
+                m_agentAnimStates[slotKey] = std::move(animState);
             }
         }
 
@@ -1288,6 +1312,7 @@ void ReplayWindow::LoadAgentModels()
 {
     if (m_agentModelsLoaded) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
+    if (!m_modelChangesBuilt) return;   // same gate as the async path; see LoadAgentModelsAsync
     if (!m_datManager || !m_hashIndex) return;
 
     auto* map_renderer = m_mapRenderer.get();
@@ -1303,6 +1328,35 @@ void ReplayWindow::LoadAgentModels()
         StepCreateAgentModelResources();
 }
 
+
+// ---------------------------------------------------------------------------
+// World-space top of the model an agent is wearing at `time`, for the overlays that anchor
+// above an agent's head. Returns groundY unchanged when there is no model to measure.
+//
+// Which model that is has to be resolved per call: an avatar form is a different height from
+// the base skin, so a profession icon or a damage number placed from the base model would sit
+// inside a transformed player's head.
+// ---------------------------------------------------------------------------
+
+float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
+                                   float groundY, float time) const
+{
+    if (!m_useAgentModels || !m_agentModelsLoaded) return groundY;
+
+    uint32_t avatar = ard.modelIdAtTime(time);
+    if (LookupAvatarFileHash(avatar) == 0) avatar = 0;
+
+    auto hashIt = m_agentFileHashCache.find(avatar ? AvatarSlotKey(agentId, avatar) : agentId);
+    if (hashIt == m_agentFileHashCache.end()) return groundY;
+    auto tmplIt = m_agentModelTemplates.find(hashIt->second);
+    if (tmplIt == m_agentModelTemplates.end()) return groundY;
+
+    const AgentModelInfo info = avatar
+        ? LookupAvatarModelInfo(avatar)
+        : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+
+    return groundY + tmplIt->second.nativeHeight * info.npcAdjustment * m_agentModelScale;
+}
 
 // ---------------------------------------------------------------------------
 // Per-frame: update agent model world transforms and visibility
@@ -1338,19 +1392,36 @@ void ReplayWindow::DrawAgentModels()
         bMaxZ = terrain->m_bounds.map_max_z;
     }
 
-    for (auto& [agentId, meshIds] : m_agentMeshIds)
+    for (auto& [slotKey, meshIds] : m_agentMeshIds)
     {
+        const int      agentId    = SlotOwnerAgentId(slotKey);
+        const uint32_t slotAvatar = SlotAvatarModelId(slotKey);
+
         auto agentIt = m_replayCtx.agents.find(agentId);
         if (agentIt == m_replayCtx.agents.end()) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = std::format("hidden: not in agents (meshes={})", meshIds.size());
+            m_agentModelRenderStatus[slotKey] = std::format("hidden: not in agents (meshes={})", meshIds.size());
             continue;
         }
 
         auto& ard = agentIt->second;
         if (ard.snapshots.empty()) {
             for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
-            if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = "hidden: no snapshots";
+            m_agentModelRenderStatus[slotKey] = "hidden: no snapshots";
+            continue;
+        }
+
+        // An agent owns one slot per model it wears during the match, and exactly one of them
+        // draws at any time. A model we have no file for - a costume, a tonic - resolves to no
+        // slot, which leaves the base skin on screen rather than making the player vanish.
+        uint32_t wornAvatar = ard.modelIdAtTime(m_debugTimeline);
+        if (LookupAvatarFileHash(wornAvatar) == 0) wornAvatar = 0;
+        if (slotAvatar != wornAvatar) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            // Unconditional, like the fog and spirit branches below: the skinned and weapon
+            // passes draw from this status alone, so the slot that is not worn has to say so
+            // every frame or it keeps drawing on top of the one that is.
+            m_agentModelRenderStatus[slotKey] = "hidden: model slot not worn";
             continue;
         }
 
@@ -1372,7 +1443,7 @@ void ReplayWindow::DrawAgentModels()
                 // Leaving a stale "skinned" status here keeps the spirit's 3D model
                 // on screen after it dies, despawns, or is overwritten by a newer
                 // spirit of the same type - frozen at its last pose and position.
-                m_agentModelRenderStatus[agentId] = "hidden: spirit not active";
+                m_agentModelRenderStatus[slotKey] = "hidden: spirit not active";
                 continue;
             }
         }
@@ -1389,7 +1460,7 @@ void ReplayWindow::DrawAgentModels()
             // whose status still starts with "skinned". Leaving a stale
             // "skinned" status here keeps the minion's 3D model visible after
             // it dies/despawns.
-            m_agentModelRenderStatus[agentId] = "hidden: minion dead/removed";
+            m_agentModelRenderStatus[slotKey] = "hidden: minion dead/removed";
             continue;
         }
 
@@ -1413,7 +1484,7 @@ void ReplayWindow::DrawAgentModels()
             // are drawn from this status alone, so a conditional write would leave
             // players, NPCs and spirits rendering after they walk into the fog.
             // The status is rewritten to "skinned" as soon as they leave it again.
-            m_agentModelRenderStatus[agentId] = "hidden: fog";
+            m_agentModelRenderStatus[slotKey] = "hidden: fog";
             continue;
         }
 
@@ -1434,7 +1505,7 @@ void ReplayWindow::DrawAgentModels()
             if (dist > lodDot) {
                 for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
                 ard.currentLOD = 0;
-                if (m_showAgentModelWindow) m_agentModelRenderStatus[agentId] = std::format("hidden: LOD icon (dist={:.0f})", dist);
+                m_agentModelRenderStatus[slotKey] = std::format("hidden: LOD icon (dist={:.0f})", dist);
                 continue;
             }
         }
@@ -1444,12 +1515,13 @@ void ReplayWindow::DrawAgentModels()
         float rotRad = ard.snapshots[snapIdx].rotation;
 
         // Scale: FFNA models are already in game units; only apply the GW NPC adjustment
-        auto hashIt = m_agentFileHashCache.find(agentId);
+        auto hashIt = m_agentFileHashCache.find(slotKey);
         uint32_t cachedHash = (hashIt != m_agentFileHashCache.end()) ? hashIt->second : 0;
         auto tmplIt = m_agentModelTemplates.find(cachedHash);
 
-        AgentModelInfo info = LookupAgentModelInfo(ard.type, ard.modelId,
-                                                     ard.primaryProf, ard.isFemale);
+        AgentModelInfo info = slotAvatar
+            ? LookupAvatarModelInfo(slotAvatar)
+            : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
         float nativeH = (tmplIt != m_agentModelTemplates.end())
                             ? tmplIt->second.nativeHeight : 0.f;
         float scale;
@@ -1472,7 +1544,7 @@ void ReplayWindow::DrawAgentModels()
             * XMMatrixTranslation(pos.x, pos.y, pos.z);
 
         // Decide skinned vs. rigid rendering
-        auto animIt = m_agentAnimStates.find(agentId);
+        auto animIt = m_agentAnimStates.find(slotKey);
         bool useSkinned = (animIt != m_agentAnimStates.end() && animIt->second.hasSkinning);
 
         if (useSkinned) {
@@ -1815,7 +1887,7 @@ void ReplayWindow::DrawAgentModels()
             // Consumed by DrawWeaponModels, which runs after this pass.
             animState.lastSnapIdx = snapIdx;
 
-            m_agentModelRenderStatus[agentId] = m_showAgentModelWindow
+            m_agentModelRenderStatus[slotKey] = m_showAgentModelWindow
                 ? std::format("skinned{}: submeshes={} pos=({:.0f},{:.0f},{:.0f}) anim=0x{:X}",
                     dead ? " (dead)" : "", animState.animMeshes.size(),
                     pos.x, pos.y, pos.z, snap.animation_code)
@@ -1838,7 +1910,7 @@ void ReplayWindow::DrawAgentModels()
                     renderedCount++;
                 }
             }
-            m_agentModelRenderStatus[agentId] = m_showAgentModelWindow
+            m_agentModelRenderStatus[slotKey] = m_showAgentModelWindow
                 ? std::format("shown: meshes={}/{} pos=({:.0f},{:.0f},{:.0f}) scale={:.3f}",
                     renderedCount, meshIds.size(), pos.x, pos.y, pos.z, scale)
                 : "shown";
@@ -1865,9 +1937,9 @@ void ReplayWindow::DrawSkinnedAgentModels()
     if (!context || !meshManager || !textureManager) return;
 
     bool anyVisible = false;
-    for (auto& [agentId, animState] : m_agentAnimStates) {
+    for (auto& [slotKey, animState] : m_agentAnimStates) {
         if (!animState.hasSkinning) continue;
-        auto statusIt = m_agentModelRenderStatus.find(agentId);
+        auto statusIt = m_agentModelRenderStatus.find(slotKey);
         if (statusIt == m_agentModelRenderStatus.end()) continue;
         if (statusIt->second.starts_with("skinned")) { anyVisible = true; break; }
     }
@@ -1877,11 +1949,11 @@ void ReplayWindow::DrawSkinnedAgentModels()
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_mapRenderer->BindModelPixelShader(false);
 
-    for (auto& [agentId, animState] : m_agentAnimStates)
+    for (auto& [slotKey, animState] : m_agentAnimStates)
     {
         if (!animState.hasSkinning) continue;
 
-        auto statusIt = m_agentModelRenderStatus.find(agentId);
+        auto statusIt = m_agentModelRenderStatus.find(slotKey);
         if (statusIt == m_agentModelRenderStatus.end() || !statusIt->second.starts_with("skinned"))
             continue;
 

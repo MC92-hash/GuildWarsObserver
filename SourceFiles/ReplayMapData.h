@@ -270,6 +270,42 @@ inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool is
     }
 }
 
+// ---------------------------------------------------------------------------
+// Dervish avatar forms
+//
+// StoC/model_events.txt reports the model a player is wearing as an NPC model id
+// (AgentLiving::transmog_npc_id), and 0 when they are back in their own skin. The five
+// avatar forms sit in one contiguous block of .dat character models, five file numbers
+// apart and in model-id order.
+//
+// Anything else - a costume, a tonic, any other transmog - returns 0 and keeps the base
+// skin on screen, which is the honest answer for a model we have no file for.
+// ---------------------------------------------------------------------------
+
+inline uint32_t LookupAvatarFileHash(uint32_t avatarModelId)
+{
+    switch (avatarModelId) {
+    case 7:  return 0x32AE0; // Avatar of Balthazar
+    case 8:  return 0x32AE5; // Avatar of Dwayna
+    case 9:  return 0x32AEA; // Avatar of Grenth
+    case 10: return 0x32AEF; // Avatar of Lyssa
+    case 11: return 0x32AF4; // Avatar of Melandru
+    default: return 0;
+    }
+}
+
+inline const char* AvatarFormName(uint32_t avatarModelId)
+{
+    switch (avatarModelId) {
+    case 7:  return "Avatar of Balthazar";
+    case 8:  return "Avatar of Dwayna";
+    case 9:  return "Avatar of Grenth";
+    case 10: return "Avatar of Lyssa";
+    case 11: return "Avatar of Melandru";
+    default: return "";
+    }
+}
+
 inline uint32_t LookupPlayerFileHash(int primaryProf, bool isFemale, int variantIndex = 0)
 {
     auto variants = GetPlayerModelVariants(primaryProf, isFemale);
@@ -325,6 +361,13 @@ inline AgentModelInfo LookupPlayerModelInfo(int primaryProf, bool isFemale)
     if (!isFemale && (primaryProf == 1 || primaryProf == 3 || primaryProf == 5))
         height = 75.734184f;
     return { hash, height, 1.0f };
+}
+
+// Avatar models are authored at the size the game shows them at, so they render at their
+// native height with no adjustment - the same rule the player models follow.
+inline AgentModelInfo LookupAvatarModelInfo(uint32_t avatarModelId)
+{
+    return { LookupAvatarFileHash(avatarModelId), 0.f, 1.0f };
 }
 
 inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
@@ -579,6 +622,15 @@ struct MoveToPointEvent
     float targetY = 0.f;
 };
 
+// A change to the model (appearance) a player is wearing, from StoC/model_events.txt.
+// modelId is an NPC model id, 0 when the player is back in their own skin.
+struct ModelChangeEvent
+{
+    float    time = 0.f;
+    int      agent_id = 0;
+    uint32_t modelId = 0;
+};
+
 // A time interval during which an agent was casting a skill.
 // Built from StoC SKILL_ACTIVATED / SKILL_FINISHED / SKILL_STOPPED events.
 struct CastInterval
@@ -643,6 +695,22 @@ struct AgentReplayData
 
     // Per-agent MOVE_TO_POINT events (built from StoC after both parsers finish)
     std::vector<MoveToPointEvent> moveEvents;
+
+    // Model (appearance) changes for this agent, sorted by time. Only players transform, and
+    // in a GvG only into one of the five Dervish avatar forms. An empty vector means either the
+    // agent never transformed or the recording predates model tracking; both read the same way,
+    // as "wearing the base skin throughout".
+    std::vector<ModelChangeEvent> modelChanges;
+
+    // The NPC model this agent is wearing at t, 0 for their own skin. Step function over
+    // modelChanges: the server reports each change once and it holds until the next one.
+    uint32_t modelIdAtTime(float t) const
+    {
+        if (modelChanges.empty() || t < modelChanges.front().time) return 0;
+        auto it = std::upper_bound(modelChanges.begin(), modelChanges.end(), t,
+            [](float v, const ModelChangeEvent& e) { return v < e.time; });
+        return (--it)->modelId;
+    }
 
     // Transient spirit overlap state (recomputed each frame, not serialized)
     bool  overlapHidden       = false;
@@ -1515,6 +1583,7 @@ struct StoCData
     std::vector<DoorEvent>              doorEvents;
     FlagEventData                       flagEvents;
     std::vector<SoundLogEvent>          soundEvents;
+    std::vector<ModelChangeEvent>       modelEvents;
     Equipment::Data                     equipment;
 };
 

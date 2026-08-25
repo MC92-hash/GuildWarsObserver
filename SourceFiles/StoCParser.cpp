@@ -928,6 +928,54 @@ static void ParseSoundEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Model changes (MODEL_INIT / MODEL_CHANGE / MODEL_RESYNC)
+//
+// MODEL_INIT is the per-player baseline the recorder polls once; MODEL_CHANGE comes from the
+// server packet that causes the change, so its timestamp is exact. MODEL_RESYNC means the poll
+// found a model the packet stream never reported - it should never appear, but it carries the
+// same agent_id;model_id;prev_model_id prefix, so treat it as a change and take the timestamp
+// for what it is worth rather than dropping the transformation.
+// ---------------------------------------------------------------------------
+
+static void ParseModelEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[8];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 8);
+                if (n >= 3)
+                {
+                    std::string_view typeName(tok[0].begin, tok[0].end - tok[0].begin);
+                    if (typeName == "MODEL_INIT" || typeName == "MODEL_CHANGE" ||
+                        typeName == "MODEL_RESYNC")
+                    {
+                        ModelChangeEvent ev;
+                        ev.time     = li.time;
+                        ev.agent_id = ToInt(tok[1].begin, tok[1].end);
+                        ev.modelId  = static_cast<uint32_t>(ToInt(tok[2].begin, tok[2].end));
+                        data.modelEvents.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Equipment (weapon/armour skins, dyes and raw mod words)
 // ---------------------------------------------------------------------------
 
@@ -961,6 +1009,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "flag_events",                   ParseFlagEvents },
     { "sound_events",                  ParseSoundEvents },
     { "equipment_events",              ParseEquipmentEvents },
+    { "model_events",                  ParseModelEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

@@ -304,19 +304,7 @@ void ReplayWindow::DrawAgentOverlay()
         // For players with 3D representation (not dot LOD), draw profession icon just above model head
         if (ard.type == AgentType::Player && !showDot && ard.primaryProf >= 1)
         {
-            float modelTopY = pos.y;
-            if (m_useAgentModels && m_agentModelsLoaded) {
-                auto hashIt = m_agentFileHashCache.find(agentId);
-                if (hashIt != m_agentFileHashCache.end()) {
-                    auto tmplIt = m_agentModelTemplates.find(hashIt->second);
-                    if (tmplIt != m_agentModelTemplates.end()) {
-                        AgentModelInfo minfo = LookupAgentModelInfo(
-                            ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
-                        float scale = minfo.npcAdjustment * m_agentModelScale;
-                        modelTopY += tmplIt->second.nativeHeight * scale;
-                    }
-                }
-            }
+            float modelTopY = AgentModelTopY(agentId, ard, pos.y, m_debugTimeline);
             if (modelTopY <= pos.y)
                 modelTopY = pos.y + 120.f;
 

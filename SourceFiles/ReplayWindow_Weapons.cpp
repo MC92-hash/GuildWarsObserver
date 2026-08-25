@@ -109,6 +109,15 @@ void ReplayWindow::SeedWeaponGrips()
     // An urn is cradled in the hand that does not hold a weapon, the same way a bow is.
     m_weaponGrips[kAshesItemType] = WeaponGrip{};
     m_weaponGrips[kAshesItemType].forceOffHand = true;
+
+    // Tuned against the render in Debug > Weapon Sockets. A scythe is the one class the
+    // sword-derived default is badly wrong for: it is carried along the body rather than
+    // seated upright in the fist, so it needs a long push down the shaft and a roll.
+    m_weaponGrips[35].offset   = { -1.00f, -3.00f, -15.00f };
+    m_weaponGrips[35].rotation = {  0.0f,   0.0f,   70.5f  };
+
+    // A shield hangs off the forearm, not the palm, so it takes none of the default's drop.
+    m_weaponGrips[24].offset   = { -2.00f,  0.00f,   0.00f };
 }
 
 
@@ -570,7 +579,7 @@ void ReplayWindow::DrawWeaponModels()
     bool shadersBound = false;
     int  boundPixelShader = -1;   // avoids a PSSetShader per weapon; most are OldModel
 
-    for (auto& [agentId, animState] : m_agentAnimStates)
+    for (auto& [slotKey, animState] : m_agentAnimStates)
     {
         if (!animState.hasSkinning || !animState.controller) continue;
         if (animState.perMeshCBs.empty()) continue;
@@ -578,13 +587,17 @@ void ReplayWindow::DrawWeaponModels()
 
         // Inherit the parent agent's visibility decision rather than re-deriving it: this is the
         // same gate DrawSkinnedAgentModels uses, and it already folds in fog, LOD, spirit
-        // windows and minion death.
-        auto statusIt = m_agentModelRenderStatus.find(agentId);
+        // windows and minion death - and, for a player in an avatar form, which of their model
+        // slots is the one being worn.
+        auto statusIt = m_agentModelRenderStatus.find(slotKey);
         if (statusIt == m_agentModelRenderStatus.end() ||
             !statusIt->second.starts_with("skinned"))
             continue;
 
-        auto hashIt = m_agentFileHashCache.find(agentId);
+        // The socket comes from the rig actually on screen, so an avatar form grips its weapon
+        // with the avatar's hand bones rather than the base skin's.
+        const int agentId = SlotOwnerAgentId(slotKey);
+        auto hashIt = m_agentFileHashCache.find(slotKey);
         if (hashIt == m_agentFileHashCache.end()) continue;
         auto tmplIt = m_agentModelTemplates.find(hashIt->second);
         if (tmplIt == m_agentModelTemplates.end()) continue;
@@ -866,9 +879,10 @@ void ReplayWindow::DrawWeaponSocketWindow()
             for (uint32_t itemType : kWeaponItemTypes)
             {
                 const WeaponGrip& w = m_weaponGrips[itemType];
-                out += std::format("m_weaponGrips[{}] = {{ {}, {{{:.2f}f, {:.2f}f, {:.2f}f}}, "
+                out += std::format("m_weaponGrips[{}] = {{ {}, {}, {{{:.2f}f, {:.2f}f, {:.2f}f}}, "
                                    "{{{:.1f}f, {:.1f}f, {:.1f}f}}, {:.3f}f }};  // {}\n",
                                    itemType, w.forceOffHand ? "true" : "false",
+                                   w.mirrorToOffHand ? "true" : "false",
                                    w.offset.x, w.offset.y, w.offset.z,
                                    w.rotation.x, w.rotation.y, w.rotation.z,
                                    w.scale, WeaponItemTypeName(itemType));
@@ -948,7 +962,13 @@ void ReplayWindow::DrawWeaponSocketWindow()
                 ard.playerName.empty() ? ard.categoryName.c_str() : ard.playerName.c_str());
 
     // --- Rig -------------------------------------------------------------
-    auto hashIt = m_agentFileHashCache.find(agentId);
+    // Follow the model slot on screen: while an avatar form is up, the rig, socket and live
+    // bones all belong to the avatar, and reporting the base skin's would be misleading.
+    uint32_t wornAvatar = ard.modelIdAtTime(m_debugTimeline);
+    if (LookupAvatarFileHash(wornAvatar) == 0) wornAvatar = 0;
+    const int slotKey = wornAvatar ? AvatarSlotKey(agentId, wornAvatar) : agentId;
+
+    auto hashIt = m_agentFileHashCache.find(slotKey);
     const uint32_t fileHash = (hashIt != m_agentFileHashCache.end()) ? hashIt->second : 0;
     auto tmplIt = m_agentModelTemplates.find(fileHash);
 
@@ -962,7 +982,7 @@ void ReplayWindow::DrawWeaponSocketWindow()
         ImGui::Text("Rig  hash0=0x%08X  hash1=0x%08X  clips=%zu",
                     tmpl.modelHash0, tmpl.modelHash1, tmpl.allClips.size());
 
-        auto animIt = m_agentAnimStates.find(agentId);
+        auto animIt = m_agentAnimStates.find(slotKey);
         const GW::Animation::AnimationController* ctrl =
             (animIt != m_agentAnimStates.end() && animIt->second.controller)
                 ? animIt->second.controller.get() : nullptr;
@@ -1079,7 +1099,7 @@ void ReplayWindow::DrawWeaponSocketWindow()
     // that weapon class: a hammer run puts both hands on the shaft, a generic run does not. No
     // grip offset can compensate for the wrong animation, so this distinguishes the two.
     {
-        auto animIt = m_agentAnimStates.find(agentId);
+        auto animIt = m_agentAnimStates.find(slotKey);
         if (animIt != m_agentAnimStates.end())
         {
             const auto& st = animIt->second;

@@ -4809,6 +4809,38 @@ void ReplayWindow::Tick()
         m_moveEventsBuilt = true;
     }
 
+    // Distribute model (appearance) changes into per-agent timelines, so the renderer can swap
+    // a transformed player to their avatar model. The recorder emits a MODEL_INIT baseline per
+    // player, so an agent with a timeline but no avatar in it is known to have stayed in their
+    // own skin - which is not the same as a recording that never tracked models at all.
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_modelChangesBuilt)
+    {
+        for (auto& ev : m_replayCtx.stocData.modelEvents)
+        {
+            int resolvedId = ResolveAgentAtTime(ev.agent_id, ev.time);
+            auto it = m_replayCtx.agents.find(resolvedId);
+            if (it != m_replayCtx.agents.end())
+                it->second.modelChanges.push_back(ev);
+        }
+        for (auto& [id, ard] : m_replayCtx.agents)
+        {
+            auto& changes = ard.modelChanges;
+            std::stable_sort(changes.begin(), changes.end(),
+                             [](const ModelChangeEvent& a, const ModelChangeEvent& b) {
+                                 return a.time < b.time;
+                             });
+            // A MODEL_INIT baseline repeats the model the previous line already reported
+            // whenever an agent id is reused or a new instance loads. Collapsing the repeats
+            // keeps the step lookup to the entries that actually change the model.
+            changes.erase(std::unique(changes.begin(), changes.end(),
+                                      [](const ModelChangeEvent& a, const ModelChangeEvent& b) {
+                                          return a.modelId == b.modelId;
+                                      }),
+                          changes.end());
+        }
+        m_modelChangesBuilt = true;
+    }
+
     // Build per-agent casting intervals from StoC skill/attack-skill events.
     // A SKILL_ACTIVATED opens an interval; SKILL_FINISHED / SKILL_STOPPED closes it.
     // INSTANT_SKILL_USED has no cast time so we skip it.
@@ -6012,7 +6044,7 @@ void ReplayWindow::DrawImGuiOverlay()
             {
                 // Turning off: hide all agent model meshes
                 auto* meshMgr = m_mapRenderer->GetMeshManager();
-                for (auto& [agentId, meshIds] : m_agentMeshIds)
+                for (auto& [slotKey, meshIds] : m_agentMeshIds)
                     for (int mid : meshIds)
                         meshMgr->SetMeshShouldRender(mid, false);
             }
@@ -6023,7 +6055,7 @@ void ReplayWindow::DrawImGuiOverlay()
 
             ImGui::Separator();
             if (m_agentModelsLoaded) {
-                ImGui::Text("Loaded: %d unique models, %d agents",
+                ImGui::Text("Loaded: %d unique models, %d model slots",
                     (int)m_agentModelTemplates.size(), (int)m_agentMeshIds.size());
 
                 if (ImGui::TreeNode("Agent Model Diagnostics"))
@@ -6046,25 +6078,36 @@ void ReplayWindow::DrawImGuiOverlay()
                             if (ard.type != AgentType::Player && ard.type != AgentType::NPC
                                 && ard.type != AgentType::Spirit && ard.type != AgentType::Unknown)
                                 continue;
+                            // Report the slot on screen, not the base skin: a player in an
+                            // avatar form is drawn from a different model, hash and mesh set.
+                            uint32_t worn = ard.modelIdAtTime(m_debugTimeline);
+                            if (LookupAvatarFileHash(worn) == 0) worn = 0;
+                            const int slotKey = worn ? AvatarSlotKey(agentId, worn) : agentId;
+
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0); ImGui::Text("%d", agentId);
                             ImGui::TableSetColumnIndex(1); ImGui::Text("%s", AgentTypeName(ard.type));
-                            ImGui::TableSetColumnIndex(2); ImGui::Text("%u", ard.modelId);
+                            ImGui::TableSetColumnIndex(2);
+                            if (worn)
+                                ImGui::Text("%u (%s)", ard.modelId, AvatarFormName(worn));
+                            else
+                                ImGui::Text("%u", ard.modelId);
                             ImGui::TableSetColumnIndex(3); ImGui::Text("%u", ard.teamId);
-                            auto cacheIt = m_agentFileHashCache.find(agentId);
+
+                            auto cacheIt = m_agentFileHashCache.find(slotKey);
                             ImGui::TableSetColumnIndex(4);
                             if (cacheIt != m_agentFileHashCache.end())
                                 ImGui::Text("0x%X", cacheIt->second);
                             else
                                 ImGui::TextDisabled("none");
-                            auto meshIt = m_agentMeshIds.find(agentId);
+                            auto meshIt = m_agentMeshIds.find(slotKey);
                             ImGui::TableSetColumnIndex(5);
                             if (meshIt != m_agentMeshIds.end())
                                 ImGui::Text("%d", (int)meshIt->second.size());
                             else
                                 ImGui::TextDisabled("-");
                             ImGui::TableSetColumnIndex(6);
-                            auto statusIt = m_agentModelRenderStatus.find(agentId);
+                            auto statusIt = m_agentModelRenderStatus.find(slotKey);
                             if (statusIt != m_agentModelRenderStatus.end())
                                 ImGui::TextWrapped("%s", statusIt->second.c_str());
                             else
