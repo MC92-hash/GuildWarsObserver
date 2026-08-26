@@ -358,6 +358,10 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
     if not all(source in sources for source in REQUIRED_STOC_SOURCES):
         return {}
     result = build_combat_analytics(infos, events)
+    from player_matrix import build_player_matrix
+    matrix = build_player_matrix(infos, events, match_dir)
+    if matrix:
+        result["player_matrix"] = matrix
     if "attack_skill_events" not in sources:
         for party_rows in result["players"].values():
             for row in party_rows:

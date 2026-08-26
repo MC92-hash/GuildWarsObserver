@@ -79,7 +79,20 @@ All UI is Dear ImGui immediate-mode. ~28 modular panels live in separate `draw_*
 HLSL shaders are compiled to C++ headers. Multiple pixel/vertex shaders: NewModel, OldModel, Terrain, Water, Sky, Skinned, Clouds.
 
 ### Utility Scripts
-`scripts/` contains ~17 Python 3 scripts for reverse-engineering FFNA binary formats (chunk analysis, submesh parsing, UV layout comparison). These are developer tools, not part of the build.
+`scripts/` contains ~17 Python 3 scripts for reverse-engineering FFNA binary formats (chunk analysis, submesh parsing, UV layout comparison). Those are developer tools, not part of the build.
+
+**Not all of `scripts/` is a developer tool.** Part of it is the publish pipeline Watchtower runs, and those modules are runtime dependencies with a real import chain:
+
+```
+upload_to_r2.build_stats_entry
+  -> combat_analytics.build_from_match_dir
+       -> player_matrix.build_player_matrix
+            -> max_hp_solver          (a faithful Python port of SourceFiles/MaxHpSolver.cpp)
+```
+
+Keep that chain intact when adding or moving files. `upload_to_r2.py:580` wraps the analytics call in a broad `try/except` so a parser defect never costs a match its index entry - which also means a **missing module in this chain fails silently**: the `ImportError` is caught, `analytics` becomes `{}`, and every match publishes with no `combat_analytics` at all, not merely without the piece that was missing. The only trace is a `Warning: combat analytics unavailable` line in the upload log.
+
+`max_hp_solver.py` duplicates the constants in `SourceFiles/MaxHpSolver.cpp` on purpose (search window, residual thresholds, packet tolerance and the fourteen correction offsets). If you change them in one, change them in the other, or the desktop tool and the website will disagree about the same match.
 
 ## Code Style
 
@@ -122,6 +135,11 @@ Matches are distributed via Cloudflare R2 cloud storage. The app fetches an inde
 - `scripts/upload_to_r2.py` — main upload script (`--dry-run`, `--list-remote`, `--source-dir`)
 - `scripts/r2_config.env` — R2 credentials (gitignored, see `.example`)
 - `scripts/setup_scheduled_task.bat` — Windows Task Scheduler automation
+- `scripts/backfill_index.py` — retrofits guild capes and `preview_stats` onto matches already published (dry run by default; `--from-r2` for matches with no local recording)
+- `scripts/backfill_stats.py` — the same idea for the `stats/<YYYY-MM>.json` sidecar
+- `scripts/combat_analytics.py`, `scripts/player_matrix.py`, `scripts/max_hp_solver.py` — the analytics chain above, required at publish time
+
+`write_index()` in `upload_to_r2.py` is the **single writer** for `index.json`. It publishes minified JSON plus a gzipped `index.json.gz` alongside it, never instead of it, so builds already released keep working. Anything that rewrites the index goes through it - a hand-rolled `put_object` re-inflates a 12 MB object that every client downloads.
 
 ## Important Constraints
 
