@@ -376,6 +376,42 @@ def read_infos_json(match_dir: Path) -> dict | None:
         return None
 
 
+# ── Desktop preview fields ──────────────────────────────────────────────────
+#
+# Pulled out of build_index_entry so backfill_index.py can call the real
+# producers over already-published entries instead of copying these shapes.
+# Both return None for "the recording does not carry this", which is not the
+# same as zero -- the client distinguishes the two and renders "-".
+
+CAPE_FIELDS = (
+    "bg_color", "detail_color", "emblem_color", "shape", "detail", "emblem",
+    "trim",
+)
+
+# Positional, not named keys: ~40 bytes per player against ~528 as named keys
+# (see the sidecar note below). The first three positions are frozen for
+# clients already in the wild; new counters are append-only.
+PREVIEW_FIELDS = (
+    "interrupted_count", "cancelled_skills_count", "skills_finished",
+    "total_damage_received", "total_healing_dealt", "total_healing_received",
+)
+
+
+def build_cape(guild_obj: dict) -> dict | None:
+    """The guild's cape from an infos.json guild object, or None."""
+    cape = guild_obj.get("cape")
+    if not isinstance(cape, dict):
+        return None
+    return {field: cape.get(field, 0) for field in CAPE_FIELDS}
+
+
+def build_preview_stats(player: dict) -> list | None:
+    """The compact preview array from an infos.json player object, or None."""
+    if not any(field in player for field in PREVIEW_FIELDS):
+        return None
+    return [player.get(field) for field in PREVIEW_FIELDS]
+
+
 def build_index_entry(
     folder_name: str,
     infos: dict,
@@ -410,17 +446,9 @@ def build_index_entry(
                     "name": guild_obj.get("name", ""),
                     "tag": guild_obj.get("tag", ""),
                 }
-                cape = guild_obj.get("cape")
-                if isinstance(cape, dict):
-                    entry["guilds"][guild_key]["cape"] = {
-                        "bg_color": cape.get("bg_color", 0),
-                        "detail_color": cape.get("detail_color", 0),
-                        "emblem_color": cape.get("emblem_color", 0),
-                        "shape": cape.get("shape", 0),
-                        "detail": cape.get("detail", 0),
-                        "emblem": cape.get("emblem", 0),
-                        "trim": cape.get("trim", 0),
-                    }
+                cape = build_cape(guild_obj)
+                if cape is not None:
+                    entry["guilds"][guild_key]["cape"] = cape
 
     # Team-level stats
     entry["team_kills"] = infos.get("team_kills", {})
@@ -448,16 +476,9 @@ def build_index_entry(
                     "deaths": player.get("deaths", 0),
                     "total_damage": player.get("total_damage", 0),
                 }
-                # Compact desktop preview. Keep the first three positions
-                # stable for older clients; new counters are append-only.
-                # None means unavailable, not zero.
-                preview_fields = (
-                    "interrupted_count", "cancelled_skills_count", "skills_finished",
-                    "total_damage_received", "total_healing_dealt",
-                    "total_healing_received",
-                )
-                if any(field in player for field in preview_fields):
-                    player_out["preview_stats"] = [player.get(field) for field in preview_fields]
+                preview = build_preview_stats(player)
+                if preview is not None:
+                    player_out["preview_stats"] = preview
                 players_out.append(player_out)
             parties_out[party_id] = {"PLAYER": players_out}
         entry["parties"] = parties_out
@@ -705,16 +726,52 @@ def upload_file(s3, bucket: str, key: str, file_path: Path):
     s3.upload_file(str(file_path), bucket, key)
 
 
-def upload_index(s3, bucket: str, entries: list[dict]):
-    """Upload the updated index.json to R2."""
+# ── index.json serialisation ────────────────────────────────────────────────
+#
+# One helper, because index.json has several writers -- cmd_upload, the
+# maintenance commands below, purge_leaked_scrims.py, and the orchestrator's
+# scrim_uploader -- and any one of them writing a different shape re-inflates
+# the object for every desktop client on its next run.
+#
+# Minified, not indent=2. Measured on the live 2,643-match object: 23.07 MB
+# on the wire against 3.7 MB of actual JSON payload, the rest whitespace, key
+# names and punctuation. Minifying alone takes it to 9.27 MB, costs no schema
+# change, and every client already in the wild parses it unchanged -- JSON is
+# JSON. The stats sidecar has always been written this way (upload_stats
+# below); index.json was the only pretty-printed object in the bucket.
+#
+# CacheControl is "no-cache", which means *revalidate*, not "do not store" --
+# the correct directive for the ETag/If-None-Match path, and what the two
+# writers that set it at all already used.
+
+INDEX_KEY = "index.json"
+INDEX_CACHE_CONTROL = "no-cache"
+
+
+def serialize_index(entries: list[dict]) -> bytes:
+    """Serialise index entries to the exact bytes published to R2."""
     index_data = {"version": 1, "matches": entries}
-    body = json.dumps(index_data, indent=2, ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        index_data, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def write_index(s3, bucket: str, entries: list[dict]) -> int:
+    """Publish index.json. The single writer -- see the note above."""
+    body = serialize_index(entries)
     s3.put_object(
         Bucket=bucket,
-        Key="index.json",
+        Key=INDEX_KEY,
         Body=body,
         ContentType="application/json",
+        CacheControl=INDEX_CACHE_CONTROL,
     )
+    return len(body)
+
+
+def upload_index(s3, bucket: str, entries: list[dict]):
+    """Back-compat alias for write_index (imported by the fixup scripts)."""
+    write_index(s3, bucket, entries)
 
 
 def dir_size_bytes(path: Path) -> int:
