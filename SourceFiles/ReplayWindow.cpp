@@ -4686,13 +4686,17 @@ void ReplayWindow::Tick()
         m_team2GuildHeader = BuildGuildHeader("2", m_folderTag2);
 
         // Build NPC + Spirit team lists for Allies section
-        auto NpcSortOrder = [](const std::string& cat) -> int {
+        // A pet belongs to the party the way the guild NPCs do, so it sits under them and
+        // above the spirits, which come and go.
+        auto NpcSortOrder = [](const AgentReplayData& a) -> int {
+            const std::string& cat = a.categoryName;
             if (cat == "Guild Lord")    return 0;
             if (cat == "Bodyguard")     return 1;
             if (cat == "Knight")        return 2;
             if (cat == "Archer")        return 3;
             if (cat == "Footman")       return 4;
-            return 5; // Pets, Spirits, other NPCs
+            if (IsPetModelId(a.modelId)) return 5;
+            return 6; // Spirits, other NPCs
         };
 
         for (int id : m_npcIds)
@@ -4714,8 +4718,8 @@ void ReplayWindow::Tick()
             std::sort(ids.begin(), ids.end(), [&](int a, int b) {
                 auto& aa = m_replayCtx.agents[a];
                 auto& bb = m_replayCtx.agents[b];
-                int oa = NpcSortOrder(aa.categoryName);
-                int ob = NpcSortOrder(bb.categoryName);
+                int oa = NpcSortOrder(aa);
+                int ob = NpcSortOrder(bb);
                 if (oa != ob) return oa < ob;
                 return aa.agent_id < bb.agent_id;
             });

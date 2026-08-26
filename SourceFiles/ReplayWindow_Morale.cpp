@@ -80,6 +80,14 @@ void ReplayWindow::BuildMoraleTimelines() const
     m_moraleDeaths.clear();
     m_moraleBoosts.clear();
 
+    // A pet takes death penalty on the same terms its owner does, so it needs a timeline too.
+    // Its own death pays the enemy nothing though -- only a player kill claws penalty back --
+    // which is why the enemy-kill events below are filtered back down to players.
+    auto CarriesMorale = [](const AgentReplayData& a) {
+        return a.type == AgentType::Player
+            || (a.type == AgentType::NPC && IsPetModelId(a.modelId));
+    };
+
     struct DPSLink { int casterId; int targetId; float linkStart; float linkEnd; };
     std::vector<DPSLink> dpsLinks;
     for (const auto& [aid, agentData] : m_replayCtx.agents) {
@@ -91,10 +99,10 @@ void ReplayWindow::BuildMoraleTimelines() const
         }
     }
 
-    // Every player's death-penalty-carrying deaths, once, so each team can read the other team's
-    // as kills and neither side counts a signet backfire.
+    // Every death-penalty-carrying death, once, so each team can read the other team's as kills
+    // and neither side counts a signet backfire. Pets are in here for their own penalty only.
     for (const auto& [aid, ard] : m_replayCtx.agents) {
-        if (ard.type != AgentType::Player) continue;
+        if (!CarriesMorale(ard)) continue;
         auto& times = m_moraleDeaths[aid];
         float lastResTime = -999.f;
         for (size_t i = 1; i < ard.snapshots.size(); ++i) {
@@ -129,7 +137,7 @@ void ReplayWindow::BuildMoraleTimelines() const
     }
 
     for (const auto& [aid, ard] : m_replayCtx.agents) {
-        if (ard.type != AgentType::Player) continue;
+        if (!CarriesMorale(ard)) continue;
         if (ard.teamId != 1 && ard.teamId != 2) continue;
 
         enum class MET : uint8_t { Death, Boost, EnemyKill };
@@ -142,6 +150,8 @@ void ReplayWindow::BuildMoraleTimelines() const
             auto oit = m_replayCtx.agents.find(otherId);
             if (oit == m_replayCtx.agents.end()) continue;
             if (oit->second.teamId == ard.teamId) continue;
+            // Killing a pet is not a kill: only a player death pays the other side.
+            if (oit->second.type != AgentType::Player) continue;
             for (float t : times) events.push_back({ t, MET::EnemyKill });
         }
         std::sort(events.begin(), events.end(),
