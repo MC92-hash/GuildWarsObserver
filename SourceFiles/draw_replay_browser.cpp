@@ -3,6 +3,7 @@
 #include "ReplayLibrary.h"
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
+#include "GuildCapeCache.h"
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
@@ -35,6 +36,17 @@ struct BuildDef {
 
 static std::vector<BuildDef> s_buildDefs;
 static bool s_buildDefsLoaded = false;
+// Bumped whenever s_buildDefs changes. ComputeTeamBuild's answer depends on the definitions,
+// so the cached per-match builds have to be thrown away when they are edited or reloaded.
+static int  s_buildDefsGen = 0;
+
+// ReplayLibrary's generation, sampled once per frame in draw_replay_browser. Every cache in
+// this file that is index-aligned with the match list keys off it.
+//
+// The vector's address and size are not enough on their own: RescanDiff replaces entries in
+// place when a match's cloud status flips, and re-sorts the whole vector afterwards, so an
+// unchanged address and count can still mean every index now points at a different match.
+static int s_libraryGeneration = -1;
 static std::filesystem::path s_buildDefsPath; // resolved local path for saving
 
 static void ParseBuildDefs(const nlohmann::json& j, std::vector<BuildDef>& out)
@@ -89,6 +101,7 @@ static void SaveBuildDefs()
     auto settingsDir = s_buildDefsPath.parent_path();
     if (!std::filesystem::exists(settingsDir))
         std::filesystem::create_directories(settingsDir);
+    s_buildDefsGen++;
     std::ofstream f(s_buildDefsPath);
     if (!f.is_open()) return;
     f << SerializeBuildDefs(s_buildDefs).dump(2) << "\n";
@@ -617,6 +630,121 @@ static ImTextureID GetProfessionIcon(int profId)
     return GetTextureCache().GetTexture(path);
 }
 
+// A slow breathing value in [0,1], for drawing the eye to a control without moving it.
+// Driven off the shared clock so every pulsing control beats together rather than drifting
+// apart, which is what makes two of them read as one deliberate cue.
+static float BrowserPulse()
+{
+    constexpr float kPeriodSeconds = 1.9f;
+    return 0.5f + 0.5f * sinf((float)ImGui::GetTime() * (2.0f * IM_PI / kPeriodSeconds));
+}
+
+// A soft halo just outside mn..mx, brightest at the pulse peak. Three rings with a falling
+// alpha rather than one, so it reads as a glow instead of a second hard border.
+static void DrawPulseGlow(ImDrawList* dl, const ImVec2& mn, const ImVec2& mx,
+                          ImU32 rgb, float rounding, float strength = 1.0f)
+{
+    const float p = BrowserPulse();
+    for (int i = 0; i < 3; i++)
+    {
+        const float grow = 1.0f + i * 2.0f;
+        const float a = (0.40f - i * 0.11f) * p * strength;
+        if (a <= 0.0f) continue;
+        const ImU32 col = (rgb & ~IM_COL32_A_MASK)
+                        | ((ImU32)(a * 255.0f) << IM_COL32_A_SHIFT);
+        dl->AddRect(ImVec2(mn.x - grow, mn.y - grow), ImVec2(mx.x + grow, mx.y + grow),
+                    col, rounding + grow, 0, 1.5f);
+    }
+}
+
+// The refresh control, drawn with a Guild Wars UI badge instead of the word.
+//
+// The atlas is 128x64 and holds the badge twice, side by side: a banked copy on the left and
+// a lit one on the right. That is exactly the idle/hover pair, so both states come from the
+// same texture with no tinting.
+//
+// highlight: new matches are waiting, so the badge is lit and outlined without a hover.
+// Returns true on click.
+
+// Source rects in the atlas. Centred on the badge's solid disc rather than on its alpha
+// bounding box: the art carries a soft glow that reaches further right and further down, so a
+// tight box sits the badge low and right of the frame it is drawn in. Square, so the button
+// is square too.
+inline constexpr float kRefreshAtlasW = 128.0f, kRefreshAtlasH = 64.0f;
+inline constexpr float kRefreshSrcY0 = 3.0f, kRefreshSrcY1 = 55.0f;
+inline constexpr float kRefreshDimX0 = 5.0f,  kRefreshDimX1 = 57.0f;
+inline constexpr float kRefreshLitX0 = 69.0f, kRefreshLitX1 = 121.0f;
+inline constexpr float kRefreshDrawH = 30.0f;
+inline constexpr float kRefreshPad = 4.0f;
+
+// Total height of the control, so the labels beside it can be centred against it.
+inline float RefreshIconButtonHeight() { return kRefreshDrawH + kRefreshPad * 2.0f; }
+
+static bool DrawRefreshIconButton(const char* id, bool highlight)
+{
+    EnsureTextureBasePath();
+    const std::string path = g_textureBasePath + "\\Textures\\DDS\\ATEXDXT5\\texture_337393.dds";
+    ImTextureID tex = GetTextureCache().GetTexture(path);
+
+    // No atlas: the word still has to be clickable.
+    if (!tex)
+        return ImGui::SmallButton("Refresh");
+
+    const ImVec2 uvDim0(kRefreshDimX0 / kRefreshAtlasW, kRefreshSrcY0 / kRefreshAtlasH);
+    const ImVec2 uvDim1(kRefreshDimX1 / kRefreshAtlasW, kRefreshSrcY1 / kRefreshAtlasH);
+    const ImVec2 uvLit0(kRefreshLitX0 / kRefreshAtlasW, kRefreshSrcY0 / kRefreshAtlasH);
+    const ImVec2 uvLit1(kRefreshLitX1 / kRefreshAtlasW, kRefreshSrcY1 / kRefreshAtlasH);
+
+    const float sz = kRefreshDrawH;
+    const ImVec2 pad(kRefreshPad, kRefreshPad);
+    constexpr float kRound = 5.0f;
+
+    // Chrome at rest, not just on hover: with a fully transparent frame the badge read as
+    // decoration rather than something to click.
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(1, 1, 1, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.18f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1, 1, 1, 0.26f));
+    ImGui::PushStyleColor(ImGuiCol_Border, highlight ? ImVec4(0.18f, 0.72f, 0.35f, 1.0f)
+                                                     : ImVec4(1, 1, 1, 0.16f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,    pad);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, highlight ? 2.0f : 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,   kRound);
+
+    const bool clicked = ImGui::ImageButton(id, tex, ImVec2(sz, sz), uvDim0, uvDim1);
+    const bool hovered = ImGui::IsItemHovered();
+
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(4);
+
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    const float hoverGrow = hovered ? 3.0f : 0.0f;
+
+    // Breathing halo so the control is noticed without being hunted for. Stronger once new
+    // matches are waiting, which is when it actually wants pressing.
+    DrawPulseGlow(dl, ImVec2(mn.x - hoverGrow, mn.y - hoverGrow),
+                  ImVec2(mx.x + hoverGrow, mx.y + hoverGrow),
+                  highlight ? IM_COL32(46, 184, 90, 255) : IM_COL32(245, 190, 90, 255),
+                  kRound, highlight ? 1.0f : 0.65f);
+
+    // Swap in the lit copy by drawing it over the one already submitted; hover state is only
+    // known after the item exists, and the alternative is a frame of lag.
+    if (hovered || highlight)
+        dl->AddImage(tex, ImVec2(mn.x + pad.x - hoverGrow, mn.y + pad.y - hoverGrow),
+                     ImVec2(mn.x + pad.x + sz + hoverGrow, mn.y + pad.y + sz + hoverGrow),
+                     uvLit0, uvLit1);
+
+    // A gold ring on hover, so the feedback carries at a glance.
+    if (hovered)
+        dl->AddRect(ImVec2(mn.x - hoverGrow, mn.y - hoverGrow),
+                    ImVec2(mx.x + hoverGrow, mx.y + hoverGrow),
+                    IM_COL32(245, 190, 90, 255), kRound + hoverGrow, 0, 2.0f);
+
+    return clicked;
+}
+
 static ImTextureID GetMapIcon(int mapId)
 {
     const char* file = GetMapIconFile(mapId);
@@ -661,11 +789,75 @@ static ImTextureID GetArenaIcon()
     return GetTextureCache().GetTexture(path);
 }
 
-static ImTextureID GetStatIcon(const char* filename)
+// Stat icons, by base name.
+//
+// Prefers the background-removed art where it has been exported, and falls back to the
+// original plate otherwise, so an icon that has not been cut out yet still shows. Which one
+// won is remembered per name: a missing file is not cached by the texture cache, so without
+// this the fallbacks would re-probe the filesystem on every frame.
+static ImTextureID GetStatIcon(const char* baseName)
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Others_UI\\" + filename;
-    return GetTextureCache().GetTexture(path);
+
+    static std::unordered_map<std::string, std::string> s_resolved;
+    auto it = s_resolved.find(baseName);
+    if (it == s_resolved.end())
+    {
+        const std::string dir = g_textureBasePath + "\\Textures\\Match library\\";
+        std::string cut   = dir + baseName + "-removebg-preview.png";
+        std::string plain = dir + baseName + ".png";
+        std::error_code ec;
+        it = s_resolved.emplace(baseName,
+                 std::filesystem::exists(cut, ec) ? std::move(cut) : std::move(plain)).first;
+    }
+    return GetTextureCache().GetTexture(it->second);
+}
+
+// ─── Guild capes ──────────────────────────────────────────────────
+//
+// Composed from the cape fields infos.json already carries, the same way the replay loading
+// screen builds them. Banners are cached by guild tag, so each is composed once per session
+// however many matches that guild appears in.
+
+static GuildCapeCache& BrowserCapeCache()
+{
+    static GuildCapeCache cache;
+    static bool tried = false;
+    if (!tried)
+    {
+        tried = true;
+        EnsureTextureBasePath();
+        auto root = std::filesystem::path(g_textureBasePath) / "Textures" / "CapeAssets";
+        std::error_code ec;
+        if (std::filesystem::exists(root, ec))
+            cache.Init(GetTextureCache().Device(), root);
+    }
+    return cache;
+}
+
+// The cape for one side of a match, or nullptr when the guild is unknown or has none.
+// Matched by tag, which is what GetPartyGuild already resolved from the folder name.
+//
+// A match that has not been downloaded is built from the cloud index, which carries only each
+// guild's name and tag - so its CapeData arrives default-constructed. Composing from that
+// would not merely draw a blank banner: the cache is keyed by tag alone, so it would store the
+// blank under that guild and keep serving it afterwards, including for downloaded matches that
+// do have the real thing. All seven fields zero means "not recorded", so stop before caching.
+static ImTextureID GetGuildCape(const MatchMeta& m, const GuildLabel& label)
+{
+    if (label.tag.empty()) return nullptr;
+    auto& cache = BrowserCapeCache();
+    if (!cache.IsReady()) return nullptr;
+
+    for (const auto& [id, gm] : m.guilds)
+    {
+        if (gm.tag != label.tag) continue;
+        const CapeData& c = gm.cape;
+        const bool recorded = c.bg_color || c.detail_color || c.emblem_color
+                           || c.shape || c.detail || c.emblem || c.trim;
+        return recorded ? cache.GetOrCreate(gm.tag, c) : nullptr;
+    }
+    return nullptr;
 }
 
 // ─── Skill icon lookup ──────────────────────────────────────────────────────
@@ -849,6 +1041,9 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
 static ImVec4 kColorBg, kColorPanel, kColorPanelLight, kColorBorder;
 static ImVec4 kColorAccent, kColorAccentDim;
 static ImVec4 kColorText, kColorTextDim;
+// Between the two: for the list's supporting columns, which should sit back from the guild
+// names without receding as far as a disabled label.
+static ImVec4 kColorTextMuted;
 static ImVec4 kColorSelected, kColorHover;
 
 // Color interpolation helper
@@ -902,6 +1097,7 @@ static void ApplyBrowserTheme(int theme)
         kColorAccentDim  = ImVec4(0.961f, 0.620f, 0.043f, 0.50f); // amber dimmed
         kColorText       = ImVec4(0.894f, 0.894f, 0.906f, 1.00f); // #e4e4e7 zinc-200
         kColorTextDim    = ImVec4(0.631f, 0.631f, 0.667f, 1.00f); // #a1a1aa zinc-400
+        kColorTextMuted  = ImVec4(0.789f, 0.789f, 0.810f, 1.00f); // #c9c9cf
         kColorSelected   = ImVec4(0.961f, 0.620f, 0.043f, 0.15f); // amber tint
         kColorHover      = ImVec4(0.961f, 0.620f, 0.043f, 0.10f); // amber tint
 
@@ -928,7 +1124,7 @@ static void ApplyBrowserTheme(int theme)
         s_themeColors.scrollGrabHov = ImVec4(0.322f, 0.322f, 0.357f, 0.70f);
         s_themeColors.button        = ImVec4(0.153f, 0.153f, 0.165f, 0.40f);
         s_themeColors.buttonHov     = ImVec4(0.961f, 0.620f, 0.043f, 0.15f);
-        s_themeColors.tableHeaderBg = ImVec4(0.12f, 0.12f, 0.13f, 0.95f);
+        s_themeColors.tableHeaderBg = ImVec4(0.12f, 0.12f, 0.13f, 0.45f);
         s_themeColors.tableBorderStrong = ImVec4(0.247f, 0.247f, 0.275f, 0.65f);
         s_themeColors.tableBorderLight  = ImVec4(0.247f, 0.247f, 0.275f, 0.30f);
         s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
@@ -961,6 +1157,7 @@ static void ApplyBrowserTheme(int theme)
         kColorAccentDim  = ImVec4(0.878f, 0.710f, 0.388f, 0.70f);
         kColorText       = ImVec4(0.941f, 0.937f, 0.914f, 1.00f); // #F0EFE9
         kColorTextDim    = ImVec4(0.612f, 0.580f, 0.533f, 1.00f); // #9C9488
+        kColorTextMuted  = ImVec4(0.809f, 0.794f, 0.762f, 1.00f); // #CFCAC2
         kColorSelected   = ImVec4(0.228f, 0.185f, 0.101f, 0.90f);
         kColorHover      = ImVec4(0.202f, 0.163f, 0.089f, 0.70f);
 
@@ -987,7 +1184,7 @@ static void ApplyBrowserTheme(int theme)
         s_themeColors.scrollGrabHov = ImVec4(0.38f, 0.32f, 0.22f, 0.70f);
         s_themeColors.button        = ImVec4(0.14f, 0.12f, 0.08f, 0.80f);
         s_themeColors.buttonHov     = ImVec4(0.25f, 0.22f, 0.14f, 0.80f);
-        s_themeColors.tableHeaderBg = ImVec4(0.16f, 0.14f, 0.09f, 0.95f);
+        s_themeColors.tableHeaderBg = ImVec4(0.16f, 0.14f, 0.09f, 0.45f);
         s_themeColors.tableBorderStrong = ImVec4(0.20f, 0.17f, 0.10f, 1.00f);
         s_themeColors.tableBorderLight  = ImVec4(0.25f, 0.22f, 0.15f, 0.40f);
         s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
@@ -1250,6 +1447,7 @@ struct BrowserState
 
     // Multi-select filter selections
     std::set<std::string> selectedSearchTerms;
+    int  searchMatchMode = 0;   // 0 = All (every chip must match), 1 = Any
     std::set<std::string> selectedMaps;
     std::set<std::string> selectedFluxes;
     std::set<std::string> selectedOccasions;
@@ -1303,6 +1501,7 @@ struct BrowserState
 
     bool filtersBuilt = false;
     int  lastMatchCount = -1;
+    int  lastLibraryGen = -1;
 
     // Responsive layout state
     LayoutMode layout = LayoutMode::Full;
@@ -1630,8 +1829,13 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
         g_invalidateFilters = false;
         s_tournamentCacheKey.clear();
     }
-    if (s_state.filtersBuilt && s_state.lastMatchCount == (int)matches.size())
+    // The count alone is not enough. s_matchSkillIndex is index-aligned with the match list,
+    // and a rescan that adds nothing still re-sorts it, which would leave every skill-filter
+    // lookup pointing at a different match than the one it describes.
+    if (s_state.filtersBuilt && s_state.lastMatchCount == (int)matches.size()
+        && s_state.lastLibraryGen == s_libraryGeneration)
         return;
+    s_state.lastLibraryGen = s_libraryGeneration;
 
     std::set<std::string> maps, guilds, fluxes, occasions;
     std::set<std::string> teams, players, tags;
@@ -3282,8 +3486,87 @@ struct FilteredMatch
     std::map<std::string, int> profCounts2;
 };
 
-static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& matches)
+
+// ─── Per-match derived data ─────────────────────────────────────────────────
+//
+// Everything here is a pure function of one match plus the build definitions: the map name,
+// the two guild labels, the two team builds and their profession signatures. None of it
+// depends on the filters or on the frame, but computing it is by far the most expensive part
+// of building the list - ComputeTeamBuild alone allocates a std::set of skills per player and
+// a profession map per team, twice per match.
+//
+// It used to run for every match on every frame. Across a 2500-match library that is tens of
+// thousands of heap allocations a frame, which is what made the browser window slow, left the
+// row highlight trailing the mouse and set the cursor flickering between shapes.
+struct MatchDerived
 {
+    GuildLabel  guild1, guild2;
+    std::string mapName;
+    std::string build1, build2;
+    std::string profSig1, profSig2;
+    std::map<std::string, int> profCounts1, profCounts2;
+};
+
+static std::vector<MatchDerived> s_matchDerived;
+// The match vector's identity, not just its size: a rescan can reallocate it, and every
+// FilteredMatch::meta points into it.
+static const MatchMeta* s_derivedMatchesData = nullptr;
+static size_t           s_derivedMatchCount  = 0;
+static int              s_derivedBuildGen    = -1;
+static int              s_derivedLibraryGen  = -1;
+
+static void EnsureMatchDerived(const std::vector<MatchMeta>& matches)
+{
+    // Resolve the definitions before sampling the generation: the first ComputeTeamBuild would
+    // otherwise load them midway through the rebuild and leave the cache stamped with the
+    // pre-load generation.
+    LoadBuildDefs();
+
+    if (s_derivedMatchesData == matches.data() &&
+        s_derivedMatchCount  == matches.size() &&
+        s_derivedBuildGen    == s_buildDefsGen &&
+        s_derivedLibraryGen  == s_libraryGeneration)
+        return;
+
+    s_matchDerived.clear();
+    s_matchDerived.resize(matches.size());
+
+    for (size_t i = 0; i < matches.size(); i++)
+    {
+        const auto& m = matches[i];
+        MatchDerived& d = s_matchDerived[i];
+
+        const char* mn = GetMapName(m.map_id);
+        d.mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+
+        std::string ft1, ft2;
+        ParseFolderTags(m.folder_name, ft1, ft2);
+        d.guild1 = GetPartyGuild(m, "1", ft1);
+        d.guild2 = GetPartyGuild(m, "2", ft2);
+
+        auto side = [&](const char* partyId, std::string& build,
+                        std::map<std::string, int>& counts, std::string& sig) {
+            auto it = m.parties.find(partyId);
+            if (it == m.parties.end()) return;
+            for (const auto& p : it->second.players)
+                if (p.primary >= 1 && p.primary <= 10) counts[GetProfAbbrev(p.primary)]++;
+            build = ComputeTeamBuild(it->second);
+            sig   = ComputeProfSignature(counts);
+        };
+        side("1", d.build1, d.profCounts1, d.profSig1);
+        side("2", d.build2, d.profCounts2, d.profSig2);
+    }
+
+    s_derivedMatchesData = matches.data();
+    s_derivedMatchCount  = matches.size();
+    s_derivedBuildGen    = s_buildDefsGen;
+    s_derivedLibraryGen  = s_libraryGeneration;
+}
+
+static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMeta>& matches)
+{
+    EnsureMatchDerived(matches);
+
     std::vector<FilteredMatch> result;
     result.reserve(matches.size());
 
@@ -3292,10 +3575,10 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
     for (int i = 0; i < (int)matches.size(); i++)
     {
         const auto& m = matches[i];
+        const MatchDerived& d = s_matchDerived[i];
 
         // Map filter (multi-select)
-        const char* mn = GetMapName(m.map_id);
-        std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
+        const std::string& mapName = d.mapName;
 
         if (!s_state.selectedMaps.empty())
         {
@@ -3343,10 +3626,8 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 continue;
         }
 
-        std::string ft1, ft2;
-        ParseFolderTags(m.folder_name, ft1, ft2);
-        GuildLabel g1 = GetPartyGuild(m, "1", ft1);
-        GuildLabel g2 = GetPartyGuild(m, "2", ft2);
+        const GuildLabel& g1 = d.guild1;
+        const GuildLabel& g2 = d.guild2;
 
         // Matchup filter — side-agnostic; with only one slot filled it degrades
         // to "this guild played in the match".
@@ -3371,10 +3652,12 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             }
         }
 
-        // Search filter — chip-based (OR logic) or text-based fallback
+        // Search chips. All by default, so stacking two players asks for matches they both
+        // played in; Any widens it back to either of them.
         if (!s_state.selectedSearchTerms.empty())
         {
-            bool anyMatch = false;
+            const bool matchAll = (s_state.searchMatchMode == 0);
+            bool verdict = matchAll;
             for (const auto& term : s_state.selectedSearchTerms)
             {
                 std::string tLow = ToLower(term);
@@ -3385,19 +3668,17 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 found |= ToLower(g2.name).find(tLow) != std::string::npos;
                 found |= ToLower(g2.tag).find(tLow) != std::string::npos;
                 found |= ToLower(g2.display).find(tLow) != std::string::npos;
-
                 for (const auto& [pid, party] : m.parties)
                 {
                     for (const auto& p : party.players)
-                    {
                         if (ToLower(p.encoded_name).find(tLow) != std::string::npos)
                         { found = true; break; }
-                    }
                     if (found) break;
                 }
-                if (found) { anyMatch = true; break; }
+                if (matchAll && !found) { verdict = false; break; }
+                if (!matchAll && found) { verdict = true;  break; }
             }
-            if (!anyMatch) continue;
+            if (!verdict) continue;
         }
         else if (!searchLower.empty())
         {
@@ -3421,46 +3702,27 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
             if (!found) continue;
         }
 
-        // Compute team build compositions + prof counts
-        std::string b1, b2;
-        std::map<std::string, int> pc1, pc2;
-        {
-            auto pit1 = m.parties.find("1");
-            auto pit2 = m.parties.find("2");
-            if (pit1 != m.parties.end())
-            {
-                for (const auto& p : pit1->second.players)
-                    if (p.primary >= 1 && p.primary <= 10) pc1[GetProfAbbrev(p.primary)]++;
-                b1 = ComputeTeamBuild(pit1->second);
-            }
-            if (pit2 != m.parties.end())
-            {
-                for (const auto& p : pit2->second.players)
-                    if (p.primary >= 1 && p.primary <= 10) pc2[GetProfAbbrev(p.primary)]++;
-                b2 = ComputeTeamBuild(pit2->second);
-            }
-        }
-
         // Build filter (multi-select)
         if (!s_state.selectedBuilds.empty())
         {
-            bool match = s_state.selectedBuilds.count(b1) || s_state.selectedBuilds.count(b2);
+            bool match = s_state.selectedBuilds.count(d.build1)
+                      || s_state.selectedBuilds.count(d.build2);
             if (!match) continue;
         }
 
         FilteredMatch fm;
         fm.originalIndex = i;
         fm.meta = &m;
-        fm.guild1 = g1;
-        fm.guild2 = g2;
-        fm.mapName = mapName;
-        fm.build1 = std::move(b1);
-        fm.build2 = std::move(b2);
-        fm.profCounts1 = std::move(pc1);
-        fm.profCounts2 = std::move(pc2);
-        fm.profSig1 = ComputeProfSignature(fm.profCounts1);
-        fm.profSig2 = ComputeProfSignature(fm.profCounts2);
-        result.push_back(fm);
+        fm.guild1 = d.guild1;
+        fm.guild2 = d.guild2;
+        fm.mapName = d.mapName;
+        fm.build1 = d.build1;
+        fm.build2 = d.build2;
+        fm.profCounts1 = d.profCounts1;
+        fm.profCounts2 = d.profCounts2;
+        fm.profSig1 = d.profSig1;
+        fm.profSig2 = d.profSig2;
+        result.push_back(std::move(fm));
     }
 
     // Sort
@@ -3488,13 +3750,16 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
                 }
                 break;
             }
+            // These indices are the table's logical column order; see MatchCol in
+            // DrawMatchListTable. The two Composition columns are NoSort, so they never
+            // reach here.
             case 1: r = a.meta->occasion.compare(b.meta->occasion); break;
             case 2: r = a.mapName.compare(b.mapName); break;
             case 3: r = a.guild1.display.compare(b.guild1.display); break;
-            case 4: r = a.build1.compare(b.build1); break;
             case 5: r = a.guild2.display.compare(b.guild2.display); break;
-            case 6: r = a.build2.compare(b.build2); break;
-            case 7: r = MatchRatings::Get().GetRating(a.meta->folder_name)
+            case 7: r = a.build1.compare(b.build1); break;
+            case 8: r = a.build2.compare(b.build2); break;
+            case 9: r = MatchRatings::Get().GetRating(a.meta->folder_name)
                       - MatchRatings::Get().GetRating(b.meta->folder_name); break;
             default: break;
             }
@@ -3510,6 +3775,77 @@ static std::vector<FilteredMatch> FilterMatches(const std::vector<MatchMeta>& ma
     return result;
 }
 
+// ─── Filtered-list cache ────────────────────────────────────────────────────
+//
+// The filtered, sorted list is rebuilt only when something it depends on changes. Everything
+// BuildFilteredMatches reads has to be folded into the signature below; a field left out here
+// is a filter that silently stops responding, so add to it whenever a filter is added.
+//
+// The match vector's address is part of the signature as well as its size, because every
+// FilteredMatch::meta points into it and a rescan can move it.
+static uint64_t FilterSignature(const std::vector<MatchMeta>& matches)
+{
+    uint64_t h = 1469598103934665603ull;   // FNV-1a
+    auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    auto mixStr = [&](const std::string& s) {
+        for (unsigned char c : s) mix(c);
+        mix(0x5eed);
+    };
+    auto mixStrSet = [&](const std::set<std::string>& set) {
+        mix(set.size());
+        for (const auto& e : set) mixStr(e);
+    };
+
+    mix(reinterpret_cast<uintptr_t>(matches.data()));
+    mix(matches.size());
+    mix((uint64_t)s_libraryGeneration);
+    mix((uint64_t)s_buildDefsGen);
+    mix(MatchRatings::Get().Version());
+
+    mixStrSet(s_state.selectedMaps);
+    mixStrSet(s_state.selectedOccasions);
+    mixStrSet(s_state.selectedFluxes);
+    mixStrSet(s_state.selectedBuilds);
+    mixStrSet(s_state.selectedSearchTerms);
+    mix((uint64_t)s_state.searchMatchMode);
+    mixStr(std::string(s_state.searchDebounced));
+
+    mix(s_state.selectedSkills.size());
+    for (int sk : s_state.selectedSkills) mix((uint64_t)sk);
+    mix((uint64_t)s_state.skillMatchMode);
+    mix((uint64_t)s_state.skillScope);
+
+    mix((uint64_t)s_state.dateFrom.day);   mix((uint64_t)s_state.dateFrom.month);
+    mix((uint64_t)s_state.dateFrom.year);
+    mix((uint64_t)s_state.dateTo.day);     mix((uint64_t)s_state.dateTo.month);
+    mix((uint64_t)s_state.dateTo.year);
+
+    mix((uint64_t)s_state.minRatingFilter);
+    mixStr(s_state.matchupNameA); mixStr(s_state.matchupTagA);
+    mixStr(s_state.matchupNameB); mixStr(s_state.matchupTagB);
+
+    mix((uint64_t)s_state.sortColumn);
+    mix(s_state.sortAscending ? 1u : 0u);
+    return h;
+}
+
+static const std::vector<FilteredMatch>& FilterMatches(const std::vector<MatchMeta>& matches)
+{
+    static std::vector<FilteredMatch> s_cache;
+    static uint64_t s_cacheSig = 0;
+    static bool     s_cacheValid = false;
+
+    const uint64_t sig = FilterSignature(matches);
+    if (!s_cacheValid || sig != s_cacheSig)
+    {
+        s_cache = BuildFilteredMatches(matches);
+        s_cacheSig = sig;
+        s_cacheValid = true;
+    }
+    return s_cache;
+}
+
+
 // For each occasion string, count matches that pass every OTHER active filter
 // (map, flux, skill, date, rating, matchup, search, build) - the Occasion
 // filter itself is deliberately skipped so the tree can show "how many
@@ -3522,17 +3858,17 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
     std::string searchLower = ToLower(std::string(s_state.searchDebounced));
     bool hasMatchup = MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
                        MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB);
-    bool needGuildLabels = hasMatchup || !s_state.selectedSearchTerms.empty() || !searchLower.empty();
     bool needBuild = !s_state.selectedBuilds.empty();
+
+    EnsureMatchDerived(matches);
 
     for (int i = 0; i < (int)matches.size(); i++)
     {
         const auto& m = matches[i];
+        const MatchDerived& d = s_matchDerived[i];
 
-        const char* mn = GetMapName(m.map_id);
-        std::string mapName = mn ? mn : ("Map " + std::to_string(m.map_id));
         if (!s_state.selectedMaps.empty() &&
-            s_state.selectedMaps.find(mapName) == s_state.selectedMaps.end())
+            s_state.selectedMaps.find(d.mapName) == s_state.selectedMaps.end())
             continue;
 
         if (!s_state.selectedFluxes.empty() &&
@@ -3555,14 +3891,8 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
             MatchRatings::Get().GetRating(m.folder_name) < s_state.minRatingFilter)
             continue;
 
-        GuildLabel g1, g2;
-        if (needGuildLabels)
-        {
-            std::string ft1, ft2;
-            ParseFolderTags(m.folder_name, ft1, ft2);
-            g1 = GetPartyGuild(m, "1", ft1);
-            g2 = GetPartyGuild(m, "2", ft2);
-        }
+        const GuildLabel& g1 = d.guild1;
+        const GuildLabel& g2 = d.guild2;
 
         if (hasMatchup)
         {
@@ -3581,9 +3911,11 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
             if (!ok) continue;
         }
 
+        // Same rule as FilterMatches; the two must agree or the counts lie.
         if (!s_state.selectedSearchTerms.empty())
         {
-            bool anyMatch = false;
+            const bool matchAll = (s_state.searchMatchMode == 0);
+            bool verdict = matchAll;
             for (const auto& term : s_state.selectedSearchTerms)
             {
                 std::string tLow = ToLower(term);
@@ -3601,9 +3933,10 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
                         { found = true; break; }
                     if (found) break;
                 }
-                if (found) { anyMatch = true; break; }
+                if (matchAll && !found) { verdict = false; break; }
+                if (!matchAll && found) { verdict = true;  break; }
             }
-            if (!anyMatch) continue;
+            if (!verdict) continue;
         }
         else if (!searchLower.empty())
         {
@@ -3626,12 +3959,8 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
 
         if (needBuild)
         {
-            std::string b1, b2;
-            auto pit1 = m.parties.find("1");
-            auto pit2 = m.parties.find("2");
-            if (pit1 != m.parties.end()) b1 = ComputeTeamBuild(pit1->second);
-            if (pit2 != m.parties.end()) b2 = ComputeTeamBuild(pit2->second);
-            if (!s_state.selectedBuilds.count(b1) && !s_state.selectedBuilds.count(b2))
+            if (!s_state.selectedBuilds.count(d.build1) &&
+                !s_state.selectedBuilds.count(d.build2))
                 continue;
         }
 
@@ -3655,6 +3984,7 @@ static int CountActiveFilters()
     if (MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
         MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB)) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
+    if (s_state.minRatingFilter > 0) n++;
     if (s_state.tournamentMode) n++;
     return n;
 }
@@ -3712,6 +4042,76 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     ImGui::Separator();
     ImGui::Spacing();
 
+    // ── Clear all filters ──
+    //
+    // Red only while something is actually filtered: with an empty sidebar the button does
+    // nothing, and a permanent red block would be the loudest thing on screen for no reason.
+    // A low-alpha tint rather than a solid fill, which is how the accent is used elsewhere.
+    const bool anyFilters = CountActiveFilters() > 0;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    if (anyFilters)
+    {
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.86f, 0.31f, 0.29f, 0.16f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.86f, 0.31f, 0.29f, 0.30f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.86f, 0.31f, 0.29f, 0.42f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.86f, 0.36f, 0.33f, 0.50f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.96f, 0.65f, 0.61f, 1.00f));
+    }
+    if (ImGui::Button("Clear All Filters", ImVec2(-1, 0)))
+    {
+        s_state.searchBuf[0] = '\0';
+        s_state.searchDebounced[0] = '\0';
+        s_state.lastSearchEditTime = -1.0f;
+        s_state.selectedSearchTerms.clear();
+        s_state.selectedMaps.clear();
+        s_state.selectedFluxes.clear();
+        s_state.selectedOccasions.clear();
+        s_state.selectedBuilds.clear();
+        s_state.selectedSkills.clear();
+        s_state.mapSearchBuf[0] = '\0';
+        s_state.fluxSearchBuf[0] = '\0';
+        s_state.buildSearchBuf[0] = '\0';
+        s_state.skillSearchBuf[0] = '\0';
+        s_state.skillMatchMode = 0;
+        s_state.skillScope = 2;
+        s_state.browseOpenId.clear();
+        s_state.matchupBufA[0] = '\0';
+        s_state.matchupBufB[0] = '\0';
+        s_state.matchupDisplayA.clear();
+        s_state.matchupNameA.clear();
+        s_state.matchupTagA.clear();
+        s_state.matchupDisplayB.clear();
+        s_state.matchupNameB.clear();
+        s_state.matchupTagB.clear();
+        s_state.dateFrom = {};
+        s_state.dateTo = {};
+        s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
+        s_state.calBrowseToMonth = 0; s_state.calBrowseToYear = 0;
+        s_state.minRatingFilter = 0;
+        s_state.tournamentMode = false;
+        s_state.tournamentGuildBuf[0] = '\0';
+        s_state.tournamentGuildDisplay.clear();
+        s_state.tournamentGuildTag.clear();
+        s_state.tournamentGuildName.clear();
+        s_state.tournamentMaps.clear();
+        s_state.tournamentMapBuf[0] = '\0';
+        s_state.tournamentSelectedBuild = -1;
+        s_state.tournamentSelectedLostTo = -1;
+        s_state.tournamentLostToSearch[0] = '\0';
+    }
+    if (anyFilters)
+    {
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar();
+    }
+    ImGui::PopStyleVar();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     // ── Global search with auto-complete chips ──
     ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
     ImGui::TextUnformatted("Search");
@@ -3724,6 +4124,27 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         if (ImGui::SmallButton("Clear##search_clear"))
             s_state.selectedSearchTerms.clear();
         ImGui::PopStyleColor();
+
+        // Only means anything with two or more chips, so it stays out of the way until then.
+        if (s_state.selectedSearchTerms.size() > 1)
+        {
+            ImGui::SameLine(0, 10);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 1));
+            const char* modes[2] = { "All", "Any" };
+            for (int i = 0; i < 2; i++)
+            {
+                if (i) ImGui::SameLine(0, 3);
+                const bool on = (s_state.searchMatchMode == i);
+                ImGui::PushStyleColor(ImGuiCol_Button, on ? kColorSelected : ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_Text,   on ? kColorAccent : kColorTextDim);
+                if (ImGui::SmallButton((std::string(modes[i]) + "##srchmode").c_str()))
+                    s_state.searchMatchMode = i;
+                ImGui::PopStyleColor(2);
+            }
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("All: matches featuring every term.\nAny: matches featuring at least one.");
+        }
 
         float maxLineX = ImGui::GetContentRegionMax().x;
         float lineX = 0.0f;
@@ -3781,6 +4202,13 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     ImGui::Separator();
     ImGui::Spacing();
 
+    // ── Skill filter ──
+    DrawSkillFilter();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     // ── Matchup filter (guild A vs guild B) ──
     DrawMatchupFilter();
 
@@ -3823,65 +4251,12 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     ImGui::Separator();
     ImGui::Spacing();
 
-    // ── Skill filter ──
-    DrawSkillFilter();
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
     // ── Date range filter ──
     DrawDateRangeFilter();
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-
-    // ── Clear all filters ──
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-    if (ImGui::Button("Clear All Filters", ImVec2(-1, 0)))
-    {
-        s_state.searchBuf[0] = '\0';
-        s_state.searchDebounced[0] = '\0';
-        s_state.lastSearchEditTime = -1.0f;
-        s_state.selectedSearchTerms.clear();
-        s_state.selectedMaps.clear();
-        s_state.selectedFluxes.clear();
-        s_state.selectedOccasions.clear();
-        s_state.selectedBuilds.clear();
-        s_state.selectedSkills.clear();
-        s_state.mapSearchBuf[0] = '\0';
-        s_state.fluxSearchBuf[0] = '\0';
-        s_state.buildSearchBuf[0] = '\0';
-        s_state.skillSearchBuf[0] = '\0';
-        s_state.skillMatchMode = 0;
-        s_state.skillScope = 2;
-        s_state.browseOpenId.clear();
-        s_state.matchupBufA[0] = '\0';
-        s_state.matchupBufB[0] = '\0';
-        s_state.matchupDisplayA.clear();
-        s_state.matchupNameA.clear();
-        s_state.matchupTagA.clear();
-        s_state.matchupDisplayB.clear();
-        s_state.matchupNameB.clear();
-        s_state.matchupTagB.clear();
-        s_state.dateFrom = {};
-        s_state.dateTo = {};
-        s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
-        s_state.calBrowseToMonth = 0; s_state.calBrowseToYear = 0;
-        s_state.minRatingFilter = 0;
-        s_state.tournamentMode = false;
-        s_state.tournamentGuildBuf[0] = '\0';
-        s_state.tournamentGuildDisplay.clear();
-        s_state.tournamentGuildTag.clear();
-        s_state.tournamentGuildName.clear();
-        s_state.tournamentMaps.clear();
-        s_state.tournamentMapBuf[0] = '\0';
-        s_state.tournamentSelectedBuild = -1;
-        s_state.tournamentSelectedLostTo = -1;
-        s_state.tournamentLostToSearch[0] = '\0';
-    }
-    ImGui::PopStyleVar();
 
     // ── Min Rating filter ──
     ImGui::Spacing();
@@ -4998,35 +5373,16 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         }
     }
 
-    // Refresh button — always visible, same height as Table/Cards buttons
+    // Refresh — outlined when new matches are waiting
     ImGui::SameLine(0, 16);
+    if (DrawRefreshIconButton("##refresh_gallery", g_refreshHint))
     {
-        bool hint = g_refreshHint;
-        if (hint)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.12f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.961f, 0.620f, 0.043f, 0.20f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.984f, 0.749f, 0.141f, 1.f));
-        }
-        else
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.14f, 0.16f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.20f, 0.22f, 0.9f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.247f, 0.247f, 0.275f, 0.45f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.631f, 0.631f, 0.667f, 1.f));
-        }
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
-        if (ImGui::Button("REFRESH"))
-        {
-            g_refreshMatchIndex = true;
-            g_refreshHint = false;
-        }
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(4);
+        g_refreshMatchIndex = true;
+        g_refreshHint = false;
     }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
+                                        : "Refresh - re-fetch match list from cloud");
 }
 
 // ─── Tournament Prep stats panel ────────────────────────────────────────────
@@ -5650,6 +6006,43 @@ static void DrawCardGallery(const std::vector<FilteredMatch>& filtered,
 
 // ─── Match list table ────────────────────────────────────────────────────────
 
+// Shared with the row loop, which needs the height to centre the cell.
+static constexpr float kCompIconSz  = 18.0f;
+static constexpr float kCompIconGap = 3.0f;
+
+// A team's composition: one profession symbol per player, melee first.
+//
+// The signature is grouped ("2W/1R/2Mo"), so each token is repeated for its count rather than
+// printed as a number - eight players read as eight icons.
+static void DrawCompositionIcons(const std::string& profSig)
+{
+    if (profSig.empty()) { ImGui::TextDisabled("-"); return; }
+
+    const auto tokens = ParseCompString(profSig);
+    const float iconSz = kCompIconSz;
+    const float gap = kCompIconGap;
+
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float x = start.x;
+
+    for (const auto& t : tokens)
+    {
+        ImTextureID ico = GetProfessionIcon(t.profId);
+        if (!ico) continue;
+        for (int n = 0; n < t.count; n++)
+        {
+            dl->AddImage(ico, ImVec2(x, start.y), ImVec2(x + iconSz, start.y + iconSz));
+            x += iconSz + gap;
+        }
+    }
+
+    // Claim the row height, and give the cell something to hover for the text form.
+    ImGui::Dummy(ImVec2(std::max(1.f, x - start.x), iconSz));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", profSig.c_str());
+}
+
 static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                                const std::vector<MatchMeta>& allMatches,
                                float listH = 0)
@@ -5683,17 +6076,35 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         return;
     }
 
+    // The refresh badge is the tallest thing on this row, so the row grows to it and every
+    // other control is centred against that height instead of sitting on the top edge.
+    constexpr float btnPadY = 2.0f;
+    const float rowTopY = ImGui::GetCursorPosY();
+    const float topRowH = std::max(RefreshIconButtonHeight(), ImGui::GetFrameHeight());
+    auto CentreOnRow = [&](float itemH) {
+        ImGui::SetCursorPosY(rowTopY + (topRowH - itemH) * 0.5f);
+    };
+
     ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
-    // Use a dummy frame padding so Text and Button share the same line height
-    float btnPadY = 2.0f;
-    float textOffsetY = btnPadY + ImGui::GetStyle().FrameBorderSize;
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textOffsetY);
+    CentreOnRow(ImGui::GetTextLineHeight());
     ImGui::Text("MATCHES  (%d)", (int)filtered.size());
     ImGui::PopStyleColor();
 
-    // Prep button in table header
     ImGui::SameLine(0, 12);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - textOffsetY);
+    CentreOnRow(RefreshIconButtonHeight());
+    // Refresh — outlined when new matches are waiting
+    if (DrawRefreshIconButton("##refresh_list", g_refreshHint))
+    {
+        g_refreshMatchIndex = true;
+        g_refreshHint = false;
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
+                                        : "Refresh - re-fetch match list from cloud");
+
+    // Prep button in table header
+    ImGui::SameLine(0, 8);
+    CentreOnRow(ImGui::GetTextLineHeight() + btnPadY * 2.0f + 2.0f);   // +border
     {
         bool prepActive = s_state.tournamentMode;
         if (prepActive)
@@ -5720,45 +6131,6 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Scout - what they run, and what beats them");
     }
-
-    ImGui::SameLine(0, 8);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY());
-    // Refresh button — highlighted when new matches are available
-    if (g_refreshHint)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.14f, 0.14f, 0.14f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.10f, 0.10f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.18f, 0.72f, 0.35f, 1.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
-
-        if (ImGui::Button("REFRESH"))
-        {
-            g_refreshMatchIndex = true;
-            g_refreshHint = false;
-        }
-
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(5);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Refresh for latest matches");
-    }
-    else
-    {
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
-        if (ImGui::SmallButton("Refresh"))
-            g_refreshMatchIndex = true;
-        ImGui::PopStyleColor(3);
-        ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Re-fetch match list from cloud");
-    }
     ImGui::Separator();
 
     // Card mode for mobile
@@ -5776,29 +6148,50 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float dateW = 100.0f;
     float occasionW = (mode == LayoutMode::Narrow) ? 100.0f : 130.0f;
     float ratingW = 72.0f;
-    float compW = 80.0f;
+    float compW = 80.0f;          // team build name
+    float compIconW = 8 * (kCompIconSz + kCompIconGap) + 4.0f;   // a full team of eight
     float mapW = std::max(90.0f, tableW * 0.13f);
     float notesColW = 20.0f;
-    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW - compW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
+    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW
+                              - compW * 2 - compIconW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
-        ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
+        ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_Sortable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX;
 
-    if (ImGui::BeginTable("##match_table", 9, tableFlags))
+    // Wider gutters stand in for the column rules that used to separate the cells.
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(10.0f, 2.0f));
+
+    // Column order is the logical order the cells below address by index, so the cells can
+    // stay in the order that reads best in code while the table shows them in this one.
+    // The sort comparator switches on the same indices - keep the two in step.
+    enum MatchCol {
+        Col_Date = 0, Col_Occasion, Col_Map,
+        Col_Team1, Col_Comp1, Col_Team2, Col_Comp2,
+        Col_Build1, Col_Build2, Col_Rating, Col_Notes, Col_Count
+    };
+
+    if (ImGui::BeginTable("##match_table", Col_Count, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Date",     ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
-        ImGui::TableSetupColumn("Occasion", ImGuiTableColumnFlags_WidthFixed, occasionW);
-        ImGui::TableSetupColumn("Map",      ImGuiTableColumnFlags_WidthFixed, mapW);
-        ImGui::TableSetupColumn("Team 1",   ImGuiTableColumnFlags_WidthFixed, teamW);
-        ImGui::TableSetupColumn("Comp 1",   ImGuiTableColumnFlags_WidthFixed, compW);
-        ImGui::TableSetupColumn("Team 2",   ImGuiTableColumnFlags_WidthFixed, teamW);
-        ImGui::TableSetupColumn("Comp 2",   ImGuiTableColumnFlags_WidthFixed, compW);
-        ImGui::TableSetupColumn("Rating",   ImGuiTableColumnFlags_WidthFixed, ratingW);
-        ImGui::TableSetupColumn("##notes",  ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW);
+        ImGui::TableSetupColumn("DATE",          ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
+        ImGui::TableSetupColumn("OCCASION",      ImGuiTableColumnFlags_WidthFixed, occasionW);
+        ImGui::TableSetupColumn("MAP",           ImGuiTableColumnFlags_WidthFixed, mapW);
+        ImGui::TableSetupColumn("TEAM 1",        ImGuiTableColumnFlags_WidthFixed, teamW);
+        // Icons carry no ordering a click on the header could express, so they do not sort.
+        ImGui::TableSetupColumn("COMPOSITION 1", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW);
+        ImGui::TableSetupColumn("TEAM 2",        ImGuiTableColumnFlags_WidthFixed, teamW);
+        ImGui::TableSetupColumn("COMPOSITION 2", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW);
+        ImGui::TableSetupColumn("TEAM BUILD 1",  ImGuiTableColumnFlags_WidthFixed, compW);
+        ImGui::TableSetupColumn("TEAM BUILD 2",  ImGuiTableColumnFlags_WidthFixed, compW);
+        ImGui::TableSetupColumn("RATING",        ImGuiTableColumnFlags_WidthFixed, ratingW);
+        ImGui::TableSetupColumn("##notes",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW);
+
+        // Headers sit back as labels over the list rather than announcing a grid.
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
         ImGui::TableHeadersRow();
+        ImGui::PopStyleColor();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
         {
@@ -5812,6 +6205,39 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
         ImTextureID cupTex = GetCupIcon();
 
+        // Rows are given room to breathe rather than packed to the text height. Scaled off
+        // the font so it follows the font-size setting instead of fixing a pixel count.
+        const float textH = ImGui::GetTextLineHeight();
+        const float rowH  = textH + 12.0f;
+
+        // ImGui puts cell content at the top of the row, which in a tall row leaves the text
+        // sitting on a band of whitespace. Nudge each cell down to sit on the row's centre.
+        auto CenterCell = [&](float contentH) {
+            const float off = (rowH - contentH) * 0.5f;
+            if (off > 0.f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + off);
+        };
+
+        // ComputeTeamBuild falls back to the profession signature when no definition matches,
+        // so an unnamed build prints the Composition column beside it a second time, in text.
+        // A dash instead leaves only the builds somebody has actually named on screen.
+        auto DrawGuild = [&](const GuildLabel& g) {
+            if (GuiGlobalConstants::boldFont) ImGui::PushFont(GuiGlobalConstants::boldFont);
+            ImGui::TextUnformatted(g.name.empty() ? g.display.c_str() : g.name.c_str());
+            if (GuiGlobalConstants::boldFont) ImGui::PopFont();
+            if (!g.name.empty() && !g.tag.empty())
+            {
+                ImGui::SameLine(0, 4);
+                ImGui::TextColored(kColorTextDim, "[%s]", g.tag.c_str());
+            }
+        };
+
+        auto DrawBuildName = [&](const std::string& build, const std::string& profSig) {
+            if (build.empty() || build == profSig) { ImGui::TextDisabled("-"); return; }
+            ImGui::PushStyleColor(ImGuiCol_Text, s_themeColors.compTextCol);
+            ImGui::TextUnformatted(build.c_str());
+            ImGui::PopStyleColor();
+        };
+
         ImGuiListClipper clipper;
         clipper.Begin((int)filtered.size());
         while (clipper.Step())
@@ -5822,7 +6248,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 const auto& m = *fm.meta;
                 bool isSelected = (s_state.selectedMatchIndex == fm.originalIndex);
 
-                ImGui::TableNextRow();
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, rowH);
                 ImGui::PushID(fm.originalIndex);
 
                 // Gold highlight flash for newly added matches
@@ -5836,21 +6262,21 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                             IM_COL32(212, 160, 32, (int)(hlAlpha * 255)));
                 }
 
-                ImGui::TableNextColumn();
+                ImGui::TableSetColumnIndex(Col_Date);
 
-                // Reserve space for status icon, then render date
+                // Status icon and date are painted over the selectable below, so the
+                // selectable carries no label and only provides the row's hit box.
                 ImVec2 cellStart = ImGui::GetCursorScreenPos();
                 float iconW = ImGui::CalcTextSize("\xe2\x98\x81").x + 4.f;
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + iconW);
 
-                char dateBuf[16];
-                snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, s_themeColors.rowHoverBg);
                 ImGui::PushStyleColor(ImGuiCol_Header,        s_themeColors.rowSelectedBg);
                 ImGui::PushStyleColor(ImGuiCol_HeaderActive,  s_themeColors.rowSelectedBg);
-                bool rowClicked = ImGui::Selectable(dateBuf, isSelected,
+                // An explicit height, because a Selectable sizes itself to its text and would
+                // otherwise paint a highlight band thinner than the row it belongs to.
+                bool rowClicked = ImGui::Selectable("##row", isSelected,
                     ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap
-                    | ImGuiSelectableFlags_AllowDoubleClick);
+                    | ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, rowH));
                 ImGui::PopStyleColor(3);
                 if (rowClicked)
                 {
@@ -5882,28 +6308,44 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                         icon = "\xe2\x9c\x94"; // ✔
                         color = IM_COL32(70, 190, 95, 230);
                     }
-                    dl->AddText(cellStart, color, icon);
+                    const float cy = cellStart.y + (rowH - textH) * 0.5f;
+                    dl->AddText(ImVec2(cellStart.x, cy), color, icon);
+
+                    // Every row carries its own date. Blanking the repeats left ragged holes
+                    // down the column, which reads as broken rather than grouped, and it fell
+                    // apart under any sort but this one. The day banding above does that job.
+                    char dateBuf[16];
+                    snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d",
+                             m.year, m.month, m.day);
+                    dl->AddText(ImVec2(cellStart.x + iconW, cy),
+                                ImGui::GetColorU32(kColorTextMuted), dateBuf);
                 }
 
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(m.occasion.c_str());
+                ImGui::TableSetColumnIndex(Col_Occasion);
+                CenterCell(textH);
+                ImGui::TextColored(kColorTextMuted, "%s", m.occasion.c_str());
 
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(fm.mapName.c_str());
+                ImGui::TableSetColumnIndex(Col_Map);
+                CenterCell(textH);
+                ImGui::TextColored(kColorTextMuted, "%s", fm.mapName.c_str());
 
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(fm.guild1.display.c_str());
+                ImGui::TableSetColumnIndex(Col_Team1);
+                CenterCell(textH);
+                DrawGuild(fm.guild1);
                 if (m.winner_party_id == 1 && cupTex)
                 {
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
                 }
 
-                // Comp 1
-                ImGui::TableNextColumn();
-                ImGui::PushStyleColor(ImGuiCol_Text, s_themeColors.compTextCol);
-                ImGui::TextUnformatted(fm.build1.c_str());
-                ImGui::PopStyleColor();
+                ImGui::TableSetColumnIndex(Col_Comp1);
+                CenterCell(kCompIconSz);
+                DrawCompositionIcons(fm.profSig1);
+
+                // Team build 1
+                ImGui::TableSetColumnIndex(Col_Build1);
+                CenterCell(textH);
+                DrawBuildName(fm.build1, fm.profSig1);
                 if (ImGui::IsItemHovered() && !fm.profSig1.empty())
                     ImGui::SetTooltip("%s", fm.profSig1.c_str());
                 if (GuiGlobalConstants::IsDeveloperMode() && !GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc1_" + std::to_string(fm.originalIndex)).c_str()))
@@ -5980,19 +6422,23 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     ImGui::EndPopup();
                 }
 
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(fm.guild2.display.c_str());
+                ImGui::TableSetColumnIndex(Col_Team2);
+                CenterCell(textH);
+                DrawGuild(fm.guild2);
                 if (m.winner_party_id == 2 && cupTex)
                 {
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
                 }
 
-                // Comp 2
-                ImGui::TableNextColumn();
-                ImGui::PushStyleColor(ImGuiCol_Text, s_themeColors.compTextCol);
-                ImGui::TextUnformatted(fm.build2.c_str());
-                ImGui::PopStyleColor();
+                ImGui::TableSetColumnIndex(Col_Comp2);
+                CenterCell(kCompIconSz);
+                DrawCompositionIcons(fm.profSig2);
+
+                // Team build 2
+                ImGui::TableSetColumnIndex(Col_Build2);
+                CenterCell(textH);
+                DrawBuildName(fm.build2, fm.profSig2);
                 if (ImGui::IsItemHovered() && !fm.profSig2.empty())
                     ImGui::SetTooltip("%s", fm.profSig2.c_str());
                 if (GuiGlobalConstants::IsDeveloperMode() && !GuiGlobalConstants::contributor_key.empty() && ImGui::BeginPopupContextItem(("##nc2_" + std::to_string(fm.originalIndex)).c_str()))
@@ -6068,16 +6514,19 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 }
 
                 // Rating column
-                ImGui::TableNextColumn();
+                ImGui::TableSetColumnIndex(Col_Rating);
+                CenterCell(textH);
                 {
                     int cur = MatchRatings::Get().GetRating(m.folder_name);
-                    int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(), cur);
+                    int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(),
+                                             cur, false, /*hideWhenEmpty=*/true);
                     if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
                     else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
                 }
 
                 // Notes indicator
-                ImGui::TableNextColumn();
+                ImGui::TableSetColumnIndex(Col_Notes);
+                CenterCell(textH);
                 if (MatchNotes::Get().HasNote(m.folder_name))
                 {
                     ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
@@ -6090,6 +6539,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         }
         ImGui::EndTable();
     }
+    ImGui::PopStyleVar();   // CellPadding, pushed before BeginTable
 
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
@@ -6097,6 +6547,93 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 }
 
 // ─── Team composition panel ──────────────────────────────────────────────────
+
+// Draws `label` as a link into the search filter: underlined and lit in the accent while
+// hovered, with the hand cursor, so it reads as something to click rather than a label that
+// happens to react. Returns true on click.
+//
+// The hover repaint overdraws the same string at the same position rather than colouring it
+// up front, because hover is only known once the item exists.
+// Clicking one of these changes the list behind the panel, but the panel itself does not
+// move, so without an acknowledgement the click reads as having done nothing. Keyed by the
+// label, which is unique enough among guild and player names on screen at once.
+static std::unordered_map<std::string, float> s_linkFlashTimes;
+constexpr float kLinkFlashSeconds = 0.45f;
+
+static bool DrawFilterLink(const char* label, const ImVec4& baseCol)
+{
+    const float now = (float)ImGui::GetTime();
+
+    ImGui::PushStyleColor(ImGuiCol_Text, baseCol);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 lit = ImGui::GetColorU32(kColorAccent);
+
+    auto plate = [&](float alpha, float dy) {
+        ImVec4 c = kColorAccent; c.w = alpha;
+        dl->AddRectFilled(ImVec2(mn.x - 3.0f, mn.y - 2.0f), ImVec2(mx.x + 3.0f, mx.y + 2.0f),
+                          ImGui::GetColorU32(c), 3.0f);
+        // Repainted over the plate rather than under it, since the label is already down.
+        dl->AddText(ImVec2(mn.x, mn.y + dy), lit, label);
+    };
+
+    // Fading confirmation of a click that has already landed.
+    auto flash = s_linkFlashTimes.find(label);
+    if (flash != s_linkFlashTimes.end())
+    {
+        const float age = now - flash->second;
+        if (age >= kLinkFlashSeconds) s_linkFlashTimes.erase(flash);
+        else plate(0.40f * (1.0f - age / kLinkFlashSeconds), 0.0f);
+    }
+
+    if (!ImGui::IsItemHovered()) return false;
+
+    // Held: pressed plate and a one-pixel push, so the click has a beginning as well as an end.
+    const bool held = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (held) plate(0.28f, 1.0f);
+    else      dl->AddText(mn, lit, label);
+
+    dl->AddLine(ImVec2(mn.x, mx.y - 1.0f), ImVec2(mx.x, mx.y - 1.0f), lit, 1.0f);
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        s_linkFlashTimes[label] = now;
+        return true;
+    }
+    return false;
+}
+
+// Add one guild or player to the search without disturbing what is already there.
+//
+// The typed box is cleared, since it is a second and independent filter that would otherwise
+// keep narrowing on top of the chips.
+//
+// Note the chips are OR-ed by FilterMatches, so several players widen the result to matches
+// featuring ANY of them, not all.
+static void AddSearchTerm(const std::string& term)
+{
+    if (term.empty()) return;
+    s_state.selectedSearchTerms.insert(term);
+    s_state.searchBuf[0] = '\0';
+    s_state.searchDebounced[0] = '\0';
+    s_state.lastSearchEditTime = -1.0f;
+}
+
+// Narrow the library to exactly one guild or player, dropping whatever was filtered before.
+static void FilterBySearchTerm(const std::string& term)
+{
+    if (term.empty()) return;
+    s_state.selectedSearchTerms.clear();
+    s_state.selectedSearchTerms.insert(term);
+    s_state.searchBuf[0] = '\0';
+    s_state.searchDebounced[0] = '\0';
+    s_state.lastSearchEditTime = -1.0f;
+}
 
 static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                                 const GuildLabel& guild, bool isWinner,
@@ -6118,33 +6655,6 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
 
     ImGui::BeginGroup();
 
-    // Team name header (full width, bold font)
-    {
-        ImFont* bold = GuiGlobalConstants::boldFont;
-        if (bold) ImGui::PushFont(bold);
-
-        if (guild.rank > 0)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
-            ImGui::Text("#%d", guild.rank);
-            ImGui::PopStyleColor();
-            ImGui::SameLine(0, 6);
-        }
-
-        ImGui::PushStyleColor(ImGuiCol_Text, isWinner ? kColorAccent : kColorText);
-        ImGui::TextUnformatted(guild.display.c_str());
-        ImGui::PopStyleColor();
-
-        if (isWinner)
-        {
-            ImGui::SameLine(0, 4);
-            ImTextureID cup = GetCupIcon();
-            if (cup) ImGui::Image(cup, ImVec2(smallIconSize, smallIconSize));
-        }
-
-        if (bold) ImGui::PopFont();
-    }
-
     auto pit = m.parties.find(partyId);
     if (pit == m.parties.end())
     {
@@ -6163,40 +6673,67 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     static const ImVec4 kColorStatText = ImVec4(0.490f, 0.490f, 0.494f, 1.0f); // #7D7D7E
 
     const float availW = ImGui::GetContentRegionAvail().x;
-    const float statColW = 34.0f;
-    const float dmgColW = 44.0f;
-    const float statIconSz = 20.0f;
+    const float statColW = 42.0f;
+    const float dmgColW = 50.0f;
+    const float statIconSz = 34.0f;
     bool showSkills = (s_state.layout != LayoutMode::Mobile && s_state.layout != LayoutMode::Narrow
                        && availW >= 500.0f);
     const float nameColW = showSkills
         ? std::max(80.0f, availW * 0.18f)
         : std::max(80.0f, availW * 0.30f);
 
-    struct StatCol { const char* hdr; const char* tooltip; const char* iconFile; float w; };
+    struct StatCol { const char* hdr; const char* tooltip; const char* iconBase; float w; };
+    // The hdr strings are the fallback shown when an icon fails to load.
     StatCol statCols[] = {
-        { "K",   "Kills",            "damagedone3.jpg",   statColW },
-        { "D",   "Deaths",           "death2.jpg",      statColW },
-        { "DMG", "Damage Dealt",     "kill2.png", dmgColW  },
-        { "INT", "Interrupts",       "interrupts2.jpg", statColW },
-        { "CNC", "Cancelled Skills", "cancel2.png",     statColW },
-        { "SKL", "Skill Count",      "skillcount2.jpg", statColW },
+        { "K",   "Kills",                "Kills",       statColW },
+        { "D",   "Deaths",               "Deaths",      statColW },
+        { "DMG", "Damage Dealt",         "Dmg_Out",     dmgColW  },
+        { "DMR", "Damage Received",      "Dmg_In",      dmgColW  },
+        { "HEL", "Healing Done",         "Heal_Out",    dmgColW  },
+        { "HLR", "Healing Received",     "Heal_In",     dmgColW  },
+        { "INT", "Interrupts Received",  "Rupt_In",     statColW },
+        { "CNC", "Cancelled Skills",     "Cancel",      statColW },
+        { "SKL", "Skill Count",          "Skill_Count", statColW },
     };
-    const int numStats = 6;
+    const int numStats = static_cast<int>(std::size(statCols));
 
-    int totals[6] = {};
-    bool totalsAvailable[] = { true, true, true, true, true, true };
+    // Read a column off a player. The column order lives in exactly one place this way,
+    // instead of in a header list, a totals loop and a per-row list that could drift apart.
+    auto StatOf = [](const PlayerMeta& q, int si) -> int {
+        switch (si) {
+        case 0:  return q.kills;
+        case 1:  return q.deaths;
+        case 2:  return q.total_damage;
+        case 3:  return q.total_damage_received;
+        case 4:  return q.total_healing_dealt;
+        case 5:  return q.total_healing_received;
+        case 6:  return q.interrupted_count;
+        case 7:  return q.cancelled_skills_count;
+        default: return q.skills_finished;
+        }
+    };
+
+    auto StatAvailable = [](const PlayerMeta& q, int si) -> bool {
+        switch (si) {
+        case 3:  return (q.preview_stats_available & PreviewDamageReceived) != 0;
+        case 4:  return (q.preview_stats_available & PreviewHealingDealt) != 0;
+        case 5:  return (q.preview_stats_available & PreviewHealingReceived) != 0;
+        case 6:  return (q.preview_stats_available & PreviewInterrupted) != 0;
+        case 7:  return (q.preview_stats_available & PreviewCancelledSkills) != 0;
+        case 8:  return (q.preview_stats_available & PreviewSkillsFinished) != 0;
+        default: return true;
+        }
+    };
+
+    int totals[std::size(statCols)] = {};
+    bool totalsAvailable[std::size(statCols)];
+    std::fill(std::begin(totalsAvailable), std::end(totalsAvailable), true);
     for (const auto* pp : sorted)
-    {
-        totals[0] += pp->kills;
-        totals[1] += pp->deaths;
-        totals[2] += pp->total_damage;
-        totals[3] += pp->interrupted_count;
-        totals[4] += pp->cancelled_skills_count;
-        totals[5] += pp->skills_finished;
-        totalsAvailable[3] &= (pp->preview_stats_available & PreviewInterrupted) != 0;
-        totalsAvailable[4] &= (pp->preview_stats_available & PreviewCancelledSkills) != 0;
-        totalsAvailable[5] &= (pp->preview_stats_available & PreviewSkillsFinished) != 0;
-    }
+        for (int si = 0; si < numStats; si++)
+        {
+            totals[si] += StatOf(*pp, si);
+            totalsAvailable[si] &= StatAvailable(*pp, si);
+        }
 
     float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
     float statsNeeded = 0.0f;
@@ -6244,20 +6781,77 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             for (int si = 0; si < numStats; si++)
                 ImGui::TableSetupColumn(statCols[si].hdr, ImGuiTableColumnFlags_WidthFixed, statCols[si].w);
 
-        // Stat icons header row
-        if (showStats)
+        // Header row: the guild's identity on the left, the stat icons on the right.
+        // Folding the two together reclaims the separate title line the guild used to have.
         {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); // Pri
-            ImGui::TableNextColumn(); // Sec
-            ImGui::TableNextColumn(); // Name
-            if (showSkills) ImGui::TableNextColumn(); // Skills
-            ImGui::TableNextColumn(); // Copy
+            ImGui::TableSetColumnIndex(0);
 
+            // The name is drawn from the first column but is far wider than it, so the clip
+            // is widened across the cells to its right - all empty on this row - rather than
+            // letting a long guild name be cut at the Name column's edge.
+            const ImVec2 clipMin = ImGui::GetCursorScreenPos();
+            const float clipW = iconSize + (iconSize + 2.0f) + nameColW
+                              + skillsNeeded + copyBtnW;
+            ImGui::PushClipRect(clipMin,
+                                ImVec2(clipMin.x + clipW, clipMin.y + statIconSz + 8.0f), false);
+
+            ImFont* bold = GuiGlobalConstants::boldFont;
+            if (bold) ImGui::PushFont(bold);
+
+            // Everything on this row lines up on the stat icons' centre rather than their top.
+            const float rowTopY = ImGui::GetCursorPosY();
+            auto CentreOnIcons = [&](float itemH) {
+                ImGui::SetCursorPosY(rowTopY + (statIconSz - itemH) * 0.5f);
+            };
+            const float lineH = ImGui::GetTextLineHeight();
+            constexpr float kNameScale = 1.15f;
+
+            // The trophy leads the winner rather than trailing the name: at a glance the eye
+            // finds the marker before it has read either guild. The art is 64x109, so the
+            // width follows the height or the cup comes out squashed.
+            if (isWinner)
+            {
+                if (ImTextureID cup = GetCupIcon())
+                {
+                    const float trophyH = statIconSz;
+                    const float trophyW = trophyH * (64.0f / 109.0f);
+                    CentreOnIcons(trophyH);
+                    ImGui::Image(cup, ImVec2(trophyW, trophyH));
+                    ImGui::SameLine(0, 12);
+                }
+            }
+
+            if (guild.rank > 0)
+            {
+                CentreOnIcons(lineH);
+                ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
+                ImGui::Text("#%d", guild.rank);
+                ImGui::PopStyleColor();
+                ImGui::SameLine(0, 6);
+            }
+
+            CentreOnIcons(lineH * kNameScale);
+            ImGui::SetWindowFontScale(kNameScale);
+            if (DrawFilterLink(guild.display.c_str(), isWinner ? kColorAccent : kColorText))
+                FilterBySearchTerm(guild.display);
+            const bool guildHovered = ImGui::IsItemHovered();
+            ImGui::SetWindowFontScale(1.0f);
+
+            if (bold) ImGui::PopFont();
+            ImGui::PopClipRect();
+
+            if (guildHovered)
+                ImGui::SetTooltip("Show every match for %s", guild.display.c_str());
+        }
+
+        if (showStats)
+        {
+            const int firstStatCol = 3 + (showSkills ? 1 : 0) + 1;
             for (int si = 0; si < numStats; si++)
             {
-                ImGui::TableNextColumn();
-                ImTextureID ico = GetStatIcon(statCols[si].iconFile);
+                ImGui::TableSetColumnIndex(firstStatCol + si);
+                ImTextureID ico = GetStatIcon(statCols[si].iconBase);
                 if (ico)
                 {
                     float padX = (statCols[si].w - statIconSz) * 0.5f;
@@ -6332,9 +6926,11 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             ImGui::TableNextColumn();
             std::string cleanName = p.encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p.encoded_name);
             if (textPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textPad);
-            ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
-            ImGui::TextUnformatted(cleanName.c_str());
-            ImGui::PopStyleColor();
+            if (DrawFilterLink(cleanName.c_str(), kColorText))
+            {
+                if (ImGui::GetIO().KeyCtrl) AddSearchTerm(cleanName);
+                else                        FilterBySearchTerm(cleanName);
+            }
 
             if (ImGui::IsItemHovered())
             {
@@ -6344,6 +6940,8 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 if (!p.skill_template_code.empty())
                     ImGui::Text("Template: %s", p.skill_template_code.c_str());
                 ImGui::PopStyleColor();
+                ImGui::TextColored(kColorTextDim, "Click to show every match with this player");
+                ImGui::TextColored(kColorTextDim, "Ctrl+click to add them to the current filter");
                 ImGui::EndTooltip();
             }
 
@@ -6362,8 +6960,40 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                         if (skillTex)
                         {
                             ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
+                            const bool picked = s_state.selectedSkills.count(skillId) > 0;
+                            if (picked)
+                            {
+                                // Already in the filter: ring it so the panel and this list
+                                // agree about what is selected.
+                                ImGui::GetWindowDrawList()->AddRect(
+                                    ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                                    ImGui::GetColorU32(kColorAccent), 2.0f, 0, 2.0f);
+                            }
+
                             if (ImGui::IsItemHovered())
+                            {
+                                // Lift the hovered icon a little. Drawn on the foreground
+                                // list because the grown edges would otherwise be clipped
+                                // by the table cell the row of icons sits in.
+                                const float grow = skillIconSize * 0.16f;
+                                const ImVec2 mn = ImGui::GetItemRectMin();
+                                const ImVec2 mx = ImGui::GetItemRectMax();
+                                ImGui::GetForegroundDrawList()->AddImage(
+                                    skillTex,
+                                    ImVec2(mn.x - grow, mn.y - grow),
+                                    ImVec2(mx.x + grow, mx.y + grow));
+
+                                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                                 DrawSkillTooltip(skillId, &matchView);
+
+                                // Toggle, not just add: without it the only way to undo a
+                                // mis-click is to go and find the chip in the filter panel.
+                                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                                {
+                                    if (picked) s_state.selectedSkills.erase(skillId);
+                                    else        s_state.selectedSkills.insert(skillId);
+                                }
+                            }
                         }
                         else
                             ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
@@ -6463,28 +7093,55 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
 
             if (showStats)
             {
-                int statValues[] = {
-                    p.kills, p.deaths, p.total_damage,
-                    p.interrupted_count, p.cancelled_skills_count, p.skills_finished
-                };
-
-                bool statAvailable[] = {
-                    true, true, true,
-                    (p.preview_stats_available & PreviewInterrupted) != 0,
-                    (p.preview_stats_available & PreviewCancelledSkills) != 0,
-                    (p.preview_stats_available & PreviewSkillsFinished) != 0
-                };
                 for (int si = 0; si < numStats; si++)
                 {
+                    const int value = StatOf(p, si);
+
                     ImGui::TableNextColumn();
                     if (textPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textPad);
                     char buf[16];
-                    if (!statAvailable[si]) snprintf(buf, sizeof(buf), "-");
-                    else snprintf(buf, sizeof(buf), "%d", statValues[si]);
+                    if (!StatAvailable(p, si)) snprintf(buf, sizeof(buf), "-");
+                    else snprintf(buf, sizeof(buf), "%d", value);
                     float tw = ImGui::CalcTextSize(buf).x;
                     float padX = (statCols[si].w - tw) * 0.5f;
                     if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
                     ImGui::TextUnformatted(buf);
+
+                    // A bare number says little on its own. Placing it against the rest of
+                    // the team is the reading you actually want, and it is only computed
+                    // for the one cell under the cursor.
+                    if (ImGui::IsItemHovered())
+                    {
+                        int better = 0, equal = 0;
+                        for (const auto* q : sorted)
+                        {
+                            const int v = StatOf(*q, si);
+                            if (v > value) better++;
+                            else if (v == value) equal++;
+                        }
+                        const int rank = better + 1;
+                        const int teamTotal = totals[si];
+
+                        ImFont* tipBold = GuiGlobalConstants::boldFont;
+                        ImGui::BeginTooltip();
+                        if (tipBold) ImGui::PushFont(tipBold);
+                        ImGui::TextUnformatted(statCols[si].tooltip);
+                        if (tipBold) ImGui::PopFont();
+                        ImGui::Separator();
+                        ImGui::Text("%d", value);
+                        if (teamTotal > 0)
+                            ImGui::TextColored(kColorTextDim, "%.0f%% of team (%d)",
+                                               value * 100.0f / teamTotal, teamTotal);
+                        // Ties share a place, so say so rather than implying an order the
+                        // numbers do not support.
+                        if (equal > 1)
+                            ImGui::TextColored(kColorTextDim, "joint #%d of %d",
+                                               rank, (int)sorted.size());
+                        else
+                            ImGui::TextColored(kColorTextDim, "#%d of %d",
+                                               rank, (int)sorted.size());
+                        ImGui::EndTooltip();
+                    }
                 }
             }
         }
@@ -6546,6 +7203,13 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         }
         btnH = fontSize + padY * 2.0f;
 
+        // Grown on hover. Safe to grow the frame itself here, unlike the refresh badge:
+        // this button is placed absolutely against the panel's right edge, so nothing sits
+        // beside it to be pushed around. Hover is last frame's, which at this size and
+        // frame rate is not perceptible.
+        static bool s_replayHot = false;
+        if (s_replayHot) { btnW *= 1.06f; btnH *= 1.06f; }
+
         float closeW = 24.0f;
         float gap = 22.0f;
         float btnX = contentMaxX - closeW - gap - btnW;
@@ -6588,6 +7252,8 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
             g_pendingReplay.match = m;
         }
 
+        s_replayHot = hovered;
+
         ImVec2 rMin = ImGui::GetItemRectMin();
         ImVec2 rMax = ImGui::GetItemRectMax();
 
@@ -6596,6 +7262,11 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImFont* drawFont = semibold ? semibold : ImGui::GetFont();
+
+        // Held back while a download has the button disabled: pulsing there would be
+        // advertising an action that cannot currently be taken.
+        if (!g_cloudDownloadInProgress)
+            DrawPulseGlow(dl, rMin, rMax, ImGui::GetColorU32(kColorAccent), 5.0f);
 
         // Visual states: icon and text colors react to hover/press
         ImVec4 colGreen    (0.0f,  1.0f, 0.4f, 1.0f);
@@ -6699,6 +7370,11 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
         ImFont* bold = GuiGlobalConstants::boldFont;
 
+        // The metadata lines are narrow, so the two capes hang in the space beside them
+        // rather than taking a row of their own. Their top is remembered here and the
+        // cursor is put back below the taller of the two blocks afterwards.
+        const float metaTopY = ImGui::GetCursorPosY();
+
         const char* mapName = GetMapName(m.map_id);
         char dateBuf[16];
         snprintf(dateBuf, sizeof(dateBuf), "%04d/%02d/%02d", m.year, m.month, m.day);
@@ -6731,6 +7407,41 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         }
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
+
+        // ── Guild capes, in the gap to the right of the metadata ──
+        {
+            const float metaBottomY = ImGui::GetCursorPosY();
+
+            ImTextureID cape1 = GetGuildCape(m, g1);
+            ImTextureID cape2 = GetGuildCape(m, g2);
+            if (cape1 || cape2)
+            {
+                // Banners are composed 128x256, so height is twice width. Sized to the
+                // metadata block it sits beside, and clamped so it neither vanishes on a
+                // narrow panel nor outgrows the map image above it.
+                const float gap = 6.0f;
+                float capeH = std::clamp(metaBottomY - metaTopY, 44.0f, 96.0f);
+                float capeW = capeH * 0.5f;
+                float needed = capeW * 2.0f + gap;
+
+                // Only worth doing if the capes fit without crowding the text.
+                if (needed < mapAreaW * 0.75f)
+                {
+                    float x = mapAreaW - needed;
+                    auto drawCape = [&](ImTextureID tex, const GuildLabel& label, float cx) {
+                        if (!tex) return;
+                        ImGui::SetCursorPos(ImVec2(cx, metaTopY));
+                        ImGui::Image(tex, ImVec2(capeW, capeH));
+                        if (ImGui::IsItemHovered() && !label.display.empty())
+                            ImGui::SetTooltip("%s", label.display.c_str());
+                    };
+                    drawCape(cape1, g1, x);
+                    drawCape(cape2, g2, x + capeW + gap);
+
+                    ImGui::SetCursorPosY(std::max(metaBottomY, metaTopY + capeH));
+                }
+            }
+        }
 
         // ── Rating ──
         ImGui::Spacing();
@@ -6987,6 +7698,7 @@ void draw_replay_browser(ReplayLibrary& library)
     ApplyBrowserTheme(themeToApply);
 
     const auto& matches = library.GetMatches();
+    s_libraryGeneration = library.GetGeneration();
     BuildFilterLists(matches);
 
     // Sync card gallery settings from global constants (may be changed via Settings window)
@@ -7061,7 +7773,7 @@ void draw_replay_browser(ReplayLibrary& library)
         }
     }
 
-    auto filtered = FilterMatches(matches);
+    const auto& filtered = FilterMatches(matches);
 
     // Helper lambda: re-check selection validity (can change mid-frame via clicks)
     auto validSelection = [&]() {

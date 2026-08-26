@@ -31,6 +31,9 @@ struct RemotePlayerInfo
     std::optional<int> interrupted_count;
     std::optional<int> cancelled_skills_count;
     std::optional<int> skills_finished;
+    std::optional<int> total_damage_received;
+    std::optional<int> total_healing_dealt;
+    std::optional<int> total_healing_received;
 };
 
 struct RemotePartyInfo

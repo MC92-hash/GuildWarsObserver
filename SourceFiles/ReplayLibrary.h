@@ -21,6 +21,9 @@ enum PlayerPreviewStat : unsigned char
     PreviewInterrupted      = 1 << 0,
     PreviewCancelledSkills = 1 << 1,
     PreviewSkillsFinished  = 1 << 2,
+    PreviewDamageReceived  = 1 << 3,
+    PreviewHealingDealt    = 1 << 4,
+    PreviewHealingReceived = 1 << 5,
 };
 
 struct GuildMeta
@@ -51,6 +54,9 @@ struct PlayerMeta
     std::string encoded_name;
     std::string gender;       // "Male" or "Female" from infos.json
     int total_damage = 0;
+    int total_damage_received = 0;
+    int total_healing_dealt = 0;
+    int total_healing_received = 0;
     int attacks_started = 0;
     int attacks_finished = 0;
     int attacks_stopped = 0;

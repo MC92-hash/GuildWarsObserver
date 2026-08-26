@@ -909,10 +909,15 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		// Version label — right-aligned in menu bar
 		{
 			const char* ver = "v" GWO_VERSION;
+			const char* credit = "By Purif & Maverick";
 			float verW = ImGui::CalcTextSize(ver).x;
+			float creditW = ImGui::CalcTextSize(credit).x;
 			float barW = ImGui::GetWindowSize().x;
 			float pad = 12.0f;
-			ImGui::SameLine(barW - verW - pad);
+			float gap = 10.0f;
+			ImGui::SameLine(barW - verW - gap - creditW - pad);
+			ImGui::TextColored(ImVec4(0.545f, 0.529f, 0.494f, 1.0f), "%s", credit);
+			ImGui::SameLine(0, gap);
 			ImGui::TextColored(ImVec4(0.784f, 0.608f, 0.235f, 1.0f), "%s", ver);
 		}
 

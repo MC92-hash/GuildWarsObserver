@@ -106,6 +106,21 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
                 p.skills_finished = *rp.skills_finished;
                 p.preview_stats_available |= PreviewSkillsFinished;
             }
+            if (rp.total_damage_received)
+            {
+                p.total_damage_received = *rp.total_damage_received;
+                p.preview_stats_available |= PreviewDamageReceived;
+            }
+            if (rp.total_healing_dealt)
+            {
+                p.total_healing_dealt = *rp.total_healing_dealt;
+                p.preview_stats_available |= PreviewHealingDealt;
+            }
+            if (rp.total_healing_received)
+            {
+                p.total_healing_received = *rp.total_healing_received;
+                p.preview_stats_available |= PreviewHealingReceived;
+            }
             pm.players.push_back(std::move(p));
         }
         meta.parties[pid] = std::move(pm);

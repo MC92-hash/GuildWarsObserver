@@ -448,10 +448,13 @@ def build_index_entry(
                     "deaths": player.get("deaths", 0),
                     "total_damage": player.get("total_damage", 0),
                 }
-                # Compact desktop preview: [interrupts, cancelled skills,
-                # finished skills]. None means unavailable, not zero.
+                # Compact desktop preview. Keep the first three positions
+                # stable for older clients; new counters are append-only.
+                # None means unavailable, not zero.
                 preview_fields = (
                     "interrupted_count", "cancelled_skills_count", "skills_finished",
+                    "total_damage_received", "total_healing_dealt",
+                    "total_healing_received",
                 )
                 if any(field in player for field in preview_fields):
                     player_out["preview_stats"] = [player.get(field) for field in preview_fields]

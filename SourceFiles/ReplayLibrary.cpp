@@ -107,6 +107,9 @@ void LocalReplayProvider::ParsePlayerArray(const void* jsonArrayPtr, std::vector
         pm.encoded_name = p.value("encoded_name", std::string());
         pm.gender = p.value("gender", std::string());
         pm.total_damage = p.value("total_damage", 0);
+        pm.total_damage_received = p.value("total_damage_received", 0);
+        pm.total_healing_dealt = p.value("total_healing_dealt", 0);
+        pm.total_healing_received = p.value("total_healing_received", 0);
         pm.attacks_started = p.value("attacks_started", 0);
         pm.attacks_finished = p.value("attacks_finished", 0);
         pm.attacks_stopped = p.value("attacks_stopped", 0);
@@ -130,6 +133,12 @@ void LocalReplayProvider::ParsePlayerArray(const void* jsonArrayPtr, std::vector
             pm.preview_stats_available |= PreviewCancelledSkills;
         if (p.contains("skills_finished") && p["skills_finished"].is_number_integer())
             pm.preview_stats_available |= PreviewSkillsFinished;
+        if (p.contains("total_damage_received") && p["total_damage_received"].is_number_integer())
+            pm.preview_stats_available |= PreviewDamageReceived;
+        if (p.contains("total_healing_dealt") && p["total_healing_dealt"].is_number_integer())
+            pm.preview_stats_available |= PreviewHealingDealt;
+        if (p.contains("total_healing_received") && p["total_healing_received"].is_number_integer())
+            pm.preview_stats_available |= PreviewHealingReceived;
         pm.skill_template_code = p.value("skill_template_code", std::string());
 
         if (p.contains("used_skills") && p["used_skills"].is_array())

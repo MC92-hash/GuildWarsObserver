@@ -130,7 +130,10 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
                     pj["preview_stats"] = {
                         p.interrupted_count ? json(*p.interrupted_count) : json(nullptr),
                         p.cancelled_skills_count ? json(*p.cancelled_skills_count) : json(nullptr),
-                        p.skills_finished ? json(*p.skills_finished) : json(nullptr)
+                        p.skills_finished ? json(*p.skills_finished) : json(nullptr),
+                        p.total_damage_received ? json(*p.total_damage_received) : json(nullptr),
+                        p.total_healing_dealt ? json(*p.total_healing_dealt) : json(nullptr),
+                        p.total_healing_received ? json(*p.total_healing_received) : json(nullptr)
                     };
                     json skills = json::array();
                     for (int s : p.used_skills) skills.push_back(s);
@@ -268,6 +271,12 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                                 pi.cancelled_skills_count = ps[1].get<int>();
                             if (ps.size() > 2 && ps[2].is_number_integer())
                                 pi.skills_finished = ps[2].get<int>();
+                            if (ps.size() > 3 && ps[3].is_number_integer())
+                                pi.total_damage_received = ps[3].get<int>();
+                            if (ps.size() > 4 && ps[4].is_number_integer())
+                                pi.total_healing_dealt = ps[4].get<int>();
+                            if (ps.size() > 5 && ps[5].is_number_integer())
+                                pi.total_healing_received = ps[5].get<int>();
                         }
                         if (pj.contains("used_skills") && pj["used_skills"].is_array())
                         {
