@@ -1,0 +1,856 @@
+{
+  "date": "2026-08-26",
+  "description": "August 2026 balance update",
+  "source": "Official skill update notes, 2026-08-26. Transcribed by hand because build-wars/gw-skilldata had not published a post-patch dump (data/json-full/skilldata.json last touched 2026-07-21). Replace with an upstream diff via make_skillpatch.py when it lands, and use that to check this transcription.",
+  "changes": [
+    {
+      "skill": "Aura of Displacement",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Black Lotus Strike",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Black Spider Strike",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Caltrops",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Mantis Touch",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      },
+      "note": "Notes say 'from 20 to 10' but our 2026-07-21 data reads 15 and the June overlay never touched it. Target value 10 is unambiguous, so it is applied; the overlay records the real pre-patch 15, not the notes' claim."
+    },
+    {
+      "skill": "Recall",
+      "expect": {
+        "energy": 15
+      },
+      "set": {
+        "energy": 10
+      }
+    },
+    {
+      "skill": "Shadow Meld",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Shadow Prison",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Sharpen Daggers",
+      "expect": {
+        "activation": 1
+      },
+      "set": {
+        "activation": 0.5
+      }
+    },
+    {
+      "skill": "Dash",
+      "expect": {
+        "attribute": 101
+      },
+      "set": {
+        "attribute": 31
+      },
+      "note": "Moved to Shadow Arts (attribute 31). The PvP recharge 8->12 needs the new split id."
+    },
+    {
+      "skill": "Fleeting Stability",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      },
+      "note": "Recharge change is marked BOTH; the PvP duration cut needs the new split id."
+    },
+    {
+      "skill": "Mystic Regeneration (PvP)",
+      "expect": {
+        "recharge": 12
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Mirage Cloak",
+      "expect": {
+        "energy": 10,
+        "recharge": 15
+      },
+      "set": {
+        "energy": 15,
+        "recharge": 24
+      },
+      "note": "SPLIT PvE: the base entry becomes the PvE version carrying these values."
+    },
+    {
+      "skill": "Whirling Charge",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 8
+      },
+      "note": "SPLIT PvE: base entry is the PvE version."
+    },
+    {
+      "skill": "Test of Faith",
+      "expect": {
+        "activation": 0.75
+      },
+      "set": {
+        "activation": 0.5
+      }
+    },
+    {
+      "skill": "Conjure Flame",
+      "expect": {
+        "recharge": 45
+      },
+      "set": {
+        "recharge": 30
+      }
+    },
+    {
+      "skill": "Conjure Frost",
+      "expect": {
+        "recharge": 45
+      },
+      "set": {
+        "recharge": 30
+      }
+    },
+    {
+      "skill": "Conjure Lightning",
+      "expect": {
+        "recharge": 45
+      },
+      "set": {
+        "recharge": 30
+      }
+    },
+    {
+      "skill": "Icy Prism",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Lightning Orb",
+      "expect": {
+        "energy": 15
+      },
+      "set": {
+        "energy": 10
+      }
+    },
+    {
+      "skill": "Lightning Surge",
+      "expect": {
+        "energy": 15
+      },
+      "set": {
+        "energy": 10
+      }
+    },
+    {
+      "skill": "Lightning Touch",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 5
+      }
+    },
+    {
+      "skill": "Maelstrom",
+      "expect": {
+        "energy": 25,
+        "activation": 2,
+        "recharge": 30
+      },
+      "set": {
+        "energy": 15,
+        "activation": 1.5,
+        "recharge": 20
+      }
+    },
+    {
+      "skill": "Ride the Lightning",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Ward Against Harm (PvP)",
+      "expect": {
+        "recharge": 30
+      },
+      "set": {
+        "recharge": 20
+      }
+    },
+    {
+      "skill": "Channeling",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Fevered Dreams (PvP)",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Illusionary Weaponry",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Mirror of Disenchantment (PvP)",
+      "expect": {
+        "energy": 15
+      },
+      "set": {
+        "energy": 10
+      }
+    },
+    {
+      "skill": "Phantom Pain",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Symbols of Inspiration",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Tease",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 15
+      },
+      "note": "SPLIT PvE: base entry is the PvE version."
+    },
+    {
+      "skill": "Wastrel's Demise",
+      "expect": {
+        "recharge": 5
+      },
+      "set": {
+        "recharge": 4
+      }
+    },
+    {
+      "skill": "Wastrel's Worry",
+      "expect": {
+        "recharge": 4
+      },
+      "set": {
+        "recharge": 2
+      },
+      "note": "SPLIT PvE: base entry is the PvE version."
+    },
+    {
+      "skill": "Bane Signet",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Blessed Light",
+      "expect": {
+        "energy": 10,
+        "recharge": 3
+      },
+      "set": {
+        "energy": 5,
+        "recharge": 5
+      }
+    },
+    {
+      "skill": "Castigation Signet",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Heal Party (PvP)",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Healing Light",
+      "expect": {
+        "activation": 1
+      },
+      "set": {
+        "activation": 0.75
+      }
+    },
+    {
+      "skill": "Holy Haste",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      }
+    },
+    {
+      "skill": "Kirin's Wrath",
+      "expect": {
+        "activation": 2,
+        "recharge": 30
+      },
+      "set": {
+        "activation": 1,
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Light of Deliverance (PvP)",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 8
+      }
+    },
+    {
+      "skill": "Barbs",
+      "expect": {
+        "activation": 2
+      },
+      "set": {
+        "activation": 1
+      }
+    },
+    {
+      "skill": "Contagion",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Corrupt Enchantment",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 5
+      }
+    },
+    {
+      "skill": "Cultist's Fervor",
+      "expect": {
+        "recharge": 25
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Envenom Enchantments",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Insidious Parasite",
+      "expect": {
+        "energy": 15,
+        "recharge": 12
+      },
+      "set": {
+        "energy": 10,
+        "recharge": 8
+      }
+    },
+    {
+      "skill": "Reaper's Mark",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Soul Barbs",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Well of Power",
+      "expect": {
+        "recharge": 15
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Crippling Anthem",
+      "expect": {
+        "adrenaline": 4
+      },
+      "set": {
+        "adrenaline": 3
+      }
+    },
+    {
+      "skill": "Focused Anger",
+      "expect": {
+        "recharge": 60
+      },
+      "set": {
+        "recharge": 45
+      }
+    },
+    {
+      "skill": "Lyric of Zeal",
+      "expect": {
+        "recharge": 5
+      },
+      "set": {
+        "recharge": 0
+      }
+    },
+    {
+      "skill": "Mighty Throw",
+      "expect": {
+        "adrenaline": 2
+      },
+      "set": {
+        "adrenaline": 4
+      },
+      "note": "Adrenaline change is marked BOTH; the PvP recharge 2->1 needs the new split id."
+    },
+    {
+      "skill": "Unblockable Throw",
+      "expect": {
+        "adrenaline": 4
+      },
+      "set": {
+        "adrenaline": 6
+      }
+    },
+    {
+      "skill": "Crippling Shot",
+      "expect": {
+        "energy": 10
+      },
+      "set": {
+        "energy": 5
+      },
+      "note": "SPLIT BOTH; the energy cut is the PvE half, which the base entry becomes."
+    },
+    {
+      "skill": "Focused Shot",
+      "expect": {
+        "recharge": 2
+      },
+      "set": {
+        "recharge": 8
+      }
+    },
+    {
+      "skill": "Disenchantment (PvP)",
+      "expect": {
+        "activation": 5,
+        "recharge": 45
+      },
+      "set": {
+        "activation": 3,
+        "recharge": 30
+      }
+    },
+    {
+      "skill": "Earthbind (PvP)",
+      "expect": {
+        "activation": 5,
+        "recharge": 60
+      },
+      "set": {
+        "activation": 3,
+        "recharge": 45
+      }
+    },
+    {
+      "skill": "Flesh of My Flesh (PvP)",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 6
+      }
+    },
+    {
+      "skill": "Wanderlust (PvP)",
+      "expect": {
+        "activation": 5
+      },
+      "set": {
+        "activation": 3
+      }
+    },
+    {
+      "skill": "Disrupting Chop",
+      "expect": {
+        "recharge": 1,
+        "adrenaline": 6
+      },
+      "set": {
+        "recharge": 0,
+        "adrenaline": 5
+      }
+    },
+    {
+      "skill": "Executioner's Strike",
+      "expect": {
+        "adrenaline": 8
+      },
+      "set": {
+        "adrenaline": 7
+      }
+    },
+    {
+      "skill": "Final Thrust",
+      "expect": {
+        "adrenaline": 10
+      },
+      "set": {
+        "adrenaline": 8
+      }
+    },
+    {
+      "skill": "Frenzy",
+      "expect": {
+        "attribute": 101
+      },
+      "set": {
+        "attribute": 17
+      },
+      "note": "Moved to Strength (attribute 17). The reworked damage figures are description-only, and the PvP half needs the new split id."
+    },
+    {
+      "skill": "Sever Artery",
+      "expect": {
+        "adrenaline": 4
+      },
+      "set": {
+        "adrenaline": 3
+      }
+    },
+    {
+      "skill": "Gash",
+      "expect": {
+        "adrenaline": 6
+      },
+      "set": {
+        "adrenaline": 5
+      }
+    },
+    {
+      "skill": "Crippling Slash",
+      "expect": {
+        "adrenaline": 6
+      },
+      "set": {
+        "adrenaline": 5
+      }
+    },
+    {
+      "skill": "Dragon Slash",
+      "expect": {
+        "adrenaline": 8
+      },
+      "set": {
+        "adrenaline": 7
+      }
+    },
+    {
+      "skill": "Galrath Slash",
+      "expect": {
+        "adrenaline": 8
+      },
+      "set": {
+        "adrenaline": 7
+      }
+    },
+    {
+      "skill": "Silverwing Slash",
+      "expect": {
+        "adrenaline": 8
+      },
+      "set": {
+        "adrenaline": 7
+      }
+    },
+    {
+      "skill": "Steelfang Slash",
+      "expect": {
+        "adrenaline": 8
+      },
+      "set": {
+        "adrenaline": 7
+      }
+    },
+    {
+      "skill": "Quivering Blade",
+      "expect": {
+        "adrenaline": 5
+      },
+      "set": {
+        "adrenaline": 4
+      }
+    },
+    {
+      "skill": "\"Can't Touch This!\"",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "\"Can't Touch This!\" (PvP)",
+      "expect": {
+        "recharge": 20
+      },
+      "set": {
+        "recharge": 10
+      }
+    },
+    {
+      "skill": "Defensive Anthem",
+      "expect": {
+        "recharge": 25
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Defensive Anthem (PvP)",
+      "expect": {
+        "recharge": 25
+      },
+      "set": {
+        "recharge": 15
+      }
+    },
+    {
+      "skill": "Ride the Lightning (PvP)",
+      "expect": {
+        "energy": 15
+      },
+      "set": {
+        "energy": 5
+      }
+    }
+  ],
+  "pending_split": [
+    "Dash (PvP) - recharge 8 -> 12",
+    "Shadow Shroud (PvP) - duration 3..9 -> 2..7",
+    "Aura Slicer (PvP) - adrenaline 4 -> 5",
+    "Fleeting Stability (PvP) - duration 4..10 -> 2..8",
+    "Harrier's Grasp (PvP) - reworked to melee-only cripple on moving foes",
+    "Mirage Cloak (PvP) - keeps the pre-patch values; PvE half applied to the base entry",
+    "Mystic Corruption (PvP) - Disease 1..10 -> 2..6",
+    "Pious Restoration (PvP) - recharge 8 -> 15, hexes removed 1..3 -> 1",
+    "Whirling Charge (PvP) - keeps the pre-patch values; PvE half applied to the base entry",
+    "Lightning Orb (PvP) - energy 15 -> 10",
+    "Tease (PvP) - keeps the pre-patch recharge",
+    "Wastrel's Demise (PvP) - keeps the pre-patch recharge",
+    "Wastrel's Worry (PvP) - keeps the pre-patch recharge",
+    "Peace and Harmony (PvP) - recharge 10 -> 15, removal 0..9 -> 0..4",
+    "Shield Guardian (PvP) - recharge 20 -> 25, healing 10..40 -> 10..35",
+    "Mighty Throw (PvP) - recharge 2 -> 1",
+    "Crippling Shot (PvP) - Cripple 1..12 -> 4..14",
+    "Infuriating Heat (PvP) - recharge 15 -> 30, adrenaline gain double -> +33..66%",
+    "Melandru's Shot (PvP) - recharge 8 -> 12",
+    "Nature's Renewal (PvP) - casting penalty 200% -> 50..75%",
+    "Otyugh's Cry (PvP) - duration 10..25 -> 5..15",
+    "Tranquility (PvP) - expiration speed 20..50% -> 10..30%",
+    "Guided Weapon (PvP) - recharge 5 -> 12",
+    "Protective Was Kaolai (PvP) - armor +10 -> +20, healing 10..85 -> 20..95",
+    "Soul Twisting (PvP) - instant recharge -> 25..50% faster",
+    "Auspicious Blow (PvP) - energy gain 3..8 -> 2..4",
+    "Charging Strike (PvP) - damage 10..90 -> 10..80",
+    "\"Coward!\" (PvP) - recharge 2 -> 4",
+    "Flail (PvP) - ends if you use a ranged attack skill",
+    "Frenzy (PvP) - 200..150% damage taken",
+    "Hundred Blades (PvP) - damage 10..35 -> 10..30",
+    "Primal Rage (PvP) - 200..150% damage taken",
+    "Protector's Defense (PvP) - duration 5..11 -> 4..8",
+    "Protector's Strike (PvP) - recharge 3 -> 6"
+  ],
+  "descriptive_only": [
+    "Crippling Dagger, Dancing Daggers, Disrupting Dagger - double projectile speed (no field for it)",
+    "Dancing Daggers - damage 5..35 -> 10..40",
+    "Expunge Enchantments - skill disable 10..5 -> 8..4",
+    "Caltrops - now also applies Bleeding",
+    "Recall - disable on end 10 -> 3 seconds",
+    "Seeping Wound - activation range half -> full",
+    "Grenth's Grasp - cold-weapon requirement removed",
+    "Mirage Cloak - reworked block chance and enchantment-removal damage",
+    "Mystic Sandstorm - damage 10..20 -> 10..40 per second",
+    "Test of Faith - Daze 1..4 -> 2..6",
+    "Aftershock - damage rebalanced to 15..85",
+    "Elemental Attunement, Master of Magic - energy refund reworks",
+    "Lightning Strike - damage 5..40 -> 10..60, Overcast bonus 5..40 -> 20..40",
+    "Lightning Surge - Cracked Armor now applies before damage",
+    "Over the Limit - cast/recharge bonuses up, Overcast generated 1 -> 3",
+    "Rust - damage 10..70 -> 10..85",
+    "Shatterstone - now also snares 66% and counts as a hex",
+    "Steam - +20..60 fire damage against a burning foe",
+    "Soul Ignition - brand new PvE-only skill; its id cannot be derived",
+    "Blackout - duration 2..6 -> 2..8",
+    "Ethereal Burden, Kitah's Burden - effect duration 10 -> 6..12",
+    "Fragility (PvP) - gains the adjacent-foe PvE behaviour",
+    "Illusionary Weaponry - damage 16..50 -> 20..60",
+    "Symbols of Inspiration - now copies elite skills, duration 1..31 -> 6..40",
+    "Sum of All Fears - duration 1..10 -> 4..12",
+    "Time Ward - duration 3..15 -> 6..20",
+    "Aegis (PvE) - duration 5..11 -> 6..15",
+    "Bane Signet - damage 26..56 -> 30..60",
+    "Banish - damage 20..56 -> 20..65",
+    "Blessed Light - healing 10..140 -> 10..120",
+    "Castigation Signet - energy gain 1..10 -> 4..14",
+    "Defender's Zeal - duration 5..25 -> 10..30",
+    "Dwayna's Kiss, Words of Comfort, Healing Touch, Orison of Healing, Signet of Devotion - healing up",
+    "Healing Light - healing 40..100 -> 40..120",
+    "Animate Flesh Golem - corpses left 1 -> 1..4",
+    "Barbs - damage 1..15 -> 4..16",
+    "Dark Pact - damage 10..48 -> 20..60",
+    "Faintheartedness - duration 3..16 -> 4..18, degen 0..3 -> 1..3",
+    "Foul Feast - energy gain 0..2 -> 2..4",
+    "Necrotic Traversal - reworked into a teleport",
+    "Putrid Bile - duration 5..20 -> 5..25",
+    "Ulcerous Lungs - duration and Bleeding up",
+    "Well of Power - duration 8..20 -> 10..30",
+    "Anthem of Flame, Blazing Finale - Burning 1..3 -> 1..5",
+    "Anthem of Fury - adrenaline 1..4 -> 2..5",
+    "Hasty Refrain - duration 3..15 -> 8..20",
+    "Natural Temper - duration 4..10 -> 4..15",
+    "Signet of Return - activation 5 -> 4, Health per party member up",
+    "Spear of Lightning - reworked into a line-piercing lightning spear",
+    "Burning Arrow - Burning 1..7 -> 2..8",
+    "Comfort Animal - health gain up; pet travels with you if equipped",
+    "Enraged Lunge (PvP) - damage cap 80 -> 60",
+    "Focused Shot - reworked; skill disable 5..3 -> 8..4",
+    "Glass Arrows, Keen Arrow, Penetrating Attack, Sundering Attack - damage up",
+    "Nature spirits - range 3500 -> 3000 across 20 skills (no range field exists)",
+    "Ancestors' Rage (PvP) - damage 1..41 -> 4..50",
+    "Caretaker's Charge - energy gain 5 -> 7, damage 20..75 -> 20..85",
+    "Mending Grip - healing 20..80 -> 30..90",
+    "Soul Twisting - minimum threshold 10 -> 5 (both modes)",
+    "Splinter Weapon (PvP) - damage 5..30 -> 5..40",
+    "Wielder's Strike - damage up on both halves",
+    "Axe Rake, Axe Twist, Penetrating Blow, Penetrating Chop, Executioner's Strike - damage up",
+    "Decapitate - now unblockable, on-kill nearby Weakness",
+    "Enraged Smash (PvP) - adrenaline gain 1..4 -> 1..3",
+    "Final Thrust - damage 1..40 -> 5..40",
+    "Frenzy, Primal Rage - reworked damage-taken figures",
+    "Shield Bash - triggers on melee attack skills only",
+    "Shove - reworked into damage plus stance-end plus knockdown"
+  ],
+  "unresolved": [
+    "Signet of Pious Restraint (PvP) - notes say recharge 10 -> 16, an increase; id 3273 already reads 20, so writing 16 would be a buff where a nerf was intended. Left untouched for upstream.",
+    "Illusionary Weaponry (PvP) - change is marked BOTH at 'recharge 15 -> 10', but id 3181 reads 25. The base entry (id 33, recharge 15) matches and is applied; the twin is left for upstream."
+  ]
+}
