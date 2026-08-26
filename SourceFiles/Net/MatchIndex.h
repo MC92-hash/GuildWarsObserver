@@ -5,6 +5,8 @@
 #include <set>
 #include <filesystem>
 #include <cstdint>
+#include <optional>
+#include "ReplayLibrary.h"
 
 class HttpClient;
 
@@ -12,6 +14,7 @@ struct RemoteGuildInfo
 {
     std::string name;
     std::string tag;
+    CapeData cape;
 };
 
 struct RemotePlayerInfo
@@ -25,6 +28,9 @@ struct RemotePlayerInfo
     int kills = 0;
     int deaths = 0;
     int total_damage = 0;
+    std::optional<int> interrupted_count;
+    std::optional<int> cancelled_skills_count;
+    std::optional<int> skills_finished;
 };
 
 struct RemotePartyInfo

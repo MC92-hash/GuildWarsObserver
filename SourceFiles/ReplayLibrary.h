@@ -16,6 +16,13 @@ struct CapeData
     int trim = 0;
 };
 
+enum PlayerPreviewStat : unsigned char
+{
+    PreviewInterrupted      = 1 << 0,
+    PreviewCancelledSkills = 1 << 1,
+    PreviewSkillsFinished  = 1 << 2,
+};
+
 struct GuildMeta
 {
     int id = 0;
@@ -63,6 +70,7 @@ struct PlayerMeta
     int kills = 0;
     std::string skill_template_code;
     std::vector<int> used_skills;
+    unsigned char preview_stats_available = 0;
 };
 
 struct PartyMeta

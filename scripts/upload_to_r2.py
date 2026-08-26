@@ -410,6 +410,17 @@ def build_index_entry(
                     "name": guild_obj.get("name", ""),
                     "tag": guild_obj.get("tag", ""),
                 }
+                cape = guild_obj.get("cape")
+                if isinstance(cape, dict):
+                    entry["guilds"][guild_key]["cape"] = {
+                        "bg_color": cape.get("bg_color", 0),
+                        "detail_color": cape.get("detail_color", 0),
+                        "emblem_color": cape.get("emblem_color", 0),
+                        "shape": cape.get("shape", 0),
+                        "detail": cape.get("detail", 0),
+                        "emblem": cape.get("emblem", 0),
+                        "trim": cape.get("trim", 0),
+                    }
 
     # Team-level stats
     entry["team_kills"] = infos.get("team_kills", {})
@@ -426,7 +437,7 @@ def build_index_entry(
             for player in party_obj.get("PLAYER", []):
                 if not isinstance(player, dict):
                     continue
-                players_out.append({
+                player_out = {
                     "encoded_name": player.get("encoded_name", ""),
                     "primary": player.get("primary", 0),
                     "secondary": player.get("secondary", 0),
@@ -436,7 +447,15 @@ def build_index_entry(
                     "kills": player.get("kills", 0),
                     "deaths": player.get("deaths", 0),
                     "total_damage": player.get("total_damage", 0),
-                })
+                }
+                # Compact desktop preview: [interrupts, cancelled skills,
+                # finished skills]. None means unavailable, not zero.
+                preview_fields = (
+                    "interrupted_count", "cancelled_skills_count", "skills_finished",
+                )
+                if any(field in player for field in preview_fields):
+                    player_out["preview_stats"] = [player.get(field) for field in preview_fields]
+                players_out.append(player_out)
             parties_out[party_id] = {"PLAYER": players_out}
         entry["parties"] = parties_out
 

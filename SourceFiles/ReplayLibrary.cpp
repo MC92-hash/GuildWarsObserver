@@ -124,6 +124,12 @@ void LocalReplayProvider::ParsePlayerArray(const void* jsonArrayPtr, std::vector
         pm.crits_received = p.value("crits_received", 0);
         pm.deaths = p.value("deaths", 0);
         pm.kills = p.value("kills", 0);
+        if (p.contains("interrupted_count") && p["interrupted_count"].is_number_integer())
+            pm.preview_stats_available |= PreviewInterrupted;
+        if (p.contains("cancelled_skills_count") && p["cancelled_skills_count"].is_number_integer())
+            pm.preview_stats_available |= PreviewCancelledSkills;
+        if (p.contains("skills_finished") && p["skills_finished"].is_number_integer())
+            pm.preview_stats_available |= PreviewSkillsFinished;
         pm.skill_template_code = p.value("skill_template_code", std::string());
 
         if (p.contains("used_skills") && p["used_skills"].is_array())

@@ -69,6 +69,7 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
         GuildMeta gm;
         gm.name = gi.name;
         gm.tag = gi.tag;
+        gm.cape = gi.cape;
         meta.guilds[pid] = std::move(gm);
     }
 
@@ -90,6 +91,21 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
             p.kills = rp.kills;
             p.deaths = rp.deaths;
             p.total_damage = rp.total_damage;
+            if (rp.interrupted_count)
+            {
+                p.interrupted_count = *rp.interrupted_count;
+                p.preview_stats_available |= PreviewInterrupted;
+            }
+            if (rp.cancelled_skills_count)
+            {
+                p.cancelled_skills_count = *rp.cancelled_skills_count;
+                p.preview_stats_available |= PreviewCancelledSkills;
+            }
+            if (rp.skills_finished)
+            {
+                p.skills_finished = *rp.skills_finished;
+                p.preview_stats_available |= PreviewSkillsFinished;
+            }
             pm.players.push_back(std::move(p));
         }
         meta.parties[pid] = std::move(pm);

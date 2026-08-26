@@ -85,6 +85,12 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
             json gj;
             gj["name"] = g.name;
             gj["tag"] = g.tag;
+            gj["cape"] = {
+                {"bg_color", g.cape.bg_color}, {"detail_color", g.cape.detail_color},
+                {"emblem_color", g.cape.emblem_color}, {"shape", g.cape.shape},
+                {"detail", g.cape.detail}, {"emblem", g.cape.emblem},
+                {"trim", g.cape.trim}
+            };
             guildsObj[pid] = std::move(gj);
         }
         m["guilds"] = std::move(guildsObj);
@@ -121,6 +127,11 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
                     pj["kills"] = p.kills;
                     pj["deaths"] = p.deaths;
                     pj["total_damage"] = p.total_damage;
+                    pj["preview_stats"] = {
+                        p.interrupted_count ? json(*p.interrupted_count) : json(nullptr),
+                        p.cancelled_skills_count ? json(*p.cancelled_skills_count) : json(nullptr),
+                        p.skills_finished ? json(*p.skills_finished) : json(nullptr)
+                    };
                     json skills = json::array();
                     for (int s : p.used_skills) skills.push_back(s);
                     pj["used_skills"] = std::move(skills);
@@ -203,6 +214,17 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                 RemoteGuildInfo gi;
                 gi.name = gObj.value("name", "");
                 gi.tag = gObj.value("tag", "");
+                if (gObj.contains("cape") && gObj["cape"].is_object())
+                {
+                    const auto& c = gObj["cape"];
+                    gi.cape.bg_color = c.value("bg_color", 0);
+                    gi.cape.detail_color = c.value("detail_color", 0);
+                    gi.cape.emblem_color = c.value("emblem_color", 0);
+                    gi.cape.shape = c.value("shape", 0);
+                    gi.cape.detail = c.value("detail", 0);
+                    gi.cape.emblem = c.value("emblem", 0);
+                    gi.cape.trim = c.value("trim", 0);
+                }
                 entry.guilds[pid] = std::move(gi);
             }
         }
@@ -237,6 +259,16 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                         pi.kills = pj.value("kills", 0);
                         pi.deaths = pj.value("deaths", 0);
                         pi.total_damage = pj.value("total_damage", 0);
+                        if (pj.contains("preview_stats") && pj["preview_stats"].is_array())
+                        {
+                            const auto& ps = pj["preview_stats"];
+                            if (ps.size() > 0 && ps[0].is_number_integer())
+                                pi.interrupted_count = ps[0].get<int>();
+                            if (ps.size() > 1 && ps[1].is_number_integer())
+                                pi.cancelled_skills_count = ps[1].get<int>();
+                            if (ps.size() > 2 && ps[2].is_number_integer())
+                                pi.skills_finished = ps[2].get<int>();
+                        }
                         if (pj.contains("used_skills") && pj["used_skills"].is_array())
                         {
                             for (const auto& s : pj["used_skills"])

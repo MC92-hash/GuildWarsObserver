@@ -4337,10 +4337,14 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
 
     // Compute totals
     int totK = 0, totD = 0, totDmg = 0, totInt = 0, totCnc = 0, totSkl = 0;
+    bool totalAvailable[] = { true, true, true, true, true, true };
     for (auto* p : sorted) {
         totK += p->kills; totD += p->deaths; totDmg += p->total_damage;
         totInt += p->interrupted_count; totCnc += p->cancelled_skills_count;
         totSkl += p->skills_finished;
+        totalAvailable[3] &= (p->preview_stats_available & PreviewInterrupted) != 0;
+        totalAvailable[4] &= (p->preview_stats_available & PreviewCancelledSkills) != 0;
+        totalAvailable[5] &= (p->preview_stats_available & PreviewSkillsFinished) != 0;
     }
 
     struct SC { const char* label; const char* tooltip; int total; };
@@ -4395,7 +4399,8 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
             ImGui::PopStyleColor();
             // Total
             char totBuf[16];
-            if (totals[si] >= 1000) snprintf(totBuf, sizeof(totBuf), "%.1fk", totals[si] / 1000.f);
+            if (!totalAvailable[si]) snprintf(totBuf, sizeof(totBuf), "-");
+            else if (totals[si] >= 1000) snprintf(totBuf, sizeof(totBuf), "%.1fk", totals[si] / 1000.f);
             else snprintf(totBuf, sizeof(totBuf), "%d", totals[si]);
             ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
             if (boldFnt) ImGui::PushFont(boldFnt);
@@ -4481,11 +4486,19 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
             // Stats
             int playerStats[] = { p.kills, p.deaths, p.total_damage,
                                   p.interrupted_count, p.cancelled_skills_count, p.skills_finished };
+            bool playerStatAvailable[] = {
+                true, true, true,
+                (p.preview_stats_available & PreviewInterrupted) != 0,
+                (p.preview_stats_available & PreviewCancelledSkills) != 0,
+                (p.preview_stats_available & PreviewSkillsFinished) != 0
+            };
             for (int si = 0; si < 6; si++)
             {
                 ImGui::TableNextColumn();
                 char buf[16];
-                if (playerStats[si] >= 1000)
+                if (!playerStatAvailable[si])
+                    snprintf(buf, sizeof(buf), "-");
+                else if (playerStats[si] >= 1000)
                     snprintf(buf, sizeof(buf), "%.1fk", playerStats[si] / 1000.f);
                 else
                     snprintf(buf, sizeof(buf), "%d", playerStats[si]);
@@ -6171,6 +6184,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     const int numStats = 6;
 
     int totals[6] = {};
+    bool totalsAvailable[] = { true, true, true, true, true, true };
     for (const auto* pp : sorted)
     {
         totals[0] += pp->kills;
@@ -6179,6 +6193,9 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
         totals[3] += pp->interrupted_count;
         totals[4] += pp->cancelled_skills_count;
         totals[5] += pp->skills_finished;
+        totalsAvailable[3] &= (pp->preview_stats_available & PreviewInterrupted) != 0;
+        totalsAvailable[4] &= (pp->preview_stats_available & PreviewCancelledSkills) != 0;
+        totalsAvailable[5] &= (pp->preview_stats_available & PreviewSkillsFinished) != 0;
     }
 
     float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
@@ -6278,7 +6295,9 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             for (int si = 0; si < numStats; si++)
             {
                 ImGui::TableNextColumn();
-                char buf[16]; snprintf(buf, sizeof(buf), "%d", totals[si]);
+                char buf[16];
+                if (!totalsAvailable[si]) snprintf(buf, sizeof(buf), "-");
+                else snprintf(buf, sizeof(buf), "%d", totals[si]);
                 float tw = ImGui::CalcTextSize(buf).x;
                 float padX = (statCols[si].w - tw) * 0.5f;
                 if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
@@ -6449,11 +6468,19 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                     p.interrupted_count, p.cancelled_skills_count, p.skills_finished
                 };
 
+                bool statAvailable[] = {
+                    true, true, true,
+                    (p.preview_stats_available & PreviewInterrupted) != 0,
+                    (p.preview_stats_available & PreviewCancelledSkills) != 0,
+                    (p.preview_stats_available & PreviewSkillsFinished) != 0
+                };
                 for (int si = 0; si < numStats; si++)
                 {
                     ImGui::TableNextColumn();
                     if (textPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textPad);
-                    char buf[16]; snprintf(buf, sizeof(buf), "%d", statValues[si]);
+                    char buf[16];
+                    if (!statAvailable[si]) snprintf(buf, sizeof(buf), "-");
+                    else snprintf(buf, sizeof(buf), "%d", statValues[si]);
                     float tw = ImGui::CalcTextSize(buf).x;
                     float padX = (statCols[si].w - tw) * 0.5f;
                     if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
