@@ -741,6 +741,16 @@
       "set": {
         "energy": 5
       }
+    },
+    {
+      "skill": "Signet of Pious Restraint (PvP)",
+      "expect": {
+        "recharge": 10
+      },
+      "set": {
+        "recharge": 16
+      },
+      "note": "Our data read 20, which is wrong: ArenaNet's notes and the wiki page for id 3273 independently give a pre-patch recharge of 10. The 20 was corrected to 10 in skilldata.json before this entry was applied, so the overlay records 10."
     }
   ],
   "pending_split": [
@@ -850,7 +860,6 @@
     "Shove - reworked into damage plus stance-end plus knockdown"
   ],
   "unresolved": [
-    "Signet of Pious Restraint (PvP) - notes say recharge 10 -> 16, an increase; id 3273 already reads 20, so writing 16 would be a buff where a nerf was intended. Left untouched for upstream.",
     "Illusionary Weaponry (PvP) - change is marked BOTH at 'recharge 15 -> 10', but id 3181 reads 25. The base entry (id 33, recharge 15) matches and is applied; the twin is left for upstream."
   ]
 }
