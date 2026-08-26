@@ -564,10 +564,9 @@ def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
         if players_out:
             parties_out[party_id] = players_out
 
-    if not parties_out:
-        return {}
-
-    out: dict = {"players": parties_out}
+    out: dict = {}
+    if parties_out:
+        out["players"] = parties_out
     if "recording_version" in infos:
         out["recording_version"] = infos["recording_version"]
     # index.json publishes team_kills and team_damage but not team_healing.
@@ -587,6 +586,34 @@ def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
             analytics = {}
         if analytics:
             out["combat_analytics"] = analytics
+            try:
+                from combat_table import build_combat_table
+                table = build_combat_table(
+                    analytics.get("player_matrix", {}),
+                    wall_clock_seconds=None,
+                    combat_time_seconds=None,
+                )
+            except Exception as exc:
+                print(f"  Warning: combat table unavailable: {type(exc).__name__}: {exc}")
+                table = {}
+            if table:
+                out["combat_table"] = table
+        try:
+            from lord_pressure import build_lord_pressure
+            pressure = build_lord_pressure(infos, match_dir)
+        except Exception as exc:
+            print(f"  Warning: lord pressure unavailable: {type(exc).__name__}: {exc}")
+            pressure = {}
+        if pressure:
+            out["lord_pressure"] = pressure
+        try:
+            from match_timeline import build_timeline
+            timeline = build_timeline(infos, match_dir)
+        except Exception as exc:
+            print(f"  Warning: match timeline unavailable: {type(exc).__name__}: {exc}")
+            timeline = {}
+        if timeline:
+            out["timeline"] = timeline
     return out
 
 

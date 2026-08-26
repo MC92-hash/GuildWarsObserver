@@ -77,7 +77,8 @@ def build_player_matrix(infos: dict, events, match_dir: Path) -> dict:
         solved[target_id] = solve_observations(observations)
 
     edges = defaultdict(lambda: {"damage": 0, "healing": 0,
-                                "damage_packets": 0, "healing_packets": 0})
+                                "damage_packets": 0, "healing_packets": 0,
+                                "damage_type_counts": {}})
     audit = defaultdict(int)
     for event in packet_events:
         audit["packet_events"] += 1
@@ -110,6 +111,9 @@ def build_player_matrix(infos: dict, events, match_dir: Path) -> dict:
             edges[key]["damage"] += amount
             edges[key]["damage_packets"] += 1
             audit["included_damage"] += amount
+            type_counts = edges[key]["damage_type_counts"]
+            type_name = str(_integer(event.fields[3]))
+            type_counts[type_name] = type_counts.get(type_name, 0) + amount
         else:
             edges[key]["healing"] += amount
             edges[key]["healing_packets"] += 1

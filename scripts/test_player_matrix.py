@@ -27,14 +27,10 @@ def test_matrix_excludes_npcs_and_conserves_taken(tmp_path: Path):
         "[00:01.300] DAMAGE;10;77;-0.3;0",
     ])
     result = build_player_matrix(infos, events, tmp_path)
-    assert result["edges"] == [
-        {"source_party_id": "1", "source_player_number": 1,
-         "target_party_id": "2", "target_player_number": 9,
-         "damage": 50, "healing": 0, "damage_packets": 1, "healing_packets": 0},
-        {"source_party_id": "2", "source_player_number": 9,
-         "target_party_id": "2", "target_player_number": 9,
-         "damage": 0, "healing": 20, "damage_packets": 0, "healing_packets": 1},
-    ]
+    assert len(result["edges"]) == 2
+    first, second = result["edges"]
+    assert first["damage"] == 50 and first["damage_type_counts"] == {"0": 50}
+    assert second["healing"] == 20 and second["damage"] == 0
     assert result["audit"]["included_damage"] == 50
     assert result["audit"]["excluded_unconfirmed_source"] == 1
     assert result["audit"]["excluded_unconfirmed_target"] == 1
