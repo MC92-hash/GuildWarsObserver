@@ -16,6 +16,10 @@ public:
 
     bool IsInitialized() const { return m_device != nullptr; }
 
+    // For callers that build their own textures and want the device this cache was given,
+    // rather than threading it through the UI layer a second time.
+    ID3D11Device* Device() const { return m_device; }
+
 private:
     ID3D11Device* m_device = nullptr;
     std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_cache;

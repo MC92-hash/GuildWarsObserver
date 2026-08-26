@@ -44,6 +44,9 @@ struct PlayerMeta
     std::string encoded_name;
     std::string gender;       // "Male" or "Female" from infos.json
     int total_damage = 0;
+    int total_damage_received = 0;
+    int total_healing_dealt = 0;
+    int total_healing_received = 0;
     int attacks_started = 0;
     int attacks_finished = 0;
     int attacks_stopped = 0;

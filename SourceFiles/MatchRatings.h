@@ -22,6 +22,10 @@ public:
         return instance;
     }
 
+    // Bumped on every change. The replay browser filters and sorts by rating and caches the
+    // result, so it needs to know when a rating no longer matches what it cached.
+    unsigned Version() const { return m_version; }
+
     int GetRating(const std::string& folderName) const
     {
         auto it = m_ratings.find(folderName);
@@ -35,6 +39,7 @@ public:
             m_ratings.erase(folderName);
         else
             m_ratings[folderName] = stars;
+        m_version++;
         Save();
     }
 
@@ -53,6 +58,7 @@ public:
                     m_ratings[key] = v;
             }
         } catch (...) {}
+        m_version++;
     }
 
     void Save() const
@@ -68,6 +74,7 @@ public:
 
 private:
     std::unordered_map<std::string, int> m_ratings;
+    unsigned m_version = 0;
 
     static std::filesystem::path GetFilePath()
     {
@@ -115,7 +122,11 @@ inline void DrawStarOutline(ImDrawList* dl, float cx, float cy, float r, ImU32 c
 // Pass readOnly=true for non-interactive display (e.g. table cells).
 // ---------------------------------------------------------------------------
 
-inline int DrawStarRating(const char* id, int currentRating, bool readOnly = false)
+// hideWhenEmpty: an unrated row draws nothing at all until it is hovered. Across a list of a
+// few thousand matches, five grey outlines apiece is a wall of dust that hides the ratings
+// somebody actually set.
+inline int DrawStarRating(const char* id, int currentRating, bool readOnly = false,
+                          bool hideWhenEmpty = false)
 {
     ImGui::PushID(id);
 
@@ -155,7 +166,7 @@ inline int DrawStarRating(const char* id, int currentRating, bool readOnly = fal
             if (ImGui::IsItemClicked())
                 clicked = (hoverStar == currentRating) ? -1 : hoverStar;  // -1 = clear
         }
-        else
+        else if (!hideWhenEmpty || currentRating > 0)
         {
             // Draw current rating
             for (int i = 1; i <= 5; i++)
