@@ -545,6 +545,49 @@ int SkillDatabaseView::ResolvePvpSkillId(int skillId) const
 // SkillDatabase patch loading and versioned views
 // ---------------------------------------------------------------------------
 
+// Assign one field from a patch entry onto `old`. Returns false for a key the
+// loader does not understand, so the caller can leave it out of the field list
+// rather than recording a field it never actually applied.
+static bool AssignPatchField(SkillInfo& old, const std::string& field, const json& val)
+{
+    if (field == "energy")           old.energy      = val.get<int>();
+    else if (field == "activation")  old.activation  = val.get<float>();
+    else if (field == "recharge")    old.recharge    = val.get<float>();
+    else if (field == "adrenaline")  old.adrenaline  = val.get<int>();
+    else if (field == "sacrifice")   old.sacrifice   = val.get<int>();
+    else if (field == "upkeep")      old.upkeep      = val.get<int>();
+    else if (field == "overcast")    old.overcast    = val.get<int>();
+    else if (field == "is_elite")    old.is_elite    = val.get<bool>();
+    else if (field == "type")        old.type        = val.get<int>();
+    else if (field == "profession")  old.profession  = val.get<int>();
+    else if (field == "attribute")   old.attribute   = val.get<int>();
+    else if (field == "name")        old.name        = val.get<std::string>();
+    else if (field == "description") old.description = val.get<std::string>();
+    else if (field == "concise")     old.concise     = val.get<std::string>();
+    else return false;
+    return true;
+}
+
+// Copy one already-parsed field from `src` onto `dst`. The counterpart to
+// AssignPatchField, used when merging a patch onto an accumulating view.
+static void CopyPatchField(SkillInfo& dst, const std::string& field, const SkillInfo& src)
+{
+    if (field == "energy")           dst.energy      = src.energy;
+    else if (field == "activation")  dst.activation  = src.activation;
+    else if (field == "recharge")    dst.recharge    = src.recharge;
+    else if (field == "adrenaline")  dst.adrenaline  = src.adrenaline;
+    else if (field == "sacrifice")   dst.sacrifice   = src.sacrifice;
+    else if (field == "upkeep")      dst.upkeep      = src.upkeep;
+    else if (field == "overcast")    dst.overcast    = src.overcast;
+    else if (field == "is_elite")    dst.is_elite    = src.is_elite;
+    else if (field == "type")        dst.type        = src.type;
+    else if (field == "profession")  dst.profession  = src.profession;
+    else if (field == "attribute")   dst.attribute   = src.attribute;
+    else if (field == "name")        dst.name        = src.name;
+    else if (field == "description") dst.description = src.description;
+    else if (field == "concise")     dst.concise     = src.concise;
+}
+
 void SkillDatabase::LoadPatches(const std::string& dataDir)
 {
     namespace fs = std::filesystem;
@@ -590,29 +633,27 @@ void SkillDatabase::LoadPatches(const std::string& dataDir)
             int skillId = 0;
             try { skillId = std::stoi(key); } catch (...) { continue; }
 
+            if (!val.is_object()) continue;
+
             // Look up the current (latest) SkillInfo as the base to copy from
             auto baseIt = m_skills.find(skillId);
             SkillInfo old = (baseIt != m_skills.end()) ? baseIt->second : SkillInfo{};
             old.id = skillId;
 
-            // Override with the old values stored in the patch
-            if (val.contains("energy"))      old.energy      = val["energy"].get<int>();
-            if (val.contains("activation"))  old.activation  = val["activation"].get<float>();
-            if (val.contains("recharge"))    old.recharge    = val["recharge"].get<float>();
-            if (val.contains("adrenaline"))  old.adrenaline  = val["adrenaline"].get<int>();
-            if (val.contains("sacrifice"))   old.sacrifice   = val["sacrifice"].get<int>();
-            if (val.contains("upkeep"))      old.upkeep      = val["upkeep"].get<int>();
-            if (val.contains("overcast"))    old.overcast    = val["overcast"].get<int>();
-            if (val.contains("is_elite"))    old.is_elite    = val["is_elite"].get<bool>();
-            if (val.contains("type"))        old.type        = val["type"].get<int>();
-            if (val.contains("profession"))  old.profession  = val["profession"].get<int>();
-            if (val.contains("attribute"))   old.attribute   = val["attribute"].get<int>();
-            if (val.contains("name"))        old.name        = val["name"].get<std::string>();
-            if (val.contains("description")) old.description = val["description"].get<std::string>();
-            if (val.contains("concise"))     old.concise     = val["concise"].get<std::string>();
+            // Override with the old values stored in the patch, remembering which
+            // fields this patch actually names -- GetView needs that to merge one
+            // patch onto another without clobbering fields it never touched.
+            std::vector<std::string> named;
+            named.reserve(val.size());
+            for (auto& [field, fieldVal] : val.items())
+            {
+                if (AssignPatchField(old, field, fieldVal))
+                    named.push_back(field);
+            }
 
             ParseScalesFromDescription(old);
             ClassifyDeductionUsability(old);
+            patch.fields[skillId] = std::move(named);
             patch.overrides[skillId] = std::move(old);
         }
 
@@ -634,15 +675,44 @@ SkillDatabaseView SkillDatabase::GetView(int year, int month, int day)
     // Start with a copy of the latest data
     auto data = std::make_shared<std::unordered_map<int, SkillInfo>>(m_skills);
 
-    // Apply patches dated AFTER the replay date in reverse (newest first so
-    // multiple patches to the same skill accumulate correctly)
+    // Apply patches dated AFTER the replay date in reverse, newest first, so
+    // multiple patches to the same skill accumulate.
+    //
+    // Merge field by field rather than assigning the whole SkillInfo. Each
+    // patch's `overrides` entry is a copy of the CURRENT skill with only that
+    // patch's fields rolled back, so assigning it wholesale would also write
+    // today's values for every field the patch does not mention -- undoing a
+    // newer patch that did change one of them. That is not hypothetical: with
+    // the June and August 2026 patches loaded, four skills (Black Spider
+    // Strike, Mirage Cloak, Mighty Throw, Disrupting Chop) were each patched in
+    // both, on partly different fields, and a pre-June replay rendered the
+    // post-August value for the field only August named.
     for (int i = static_cast<int>(m_patches.size()) - 1; i >= 0; --i)
     {
         const SkillPatch& patch = m_patches[i];
         if (patch.dateKey <= dateKey) continue; // patch is not after replay date
 
         for (const auto& [skillId, oldInfo] : patch.overrides)
-            (*data)[skillId] = oldInfo;
+        {
+            auto fieldsIt = patch.fields.find(skillId);
+            auto cur = data->find(skillId);
+
+            // No entry to merge onto, or a patch written before field tracking
+            // existed: fall back to the whole-struct behaviour.
+            if (cur == data->end() || fieldsIt == patch.fields.end())
+            {
+                (*data)[skillId] = oldInfo;
+                continue;
+            }
+
+            for (const std::string& field : fieldsIt->second)
+                CopyPatchField(cur->second, field, oldInfo);
+
+            // Scales are derived from the description, so re-derive whenever a
+            // patch may have changed it.
+            ParseScalesFromDescription(cur->second);
+            ClassifyDeductionUsability(cur->second);
+        }
     }
 
     auto constData = std::shared_ptr<const std::unordered_map<int, SkillInfo>>(std::move(data));

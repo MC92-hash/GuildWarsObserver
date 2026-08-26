@@ -1,6 +1,7 @@
 {
   "date": "2026-06-24",
   "description": "June 2026 balance update",
+  "notes": "Four entries carry a field June did not actually change: Black Spider Strike (energy), Mirage Cloak (energy), Mighty Throw (adrenaline) and Disrupting Chop (adrenaline). Each is set to the value in force during the June era, which is also what the 2026-08-26 patch records as its pre-patch value. They are here so a client built before the GetView field-merge fix still renders pre-June replays correctly: that loader assigned a whole SkillInfo per patch, so June - applied last - would otherwise write today's value back over August's rollback. Harmless on a fixed loader, which sets them to the same values. See scripts/check_skillpatches.py.",
   "skills": {
     "799": {
       "energy": 15
