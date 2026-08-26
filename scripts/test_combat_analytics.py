@@ -211,3 +211,114 @@ def test_merge_preserves_fields_from_a_richer_prior_stream_set():
                                   "skill_events"]
     assert merged["players"]["1"][0]["bulls_strike_uses"] == 7
     assert merged["players"]["1"][0]["coward_uses"] == 4
+
+
+# ── Inferred interrupt attribution ───────────────────────────────────
+#
+# An INTERRUPTED record names only its victim -- the recorder writes the
+# trailing fields as a literal `;0;0`. These pin the join that recovers the
+# interrupter, and the cases where it must refuse to guess.
+
+CRY_OF_FRUSTRATION = 57
+SAVAGE_SHOT = 426
+HEALING_BREEZE = 249
+
+
+def test_the_interrupter_is_inferred_from_a_rupt_cast():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;249;10;10",      # victim starts a cast
+        "[00:01.500] SKILL_ACTIVATED;57;20;10",       # a rupter aims at them
+        "[00:01.700] INTERRUPTED;10;0;0",             # ...and it lands
+        "[00:01.700] SKILL_STOPPED;10;249;0",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[9]["rupts_inferred"] == 1
+    # Never the observed counter: the packet still carries no interrupter.
+    assert rows[9]["rupts_landed"] == 0
+    assert rows[1]["casts_interrupted"] == 1
+
+
+def test_two_possible_interrupters_credit_nobody():
+    """Guessing between two would be right on average and wrong every time."""
+    infos = {"parties": {
+        "1": {"PLAYER": [{"id": 10, "player_number": 1}]},
+        "2": {"PLAYER": [{"id": 20, "player_number": 9},
+                         {"id": 21, "player_number": 10}]},
+    }}
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;249;10;10",
+        "[00:01.400] SKILL_ACTIVATED;57;20;10",
+        "[00:01.500] SKILL_ACTIVATED;426;21;10",
+        "[00:01.700] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(infos, events)
+    rows = _rows(result)
+    assert rows[9]["rupts_inferred"] == 0
+    assert rows[10]["rupts_inferred"] == 0
+    assert result["attribution"]["interrupt_inferred_ambiguous"] == 1
+
+
+def test_a_cast_outside_the_window_is_not_the_cause():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;57;20;10",       # four seconds earlier
+        "[00:05.000] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    assert _rows(result)[9]["rupts_inferred"] == 0
+    assert result["attribution"]["interrupt_inferred_none"] == 1
+
+
+def test_a_cast_aimed_elsewhere_is_not_the_cause():
+    infos = {"parties": {
+        "1": {"PLAYER": [{"id": 10, "player_number": 1},
+                         {"id": 11, "player_number": 2}]},
+        "2": {"PLAYER": [{"id": 20, "player_number": 9}]},
+    }}
+    events = parse_events([
+        "[00:01.500] SKILL_ACTIVATED;57;20;11",       # aimed at the other player
+        "[00:01.700] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(infos, events)
+    assert _rows(result)[9]["rupts_inferred"] == 0
+    assert result["attribution"]["interrupt_inferred_none"] == 1
+
+
+def test_a_non_interrupt_skill_is_never_the_cause():
+    """Cruel Spear was measured at 980 casts and 0% and removed for this reason."""
+    events = parse_events([
+        "[00:01.500] SKILL_ACTIVATED;249;20;10",      # Healing Breeze
+        "[00:01.700] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    assert _rows(result)[9]["rupts_inferred"] == 0
+    assert result["attribution"]["interrupt_inferred_none"] == 1
+
+
+def test_a_knockdown_explains_the_interrupt_without_being_credited_twice():
+    """A knockdown interrupts, and is already counted as a knockdown.
+
+    Crediting it as an interrupt as well would score one action on two axes.
+    The knockdown must also be known BEFORE the interrupt is judged: they share
+    a millisecond routinely, and collecting them later let the interrupt fall
+    through to the skill join and be credited to the wrong player.
+    """
+    events = parse_events([
+        "[00:01.500] SKILL_ACTIVATED;57;20;10",       # a rupter was also casting
+        "[00:01.700] KNOCKED_DOWN;10;20",
+        "[00:01.700] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    rows = _rows(result)
+    assert rows[9]["knockdowns_dealt"] == 1
+    assert rows[9]["rupts_inferred"] == 0
+    assert result["attribution"]["interrupt_from_knockdown"] == 1
+
+
+def test_an_attack_skill_interrupt_is_credited():
+    events = parse_events([
+        "[00:01.300] ATTACK_SKILL_ACTIVATED;426;20;10",
+        "[00:01.700] INTERRUPTED;10;0;0",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    assert _rows(result)[9]["rupts_inferred"] == 1
+    assert result["attribution"]["interrupt_inferred_unique"] == 1
