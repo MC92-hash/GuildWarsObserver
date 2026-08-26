@@ -313,6 +313,100 @@ inline uint32_t LookupPlayerFileHash(int primaryProf, bool isFemale, int variant
     return variants[variantIndex % variants.size()];
 }
 
+// ---------------------------------------------------------------------------
+// Ranger pets
+//
+// A pet arrives in the recording as an ordinary living NPC: agent_model_type 0x2000, its
+// owner's team id, and a model id. That id says both which animal it is and which of the
+// evolutions it reached, but the evolution is only a name - every Racing Beetle shares one
+// .dat model - so the name is per model id and the model file is per species.
+//
+// Model ids and file numbers come from the game client; each file was confirmed to be the
+// right creature by decoding its TEXFN textures (beetle carapace, moa feathers, spider,
+// wolf pelt). A pet whose id is not listed stays an Unknown agent, which is the honest
+// answer for a species we have no model for.
+// ---------------------------------------------------------------------------
+
+enum class PetEvolution : uint8_t { Hearty, Playful, Elder, Aggressive, Dire };
+
+struct PetInfo
+{
+    uint32_t     modelId;
+    const char*  name;       // what the party window shows
+    uint32_t     fileHash;   // .dat model, shared by every evolution of the species
+    PetEvolution evolution;  // decides its maximum health
+};
+
+// One row per model id the client can report. Everything about a pet is read from here, so a new
+// species is one block of rows and nothing else.
+inline constexpr PetInfo kPets[] = {
+    { 940,  "Elder Racing Beetle",      0x442AB, PetEvolution::Elder      },
+    { 941,  "Playful Racing Beetle",    0x442AB, PetEvolution::Playful    },
+    { 946,  "Hearty Racing Beetle",     0x442AB, PetEvolution::Hearty     },
+    { 947,  "Dire Racing Beetle",       0x442AB, PetEvolution::Dire       },
+    { 950,  "Aggressive Racing Beetle", 0x442AB, PetEvolution::Aggressive },
+    { 952,  "Dire Racing Beetle",       0x442AB, PetEvolution::Dire       },
+
+    { 836,  "Elder Moa Bird",           0x4131,  PetEvolution::Elder      },
+    { 838,  "Aggressive Moa Bird",      0x4131,  PetEvolution::Aggressive },
+    { 840,  "Dire Moa Bird",            0x4131,  PetEvolution::Dire       },
+
+    { 608,  "Playful Black Widow",      0x22B68, PetEvolution::Playful    },
+    { 611,  "Dire Black Widow",         0x22B68, PetEvolution::Dire       },
+    { 612,  "Elder Black Widow",        0x22B68, PetEvolution::Elder      },
+    { 614,  "Aggressive Black Widow",   0x22B68, PetEvolution::Aggressive },
+    { 615,  "Hearty Black Widow",       0x22B68, PetEvolution::Hearty     },
+
+    { 1122, "Elder Wolf",               0x1FB89, PetEvolution::Elder      },
+    { 1123, "Playful Wolf",             0x1FB89, PetEvolution::Playful    },
+    { 1124, "Aggressive Wolf",          0x1FB89, PetEvolution::Aggressive },
+    { 1128, "Hearty Wolf",              0x1FB89, PetEvolution::Hearty     },
+    { 1129, "Dire Wolf",                0x1FB89, PetEvolution::Dire       },
+};
+
+inline const PetInfo* LookupPet(uint32_t modelId)
+{
+    for (const PetInfo& p : kPets)
+        if (p.modelId == modelId) return &p;
+    return nullptr;
+}
+
+inline const char* LookupPetName(uint32_t modelId)
+{
+    const PetInfo* p = LookupPet(modelId);
+    return p ? p->name : nullptr;
+}
+
+inline uint32_t LookupPetFileHash(uint32_t modelId)
+{
+    const PetInfo* p = LookupPet(modelId);
+    return p ? p->fileHash : 0;
+}
+
+inline bool IsPetModelId(uint32_t modelId) { return LookupPet(modelId) != nullptr; }
+
+// Health the evolution adds to a pet's level health, the way a primary Dervish's +25 is added:
+// Hearty 540, Playful 510, Elder 480, Aggressive 450, Dire 420 against the 480 every level 20
+// creature starts from.
+//
+// Measured, not assumed. Damage packets are fractions of the target's maximum, so the maximum is
+// whichever number turns them into whole health. Across three matches the packets aimed at a Dire
+// pet fit 420 and nothing else (33/33, 19/19). After one of those pets died, its packets fit 348
+// -- exactly 420 - 72, the same 15%-of-480 step a player's death penalty takes, rather than the
+// 357 that 15% of the pet's own 420 would give. That is why the modifier goes on top of the level
+// health and morale keeps applying to the level health underneath it.
+inline int PetHealthModifier(PetEvolution e)
+{
+    switch (e) {
+    case PetEvolution::Hearty:     return  60;
+    case PetEvolution::Playful:    return  30;
+    case PetEvolution::Elder:      return   0;
+    case PetEvolution::Aggressive: return -30;
+    case PetEvolution::Dire:       return -60;
+    default:                       return   0;
+    }
+}
+
 inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
                                      int primaryProf = 0, bool isFemale = false)
 {
@@ -333,6 +427,7 @@ inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
         case 174: return 0x26C4A; // Knight
         case 175: case 176: return 0x2D18A; // Archer
         }
+        if (uint32_t pet = LookupPetFileHash(modelId)) return pet;
     }
     return 0;
 }
@@ -394,6 +489,9 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
         case 175:
         case 176: return { 0x2D18A, 72.0f,      1.0f };  // Archer
         }
+        // Pets render at their .dat native size: the game does not scale them, and there is
+        // no measured GWCA height to fit them to.
+        if (uint32_t pet = LookupPetFileHash(modelId)) return { pet, 0.f, 1.0f };
     }
     return { 0, 0.f, 1.0f };
 }
@@ -449,7 +547,7 @@ inline const char* LookupNpcName(uint32_t modelId)
     case 174: return "Knight";
     case 175: return "Archer";
     case 176: return "Archer";
-    default:  return nullptr;
+    default:  return LookupPetName(modelId);
     }
 }
 

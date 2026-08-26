@@ -377,28 +377,40 @@ namespace Equipment
     // one of the two, so taking whichever is non-zero is correct for both layouts.
     inline uint8_t SingleValue(uint8_t a1, uint8_t a2) { return a1 ? a1 : a2; }
 
-    // "Health +30" / "Health -20" -- a maximum-health line with a magnitude in it. Deliberately
-    // strict: "Health regeneration -1" and "Armor +5 (while Health is below 50%)" both mention
-    // health and neither is one of these.
-    inline bool IsHealthMagnitudeLine(std::string_view line)
+    // A magnitude line splits at its first run of digits: "Armor +10" gives "Armor +" / "10" / "".
+    // Two lines state the same thing when the halves either side of the number agree, which is how
+    // a rolled effect word gets paired with the table text it belongs to.
+    struct Magnitude
     {
-        constexpr std::string_view kPrefix = "Health ";
-        if (!line.starts_with(kPrefix)) return false;
-        size_t i = kPrefix.size();
-        if (i >= line.size() || (line[i] != '+' && line[i] != '-')) return false;
-        return i + 1 < line.size() && line[i + 1] >= '0' && line[i + 1] <= '9';
+        std::string_view head;
+        std::string_view digits;
+        std::string_view tail;
+    };
+
+    inline bool SplitMagnitude(std::string_view s, Magnitude& out)
+    {
+        size_t b = 0;
+        while (b < s.size() && (s[b] < '0' || s[b] > '9')) b++;
+        if (b == s.size()) return false;
+        size_t e = b;
+        while (e < s.size() && s[e] >= '0' && s[e] <= '9') e++;
+        out = {s.substr(0, b), s.substr(b, e - b), s.substr(e)};
+        return true;
     }
 
-    // Replaces the magnitude in such a line with the value the item actually rolled, keeping
-    // whatever follows it. No-op on anything that is not a health magnitude line.
-    inline void RewriteHealthMagnitude(std::string& effect, int rolled)
+    // ASCII is all these strings ever are. Needed because the table writes its qualifiers in the
+    // game's title case ("while Enchanted") where the decoder writes them lower case.
+    inline bool EqualNoCase(std::string_view a, std::string_view b)
     {
-        if (!IsHealthMagnitudeLine(effect)) return;
-        constexpr size_t kNumberStart = 7; // strlen("Health ")
-        size_t end = kNumberStart + 1;
-        while (end < effect.size() && effect[end] >= '0' && effect[end] <= '9') end++;
-        const char sign = effect[kNumberStart];
-        effect = std::format("Health {}{}{}", sign, rolled, effect.substr(end));
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++)
+        {
+            char ca = a[i], cb = b[i];
+            if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+            if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+            if (ca != cb) return false;
+        }
+        return true;
     }
 
     inline ModText DecodeMod(uint16_t id, uint8_t arg1, uint8_t arg2)
@@ -722,6 +734,69 @@ namespace Equipment
         condition.clear();
     }
 
+    // One line of a component's description, split into the gold half and the grey qualifier.
+    struct DescLine
+    {
+        std::string effect;
+        std::string condition;
+    };
+
+    inline std::vector<DescLine> DescriptionLines(std::string_view desc)
+    {
+        std::vector<DescLine> out;
+        for (size_t start = 0; start <= desc.size();)
+        {
+            const size_t nl = desc.find('\n', start);
+            const std::string line{desc.substr(start, nl == std::string_view::npos ? nl : nl - start)};
+            if (!line.empty())
+            {
+                DescLine dl;
+                SplitCondition(line, dl.effect, dl.condition);
+                out.push_back(std::move(dl));
+            }
+            if (nl == std::string_view::npos) break;
+            start = nl + 1;
+        }
+        return out;
+    }
+
+    // The component table stores each mod's MAXIMUM roll, because that is the name the game gives
+    // it: a "Sword Pommel of Fortitude" is always called Health +30. The item in hand may have
+    // rolled lower, and its own effect words carry what it actually rolled.
+    //
+    // That difference is real, not a display detail. One measured player's Fortitude sword granted
+    // 29 health and his Bronze Shield 28, which is why his maximum read 519 where two full mods
+    // would have given 520. A player-confirmed Great Conch gave +6 armour vs earth and +15 health
+    // where its inscription and handle are named for +10 and +30.
+    //
+    // A word rewrites the one line it matches apart from the number. A word matching several is
+    // dropped rather than guessed at: the Survivor insignia describes three health lines (15 chest
+    // / 10 legs / 5 elsewhere) against a single word, and rewriting them all with one value would
+    // be worse than leaving them alone.
+    inline void ApplyRolledMagnitudes(const std::vector<Mod>& effects, std::vector<DescLine>& lines)
+    {
+        for (const Mod& m : effects)
+        {
+            const ModText rolled = DecodeMod(m.id, m.arg1, m.arg2);
+            if (rolled.structural || !rolled.known) continue;
+
+            Magnitude rm;
+            if (!SplitMagnitude(rolled.effect, rm)) continue;
+
+            int hit = -1;
+            for (size_t i = 0; i < lines.size(); i++)
+            {
+                Magnitude lm;
+                if (!SplitMagnitude(lines[i].effect, lm)) continue;
+                if (lm.head != rm.head || lm.tail != rm.tail) continue;
+                if (!EqualNoCase(lines[i].condition, rolled.condition)) continue;
+                if (hit >= 0) { hit = -1; break; }  // ambiguous
+                hit = static_cast<int>(i);
+            }
+            if (hit >= 0) lines[static_cast<size_t>(hit)].effect = rolled.effect;
+        }
+    }
+
     // Wintergreen weapons carry fixed stats that their mod words do not describe, so they are
     // recognised by name instead. https://wiki.guildwars.com/wiki/Category:Wintergreen_weapons
     struct WintergreenStats
@@ -915,53 +990,17 @@ namespace Equipment
             }
         };
 
-        // The component table stores each mod's MAXIMUM roll, because that is the name the game
-        // gives it: a "Sword Pommel of Fortitude" is always called Health +30. The item in hand may
-        // have rolled lower, and the effect word carries what it actually rolled.
-        //
-        // That difference is real health, not a display detail. One measured player's Fortitude
-        // sword granted 29 and his Bronze Shield 28, which is why his maximum read 519 where two
-        // full mods would have given 520 -- and why the model must read the word, not the table.
-        auto rolledHealthFor = [](const ModGroup& group) -> int {
-            int rolled = -1;
-            for (const Mod& m : group.effects)
-            {
-                switch (m.id)
-                {
-                case ModId::Health_extra:
-                case ModId::Health_extra_when_enchanted:
-                case ModId::Health_extra_when_hexed:
-                case ModId::Health_extra_when_in_stance:
-                    rolled = SingleValue(m.arg1, m.arg2);
-                    break;
-                default: break;
-                }
-            }
-            if (rolled < 0 || !group.info) return -1;
-
-            // Only safe when the component grants health on exactly one line. The Survivor
-            // insignia describes three (15 chest / 10 legs / 5 elsewhere) against a single word,
-            // so rewriting them all with one value would be worse than leaving them alone.
-            const std::string_view desc = group.info->description;
-            int healthLines = 0;
-            for (size_t start = 0; start <= desc.size();)
-            {
-                const size_t nl = desc.find('\n', start);
-                const std::string_view line = desc.substr(start, nl == std::string_view::npos ? nl : nl - start);
-                if (IsHealthMagnitudeLine(line)) healthLines++;
-                if (nl == std::string_view::npos) break;
-                start = nl + 1;
-            }
-            return healthLines == 1 ? rolled : -1;
-        };
-
-        auto emitGroup = [&tip, &emitDecoded, &rolledHealthFor](const ModGroup& group) {
+        auto emitGroup = [&tip, &emitDecoded](const ModGroup& group) {
             if (!group.info)
             {
                 emitDecoded(group);
                 return;
             }
-            const int rolledHealth = rolledHealthFor(group);
+
+            // The table names the component at its maximum roll; the item's own words say what it
+            // rolled, and those win.
+            std::vector<DescLine> lines = DescriptionLines(group.info->description);
+            ApplyRolledMagnitudes(group.effects, lines);
 
             // Inscriptions are named in game (Inscription: "I have the power!"); prefixes and
             // suffixes are already spelled out by the item's own name, so only their effects show.
@@ -970,21 +1009,8 @@ namespace Equipment
                 tip.lines.push_back({Kind::Mod, std::string(group.info->name), {}});
             }
 
-            const std::string_view desc = group.info->description;
-            for (size_t start = 0; start <= desc.size();)
-            {
-                const size_t nl = desc.find('\n', start);
-                const std::string line{desc.substr(start, nl == std::string_view::npos ? nl : nl - start)};
-                if (!line.empty())
-                {
-                    std::string effect, condition;
-                    SplitCondition(line, effect, condition);
-                    if (rolledHealth >= 0) RewriteHealthMagnitude(effect, rolledHealth);
-                    tip.lines.push_back({Kind::Mod, std::move(effect), std::move(condition)});
-                }
-                if (nl == std::string_view::npos) break;
-                start = nl + 1;
-            }
+            for (DescLine& dl : lines)
+                tip.lines.push_back({Kind::Mod, std::move(dl.effect), std::move(dl.condition)});
         };
 
         emitDecoded(inherent);
