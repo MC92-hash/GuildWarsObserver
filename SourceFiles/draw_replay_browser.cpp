@@ -3984,6 +3984,7 @@ static int CountActiveFilters()
     if (MatchupSlotSet(s_state.matchupNameA, s_state.matchupTagA) ||
         MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB)) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
+    if (s_state.minRatingFilter > 0) n++;
     if (s_state.tournamentMode) n++;
     return n;
 }
@@ -4042,7 +4043,22 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     ImGui::Spacing();
 
     // ── Clear all filters ──
+    //
+    // Red only while something is actually filtered: with an empty sidebar the button does
+    // nothing, and a permanent red block would be the loudest thing on screen for no reason.
+    // A low-alpha tint rather than a solid fill, which is how the accent is used elsewhere.
+    const bool anyFilters = CountActiveFilters() > 0;
+
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    if (anyFilters)
+    {
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.86f, 0.31f, 0.29f, 0.16f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.86f, 0.31f, 0.29f, 0.30f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.86f, 0.31f, 0.29f, 0.42f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.86f, 0.36f, 0.33f, 0.50f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.96f, 0.65f, 0.61f, 1.00f));
+    }
     if (ImGui::Button("Clear All Filters", ImVec2(-1, 0)))
     {
         s_state.searchBuf[0] = '\0';
@@ -4084,6 +4100,11 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.tournamentSelectedBuild = -1;
         s_state.tournamentSelectedLostTo = -1;
         s_state.tournamentLostToSearch[0] = '\0';
+    }
+    if (anyFilters)
+    {
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar();
     }
     ImGui::PopStyleVar();
 
