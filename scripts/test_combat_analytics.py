@@ -50,6 +50,26 @@ def test_unmatched_interrupt_keeps_direct_landed_credit_and_audit():
     assert result["attribution"]["interrupt_casts_unmatched"] == 1
 
 
+def test_later_cast_does_not_hide_the_cast_that_was_interrupted():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;42;20;10",
+        "[00:01.700] SKILL_STOPPED;20;42;10",
+        "[00:01.710] INTERRUPTED;20;42;10",
+        # Cast history is complete before the interrupt join runs. This later
+        # cast is therefore visited first during the reverse search, but it
+        # did not exist at the time of the interrupt and cannot block it.
+        "[00:05.000] SKILL_ACTIVATED;99;20;10",
+        "[00:05.500] SKILL_FINISHED;20;99;10",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    rows = _rows(result)
+    assert rows[9]["casts_interrupted"] == 1
+    assert rows[9]["casts_cancelled_voluntary"] == 0
+    assert rows[1]["rupt_cast_progress_ms_sum"] == 710
+    assert result["attribution"]["interrupt_casts_matched"] == 1
+    assert result["attribution"]["interrupt_casts_unmatched"] == 0
+
+
 def test_lifecycle_closes_and_instant_skills_do_not_dilute_it():
     events = parse_events([
         "[00:01.000] SKILL_ACTIVATED;1;10;20",

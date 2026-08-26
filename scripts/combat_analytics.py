@@ -247,12 +247,17 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 delta = event.time - reference_time
                 if delta > INTERRUPT_MATCH_LATE_SECONDS:
                     break
+                # The lifecycle pass has already seen the whole match, so
+                # reverse history starts with casts that may occur well after
+                # this interrupt. They are not evidence of a newer competing
+                # cast at the interrupt timestamp and must not poison the
+                # search for the stopped cast immediately before the event.
+                if delta < -INTERRUPT_MATCH_EARLY_SECONDS:
+                    continue
                 if cast.outcome != "stopped":
                     passed_newer_cast = True
                     continue
                 if passed_newer_cast:
-                    continue
-                if delta < -INTERRUPT_MATCH_EARLY_SECONDS:
                     continue
                 if skill_id > 0 and cast.skill_id != skill_id:
                     passed_newer_cast = True
