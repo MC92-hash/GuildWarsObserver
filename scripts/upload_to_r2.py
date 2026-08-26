@@ -22,6 +22,7 @@ Configuration via scripts/r2_config.env or environment variables:
 
 import argparse
 import io
+import gzip
 import json
 import os
 import shutil
@@ -745,6 +746,11 @@ def upload_file(s3, bucket: str, key: str, file_path: Path):
 # writers that set it at all already used.
 
 INDEX_KEY = "index.json"
+# Published alongside the plain key, never instead of it: a build already in
+# the wild knows nothing about this object, and flipping index.json itself to
+# Content-Encoding: gzip would break every one of them. Clients that
+# understand it ask for this key first and fall back to the plain one.
+INDEX_GZ_KEY = "index.json.gz"
 INDEX_CACHE_CONTROL = "no-cache"
 
 
@@ -756,9 +762,35 @@ def serialize_index(entries: list[dict]) -> bytes:
     ).encode("utf-8")
 
 
+def gzip_bytes(body: bytes) -> bytes:
+    """Deterministic gzip: no mtime, so identical input keeps its ETag.
+
+    That matters more than it looks. The whole point of the .gz key is that a
+    client revalidates with If-None-Match and gets a 304; a timestamp in the
+    header would change the ETag on every publish and turn every launch back
+    into a full download.
+    """
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6, mtime=0) as f:
+        f.write(body)
+    return buf.getvalue()
+
+
 def write_index(s3, bucket: str, entries: list[dict]) -> int:
-    """Publish index.json. The single writer -- see the note above."""
+    """Publish index.json and index.json.gz. The single writer.
+
+    The gzipped key goes first: if it fails, nothing has changed and both
+    objects still agree. A failure after it leaves newer clients ahead of
+    older ones rather than serving anybody a half-written index.
+    """
     body = serialize_index(entries)
+    s3.put_object(
+        Bucket=bucket,
+        Key=INDEX_GZ_KEY,
+        Body=gzip_bytes(body),
+        ContentType="application/gzip",
+        CacheControl=INDEX_CACHE_CONTROL,
+    )
     s3.put_object(
         Bucket=bucket,
         Key=INDEX_KEY,

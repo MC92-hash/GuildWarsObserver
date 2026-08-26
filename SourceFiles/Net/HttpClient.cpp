@@ -125,7 +125,8 @@ std::wstring HttpClient::UrlEncodePath(const std::wstring& path)
     return encoded;
 }
 
-HINTERNET HttpClient::SendRequest(const std::wstring& path, uint64_t& outContentLength)
+HINTERNET HttpClient::SendRequest(const std::wstring& path, uint64_t& outContentLength,
+                                  const std::wstring& extraHeaders)
 {
     outContentLength = 0;
 
@@ -145,11 +146,23 @@ HINTERNET HttpClient::SendRequest(const std::wstring& path, uint64_t& outContent
     if (!hRequest)
         return nullptr;
 
-    // Bypass WinHTTP cache so refreshes always hit the server
+    // Bypass WinHTTP's own cache so a refresh always reaches the server. This
+    // does not defeat conditional requests: the origin still answers a
+    // matching If-None-Match with 304, which is where the saving comes from.
     std::wstring noCacheHeaders = L"Cache-Control: no-cache\r\nPragma: no-cache\r\n";
     WinHttpAddRequestHeaders(hRequest, noCacheHeaders.c_str(),
                              (DWORD)noCacheHeaders.size(),
                              WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+
+    // Caller-supplied headers (If-None-Match). SigV4 here signs only
+    // host;x-amz-content-sha256;x-amz-date, so an extra header travels
+    // unsigned and does not invalidate the signature.
+    if (!extraHeaders.empty())
+    {
+        WinHttpAddRequestHeaders(hRequest, extraHeaders.c_str(),
+                                 (DWORD)extraHeaders.size(),
+                                 WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+    }
 
     // Inject auth headers if a signing function is configured
     if (m_signingFn)
@@ -224,9 +237,17 @@ bool HttpClient::ReadResponseBody(HINTERNET hRequest, std::vector<uint8_t>& out)
     return true;
 }
 
-HttpClient::Response HttpClient::Get(const std::wstring& path)
+HttpClient::Response HttpClient::Get(const std::wstring& path,
+                                     const std::string& ifNoneMatch)
 {
     Response resp;
+
+    std::wstring extraHeaders;
+    if (!ifNoneMatch.empty())
+    {
+        std::wstring tag(ifNoneMatch.begin(), ifNoneMatch.end());
+        extraHeaders = L"If-None-Match: " + tag + L"\r\n";
+    }
 
     for (int attempt = 0; attempt < kMaxRetries; ++attempt)
     {
@@ -240,7 +261,7 @@ HttpClient::Response HttpClient::Get(const std::wstring& path)
             Sleep(kRetryDelaysMs[attempt]);
 
         uint64_t contentLength = 0;
-        HINTERNET hRequest = SendRequest(path, contentLength);
+        HINTERNET hRequest = SendRequest(path, contentLength, extraHeaders);
         if (!hRequest)
         {
             std::wstring err = GetLastWinHttpError();
@@ -256,6 +277,27 @@ HttpClient::Response HttpClient::Get(const std::wstring& path)
                             WINHTTP_HEADER_NAME_BY_INDEX,
                             &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
         resp.statusCode = static_cast<int>(statusCode);
+
+        // Capture the ETag so the next request can be conditional.
+        wchar_t etagBuf[256] = {};
+        DWORD etagSize = sizeof(etagBuf);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_ETAG,
+                                WINHTTP_HEADER_NAME_BY_INDEX,
+                                etagBuf, &etagSize, WINHTTP_NO_HEADER_INDEX))
+        {
+            std::wstring tag(etagBuf);
+            resp.etag.assign(tag.begin(), tag.end());
+        }
+
+        // 304 carries no body and is the success case for a conditional GET:
+        // what the caller already holds is still current.
+        if (resp.statusCode == 304)
+        {
+            WinHttpCloseHandle(hRequest);
+            resp.body.clear();
+            resp.errorMessage.clear();
+            return resp;
+        }
 
         resp.body.clear();
         if (contentLength > 0)
