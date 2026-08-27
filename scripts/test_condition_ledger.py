@@ -137,3 +137,36 @@ def test_pvp_twin_resolves_to_its_base_id():
     assert canonical_skill_id(3273) == 2014
     assert canonical_skill_id(2014) == 2014
     assert canonical_skill_id(331) == 331
+
+
+def test_a_shout_with_no_visible_target_can_still_be_credited(tmp_path):
+    # A shout arrives as INSTANT_SKILL_USED, whose payload carries no target, so
+    # the record names the caster in the target slot. Read as targeted-at-self
+    # it matched no victim and could neither credit nor refuse; 862 uses of this
+    # one across 250 recordings were silently dropped.
+    _agents(tmp_path, 56,
+            _snapshot("00:09.000", 0),
+            _snapshot("00:10.000", 1),
+            _snapshot("00:18.000", 0))
+    _stoc(tmp_path, "skill_events", "[00:09.500] INSTANT_SKILL_USED;1412;63;63")
+    rows = _rows(build_condition_ledger(_infos(), tmp_path))
+    assert rows[1]["cripple_applications"] == 1
+    assert rows[1]["cripple_caused_seconds"] == 8
+
+
+def test_an_untargeted_shout_refuses_a_credit_it_could_explain(tmp_path):
+    # The more important half: the shout must also be able to make the ledger
+    # REFUSE. Before, a cripple it caused was handed to whatever targeted skill
+    # happened to be in window -- measured, 21 such credits over 120 matches.
+    _agents(tmp_path, 56,
+            _snapshot("00:09.000", 0),
+            _snapshot("00:10.000", 1),
+            _snapshot("00:18.000", 0))
+    _stoc(tmp_path, "skill_events",
+          "[00:09.400] INSTANT_SKILL_USED;1412;63;63",
+          "[00:09.500] SKILL_ACTIVATED;3273;81;56")
+    result = build_condition_ledger(_infos(), tmp_path)
+    rows = _rows(result)
+    assert rows[1]["cripple_applications"] == 0
+    assert rows[9]["cripple_applications"] == 0
+    assert result["attribution"]["cripple_ambiguous"] == 1

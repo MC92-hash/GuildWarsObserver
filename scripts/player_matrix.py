@@ -46,18 +46,29 @@ def _snapshot_path(match_dir: Path, agent_id: int) -> Path | None:
     return None
 
 
-def build_player_matrix(infos: dict, events, match_dir: Path) -> dict:
+def build_player_matrix(infos: dict, events, match_dir: Path,
+                        records: dict | None = None) -> dict:
+    """The damage matrix. ``records`` is pre-read snapshot lines when a caller
+    already has them, so a match is decompressed once rather than once per
+    consumer -- see ``combat_analytics.build_from_match_dir``."""
+    from max_hp_solver import snapshot_from_fields
+
     players = confirmed_players(infos)
     if not players:
         return {}
 
     snapshots = {}
     for agent_id in players:
-        path = _snapshot_path(match_dir, agent_id)
-        if path is not None:
-            rows = read_snapshots(path)
-            if rows:
-                snapshots[agent_id] = rows
+        if records is not None:
+            rows = tuple(
+                snapshot for when, fields in records.get(agent_id, ())
+                if (snapshot := snapshot_from_fields(when, fields)) is not None
+            )
+        else:
+            path = _snapshot_path(match_dir, agent_id)
+            rows = read_snapshots(path) if path is not None else ()
+        if rows:
+            snapshots[agent_id] = rows
     if not snapshots:
         return {}
 

@@ -122,8 +122,15 @@ def build_avatar_ledger(infos: dict, match_dir: Path) -> dict:
     state: dict[int, tuple[float, int]] = {}
     forms: dict[int, Counter] = {}
     untracked = 0
+    unknown_models = 0
 
     for when, agent_id, model_id in sorted(records, key=lambda r: r[0]):
+        # Only an avatar counts as avatar uptime. Every one of the 646
+        # transforms in the archive today is a Dervish avatar, so this changes
+        # nothing now and keeps a future costume or transmog out of the metric.
+        if model_id and model_id not in AVATAR_MODELS:
+            unknown_models += 1
+            model_id = 0
         previous = state.get(agent_id)
         if previous is not None and previous[1] != 0 and agent_id in rows:
             rows[agent_id]["form_seconds"] += max(
@@ -144,6 +151,13 @@ def build_avatar_ledger(infos: dict, match_dir: Path) -> dict:
     for agent_id, counted in forms.items():
         rows[agent_id]["form_id"] = counted.most_common(1)[0][0]
 
+    # A share cannot exceed its whole. `form_seconds` is a sum of per-interval
+    # roundings against one rounded denominator, so it can drift a second or two
+    # above it on a short match with many transforms -- and the consumer's own
+    # guard would then withhold the metric entirely rather than show 101%.
+    for row in rows.values():
+        row["form_seconds"] = min(row["form_seconds"], row["match_seconds"])
+
     output: dict[str, list[dict[str, int]]] = {}
     for agent_id, (party_id, player_number) in players.items():
         output.setdefault(party_id, []).append(
@@ -159,6 +173,7 @@ def build_avatar_ledger(infos: dict, match_dir: Path) -> dict:
             "form_records": len(records),
             "form_agents_transformed": len(forms),
             "form_transforms_untracked_agent": untracked,
+            "form_models_not_an_avatar": unknown_models,
             "form_match_seconds": round(horizon),
         },
     }

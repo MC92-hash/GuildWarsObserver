@@ -26,18 +26,61 @@ def _rows(result):
 
 
 def test_interrupt_is_not_counted_as_voluntary_cancel():
+    # `INTERRUPTED;victim;skill;0` is the shape the recorder actually emits --
+    # 53,827 of 53,827 events end in `;0;0`. The fixture used to pass an
+    # interrupter id of 10, which no recording has ever carried, and that is
+    # what let `rupt_cast_progress_*` ship permanently zero: the counters were
+    # keyed on a field only the test ever populated.
     events = parse_events([
         "[00:01.000] SKILL_ACTIVATED;42;20;10",
+        # Savage Shot from player 10 at the victim: the join that recovers the
+        # interrupter the record does not name.
+        "[00:01.100] ATTACK_SKILL_ACTIVATED;426;10;20",
         "[00:01.700] SKILL_STOPPED;20;42;10",
-        "[00:01.710] INTERRUPTED;20;42;10",
+        "[00:01.710] INTERRUPTED;20;42;0",
     ])
     result = build_combat_analytics(_infos(), events)
     rows = _rows(result)
     assert rows[9]["casts_interrupted"] == 1
     assert rows[9]["casts_cancelled_voluntary"] == 0
-    assert rows[1]["rupts_landed"] == 1
+    # Unobservable, and still deliberately zero.
+    assert rows[1]["rupts_landed"] == 0
+    assert rows[1]["rupts_inferred"] == 1
+    # Credited to the INFERRED interrupter, measured from the victim's cast
+    # start to the interrupt.
     assert rows[1]["rupt_cast_progress_ms_sum"] == 710
     assert rows[1]["rupt_cast_progress_n"] == 1
+
+
+def test_cast_progress_follows_the_inference_not_the_dead_field():
+    # No rupt skill, so nobody is inferred and nothing is credited -- rather
+    # than crediting agent 0, which is never a row.
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;42;20;10",
+        "[00:01.700] SKILL_STOPPED;20;42;10",
+        "[00:01.710] INTERRUPTED;20;42;0",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[1]["rupts_inferred"] == 0
+    assert rows[1]["rupt_cast_progress_n"] == 0
+
+
+def test_one_cast_is_credited_for_only_one_interrupt():
+    # Without a consumed-cast ledger a single Savage Shot is the "unique cause"
+    # of every interrupt its victim suffers inside its 3.5 s window: measured,
+    # 43 phantom credits in 8,077 across 223 recordings.
+    events = parse_events([
+        "[00:01.100] ATTACK_SKILL_ACTIVATED;426;10;20",
+        "[00:01.200] SKILL_ACTIVATED;42;20;10",
+        "[00:01.700] SKILL_STOPPED;20;42;10",
+        "[00:01.710] INTERRUPTED;20;42;0",
+        "[00:02.200] SKILL_ACTIVATED;43;20;10",
+        "[00:02.700] SKILL_STOPPED;20;43;10",
+        "[00:02.710] INTERRUPTED;20;43;0",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    assert _rows(result)[1]["rupts_inferred"] == 1
+    assert result["attribution"]["interrupt_inferred_none"] == 1
 
 
 def test_unmatched_interrupt_keeps_direct_landed_credit_and_audit():
@@ -53,8 +96,9 @@ def test_unmatched_interrupt_keeps_direct_landed_credit_and_audit():
 def test_later_cast_does_not_hide_the_cast_that_was_interrupted():
     events = parse_events([
         "[00:01.000] SKILL_ACTIVATED;42;20;10",
+        "[00:01.100] ATTACK_SKILL_ACTIVATED;426;10;20",
         "[00:01.700] SKILL_STOPPED;20;42;10",
-        "[00:01.710] INTERRUPTED;20;42;10",
+        "[00:01.710] INTERRUPTED;20;42;0",
         # Cast history is complete before the interrupt join runs. This later
         # cast is therefore visited first during the reverse search, but it
         # did not exist at the time of the interrupt and cannot block it.

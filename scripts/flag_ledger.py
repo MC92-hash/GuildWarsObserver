@@ -18,6 +18,7 @@ from pathlib import Path
 # The same definition of "who is a player" the combat rows use. Shared rather
 # than re-derived so the two cannot disagree about the roster.
 from combat_analytics import _player_lookup as player_lookup
+from combat_analytics import match_window
 
 SCHEMA_VERSION = 1
 
@@ -79,16 +80,37 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
     if not records:
         return {}
     players = player_lookup(infos)
-    match_end = max(when for when, _fields in records)
+    stream_end = max(when for when, _fields in records)
 
-    # Two passes, because a flag is declared by an ITEM record that may sit
-    # after a pickup in file order, and because a stick or a return respawns
-    # the flag as a NEW item id -- so a flag is tracked by which team's it is,
-    # never by item id.
-    team_of_item: dict[int, int] = {}
-    for _when, fields in records:
-        if fields[0] == ITEM and len(fields) >= 5 and fields[2] == FLAG_MODEL_ID:
-            team_of_item[fields[1]] = fields[3]
+    # Legs are clipped to the MATCH, which is a window inside instance time
+    # rather than [0, duration]: the instance is created about a minute before a
+    # GvG starts, and players run the flag out of the base during that setup.
+    # Measured, 14.1% of all pickups happen before the match does, 9.9% of
+    # published carry time was warm-up, and twelve player rows credited more
+    # carry seconds than their own match lasted -- which the avatar ledger's
+    # `match_seconds`, merged into these same rows, turns into a visible
+    # contradiction.
+    start, end = match_window(infos)
+    if end <= start:
+        start, end = 0.0, stream_end
+
+    def clip(value: float) -> float:
+        return min(max(value, start), end)
+
+    # An item id to the type-3 `extra_id` naming which flag it is: 59808 blue,
+    # 57400 red. NOT a team code -- the pickup record carries a team field that
+    # is a dead zero and the announce record carries a 1/2 team, so three
+    # different fields in this one stream would otherwise answer to that name.
+    #
+    # Filled DURING the chronological pass, never in a pre-pass. A pre-pass is
+    # last-declaration-wins, and item ids are recycled and re-declared for the
+    # OTHER flag mid-match: measured, that happens in 66% of matches and
+    # mis-assigns 25.5% of every pickup, in the worst case swapping two players
+    # flag time outright. The pre-pass existed to rescue pickups whose ITEM
+    # record arrives later; that is 0.8% of pickups, and sampling shows each one
+    # is a repair kit picked up before its id was recycled into a real flag, so
+    # the rescue was itself a false positive.
+    flag_id_of_item: dict[int, int] = {}
 
     rows = {
         agent_id: {
@@ -104,18 +126,21 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
     pickups_undeclared_item = 0
     closed_by = {"taken_over": 0, "respawn": 0, "drop": 0, "match_end": 0}
 
-    def close(flag_team: int, when: float, why: str) -> None:
+    def close(flag_id: int, when: float, why: str) -> bool:
+        """End the leg on one flag. True when a leg was actually open."""
         nonlocal legs, carry_untracked_agent
-        held = carrier.pop(flag_team, None)
+        held = carrier.pop(flag_id, None)
         if held is None:
-            return
+            return False
         agent_id, since = held
         legs += 1
         closed_by[why] += 1
         if agent_id in rows:
-            rows[agent_id]["flag_carry_seconds"] += max(0, round(when - since))
+            rows[agent_id]["flag_carry_seconds"] += max(
+                0, round(clip(when) - clip(since)))
         else:
             carry_untracked_agent += 1
+        return True
 
     for when, fields in records:
         kind = fields[0]
@@ -123,24 +148,36 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             # A respawn means the previous flag is gone -- stuck at the stand
             # or returned -- so whoever was holding it is no longer holding it.
             close(fields[3], when, "respawn")
+            flag_id_of_item[fields[1]] = fields[3]
         elif kind == PICKUP and len(fields) >= 3:
-            flag_team = team_of_item.get(fields[1])
-            if flag_team is None:
+            flag_id = flag_id_of_item.get(fields[1])
+            if flag_id is None:
                 pickups_undeclared_item += 1
                 continue
-            close(flag_team, when, "taken_over")
-            carrier[flag_team] = (fields[2], when)
+            close(flag_id, when, "taken_over")
+            # Nobody carries two flags. Without this an agent can hold both and
+            # the two legs overlap, counting the same seconds twice -- 17
+            # occurrences before the recycling fix above, 1 after it.
+            for other_id, (agent_id, _since) in list(carrier.items()):
+                if agent_id == fields[2]:
+                    close(other_id, when, "drop")
+            carrier[flag_id] = (fields[2], when)
             if fields[2] in rows:
                 rows[fields[2]]["flag_pickups"] += 1
         elif kind == DROP and len(fields) >= 2:
-            for flag_team, (agent_id, _since) in list(carrier.items()):
+            # Only a drop that ENDS a carry is a flag drop. 9.3% of DROP records
+            # close no leg: they are the repair kits and vine seeds riding this
+            # packet, which `flag_pickups` already excludes. Counting them here
+            # made the two counters describe different populations.
+            dropped = False
+            for flag_id, (agent_id, _since) in list(carrier.items()):
                 if agent_id == fields[1]:
-                    close(flag_team, when, "drop")
-            if fields[1] in rows:
+                    dropped = close(flag_id, when, "drop") or dropped
+            if dropped and fields[1] in rows:
                 rows[fields[1]]["flag_drops"] += 1
 
-    for flag_team in list(carrier):
-        close(flag_team, match_end, "match_end")
+    for flag_id in list(carrier):
+        close(flag_id, end, "match_end")
 
     output: dict[str, list[dict[str, int]]] = {}
     for agent_id, (party_id, player_number) in players.items():
@@ -155,7 +192,8 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
         "players": output,
         "attribution": {
             "flag_records": len(records),
-            "flag_items_declared": len(team_of_item),
+            "flag_items_declared": len(flag_id_of_item),
+            "flag_match_seconds": round(end - start),
             "flag_carry_legs": legs,
             "flag_carry_legs_untracked_agent": carry_untracked_agent,
             "flag_pickups_undeclared_item": pickups_undeclared_item,
@@ -164,7 +202,10 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             # on the ground stay on their leg: `taken_over` is the share of
             # legs that end that way and is the size of that overcount.
             **{f"flag_leg_closed_{why}": count for why, count in closed_by.items()},
-            "flag_match_end_seconds": round(match_end),
+            # Instance time, not match time. This stream runs on the same clock
+            # as every other timestamp in a recording, and that clock starts
+            # about a minute before the match. Named so nobody divides by it.
+            "flag_stream_end_instance_seconds": round(stream_end),
         },
     }
 

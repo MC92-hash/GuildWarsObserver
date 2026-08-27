@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 from combat_analytics import _player_lookup as player_lookup
@@ -82,7 +83,6 @@ _CRIPPLE_TARGETED: dict[int, str] = {
     1038: "Crippling Dagger",
     1045: "Palm Strike",
     1133: "Drunken Blow",
-    1412: "You're All Alone!",
     1415: "Crippling Slash",
     1535: "Crippling Sweep",
     1767: "Reaper's Sweep",
@@ -91,7 +91,6 @@ _CRIPPLE_TARGETED: dict[int, str] = {
     2135: "Trampling Ox",
     2147: "Crippling Victory",
     2150: "Maiming Spear",
-    2358: "You Move Like a Dwarf!",
 }
 
 # Enchantments that cripple when the ENCHANTED player lands a hit. The cast is
@@ -102,18 +101,31 @@ _CRIPPLE_ONHIT: dict[int, str] = {
     1758: "Harrier's Grasp",
 }
 
-# Untargeted sources. They cripple whoever is nearby or the whole party's foes,
-# so there is no target to join on and they are carried only to be REFUSED
-# against: an onset one of these could explain is one this ledger must not hand
-# to a targeted skill that happened to be in window.
+# Sources with no target this stream can see. Two different reasons, one
+# behaviour: they are candidates for any victim in window, which lets them both
+# earn a credit and, more often, REFUSE one that would otherwise land on a
+# targeted skill that happened to be nearby.
+#
+# Traps and area skills genuinely have no target. The SHOUTS are here because
+# of how they are recorded, not how they work: a shout arrives as
+# `INSTANT_SKILL_USED`, whose payload carries no target, so the record names the
+# caster in the target slot. Measured, "You're All Alone!" appears 862 times
+# across 250 recordings and NEVER with a real target. Listing it as targeted --
+# as this table first did -- meant `target_id in (victim, 0)` could never match
+# it, so it could neither be credited nor refuse, and cripples it caused were
+# handed to whatever targeted skill was in window. Moving it here credits 223
+# more cripples over 120 matches and correctly refuses 21 that had been credited
+# to the wrong player.
 _CRIPPLE_UNTARGETED: dict[int, str] = {
     458: "Barbed Trap",
     461: "Spike Trap",
     854: "Snare",
     985: "Caltrops",
+    1412: "You're All Alone!",
     1476: "Tripwire",
     1554: "Crippling Anthem",
     1642: "Hidden Caltrops",
+    2358: "You Move Like a Dwarf!",
 }
 
 _ACTIVATION_KINDS = ("SKILL_ACTIVATED", "ATTACK_SKILL_ACTIVATED", "INSTANT_SKILL_USED")
@@ -181,8 +193,13 @@ def _records(path: Path):
             yield when, line[close + 1:].strip().split(";")
 
 
-def crippled_intervals(path: Path) -> list[tuple[float, float]]:
-    """(start, end) for every stretch this agent spent crippled.
+def crippled_spans(rows: Iterable[tuple[float, list[str]]]) -> list[tuple[float, float]]:
+    """(start, end) for every stretch an agent spent crippled.
+
+    Takes already-parsed snapshot lines so the file is read once per match
+    rather than once per consumer. Reading it again here cost 1.15 s on a 6.85 s
+    call, which is 45 minutes over a full backfill, entirely to re-parse lines
+    ``player_matrix`` had just parsed.
 
     A stretch still open at the last snapshot is closed there rather than at the
     match end: past the final snapshot nothing was observed, and inventing
@@ -191,7 +208,7 @@ def crippled_intervals(path: Path) -> list[tuple[float, float]]:
     spans: list[tuple[float, float]] = []
     started: float | None = None
     last_time = 0.0
-    for when, fields in _records(path):
+    for when, fields in rows:
         if len(fields) < MIN_SNAPSHOT_FIELDS:
             continue
         last_time = when
@@ -204,6 +221,11 @@ def crippled_intervals(path: Path) -> list[tuple[float, float]]:
     if started is not None and last_time > started:
         spans.append((started, last_time))
     return spans
+
+
+def crippled_intervals(path: Path) -> list[tuple[float, float]]:
+    """:func:`crippled_spans` for one snapshot file, read from disk."""
+    return crippled_spans(_records(path))
 
 
 def _read_activations(match_dir: Path, players: dict):
@@ -224,6 +246,13 @@ def _read_activations(match_dir: Path, players: dict):
                 continue
             if agent_id not in players:
                 continue
+            # A record that names the caster in the target slot is not a skill
+            # aimed at its own caster -- it is a skill whose target this stream
+            # cannot see, which is what `INSTANT_SKILL_USED` always looks like.
+            # Read as targeted-at-self it matches no victim and so can neither
+            # credit nor refuse; read as untargeted it does both.
+            if target_id == agent_id:
+                target_id = 0
             skill_id = canonical_skill_id(skill_id)
             if skill_id in _CRIPPLE_TARGETED or skill_id in _CRIPPLE_UNTARGETED:
                 attempts.append((when, agent_id, target_id, skill_id))
@@ -256,19 +285,38 @@ def _read_landed_attacks(match_dir: Path, players: dict) -> list[tuple[float, in
     return landed
 
 
-def build_condition_ledger(infos: dict, match_dir: Path) -> dict:
+def read_snapshot_records(match_dir: Path, agent_ids: Iterable[int]) -> dict:
+    """agent id -> (time, fields) for every snapshot file that exists.
+
+    Public because the caller reads these once and hands them to both this
+    module and ``player_matrix``: the files are the most expensive thing in a
+    match to open, and parsing them twice cost 45 minutes over a full backfill.
+    """
+    out: dict[int, list[tuple[float, list[str]]]] = {}
+    for agent_id in agent_ids:
+        path = _snapshot_path(match_dir, agent_id)
+        if path is None:
+            continue
+        rows = list(_records(path))
+        if rows:
+            out[agent_id] = rows
+    return out
+
+
+def build_condition_ledger(infos: dict, match_dir: Path,
+                           records: dict | None = None) -> dict:
     """Per-player cripple counters, or {} when the snapshots carry nothing."""
     players = player_lookup(infos)
     if not players:
         return {}
 
+    if records is None:
+        records = read_snapshot_records(match_dir, players)
     spans: dict[int, list[tuple[float, float]]] = {}
     for agent_id in players:
-        path = _snapshot_path(match_dir, agent_id)
-        if path is not None:
-            found = crippled_intervals(path)
-            if found:
-                spans[agent_id] = found
+        found = crippled_spans(records.get(agent_id, ()))
+        if found:
+            spans[agent_id] = found
     if not spans:
         # No snapshot carried the field. Absent is not zero.
         return {}

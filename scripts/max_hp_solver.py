@@ -132,14 +132,14 @@ def _boolean(value: str) -> bool:
     return bool(value) and value[0] != "0"
 
 
-def parse_snapshot_line(line: str) -> Snapshot | None:
-    time = parse_timestamp(line)
-    close = line.find("]")
-    if time is None or close < 0:
-        return None
-    data = line[close + 1:]
-    data = data.lstrip(" \t")
-    fields = data.rstrip("\r\n").split(";")
+def snapshot_from_fields(time: float, fields: list[str]) -> Snapshot | None:
+    """One snapshot from an already-split line.
+
+    Split out of :func:`parse_snapshot_line` so a caller that has already
+    decompressed and split a snapshot file can build these without reading it a
+    second time. The field positions are unchanged -- this is the same
+    arithmetic, given the same list.
+    """
     if len(fields) < 10:
         return None
     # AgentSnapshotParser.cpp positions; later fields are optional.
@@ -150,6 +150,17 @@ def parse_snapshot_line(line: str) -> Snapshot | None:
                     _unsigned_prefix(field(26), 8),
                     _unsigned_prefix(field(27), 16),
                     _unsigned_prefix(field(28), 16))
+
+
+def parse_snapshot_line(line: str) -> Snapshot | None:
+    time = parse_timestamp(line)
+    close = line.find("]")
+    if time is None or close < 0:
+        return None
+    data = line[close + 1:]
+    data = data.lstrip(" \t")
+    fields = data.rstrip("\r\n").split(";")
+    return snapshot_from_fields(time, fields)
 
 
 def read_snapshots(path: Path) -> tuple[Snapshot, ...]:
