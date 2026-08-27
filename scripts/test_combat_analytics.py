@@ -322,3 +322,99 @@ def test_an_attack_skill_interrupt_is_credited():
     result = build_combat_analytics(_infos(), events)
     assert _rows(result)[9]["rupts_inferred"] == 1
     assert result["attribution"]["interrupt_inferred_unique"] == 1
+
+
+# ── the knockdown claim ledger ─────────────────────────────────────────
+
+def test_knockdown_credits_the_one_attempt_that_could_have_caused_it():
+    # Hammer Bash (331) at 1.0s, its knockdown 500 ms later on the target it
+    # named -- the p50 delta measured across the archive.
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:01.500] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 1
+    assert rows[1]["kd_landed"] == 1
+    # Hammer Bash lands 75% archive-wide, so one landed is 1.33x par.
+    assert rows[1]["kd_expected_milli"] == 750
+    assert rows[1]["kd_landed_milli"] == 1000
+    assert result["attribution"]["kd_events_ambiguous"] == 0
+
+
+def test_two_attempts_that_could_equally_claim_it_credit_neither():
+    # Hammer Bash and Devastating Hammer on the same target, both still
+    # unspent when a single knockdown arrives inside both windows. Guessing
+    # would credit whichever sorted first; refusing is the point.
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:01.100] ATTACK_SKILL_ACTIVATED;355;10;20",
+        "[00:01.600] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 2
+    assert rows[1]["kd_landed"] == 0
+    assert result["attribution"]["kd_events_ambiguous"] == 1
+    assert result["attribution"]["kd_events_claimed"] == 0
+
+
+def test_exact_millisecond_shout_claims_before_a_windowed_skill():
+    # "Coward!" (869) resolves server-side in the same millisecond, so it takes
+    # the knockdown it shares a timestamp with; the Hammer Bash swung a moment
+    # earlier keeps its own.
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:01.500] INSTANT_SKILL_USED;869;10;0",
+        "[00:01.500] KNOCKED_DOWN;20;10",
+        "[00:01.800] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 2
+    assert rows[1]["kd_landed"] == 2
+    assert rows[1]["coward_uses"] == 1 and rows[1]["coward_kds"] == 1
+    assert result["attribution"]["kd_events_claimed"] == 2
+
+
+def test_a_knockdown_is_claimable_only_once():
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:05.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:05.400] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 2
+    assert rows[1]["kd_landed"] == 1
+
+
+def test_knockdown_immunity_and_decoupled_skills_are_not_attempts():
+    # Shield Bash (363) prevents a knockdown, Dolyak Signet (361) is immunity,
+    # and Bull's Charge (379) is a stance whose knockdown comes from a later
+    # auto-attack. None of the three is a try, so none may count as one.
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] SKILL_ACTIVATED;363;10;20",
+        "[00:02.000] SKILL_ACTIVATED;361;10;0",
+        "[00:03.000] INSTANT_SKILL_USED;379;10;0",
+        "[00:03.400] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 0
+    assert rows[1]["kd_landed"] == 0
+    assert result["attribution"]["kd_events_unclaimed"] == 1
+
+
+def test_knockdown_outside_the_window_is_not_claimed():
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:03.000] KNOCKED_DOWN;20;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_attempts"] == 1 and rows[1]["kd_landed"] == 0
+
+
+def test_targeted_attempt_does_not_claim_a_knockdown_on_someone_else():
+    result = build_combat_analytics(_infos(), parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;331;10;20",
+        "[00:01.500] KNOCKED_DOWN;99;10",
+    ]))
+    rows = _rows(result)
+    assert rows[1]["kd_landed"] == 0

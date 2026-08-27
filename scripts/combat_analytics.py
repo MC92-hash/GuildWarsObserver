@@ -159,6 +159,103 @@ STOC_SOURCES = REQUIRED_STOC_SOURCES + OPTIONAL_STOC_SOURCES
 BULLS_STRIKE_ID = 332
 COWARD_ID = 869
 
+# How long after a use its knockdown may still arrive. Measured p90 deltas are
+# 784 ms for Hammer Bash and 798 ms for Bull's Strike, with every melee skill
+# under 840 ms and Gale the slowest at 1,034 ms; past 2.4 s the deltas are
+# coincidence, so 1.2 s keeps the real tail and cuts the noise.
+KD_WINDOW_SECONDS = 1.2
+
+# Knockdown attempts, keyed by id -> (name, baseline conversion in thousandths).
+#
+# A skill belongs here when its OWN use is the attempt: you use it, and a
+# knockdown either follows or does not. Excluded are the families where the
+# knockdown is fired by a separate later event, so the use is not the try --
+# stances whose knockdown comes from a subsequent auto-attack (Bull's Charge,
+# 1,319 uses, 4%), hexes and traps that knock down when they end or when the
+# victim moves (Lightning Surge 0%, Wastrel's Collapse 10%, Scorpion Wire 0%,
+# Fetid Ground 0%), and the anti-knockdown skills that only ever prevent one
+# (Shield Bash 3%, Balthazar's Pendulum 0%).
+#
+# The baseline is how often a use was followed by a knockdown from the same
+# agent, measured over 623 recordings. It is what the skill lands on average,
+# so `kd_landed / kd_expected` reads the player instead of the build: a hammer
+# warrior converts 75% because Hammer Bash converts 75%, not because they are
+# good at it.
+#
+# Grouped by how a knockdown is joined back to a use:
+#   EXACT   untargeted, resolves server-side in the same millisecond
+#   TARGET  the knockdown lands on the declared target, inside the window
+#   AREA    untargeted, hits whoever is nearby, inside the window
+_KD_EXACT: dict[int, tuple[str, int]] = {
+    869: ('"Coward!"', 402),                    # 14422 uses  40%
+    170: ("Earthquake", 957),                   #    70 uses  96%
+    891: ('"None Shall Pass!"', 91),            #    44 uses   9%
+}
+_KD_TARGET: dict[int, tuple[str, int]] = {
+    331: ("Hammer Bash", 750),                  #  8016 uses  75%
+    3185: ("Psychic Instability (PvP)", 150),   #  3705 uses  15%
+    1057: ("Psychic Instability", 150),         #   PvP twin
+    332: ("Bull's Strike", 333),                #  2762 uses  33%
+    171: ("Stoning", 171),                      #  1519 uses  17%
+    231: ("Shock", 345),                        #  1132 uses  34%
+    2804: ("Mind Shock (PvP)", 742),            #  1089 uses  74%
+    226: ("Mind Shock", 742),                   #   PvP twin
+    354: ("Earth Shaker", 757),                 #  1024 uses  76%
+    355: ("Devastating Hammer", 749),           #   977 uses  75%
+    237: ("Water Trident", 82),                 #   974 uses   8%
+    2808: ("Enraged Smash (PvP)", 289),         #   737 uses  29%
+    993: ("Enraged Smash", 289),                #   PvP twin
+    162: ("Gale", 321),                         #   386 uses  32%
+    2011: ("Grapple", 251),                     #   383 uses  25%
+    786: ("Iron Palm", 801),                    #   261 uses  80%
+    777: ("Horns of the Ox", 793),              #   184 uses  79%
+    784: ("Entangling Asp", 488),               #   162 uses  49%
+    296: ("Bane Signet", 43),                   #   140 uses   4%
+    2135: ("Trampling Ox", 714),                #    98 uses  71%
+    3193: ("Signet of Clumsiness (PvP)", 276),  #    98 uses  28%
+    1657: ("Signet of Clumsiness", 276),        #   PvP twin
+    356: ("Irresistible Blow", 125),            #    80 uses  12%
+    1767: ("Reaper's Sweep", 615),              #    78 uses  62%
+    358: ("Backbreaker", 746),                  #    71 uses  75%
+    1697: ("Magehunter's Smash", 732),          #    56 uses  73%
+    1146: ("Shove", 553),                       #    47 uses  55%
+    327: ("Griffon's Sweep", 65),               #    46 uses   7%
+    # Dedicated warrior knockdowns too rare to measure -- 15 and 12 uses in 623
+    # recordings. Carried so the attempt count stays complete, at the pooled
+    # rate rather than a baseline the sample cannot support.
+    1410: ("Overbearing Smash", 452),           #    15 uses
+    359: ("Heavy Blow", 452),                   #    12 uses
+}
+_KD_AREA: dict[int, tuple[str, int]] = {
+    843: ("Gust", 430),                         #  2795 uses  43%
+    163: ("Whirlwind", 232),                    #   224 uses  23%
+}
+
+# One more exact-millisecond source is in the recordings and is NOT in the
+# table: skill 3456, 114 uses, 44% conversion, every hit in the same
+# millisecond -- the Coward! signature exactly. The bundled skill data stops at
+# id 3431, so it cannot be named, and an unnamed skill is not something to
+# credit. Counted in the audit as `kd_attempts_unknown` so the gap stays
+# visible and closes itself when the skill data is refreshed.
+_KD_UNKNOWN_EXACT = frozenset({3456})
+
+_KD_ATTEMPT_KINDS = (
+    "SKILL_ACTIVATED", "ATTACK_SKILL_ACTIVATED", "INSTANT_SKILL_USED",
+)
+
+_KD_TIERS: tuple[tuple[str, dict[int, tuple[str, int]]], ...] = (
+    ("exact", _KD_EXACT), ("target", _KD_TARGET), ("area", _KD_AREA),
+)
+
+
+def _kd_spec(skill_id: int) -> tuple[str, int] | None:
+    """(tier, baseline in thousandths) for a knockdown attempt, or None."""
+    for tier, table in _KD_TIERS:
+        entry = table.get(skill_id)
+        if entry is not None:
+            return tier, entry[1]
+    return None
+
 
 def _stoc_path(match_dir: Path, stem: str) -> Path | None:
     stoc_dir = match_dir / "StoC"
@@ -230,6 +327,13 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "coward_kds": 0,
             "bulls_strike_uses": 0,
             "bulls_strike_target_unknown": 0,
+            # Every knockdown skill on the bar, not just the two named ones.
+            # `kd_expected_milli` is the sum of each attempt's baseline, so
+            # landed/expected says whether this player beats what their own
+            # skills land on average.
+            "kd_attempts": 0,
+            "kd_landed": 0,
+            "kd_expected_milli": 0,
         }
         for agent_id in players
     }
@@ -434,45 +538,86 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 rows[interrupter_id]["rupt_cast_progress_ms_sum"] += latency_ms
                 rows[interrupter_id]["rupt_cast_progress_n"] += 1
 
-    # Coward resolves server-side at the same millisecond. Bull's Strike uses
-    # are observable, but success is not: another warrior KD can share its
-    # source/target window, and blocks/KD immunity are absent from the stream.
+    # Every knockdown attempt claims from one pool of knockdowns, tightest
+    # evidence first: same-millisecond untargeted, then target-matched inside
+    # the window, then untargeted area. A knockdown is claimable once, and when
+    # two attempts could equally claim it NEITHER is credited -- the refusal
+    # the interrupt inference already makes. That is what makes this safe where
+    # a per-skill window guess was not: an ambiguous case becomes an audited
+    # number instead of landing on whichever attempt happened to sort first.
+    attempts: list[dict] = []
+    kd_attempts_unknown = 0
+    for event in ordered:
+        if event.kind not in _KD_ATTEMPT_KINDS or len(event.fields) < 3:
+            continue
+        skill_id = _integer(event.fields[0])
+        source_id = _integer(event.fields[1])
+        if not source_id:
+            continue
+        if skill_id in _KD_UNKNOWN_EXACT:
+            kd_attempts_unknown += 1
+            continue
+        spec = _kd_spec(skill_id)
+        if spec is None:
+            continue
+        tier, baseline = spec
+        target_id = _integer(event.fields[2])
+        attempts.append({
+            "time": event.time, "ms": _event_ms(event), "skill": skill_id,
+            "source": source_id, "target": target_id, "tier": tier,
+            "landed": False,
+        })
+        if source_id not in rows:
+            continue
+        rows[source_id]["kd_attempts"] += 1
+        rows[source_id]["kd_expected_milli"] += baseline
+        if skill_id == COWARD_ID:
+            rows[source_id]["coward_uses"] += 1
+        elif skill_id == BULLS_STRIKE_ID:
+            rows[source_id]["bulls_strike_uses"] += 1
+            if target_id <= 0:
+                rows[source_id]["bulls_strike_target_unknown"] += 1
+
     consumed_kds: set[int] = set()
-    coward_uses = [
-        event for event in ordered
-        if event.kind == "INSTANT_SKILL_USED" and len(event.fields) >= 3
-        and _integer(event.fields[0]) == COWARD_ID
-    ]
-    bulls_uses = [
-        event for event in ordered
-        if event.kind == "ATTACK_SKILL_ACTIVATED" and len(event.fields) >= 3
-        and _integer(event.fields[0]) == BULLS_STRIKE_ID
-    ]
+    ambiguous_kds: set[int] = set()
 
-    for use in coward_uses:
-        source_id = _integer(use.fields[1])
-        if source_id not in rows:
+    def _kd_matches(attempt: dict, when: float, victim: int, source: int) -> bool:
+        if attempt["source"] != source:
+            return False
+        if attempt["tier"] == "exact":
+            return round(when * 1000) == attempt["ms"]
+        if not 0 <= when - attempt["time"] <= KD_WINDOW_SECONDS:
+            return False
+        return attempt["tier"] == "area" or attempt["target"] == victim
+
+    for tier, _table in _KD_TIERS:
+        pool = [attempt for attempt in attempts if attempt["tier"] == tier]
+        if not pool:
             continue
-        rows[source_id]["coward_uses"] += 1
-        candidates = [
-            index
-            for index, (kd_time, _victim, kd_source) in enumerate(kd_events)
-            if index not in consumed_kds and kd_source == source_id
-            and round(kd_time * 1000) == _event_ms(use)
-        ]
-        if candidates:
-            index = candidates[0]
+        for index, (kd_time, kd_victim, kd_source) in enumerate(kd_events):
+            if index in consumed_kds or index in ambiguous_kds:
+                continue
+            # An area skill knocks several people down at once, so it stays
+            # claimable after it lands; a single-target one is spent on the
+            # knockdown it made.
+            candidates = [
+                attempt for attempt in pool
+                if (tier == "area" or not attempt["landed"])
+                and _kd_matches(attempt, kd_time, kd_victim, kd_source)
+            ]
+            if not candidates:
+                continue
+            if len(candidates) > 1:
+                ambiguous_kds.add(index)
+                continue
+            winner = candidates[0]
             consumed_kds.add(index)
-            rows[source_id]["coward_kds"] += 1
-
-    for use in bulls_uses:
-        source_id = _integer(use.fields[1])
-        victim_id = _integer(use.fields[2])
-        if source_id not in rows:
-            continue
-        rows[source_id]["bulls_strike_uses"] += 1
-        if victim_id <= 0:
-            rows[source_id]["bulls_strike_target_unknown"] += 1
+            if winner["landed"] or winner["source"] not in rows:
+                continue
+            winner["landed"] = True
+            rows[winner["source"]]["kd_landed"] += 1
+            if winner["skill"] == COWARD_ID:
+                rows[winner["source"]]["coward_kds"] += 1
 
     for agent_id, casts in history.items():
         rows[agent_id]["casts_cancelled_voluntary"] += sum(
@@ -482,6 +627,10 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     output: dict[str, list[dict[str, int]]] = {}
     for agent_id, (party_id, player_number) in players.items():
         row = {"player_number": player_number, **rows[agent_id]}
+        # The expectation is a sum of fractional baselines, so it is carried in
+        # thousandths; the numerator is scaled to match here rather than stored
+        # twice, so the two cannot drift apart.
+        row["kd_landed_milli"] = row["kd_landed"] * 1000
         # A fully observed zero is meaningful here; unlike a missing event
         # stream, it says the event parser ran and nothing happened.
         output.setdefault(party_id, []).append(row)
@@ -513,6 +662,17 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "conditional_kd_events_assigned": len(consumed_kds),
             "conditional_kd_events_unassigned": len(kd_events) - len(consumed_kds),
             "coward_match_tolerance_ms": 0,
+            # How far the knockdown ledger reached, same shape as the interrupt
+            # audit above: attempts seen, knockdowns it explained, knockdowns it
+            # refused because two attempts could equally claim them.
+            "kd_attempt_events": len(attempts),
+            "kd_attempts_unknown_skill": kd_attempts_unknown,
+            "kd_events_claimed": len(consumed_kds),
+            "kd_events_ambiguous": len(ambiguous_kds),
+            "kd_events_unclaimed": (
+                len(kd_events) - len(consumed_kds) - len(ambiguous_kds)
+            ),
+            "kd_window_ms": round(KD_WINDOW_SECONDS * 1000),
         },
     }
 
@@ -529,10 +689,18 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
     if matrix:
         result["player_matrix"] = matrix
     if "attack_skill_events" not in sources:
+        # Most knockdown skills ARE attack skills, so without that stream the
+        # attempts are undercounted while the knockdowns they caused are still
+        # counted -- a conversion rate well above what the player managed.
+        # Withheld entirely rather than published wrong.
         for party_rows in result["players"].values():
             for row in party_rows:
                 row.pop("bulls_strike_uses", None)
                 row.pop("bulls_strike_target_unknown", None)
+                row.pop("kd_attempts", None)
+                row.pop("kd_landed", None)
+                row.pop("kd_landed_milli", None)
+                row.pop("kd_expected_milli", None)
     result["sources"] = sorted(sources)
     return result
 
