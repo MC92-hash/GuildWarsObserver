@@ -418,3 +418,35 @@ def test_targeted_attempt_does_not_claim_a_knockdown_on_someone_else():
     ]))
     rows = _rows(result)
     assert rows[1]["kd_landed"] == 0
+
+
+def test_signet_casts_count_both_pvp_twins_as_one_skill():
+    # 2014 is Signet of Pious Restraint, 3273 its PvP twin. The archive carries
+    # the twin almost exclusively, so a counter keyed on the base id alone
+    # scores zero.
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;3273;10;20",
+        "[00:03.000] SKILL_ACTIVATED;2014;10;20",
+        "[00:05.000] SKILL_ACTIVATED;42;10;20",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[1]["sopr_casts"] == 2
+    assert rows[1]["signet_casts"] == 2
+
+
+def test_an_instant_signet_is_counted_too():
+    # A signet with no cast time arrives as INSTANT_SKILL_USED and never enters
+    # the cast lifecycle, so the counter has to be fed from both branches.
+    events = parse_events([
+        "[00:01.000] INSTANT_SKILL_USED;1530;10;10",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[1]["signet_casts"] == 1
+    assert rows[1]["sopr_casts"] == 0
+
+
+def test_a_pvp_split_knockdown_resolves_without_being_hand_listed():
+    from combat_analytics import _kd_spec
+    # 2804 is hand-listed today; the canonicalisation is what makes a split
+    # created by a FUTURE balance patch land on its base id's baseline.
+    assert _kd_spec(2804) == _kd_spec(226)
