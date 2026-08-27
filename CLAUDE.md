@@ -12,8 +12,9 @@ GW Observer is a Guild Wars 1 GvG match replay and analysis tool. It loads recor
 
 Visual Studio 2022 solution, Platform Toolset v143, C++20 (`/std:c++20`), Warning Level 4.
 
-**Solution path:** `GuildWarsObserver-1.0.2-sourcecode/GuildWarsObserver-1.0.2/GuildWarsObserver.sln`
-**Source files:** `SourceFiles/` (~275 files)
+**Solution path:** `GuildWarsObserver.sln` (repository root)
+**Source files:** `SourceFiles/` (~345 files)
+**Build output:** `x64/Release/GuildWarsObserver.exe`
 
 **Build from command line (bash):**
 ```bash
