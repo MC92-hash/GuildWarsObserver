@@ -515,6 +515,13 @@ STATS_PLAYER_FIELDS = (
     # total_damage, kills and deaths are already in index.json; these are the
     # other three sides of the same story.
     "total_damage_received", "total_healing_dealt", "total_healing_received",
+    # index.json's `kills` counts a killing blow on any agent, two thirds of
+    # which are minions and pets. This is the same count filtered to players.
+    # It goes here rather than into index.json because that object is fetched
+    # by every client on every refresh, and this is website-only. Absent on
+    # every recording made before the plugin gained the counter, which is what
+    # `if field in player` below preserves.
+    "player_kills",
     # team_id ties a player to a side; guild_id is the player's *home* guild,
     # which is what distinguishes a guild's own member from a guest -- a
     # player is a member iff guild_id equals their party's key in `guilds`.
@@ -585,6 +592,15 @@ def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
             print(f"  Warning: combat analytics unavailable: {type(exc).__name__}: {exc}")
             analytics = {}
         if analytics:
+            # Flag carrying is not combat, but it is per-player-per-match, so
+            # it is folded into the same rows -- the shard parser copies any
+            # numeric key a row carries, which is what lets these reach the
+            # consumer without a new reader at every layer.
+            try:
+                from flag_ledger import build_flag_ledger, merge_into_analytics
+                merge_into_analytics(analytics, build_flag_ledger(infos, match_dir))
+            except Exception as exc:
+                print(f"  Warning: flag ledger unavailable: {type(exc).__name__}: {exc}")
             out["combat_analytics"] = analytics
             try:
                 from combat_table import build_combat_table
