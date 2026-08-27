@@ -46,12 +46,43 @@ def _decode_generic(prefix, arities=()):
         return {"t":t,"kind":f[0].lower().replace("_","."),"source":s,"line":n,"fields":f[1:]}
     return decode
 
+# The flag stream is numeric-tagged, NOT FLAG_-prefixed: "[ts] <type>;<f1>;<f2>...".
+# Layouts are the snprintf calls at EventHooks.cpp:989-1085. Decoding it with the
+# generic FLAG_ prefix rejected every line -- 53,525 read and 0 published in the
+# August shard -- so the field names below are the record, not a guess.
+# Two dead fields, deliberately still emitted so a reader sees them as dead:
+# `team_code` on pickup/drop is only ever assigned inside the STATE packet, which
+# the server never sends, so it is always 0 -- a flag's team comes from its item
+# record's `extra_id`. Type 2 itself has zero occurrences in 266,675 records.
+FLAG_RECORDS={0:("flag.pickup",("item_id","agent_id","team_code")),
+              1:("flag.drop",("agent_id","team_code")),
+              2:("flag.state",("team_code","item_id","state")),
+              3:("flag.item",("item_id","model_id","extra_id","type_id")),
+              4:("flag.stand",("stand_agent_id","field","value")),
+              5:("flag.spawn",("agent_id","unknown","object_id")),
+              6:("flag.announce",("action","template_id","team"))}
+# A return and a stick share the announce record and carry a team but NO agent,
+# so both stay at team level here; attributing one to a player is not possible
+# from this stream.
+FLAG_ANNOUNCE={0:"flag.return",1:"flag.stick"}
+
+def _decode_flag(t,f,s,n):
+    if not f or not f[0].isdigit(): return None
+    spec=FLAG_RECORDS.get(_int(f[0]))
+    if spec is None: return None
+    kind,names=spec
+    if len(f)-1<len(names): return None
+    event={"t":t,"kind":kind,"source":s,"line":n}
+    event.update({name:_int(value) for name,value in zip(names,f[1:])})
+    if kind=="flag.announce": event["kind"]=FLAG_ANNOUNCE.get(event["action"],kind)
+    return event
+
 def build_timeline(infos: dict, match_dir: Path) -> dict:
     streams={}; total_audit={}
     names=("jumbo_messages","flag_events","objective_events","door_events",
            "manipulate_map_object_events","lifecycle_events")
     decoders={"jumbo_messages":_decode_jumbo,
-              "flag_events":_decode_generic("FLAG_"),
+              "flag_events":_decode_flag,
               "objective_events":_decode_generic("OBJECTIVE"),
               "door_events":_decode_generic("DOOR_"),
               "manipulate_map_object_events":_decode_generic("MAP_OBJECT"),
