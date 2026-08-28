@@ -496,6 +496,75 @@ def test_a_pvp_split_knockdown_resolves_without_being_hand_listed():
     assert _kd_spec(2804) == _kd_spec(226)
 
 
+def test_a_rupt_at_a_target_who_is_not_casting_is_an_attempt_but_no_denominator():
+    # Savage Shot fired as ordinary pressure. It counts as an attempt, but it
+    # could never have interrupted anything, so it must not dilute the
+    # conversion rate the way dividing by every attempt does.
+    events = parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;426;20;10",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[9]["rupt_attempts"] == 1
+    assert rows[9]["rupt_attempts_on_casting_target"] == 0
+
+
+def test_a_rupt_at_a_casting_target_counts_in_both():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;249;10;10",
+        "[00:01.200] ATTACK_SKILL_ACTIVATED;426;20;10",
+        "[00:01.700] SKILL_FINISHED;10;0;0",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[9]["rupt_attempts"] == 1
+    assert rows[9]["rupt_attempts_on_casting_target"] == 1
+
+
+def test_the_cast_may_begin_after_the_shot_but_inside_its_flight():
+    # An arrow is in the air for up to 3.5 s, so a cast that starts after the
+    # activation is still interruptible by it -- that is the same window the
+    # credit uses, and attempt and credit must not disagree about it.
+    events = parse_events([
+        "[00:01.000] ATTACK_SKILL_ACTIVATED;426;20;10",
+        "[00:02.000] SKILL_ACTIVATED;249;10;10",
+        "[00:03.000] SKILL_FINISHED;10;0;0",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[9]["rupt_attempts_on_casting_target"] == 1
+
+
+def test_the_per_skill_rollup_sums_to_the_published_cast_totals():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;220;10;20",
+        "[00:02.000] SKILL_FINISHED;10;0;20",
+        "[00:03.000] SKILL_ACTIVATED;220;10;20",
+        "[00:04.000] SKILL_STOPPED;10;0;20",
+        "[00:05.000] SKILL_ACTIVATED;249;10;20",
+        "[00:06.000] SKILL_FINISHED;10;0;20",
+    ])
+    result = build_combat_analytics(_infos(), events)
+    rows = _rows(result)
+    per_skill = {
+        row["player_number"]: row.get("skills", {})
+        for party in result["skill_casts"]["players"].values()
+        for row in party
+    }[1]
+    assert per_skill["220"] == [2, 1, 0]
+    assert per_skill["249"] == [1, 1, 0]
+    assert sum(v[0] for v in per_skill.values()) == rows[1]["casts_started"]
+    assert sum(v[1] for v in per_skill.values()) == rows[1]["casts_completed"]
+
+
+def test_the_blind_model_rides_the_same_completed_casts():
+    events = parse_events([
+        "[00:01.000] SKILL_ACTIVATED;220;20;10",
+        "[00:02.000] SKILL_FINISHED;20;0;10",
+    ])
+    rows = _rows(build_combat_analytics(_infos(), events))
+    assert rows[1]["blind_applications_received"] == 1
+    assert rows[1]["blind_seconds_modeled_low"] == 7
+    assert rows[9]["blind_applications_caused"] == 1
+
+
 def test_flag_counters_reach_every_caller_not_just_the_uploader(tmp_path):
     # The flag merge used to live in upload_to_r2, so any other caller of
     # build_from_match_dir got cripple, avatar and kill counters but silently no

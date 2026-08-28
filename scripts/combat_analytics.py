@@ -31,6 +31,7 @@ from __future__ import annotations
 import gzip
 import json
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,12 @@ class Cast:
     started_at: float
     ended_at: float | None = None
     outcome: str = "ended_other"
+    # Who it was aimed at, carried from SKILL_ACTIVATED. The closing record has
+    # a target field too, but it also has a skill id of 0, so nothing on it is
+    # trusted here. Needed by the blind ledger, which has to know both that a
+    # cast completed and who it landed on -- and can get neither from a stream
+    # read on its own.
+    target_id: int = 0
 
 
 def _integer(value: str, default: int = 0) -> int:
@@ -423,6 +430,14 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             # be compared instead of one silently replacing the other.
             "rupts_landed": 0,
             "rupts_inferred": 0,
+            # The denominator `rupts_inferred` never had. An interrupt skill
+            # aimed at somebody who is not casting cannot produce an
+            # INTERRUPTED however well it is aimed, so counting those as misses
+            # understates every interrupter by the share of their bar they
+            # spend applying pressure. Measured on one match, a ranger moves
+            # from 20/42 to 18/35.
+            "rupt_attempts": 0,
+            "rupt_attempts_on_casting_target": 0,
             "rupt_cast_progress_ms_sum": 0,
             "rupt_cast_progress_n": 0,
             "knockdowns_dealt": 0,
@@ -461,6 +476,9 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     # cast aimed at somebody, and every knockdown, collected in pass one and
     # joined in pass two -- the same two-pass shape the cast lifecycle uses.
     rupt_casts: list[tuple[float, int, int, int]] = []
+    # (agent, skill) -> activations, for the per-skill ledger. Attack skills sit
+    # outside the cast lifecycle, so `history` never sees them.
+    attack_attempts: Counter = Counter()
     # A cast is spent on the interrupt it was credited for, the way a knockdown
     # attempt is spent on the knockdown it made.
     consumed_rupt_casts: set[int] = set()
@@ -498,7 +516,8 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 if canonical_skill_id(skill_id) == SOPR_ID:
                     rows[agent_id]["sopr_casts"] += 1
             close_other(agent_id)
-            open_casts[agent_id] = Cast(agent_id, skill_id, event.time)
+            open_casts[agent_id] = Cast(agent_id, skill_id, event.time,
+                                        target_id=target_id)
             rows[agent_id]["casts_started"] += 1
         elif event.kind in {"SKILL_FINISHED", "SKILL_STOPPED"} and len(event.fields) >= 2:
             # Unlike ACTIVATED, the recorder writes caster before skill here.
@@ -525,6 +544,12 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             skill_id = _integer(event.fields[0])
             agent_id = _integer(event.fields[1])
             target_id = _integer(event.fields[2])
+            if agent_id in rows and skill_id > 0:
+                # Attempts only. ATTACK_SKILL_FINISHED fires for a fraction of
+                # these (99 against 406 in one measured match), so the pairing
+                # that classifies a spell cannot classify an attack skill and
+                # the skill ledger publishes no outcome for one.
+                attack_attempts[(agent_id, skill_id)] += 1
             if (agent_id in rows and target_id
                     and _rupt_window(skill_id) is not None):
                 rupt_casts.append((event.time, skill_id, agent_id, target_id))
@@ -804,6 +829,25 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             cast.outcome == "stopped" for cast in casts
         )
 
+    # Every interrupt attempt, and the subset that could ever have worked.
+    #
+    # A rupt aimed at a target who is not casting is not a miss, it is not an
+    # interrupt attempt at all -- rangers in particular fire Savage Shot as
+    # ordinary pressure. Judged against the same window the credit uses, so
+    # attempt and credit cannot disagree about what "in time" means: the target
+    # must have had a cast in flight at some point between the activation and
+    # the end of that window.
+    rupt_attempts_casting = 0
+    for started, skill_id, caster, target in rupt_casts:
+        rows[caster]["rupt_attempts"] += 1
+        window = _rupt_window(skill_id) or 0.0
+        for cast in history.get(target, ()):
+            ended = cast.ended_at if cast.ended_at is not None else cast.started_at
+            if cast.started_at <= started + window and ended >= started:
+                rows[caster]["rupt_attempts_on_casting_target"] += 1
+                rupt_attempts_casting += 1
+                break
+
     output: dict[str, list[dict[str, int]]] = {}
     for agent_id, (party_id, player_number) in players.items():
         row = {"player_number": player_number, **rows[agent_id]}
@@ -817,7 +861,30 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     for party_rows in output.values():
         party_rows.sort(key=lambda row: row["player_number"])
 
-    return {
+    # Rolled up from `history` rather than re-read from the streams, so a
+    # per-skill row and the cast totals beside it cannot disagree -- they are
+    # the same Cast objects grouped differently. A defect here must not cost the
+    # match its combat counters, which is the same contract the sibling ledgers
+    # get in `build_from_match_dir`.
+    skill_casts: dict = {}
+    try:
+        from skill_ledger import build_skill_casts
+        skill_casts = build_skill_casts(players, history, attack_attempts,
+                                        canonical_skill_id)
+    except Exception as exc:  # noqa: BLE001 - never lose the combat rows
+        print(f"  Warning: skill ledger unavailable: {type(exc).__name__}: {exc}")
+
+    # Blind rides the same history for the same reason, plus one of its own: a
+    # blind lands when a cast COMPLETES, and the closing record's skill id is 0.
+    blind: dict = {}
+    try:
+        from blind_ledger import build_blind_ledger
+        blind = build_blind_ledger(players, history, match_seconds(infos),
+                                   canonical_skill_id)
+    except Exception as exc:  # noqa: BLE001 - never lose the combat rows
+        print(f"  Warning: blind ledger unavailable: {type(exc).__name__}: {exc}")
+
+    result = {
         "schema": SCHEMA_VERSION,
         "players": output,
         "attribution": {
@@ -832,6 +899,8 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "interrupt_inferred_ambiguous": rupt_inferred_ambiguous,
             "interrupt_inferred_none": rupt_inferred_none,
             "interrupt_from_knockdown": rupt_from_knockdown,
+            "rupt_attempts": len(rupt_casts),
+            "rupt_attempts_on_casting_target": rupt_attempts_casting,
             "rupt_spell_window_ms": round(RUPT_SPELL_WINDOW_SECONDS * 1000),
             "rupt_attack_window_ms": round(RUPT_ATTACK_WINDOW_SECONDS * 1000),
             "match_early_ms": round(INTERRUPT_MATCH_EARLY_SECONDS * 1000),
@@ -858,6 +927,13 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "kd_window_ms": round(KD_WINDOW_SECONDS * 1000),
         },
     }
+    if skill_casts:
+        result["skill_casts"] = skill_casts
+    if blind:
+        # Numeric per-player keys, so these ride the ordinary row merge and
+        # reach `stats_index.parse_shard` with no change at any layer between.
+        _merge_ledger(result, blind)
+    return result
 
 
 def _by_party(rows: Iterable[dict]) -> dict[str, list[dict]]:
@@ -987,6 +1063,11 @@ def merge_preserving_richer(prior: dict, current: dict) -> dict:
     attribution = dict(prior.get("attribution", {}))
     attribution.update(current.get("attribution", {}))
     merged["attribution"] = attribution
+    # Same contract as every other block here: a re-upload from a recording
+    # missing `attack_skill_events` must not delete counters an earlier, richer
+    # pass already published.
+    if not merged.get("skill_casts") and prior.get("skill_casts"):
+        merged["skill_casts"] = prior["skill_casts"]
 
     players: dict[str, list[dict]] = {}
     party_ids = set(prior.get("players", {})) | set(current.get("players", {}))
