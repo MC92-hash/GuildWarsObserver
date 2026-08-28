@@ -77,6 +77,19 @@ struct SkillInfo
     bool energyDelayed = false;
 };
 
+// The printf format that states a cast or recharge time exactly.
+//
+// Guild Wars counts these in quarters of a second, and "%.1f" cannot hold a quarter: it renders
+// 0.75 as "0.8" and 0.25 as "0.2". That is 267 of the 299 skills with a fractional time showing a
+// number the game never uses. So pick the shortest format that loses nothing, whole seconds
+// plain, halves to one decimal and quarters to two, rather than a fixed width that has to round.
+inline const char* SkillTimeFormat(float seconds)
+{
+    if (seconds == (float)(int)seconds)               return "%.0f";
+    if (seconds * 2.f == (float)(int)(seconds * 2.f)) return "%.1f";
+    return "%.2f";
+}
+
 class SkillDatabaseView
 {
 public:

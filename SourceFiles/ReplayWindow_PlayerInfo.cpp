@@ -856,13 +856,9 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 CostInt("upkeep.png", "%d", -si->upkeep);
 
             if (si->activation > 0)
-                CostFloat("activation.png",
-                    (si->activation == (int)si->activation) ? "%.0f" : "%.1f",
-                    si->activation);
+                CostFloat("activation.png", SkillTimeFormat(si->activation), si->activation);
             if (si->recharge > 0)
-                CostFloat("recharge.png",
-                    (si->recharge == (int)si->recharge) ? "%.0f" : "%.1f",
-                    si->recharge);
+                CostFloat("recharge.png", SkillTimeFormat(si->recharge), si->recharge);
             CostInt("overcast.png", "%d", si->overcast);
         }
 
