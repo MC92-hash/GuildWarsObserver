@@ -494,3 +494,22 @@ def test_a_pvp_split_knockdown_resolves_without_being_hand_listed():
     # 2804 is hand-listed today; the canonicalisation is what makes a split
     # created by a FUTURE balance patch land on its base id's baseline.
     assert _kd_spec(2804) == _kd_spec(226)
+
+
+def test_flag_counters_reach_every_caller_not_just_the_uploader(tmp_path):
+    # The flag merge used to live in upload_to_r2, so any other caller of
+    # build_from_match_dir got cripple, avatar and kill counters but silently no
+    # flag counters -- which produced an empty flag leaderboard and no error.
+    stoc = tmp_path / "StoC"
+    stoc.mkdir()
+    with gzip.open(stoc / "skill_events.txt.gz", "wt", encoding="utf-8") as handle:
+        handle.write("[00:01.000] SKILL_ACTIVATED;42;20;10\n")
+    with gzip.open(stoc / "combat_events.txt.gz", "wt", encoding="utf-8") as handle:
+        handle.write("[00:01.700] INTERRUPTED;20;42;0\n")
+    with gzip.open(stoc / "flag_events.txt.gz", "wt", encoding="utf-8") as handle:
+        handle.write("[00:00.100] 3;45;493;59808;6\n")
+        handle.write("[00:10.000] 0;45;10;0\n")
+        handle.write("[00:40.000] 1;10;0\n")
+    row = _rows(build_from_match_dir(_infos(), tmp_path))[1]
+    assert row["flag_carry_seconds"] == 30
+    assert row["flag_pickups"] == 1

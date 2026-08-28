@@ -932,12 +932,20 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
     # stream, so neither depends on the StoC sources gated above. Both are
     # absent rather than zero when their source is missing, and a defect in
     # either must not cost the match its combat counters.
+    # The flag ledger belongs here with its siblings. It used to be merged one
+    # layer up in `upload_to_r2.build_stats_entry`, with a byte-for-byte copy of
+    # `_merge_ledger`, which meant every OTHER caller of this function got the
+    # cripple, avatar and kill counters but silently no flag counters. That is
+    # not hypothetical: it produced a leaderboard with two empty flag tables and
+    # no error. `build_stats_entry` still calls the flag merge afterwards and it
+    # is idempotent -- the same values land on the same rows.
     ledgers = (
         ("condition_ledger", "build_condition_ledger",
          {"records": snapshot_records or None}),
         ("avatar_ledger", "build_avatar_ledger", {}),
         ("kill_ledger", "build_kill_ledger",
          {"records": snapshot_records or None}),
+        ("flag_ledger", "build_flag_ledger", {}),
     )
     for module_name, builder_name, kwargs in ledgers:
         try:
