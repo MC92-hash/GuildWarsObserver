@@ -371,6 +371,15 @@ void ReplayWindow::BuildSkillSoundTimeline()
 
         for (const auto& use : ard.skillUseHistory) {
             const SkillSoundEntry* entry = m_skillSoundTable->Get(static_cast<uint32_t>(use.skillId));
+            if (!entry) {
+                // A PvP split is a separate skill id sharing the PvE original's sound, and the
+                // capture only ever recorded the original. Without this fallback a skill goes
+                // silent the day it is split: the August 2026 update split 32 skills, 18 of them
+                // with captured sounds, Frenzy, Flail, Dash and Wastrel's Worry among them.
+                const int baseId = GetSkillDatabase().ResolveBaseSkillId(use.skillId);
+                if (baseId != use.skillId)
+                    entry = m_skillSoundTable->Get(static_cast<uint32_t>(baseId));
+            }
             if (!entry) continue;
 
             const bool truncated = use.wasCancelled || use.wasInterrupted;

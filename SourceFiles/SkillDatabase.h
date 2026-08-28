@@ -140,6 +140,11 @@ public:
 
     int ResolvePvpSkillId(int skillId) const;
 
+    // The reverse direction: the PvE original a PvP-only id was split from, or the id itself
+    // when it is not the PvP half of anything. Only the PvE row carries the link (so Get can
+    // follow it to answer as the PvP half), so walking back needs an index rather than a field.
+    int ResolveBaseSkillId(int skillId) const;
+
     static void ParseScalesFromDescription(SkillInfo& si);
     static void ClassifyDeductionUsability(SkillInfo& si);
 
@@ -149,6 +154,7 @@ public:
 
 private:
     std::unordered_map<int, SkillInfo> m_skills;
+    std::unordered_map<int, int> m_pvpToBase; // PvP-only skill id -> the PvE id it was split from
     bool m_loaded = false;
 
     struct SkillPatch {

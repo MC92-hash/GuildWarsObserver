@@ -1,7 +1,7 @@
 {
   "date": "2026-06-24",
   "description": "June 2026 balance update",
-  "notes": "Four entries carry a field June did not actually change: Black Spider Strike (energy), Mirage Cloak (energy), Mighty Throw (adrenaline) and Disrupting Chop (adrenaline). Each is set to the value in force during the June era, which is also what the 2026-08-26 patch records as its pre-patch value. They are here so a client built before the GetView field-merge fix still renders pre-June replays correctly: that loader assigned a whole SkillInfo per patch, so June - applied last - would otherwise write today's value back over August's rollback. Harmless on a fixed loader, which sets them to the same values. See scripts/check_skillpatches.py.",
+  "notes": "32 entries here carry fields June did not actually change. Each is set to the value in force during the June era, which is also what the 2026-08-26 patch records as its pre-patch value, so they are no-ops on a correct loader. They exist so a client built before the GetView field-merge fix still renders pre-June replays correctly: that loader assigned a whole SkillInfo per patch, so June - applied last - would otherwise write today's value back over August's rollback. The set grew from four when the August patch was rebuilt from the client's own skill table and turned out to cover six times as many skills as the hand-transcribed first pass. scripts/check_skillpatches.py names both the skill and the value to add.",
   "skills": {
     "799": {
       "energy": 15
@@ -17,14 +17,16 @@
       "recharge": 1
     },
     "1021": {
-      "recharge": 10
+      "recharge": 10,
+      "description": "Must follow a lead attack. If it hits, this attack strikes for +10...25 damage. If it hits a foe that was Crippled, that foe and all adjacent foes take +1...31 damage."
     },
     "1030": {
       "activation": 1
     },
     "1034": {
       "energy": 15,
-      "recharge": 12
+      "recharge": 12,
+      "description": "For 1...7 seconds, target foe moves 33% slower. That foe takes 5...25 damage each second while suffering from a condition. This spell has half the normal range."
     },
     "949": {
       "recharge": 45
@@ -32,19 +34,24 @@
     "1514": {
       "recharge": 10,
       "description": "For 2...6 seconds, you cannot be knocked down and move 25% faster. This enchantment ends prematurely if it prevents a knockdown.",
-      "concise": "(2...6 seconds.) You cannot be knocked down and move 25% faster. Ends if knockdown prevented."
+      "concise": "(2...6 seconds.) You cannot be knocked down and move 25% faster. Ends if knockdown prevented.",
+      "pvp_split": false,
+      "split_id": 0
     },
     "1500": {
       "recharge": 10,
       "description": "For 1...7 seconds, you have a 40...80% chance to block incoming attacks. When you cast this enchantment, all nearby foes are struck for 10...40 earth damage.",
       "concise": "(1...7 seconds.) You have 40...80% chance to block. Initial Effect: deals 10...40 earth damage to nearby foes.",
-      "energy": 10
+      "energy": 10,
+      "pvp_split": false,
+      "split_id": 0
     },
     "1516": {
       "energy": 10
     },
     "1491": {
-      "activation": 1
+      "activation": 1,
+      "recharge": 8
     },
     "1765": {
       "recharge": 6
@@ -53,7 +60,9 @@
       "energy": 10,
       "recharge": 6,
       "description": "For 1...6 seconds, you move 33% faster than normal. The next time you strike a foe, all other nearby foes take 10...60 cold damage and this enchantment ends.",
-      "concise": "(1...6 seconds.) You move 33% faster. Deal 10...60 cold damage to all other nearby foes the next time you hit a foe and this enchantment ends."
+      "concise": "(1...6 seconds.) You move 33% faster. Deal 10...60 cold damage to all other nearby foes the next time you hit a foe and this enchantment ends.",
+      "pvp_split": false,
+      "split_id": 0
     },
     "1085": {
       "recharge": 15
@@ -74,7 +83,8 @@
       "concise": "(8 seconds.) You have +20...80 armor. Renewal bonus: cast a spell."
     },
     "205": {
-      "energy": 10
+      "energy": 10,
+      "description": "After 3 seconds, target foe is knocked down and struck for 14...100 lightning damage, and has Cracked Armor for 5...20 seconds. This spell has 25% armor penetration."
     },
     "1372": {
       "recharge": 25,
@@ -82,7 +92,8 @@
       "concise": "Deals 10...30 earth damage each second (10 seconds). Hits foes near target foe's initial location. Hits attacking foes for 20...40 more earth damage each second."
     },
     "1081": {
-      "energy": 5
+      "energy": 5,
+      "activation": 0.75
     },
     "36": {
       "recharge": 20
@@ -123,10 +134,13 @@
       "recharge": 12
     },
     "1057": {
-      "recharge": 12
+      "recharge": 12,
+      "description": "Interrupt the target foe's action. If that action was a skill, that foe and nearby foes are knocked down for 2...4 seconds. (50% failure chance with Fast Casting 4 or less.)"
     },
     "1342": {
-      "recharge": 15
+      "recharge": 15,
+      "pvp_split": false,
+      "split_id": 0
     },
     "1335": {
       "recharge": 3
@@ -134,7 +148,9 @@
     "50": {
       "recharge": 1,
       "description": "After 3 seconds, target foe takes 20...100 damage; all adjacent foes take the same damage. If that foe successfully uses a skill, Wastrel's Worry ends prematurely and does no damage.",
-      "concise": "(3 seconds). End effect: causes 20...100 damage to target; adjacent foes take the same damage. No effect and ends early if target foe uses a skill. "
+      "concise": "(3 seconds). End effect: causes 20...100 damage to target; adjacent foes take the same damage. No effect and ends early if target foe uses a skill. ",
+      "pvp_split": false,
+      "split_id": 0
     },
     "272": {
       "energy": 25,
@@ -145,7 +161,8 @@
     },
     "1692": {
       "recharge": 5,
-      "activation": 1
+      "activation": 1,
+      "energy": 10
     },
     "258": {
       "recharge": 4
@@ -191,7 +208,8 @@
       "activation": 3
     },
     "832": {
-      "activation": 3
+      "activation": 3,
+      "description": "Exploit nearest corpse to animate a level 3...25 Flesh Golem. The Flesh Golem leaves an exploitable corpse. You can have only one Flesh Golem at a time."
     },
     "1351": {
       "energy": 15,
@@ -205,7 +223,8 @@
       "activation": 2
     },
     "98": {
-      "energy": 10
+      "energy": 10,
+      "description": "Exploit a random corpse. You teleport to that corpse's location and gain 25...100 Health and 5...20 Energy."
     },
     "151": {
       "recharge": 20
@@ -228,7 +247,8 @@
     "1562": {
       "energy": 10,
       "activation": 2,
-      "recharge": 20
+      "recharge": 20,
+      "description": "For 10 seconds, the next time each ally within earshot uses a Spell, that ally gains 1...6 Energy."
     },
     "1564": {
       "recharge": 20
@@ -242,14 +262,18 @@
       "concise": "Deals +1...31 damage. Inflicts Deep Wound condition (5...20 seconds) if target is not moving."
     },
     "2207": {
-      "recharge": 20
+      "recharge": 20,
+      "description": "You lose all adrenaline and target other ally gains 1...4 strikes of adrenaline."
     },
     "1772": {
-      "recharge": 20
+      "recharge": 20,
+      "description": "For 5...20 seconds, the next time each ally within earshot uses a Signet, that ally loses 1 Condition."
     },
     "1547": {
       "activation": 3,
-      "adrenaline": 2
+      "adrenaline": 2,
+      "pvp_split": false,
+      "split_id": 0
     },
     "1771": {
       "recharge": 20
@@ -264,7 +288,8 @@
     },
     "1550": {
       "activation": 3,
-      "adrenaline": 7
+      "adrenaline": 7,
+      "recharge": 0
     },
     "1561": {
       "recharge": 20
@@ -283,28 +308,38 @@
       "recharge": 20
     },
     "853": {
-      "recharge": 8
+      "recharge": 8,
+      "pvp_split": false,
+      "split_id": 0
     },
     "1206": {
       "recharge": 20
     },
     "462": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. For creatures within its range, all elemental damage is cold damage instead. This spirit dies after 30...150 seconds."
     },
     "465": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. For non-spirit creatures within its range, all physical damage is fire damage instead. This spirit dies after 30...150 seconds."
     },
     "961": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. Bleeding creatures within its range suffer -2 Health degeneration. When this spirit dies, all non-spirit creatures within its range that have less than 90% Health begin Bleeding for 5...25 seconds. This spirit dies after 30...150 seconds."
     },
     "997": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. Whenever a non-spirit creature in its range reaches 0 Energy, that creature takes 10...35 damage. This spirit dies after 30...90 seconds."
     },
     "1212": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. Spells cast within its range that cause Overcast cause an additional 10 Overcast. This spirit dies after 30...150 seconds."
     },
     "1730": {
-      "activation": 3
+      "activation": 3,
+      "description": "Create a level 1...10 spirit. Non-spirit creatures within its range gain adrenaline twice as fast. This spirit dies after 30...60 seconds.",
+      "pvp_split": false,
+      "split_id": 0
     },
     "3023": {
       "activation": 3,
@@ -321,11 +356,13 @@
       "activation": 3
     },
     "1219": {
-      "recharge": 25
+      "recharge": 25,
+      "description": "Hold Kaolai's ashes for up to 15...60 seconds. While you hold his ashes, you gain 10 armor. When you drop his ashes, all party members are healed for 10...85 Health."
     },
     "3006": {
       "activation": 5,
-      "recharge": 45
+      "recharge": 45,
+      "description": "Create a level 1...6 spirit. The spirit's attacks deal 5...20 damage and cause Blindness for 1...6 seconds. This spirit dies after 30 seconds. "
     },
     "1736": {
       "recharge": 30
@@ -340,7 +377,8 @@
       "concise": "(5...11 seconds.) You steal 5...35 Health from every foe that hits you with an attack."
     },
     "1268": {
-      "energy": 10
+      "energy": 10,
+      "activation": 2
     },
     "370": {
       "energy": 5,
@@ -376,7 +414,9 @@
     "381": {
       "recharge": 25,
       "description": "For 15 seconds, whenever you attack with a sword, all adjacent foes take 10...25 slashing damage.",
-      "concise": "(15 seconds.) Deals 10...25 slashing damage to all adjacent foes whenever you attack with a sword."
+      "concise": "(15 seconds.) Deals 10...25 slashing damage to all adjacent foes whenever you attack with a sword.",
+      "pvp_split": false,
+      "split_id": 0
     },
     "390": {
       "recharge": 15
@@ -438,11 +478,13 @@
     },
     "186": {
       "description": "Send out a ball of fire that strikes target foe and all adjacent foes for 7...112 fire damage.",
-      "concise": "Projectile: deals 7...112 fire damage to target and adjacent foes."
+      "concise": "Projectile: deals 7...112 fire damage to target and adjacent foes.",
+      "activation": 1
     },
     "222": {
       "description": "Strike target foe for 5...50 lightning damage. This spell has 25% armor penetration. If you are Overcast, that foe is hexed with Lightning Strike for 3 seconds. When this hex ends, that foe is struck again for 5...50 lightning damage.",
-      "concise": "Deals 5...50 lightning damage. 25% armor penetration. Hex for 3 seconds if Overcast. End effect: deals 5...50 lightning damage."
+      "concise": "Deals 5...50 lightning damage. 25% armor penetration. Hex for 3 seconds if Overcast. End effect: deals 5...50 lightning damage.",
+      "type": 22
     },
     "228": {
       "description": "Create a massive shockwave at target foe's location. Deals 10...50 lightning damage to target and all adjacent foes. Struck foes are interrupted and suffer from Cracked Armor and Weakness for 5...20 seconds. This spell has 25% armor penetration.",

@@ -83,6 +83,12 @@ bool SkillDatabase::Load(const std::string& dataDir)
         ClassifyDeductionUsability(si);
     }
 
+    // Index the splits the other way round for ResolveBaseSkillId.
+    m_pvpToBase.clear();
+    for (const auto& [id, si] : m_skills)
+        if (si.pvp_split && si.split_id > 0)
+            m_pvpToBase[si.split_id] = id;
+
     m_loaded = !m_skills.empty();
     if (m_loaded)
         m_baseView = std::make_shared<const std::unordered_map<int, SkillInfo>>(m_skills);
@@ -560,6 +566,12 @@ std::vector<int> SkillDatabaseView::SortSkillsForDisplay(
     return result;
 }
 
+int SkillDatabase::ResolveBaseSkillId(int skillId) const
+{
+    auto it = m_pvpToBase.find(skillId);
+    return (it != m_pvpToBase.end()) ? it->second : skillId;
+}
+
 int SkillDatabaseView::ResolvePvpSkillId(int skillId) const
 {
     if (!m_data) return skillId;
@@ -591,6 +603,11 @@ static bool AssignPatchField(SkillInfo& old, const std::string& field, const jso
     else if (field == "type")        old.type        = val.get<int>();
     else if (field == "profession")  old.profession  = val.get<int>();
     else if (field == "attribute")   old.attribute   = val.get<int>();
+    // A skill split for PvP part-way through the tool's history had no split before that
+    // date, and Get/GetView follow pvp_split to answer as the PvP half. Without these two a
+    // replay predating the split renders the PvP numbers for a skill that had none.
+    else if (field == "pvp_split")   old.pvp_split   = val.get<bool>();
+    else if (field == "split_id")    old.split_id    = val.get<int>();
     else if (field == "name")        old.name        = val.get<std::string>();
     else if (field == "description") old.description = val.get<std::string>();
     else if (field == "concise")     old.concise     = val.get<std::string>();
@@ -613,6 +630,8 @@ static void CopyPatchField(SkillInfo& dst, const std::string& field, const Skill
     else if (field == "type")        dst.type        = src.type;
     else if (field == "profession")  dst.profession  = src.profession;
     else if (field == "attribute")   dst.attribute   = src.attribute;
+    else if (field == "pvp_split")   dst.pvp_split   = src.pvp_split;
+    else if (field == "split_id")    dst.split_id    = src.split_id;
     else if (field == "name")        dst.name        = src.name;
     else if (field == "description") dst.description = src.description;
     else if (field == "concise")     dst.concise     = src.concise;
