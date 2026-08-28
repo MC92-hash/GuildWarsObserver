@@ -179,17 +179,30 @@ def _snapshot_path(match_dir: Path, agent_id: int) -> Path | None:
                  if p.is_file()), None)
 
 
+# The recorder writes this bare, with no timestamp, when an agent id is recycled
+# onto a different agent. It carries no state of its own but it ends the previous
+# agent's, so it is passed through with the last time seen rather than dropped --
+# 1 to 3 of them appear in nearly every snapshot file. A reader that does not
+# care about it skips it on the field-count check.
+INCARNATION_BREAK = "# INCARNATION_BREAK"
+
+
 def _records(path: Path):
     """(time, fields) for a timestamped semicolon stream."""
+    last = 0.0
     with _open(path) as handle:
         for line in handle:
             line = line.strip()
+            if line.startswith(INCARNATION_BREAK):
+                yield last, [INCARNATION_BREAK]
+                continue
             close = line.find("]")
             if not line.startswith("[") or close < 0:
                 continue
             when = _seconds(line[1:close])
             if when is None:
                 continue
+            last = when
             yield when, line[close + 1:].strip().split(";")
 
 
@@ -209,6 +222,12 @@ def crippled_spans(rows: Iterable[tuple[float, list[str]]]) -> list[tuple[float,
     started: float | None = None
     last_time = 0.0
     for when, fields in rows:
+        if fields and fields[0].startswith(INCARNATION_BREAK):
+            # A different agent now owns this id; whatever was crippled is gone.
+            if started is not None and last_time > started:
+                spans.append((started, last_time))
+            started = None
+            continue
         if len(fields) < MIN_SNAPSHOT_FIELDS:
             continue
         last_time = when

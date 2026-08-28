@@ -860,6 +860,18 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     }
 
 
+def _by_party(rows: Iterable[dict]) -> dict[str, list[dict]]:
+    """Flat rows carrying ``party_id`` into the party-keyed ledger shape."""
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        party_id = str(row.get("party_id", ""))
+        if not party_id:
+            continue
+        out.setdefault(party_id, []).append(
+            {k: v for k, v in row.items() if k != "party_id"})
+    return out
+
+
 def _merge_ledger(result: dict, ledger: dict) -> None:
     """Fold a sibling ledger's per-player rows into the combat rows.
 
@@ -897,7 +909,13 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
     snapshot_records: dict = {}
     try:
         from condition_ledger import read_snapshot_records
-        snapshot_records = read_snapshot_records(match_dir, _player_lookup(infos))
+        from kill_ledger import agent_roster
+        # Players AND the NPCs, because the kill ledger needs a guild lord's
+        # death as much as a player's. The max-HP solver and the cripple ledger
+        # index by agent id and ignore the extra keys.
+        roster_players, roster_npcs = agent_roster(infos)
+        snapshot_records = read_snapshot_records(
+            match_dir, list(roster_players) + list(roster_npcs))
     except Exception as exc:  # noqa: BLE001 - fall back to each reading its own
         print(f"  Warning: snapshot read unavailable: {type(exc).__name__}: {exc}")
 
@@ -906,6 +924,10 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
                                  records=snapshot_records or None)
     if matrix:
         result["player_matrix"] = matrix
+        # The burst figure rides the per-player row, not a matrix edge:
+        # `stats_index.parse_shard` whitelists edge fields and would drop an
+        # unknown one silently, while it copies any numeric key on a player row.
+        _merge_ledger(result, {"players": _by_party(matrix.get("spike", ()))})
     # Cripple comes from the agent snapshots and avatar uptime from the model
     # stream, so neither depends on the StoC sources gated above. Both are
     # absent rather than zero when their source is missing, and a defect in
@@ -914,6 +936,8 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
         ("condition_ledger", "build_condition_ledger",
          {"records": snapshot_records or None}),
         ("avatar_ledger", "build_avatar_ledger", {}),
+        ("kill_ledger", "build_kill_ledger",
+         {"records": snapshot_records or None}),
     )
     for module_name, builder_name, kwargs in ledgers:
         try:

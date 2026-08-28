@@ -1,4 +1,13 @@
-"""Observed player-to-player combat packet matrix for Watchtower."""
+"""Observed player-to-player combat packet matrix for Watchtower.
+
+Also computes **damage compression**: the most damage a player put on a single
+enemy player inside any short window. Every ingredient was already here -- the
+packets are millisecond-stamped and this module already converts each one to
+absolute HP -- and only the timestamp was being thrown away. It lives here
+rather than in a module of its own because ``upload_to_r2.py`` wraps the whole
+analytics call in a broad ``except``, so a new module that failed to import
+would cost the match every counter it has, not just this one.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +19,22 @@ from max_hp_solver import (Observation, correct_max_hp_for_packet, cpp_round,
                            solve_observations)
 
 MATRIX_SCHEMA = 1
+
+# The burst window, in seconds.
+#
+# Two, not three, and it was measured. Best window on a single enemy player,
+# median by profession over 45 archived matches, Assassin against Warrior:
+#
+#     1 s   188 vs 172   (+9%)        3 s   294 vs 270   (+9%)
+#     2 s   250 vs 219   (+14%)       5 s   346 vs 328   (+5%)
+#
+# The separation peaks at two seconds and decays as the window widens toward
+# what `damage_per_min` already measures -- which is the burst-versus-sustained
+# split this metric exists to capture. Change this and the counter name changes
+# with it, because a stored `spike_2s_max` that silently became three seconds
+# would be unreadable next to the archive that came before it.
+SPIKE_WINDOW_SECONDS = 2.0
+SPIKE_FIELD = "spike_2s_max"
 
 
 def _integer(value, default=0):
@@ -90,6 +115,10 @@ def build_player_matrix(infos: dict, events, match_dir: Path,
     edges = defaultdict(lambda: {"damage": 0, "healing": 0,
                                 "damage_packets": 0, "healing_packets": 0,
                                 "damage_type_counts": {}})
+    # (time, amount) per attacker-victim pair, enemy players only, for the
+    # window scan below. Collected in the loop that already converts every
+    # packet to absolute HP, so it costs one append and no extra file read.
+    spikes: dict[tuple[int, int], list[tuple[float, int]]] = defaultdict(list)
     audit = defaultdict(int)
     for event in packet_events:
         audit["packet_events"] += 1
@@ -118,8 +147,15 @@ def build_player_matrix(infos: dict, events, match_dir: Path,
         max_hp = correct_max_hp_for_packet(max_hp, fraction)
         amount = cpp_round(abs(fraction) * max_hp)
         key = (source_id, target_id)
-        if event.kind == "DAMAGE":
+        # The SIGN decides, not the record kind. Recordings before 2026-05 have
+        # no `HEAL` kind at all and file armor-ignoring heals as positive-valued
+        # `DAMAGE` -- 371 of 2,375 archived matches, every one of them April
+        # 2026. Branching on `event.kind` alone counted those heals as damage.
+        healing = fraction > 0
+        if event.kind == "DAMAGE" and not healing:
             edges[key]["damage"] += amount
+            if players[source_id][0] != players[target_id][0]:
+                spikes[key].append((event.time, amount))
             edges[key]["damage_packets"] += 1
             audit["included_damage"] += amount
             type_counts = edges[key]["damage_type_counts"]
@@ -139,4 +175,49 @@ def build_player_matrix(infos: dict, events, match_dir: Path,
                        "source_player_number": source_number,
                        "target_party_id": target_party,
                        "target_player_number": target_number, **values})
-    return {"schema": MATRIX_SCHEMA, "edges": output, "audit": dict(audit)}
+    return {"schema": MATRIX_SCHEMA, "edges": output,
+            "spike": spike_rows(spikes, players), "audit": dict(audit)}
+
+
+def best_window(hits: list[tuple[float, int]],
+                window: float = SPIKE_WINDOW_SECONDS) -> int:
+    """Most damage inside any ``window``-second span of one attacker-victim pair.
+
+    Two pointers over the packets in time order, so it is linear in hits rather
+    than quadratic in windows. The span is inclusive at both ends: two packets
+    exactly ``window`` apart are one burst.
+    """
+    if not hits:
+        return 0
+    ordered = sorted(hits)
+    best = run = 0
+    low = 0
+    for high, (when, amount) in enumerate(ordered):
+        run += amount
+        while ordered[low][0] < when - window:
+            run -= ordered[low][1]
+            low += 1
+        if run > best:
+            best = run
+    return best
+
+
+def spike_rows(spikes: dict, players: dict) -> list[dict]:
+    """Per-player best burst against a SINGLE enemy, keyed for the shard merge.
+
+    Deliberately NOT hung off a matrix edge: ``stats_index.parse_shard``
+    whitelists edge fields and would drop an unknown one silently. This is
+    emitted as its own block and merged onto the per-player analytics row, where
+    the parser copies any numeric key.
+    """
+    best: dict[int, int] = defaultdict(int)
+    for (source_id, _target_id), hits in spikes.items():
+        value = best_window(hits)
+        if value > best[source_id]:
+            best[source_id] = value
+    rows = []
+    for source_id, value in sorted(best.items()):
+        party_id, player_number = players[source_id]
+        rows.append({"party_id": party_id, "player_number": player_number,
+                     SPIKE_FIELD: value})
+    return rows
