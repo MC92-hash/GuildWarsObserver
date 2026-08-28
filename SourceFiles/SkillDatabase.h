@@ -4,7 +4,13 @@
 #include <unordered_map>
 #include <memory>
 
-enum class SkillScaleKind : uint8_t { None, Damage, Heal, LifeSteal, LifeLoss, Duration };
+// Energy = the caster gains Energy, EnergyLoss = a foe loses it. They are separate kinds
+// because the two arrive on opposite sides of the energy stream: a gain moves the caster's own
+// bar, a loss moves the victim's, and only the sign of the sample tells them apart.
+enum class SkillScaleKind : uint8_t
+{
+    None, Damage, Heal, LifeSteal, LifeLoss, Duration, Energy, EnergyLoss
+};
 
 struct SkillScale
 {
@@ -48,7 +54,41 @@ struct SkillInfo
     SkillScaleKind deductionKind = SkillScaleKind::None;
     float dedV0 = 0;                           // usable scale endpoints (rank 0 / rank 15)
     float dedV15 = 0;
+
+    // A second Heal scale the first one can be added to. Word of Healing pays 5...100, or that
+    // plus 30...115 when the target is below half health, and nothing in the recording says
+    // which - so the observation is matched against bp1(r) OR bp1(r) + bp2(r) and the rank set
+    // carries the ambiguity instead of the skill being thrown away for having two scales.
+    bool  dedTwoScale = false;
+    float dedV0b = 0;
+    float dedV15b = 0;
+
+    // The same classification for the energy stream, kept apart from the health one because a
+    // skill can be a clean ruler on both at once: Drain Enchantment scales its heal AND its
+    // energy with Inspiration, and rejecting it for having two scales would throw away both.
+    bool energyUsable = false;
+    SkillScaleKind energyKind = SkillScaleKind::None;  // Energy or EnergyLoss
+    float enV0 = 0;
+    float enV15 = 0;
+
+    // The energy arrives when the effect ENDS, not when the skill is cast (Signet of Recall,
+    // Renewing Surge, Zealous Renewal). By then the recorder's 2 s attribution window has
+    // closed, so the sample carries skill 0 and has to be matched against the caster's bar.
+    bool energyDelayed = false;
 };
+
+// The printf format that states a cast or recharge time exactly.
+//
+// Guild Wars counts these in quarters of a second, and "%.1f" cannot hold a quarter: it renders
+// 0.75 as "0.8" and 0.25 as "0.2". That is 267 of the 299 skills with a fractional time showing a
+// number the game never uses. So pick the shortest format that loses nothing, whole seconds
+// plain, halves to one decimal and quarters to two, rather than a fixed width that has to round.
+inline const char* SkillTimeFormat(float seconds)
+{
+    if (seconds == (float)(int)seconds)               return "%.0f";
+    if (seconds * 2.f == (float)(int)(seconds * 2.f)) return "%.1f";
+    return "%.2f";
+}
 
 class SkillDatabaseView
 {
@@ -100,6 +140,11 @@ public:
 
     int ResolvePvpSkillId(int skillId) const;
 
+    // The reverse direction: the PvE original a PvP-only id was split from, or the id itself
+    // when it is not the PvP half of anything. Only the PvE row carries the link (so Get can
+    // follow it to answer as the PvP half), so walking back needs an index rather than a field.
+    int ResolveBaseSkillId(int skillId) const;
+
     static void ParseScalesFromDescription(SkillInfo& si);
     static void ClassifyDeductionUsability(SkillInfo& si);
 
@@ -109,6 +154,7 @@ public:
 
 private:
     std::unordered_map<int, SkillInfo> m_skills;
+    std::unordered_map<int, int> m_pvpToBase; // PvP-only skill id -> the PvE id it was split from
     bool m_loaded = false;
 
     struct SkillPatch {

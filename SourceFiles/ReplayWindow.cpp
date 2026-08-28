@@ -5521,21 +5521,29 @@ void ReplayWindow::Tick()
         m_armourSolved = true;
     }
 
-    // Deduce attributes from combat log
-    if (m_combatLogBuilt && m_maxHpBreakpointSolved && !m_attributesDeduced)
+    // Solve each player's attribute build. It runs last of the analysis passes because it reads
+    // all of them: the combat log for the packet evidence, the breakpoint-refined max HP that
+    // turns a packet fraction into a magnitude, and the solved armour that says which ranks a
+    // player's runes could have reached.
+    if (m_combatLogBuilt && m_maxHpBreakpointSolved && m_armourSolved && m_modelChangesBuilt &&
+        !m_attributesDeduced)
     {
-        auto resolveMaxHpLambda = [this](int agentId, float t) -> std::pair<uint32_t, bool> {
+        AttributeModel::Inputs attrInputs;
+        attrInputs.skills    = &m_skillView;
+        attrInputs.combatLog = &m_combatLog;
+        attrInputs.stoc      = &m_replayCtx.stocData;
+        attrInputs.resolveMaxHp = [this](int agentId, float t) -> std::pair<uint32_t, bool> {
             auto it = m_replayCtx.agents.find(agentId);
             if (it == m_replayCtx.agents.end()) return { 0, true };
             auto sample = ResolveMaxHp(it->second, t);
             return { sample.value, sample.estimated };
         };
-        m_attrProfiles = DeduceAttributes(
-            m_replayCtx.agents,
-            m_combatLog,
-            m_skillView,
-            resolveMaxHpLambda);
+        attrInputs.skillBar = [this](int agentId) { return SkillBarForAgent(agentId); };
+
+        m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;
+
+        WriteAttributeDebugDump();
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
@@ -5717,6 +5725,37 @@ void ReplayWindow::Tick()
         RenderLoadingScreen();
         break;
     }
+}
+
+// The match index lists the skills a player used, which for a GvG player is their bar. Agent ids
+// are the index's own ids, so no model lookup is needed here.
+std::vector<int> ReplayWindow::SkillBarForAgent(int agentId) const
+{
+    for (const auto& [partyId, party] : m_matchMeta.parties)
+    {
+        for (const auto& pm : party.players)
+            if (pm.id == agentId) return pm.used_skills;
+        for (const auto& pm : party.others)
+            if (pm.id == agentId) return pm.used_skills;
+    }
+    return {};
+}
+
+void ReplayWindow::WriteAttributeDebugDump() const
+{
+    char flag[16] = {};
+    if (GetEnvironmentVariableA("GWO_ATTR_DEBUG", flag, (DWORD)sizeof(flag)) == 0) return;
+
+    char tempDir[MAX_PATH] = {};
+    if (GetTempPathA(MAX_PATH, tempDir) == 0) return;
+
+    std::string folder = m_replayCtx.matchFolderPath.filename().string();
+    if (folder.empty()) folder = "replay";
+    for (char& c : folder)
+        if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
+
+    const std::string path = std::string(tempDir) + "gwo_attributes_" + folder + ".txt";
+    AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView);
 }
 
 void ReplayWindow::Update(double elapsedMs)

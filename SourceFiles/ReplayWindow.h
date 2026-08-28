@@ -419,9 +419,17 @@ private:
     int  m_clSelectedRowIdx   = -1;
     bool m_clScrollToSelected = false;
 
-    // --- Attribute Deduction ---
+    // --- Attribute Model ---
     bool m_attributesDeduced = false;
-    std::unordered_map<int, PlayerAttributeProfile> m_attrProfiles;
+    std::unordered_map<int, AttributeModel::PlayerBuild> m_attrProfiles;
+
+    // The eight skills the match index lists for a player, which the evidence providers need to
+    // ask "which skill on this bar could have paid this out?".
+    std::vector<int> SkillBarForAgent(int agentId) const;
+
+    // Writes the whole solve to %TEMP% when GWO_ATTR_DEBUG is set. There is no UI for the
+    // evidence yet, and a model nobody can inspect is a model nobody can correct.
+    void WriteAttributeDebugDump() const;
 
     // Skill name filter (multi-select with autocomplete)
     char m_clSkillSearchBuf[128] = {};

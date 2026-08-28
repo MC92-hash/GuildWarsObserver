@@ -407,6 +407,63 @@ inline int PetHealthModifier(PetEvolution e)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Summoned minions
+//
+// A minion arrives the way a pet does: a living NPC on its master's team, identified only by
+// its model id. Unlike a pet it has no evolution and no health model of its own, and unlike
+// every other NPC it leaves no corpse - the game removes it the moment it dies, which is why
+// IsNpcHiddenWhenDead answers true for every row here and each drawing site asks before
+// leaving a body on the map.
+//
+// One row per model id. Each file number was checked in Gw.dat to be a character model
+// (GEOM TEXFN on stream 2, BB8geo on stream 0), the same shape as the Bone Horror's, so a
+// row that fails to render is a wrong id rather than a wrong kind of file. Models render at
+// their .dat native size: the game does not scale them and there is no measured height to
+// fit them to.
+// ---------------------------------------------------------------------------
+
+struct MinionInfo
+{
+    uint32_t    modelId;
+    const char* name;      // what the party window shows
+    uint32_t    fileHash;  // .dat model
+};
+
+inline constexpr MinionInfo kMinions[] = {
+    { 2280, "Bone Horror",         0xBE07  },
+    { 2281, "Bone Fiend",          0xC419  },
+    { 2282, "Bone Minion",         0xBE07  }, // shares the Bone Horror model
+    { 4260, "Flesh Golem",         0x29A1B },
+    { 5711, "Vabbi Peasant",       0x32C38 },
+    { 4765, "Istani Peasant",      0x3BDEE },
+    { 3300, "Canthan Peasant",     0x2D1B2 },
+    { 3308, "Canthan Peasant",     0x2D1C1 },
+    { 1492, "Unsuccessful Novice", 0x1C80D },
+    { 6453, "Norn Commander",      0x4CA0B },
+};
+
+inline const MinionInfo* LookupMinion(uint32_t modelId)
+{
+    for (const MinionInfo& m : kMinions)
+        if (m.modelId == modelId) return &m;
+    return nullptr;
+}
+
+inline const char* LookupMinionName(uint32_t modelId)
+{
+    const MinionInfo* m = LookupMinion(modelId);
+    return m ? m->name : nullptr;
+}
+
+inline uint32_t LookupMinionFileHash(uint32_t modelId)
+{
+    const MinionInfo* m = LookupMinion(modelId);
+    return m ? m->fileHash : 0;
+}
+
+inline bool IsMinionModelId(uint32_t modelId) { return LookupMinion(modelId) != nullptr; }
+
 inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
                                      int primaryProf = 0, bool isFemale = false)
 {
@@ -420,13 +477,13 @@ inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
     if (type == AgentType::NPC) {
         switch (modelId) {
         case 168: return 0x1FC00; // Lesser Flame Sentinel (Druid's Isle)
-        case 2280: return 0xBE07; // Bone Horror (summoned minion)
         case 170: return 0x2D161; // Guild Lord
         case 172: return 0x2D236; // Bodyguard
         case 173: return 0x26C4A; // Footman (same model as Knight)
         case 174: return 0x26C4A; // Knight
         case 175: case 176: return 0x2D18A; // Archer
         }
+        if (uint32_t minion = LookupMinionFileHash(modelId)) return minion;
         if (uint32_t pet = LookupPetFileHash(modelId)) return pet;
     }
     return 0;
@@ -481,7 +538,6 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
         switch (modelId) {
         // Lesser Flame Sentinel: real in-game height ~329.73 (fit to it)
         case 168: return { 0x1FC00, 329.731781f, 1.0f, 329.731781f };
-        case 2280: return { 0xBE07, 0.f, 1.0f };          // Bone Horror (native size)
         case 170: return { 0x2D161, 98.454437f, 1.3f };  // Guild Lord (0x82 = 130%)
         case 172: return { 0x2D236, 75.844055f, 1.0f };  // Bodyguard
         case 173: return { 0x26C4A, 75.734184f, 1.0f };  // Footman
@@ -489,8 +545,9 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
         case 175:
         case 176: return { 0x2D18A, 72.0f,      1.0f };  // Archer
         }
-        // Pets render at their .dat native size: the game does not scale them, and there is
-        // no measured GWCA height to fit them to.
+        // Minions and pets render at their .dat native size: the game does not scale them,
+        // and there is no measured GWCA height to fit them to.
+        if (uint32_t minion = LookupMinionFileHash(modelId)) return { minion, 0.f, 1.0f };
         if (uint32_t pet = LookupPetFileHash(modelId)) return { pet, 0.f, 1.0f };
     }
     return { 0, 0.f, 1.0f };
@@ -540,26 +597,62 @@ inline const char* LookupNpcName(uint32_t modelId)
 {
     switch (modelId) {
     case 168: return "Lesser Flame Sentinel";
-    case 2280: return "Bone Horror";
     case 170: return "Guild Lord";
     case 172: return "Bodyguard";
     case 173: return "Footman";
     case 174: return "Knight";
     case 175: return "Archer";
     case 176: return "Archer";
-    default:  return LookupPetName(modelId);
     }
+    if (const char* minion = LookupMinionName(modelId)) return minion;
+    return LookupPetName(modelId);
 }
 
 // NPCs (summoned minions) that should disappear from the world/minimap when
 // dead, instead of persisting like a Player grave or a faded NPC corpse.
 inline bool IsNpcHiddenWhenDead(uint32_t modelId)
 {
+    return IsMinionModelId(modelId);
+}
+
+// ---------------------------------------------------------------------------
+// Guild hall NPC maximum health
+//
+// The eight NPCs that come with the guild hall have a fixed maximum, and it is fixed in a
+// stronger sense than a player's: they wear no armour, carry no runes or insignias, swap no
+// weapon sets, and take no morale. Nothing in a match moves these numbers except Deep Wound,
+// which is a percentage taken off the end like it is for everyone.
+//
+// That is why they are a lookup rather than a solve. The forward model exists because a
+// player's maximum is a sum of unknowns; an Archer's is a constant, and running it through
+// armour solving or packet decimals can only turn a known number into an estimated one.
+//
+// The Guild Lord's 1680 is the whole of his health but not the whole of his survivability.
+// His Amulet of Protection caps how fast he can lose it: 25 health per second at 0:00, rising
+// over the first 12 minutes to 300 per second, and anything past the cap is healed back once a
+// second. So raw damage dealt to a Lord and health actually taken off him are different
+// quantities -- early damage especially, where most of a spike is refunded. The cap changes
+// nothing here (a maximum is a maximum), but it is the reason a Lord's health bar falls far
+// slower than the damage numbers aimed at it suggest.
+//
+// Returns 0 for any model id that is not one of these NPCs, including summoned minions and
+// pets, whose health is built elsewhere.
+// ---------------------------------------------------------------------------
+
+inline uint32_t LookupGuildNpcMaxHealth(uint32_t modelId)
+{
     switch (modelId) {
-    case 2280: return true;  // Bone Horror
-    default:   return false;
+    case 170: return 1680; // Guild Lord
+    case 172: return 480;  // Bodyguard
+    case 173: return 480;  // Footman
+    case 174: return 480;  // Knight
+    case 175:
+    case 176: return 480;  // Archer
+    default:  return 0;
     }
 }
+
+inline bool IsGuildNpcModelId(uint32_t modelId) { return LookupGuildNpcMaxHealth(modelId) != 0; }
 
 inline const char* LookupGadgetName(uint32_t gadgetId)
 {
@@ -1514,6 +1607,45 @@ struct SoundLogEvent
 };
 
 // ---------------------------------------------------------------------------
+// Energy events (from energy_events.txt)
+//
+// The recorder points the camera at an agent right after a cast and reports the energy the
+// effect moved, never the cast cost: value id 54 carries gains and losses only. So the stream
+// is a ruler for the attribute that scaled the effect, not an energy model.
+//
+// `skillId` is the watch's skill, or the 2 s attribution ring's guess, or 0 when the payout
+// arrived too late to be tied to anything (Signet of Recall, Renewing Surge, Chaos Storm ticks).
+// `causeId` is who caused the change - the agent itself for self gains and for chant refunds -
+// and `agentId` is whose energy actually moved.
+// ---------------------------------------------------------------------------
+
+struct EnergySample
+{
+    float time    = 0.f;
+    int   skillId = 0;
+    int   causeId = 0;
+    int   agentId = 0;
+    int   delta   = 0;
+};
+
+// One summary line per (caster, skill) pair, written when the recording ends. `mode` is the
+// value the pair settled on; min == max says the pair is constant and safe to trust, a spread
+// says it either genuinely varies or the attribution ring picked up a second source.
+//
+// Recordings made before the spread was added carry only samples and mode; the parser leaves
+// min and max equal to mode there, which reads as "constant" - the honest default, since those
+// recordings say nothing either way.
+struct EnergyCoverage
+{
+    int skillId  = 0;
+    int casterId = 0;
+    int samples  = 0;
+    int mode     = 0;
+    int minValue = 0;
+    int maxValue = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Flag events (from flag_events.txt — GvG flag StoC packets)
 // ---------------------------------------------------------------------------
 
@@ -1682,6 +1814,8 @@ struct StoCData
     FlagEventData                       flagEvents;
     std::vector<SoundLogEvent>          soundEvents;
     std::vector<ModelChangeEvent>       modelEvents;
+    std::vector<EnergySample>           energySamples;
+    std::vector<EnergyCoverage>         energyCoverage;
     Equipment::Data                     equipment;
 };
 

@@ -312,6 +312,7 @@
     <ClInclude Include="SourceFiles\MaxHpSolver.h" />
     <ClInclude Include="SourceFiles\ArmourNames.h" />
     <ClInclude Include="..\gwobserver-private\SourceFiles\HealthModel.h" />
+    <ClInclude Include="..\gwobserver-private\SourceFiles\AttributeModel.h" />
     <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
@@ -570,6 +571,8 @@
     <ClCompile Include="SourceFiles\AttributeDeducer.cpp" />
     <ClCompile Include="SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="..\gwobserver-private\SourceFiles\HealthModel.cpp" />
+    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeModel.cpp" />
+    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CharacterPanel.cpp" />
     <ClCompile Include="..\gwobserver-private\SourceFiles\ReplayWindow_HealthDebug.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />

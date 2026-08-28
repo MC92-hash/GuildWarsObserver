@@ -856,13 +856,9 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 CostInt("upkeep.png", "%d", -si->upkeep);
 
             if (si->activation > 0)
-                CostFloat("activation.png",
-                    (si->activation == (int)si->activation) ? "%.0f" : "%.1f",
-                    si->activation);
+                CostFloat("activation.png", SkillTimeFormat(si->activation), si->activation);
             if (si->recharge > 0)
-                CostFloat("recharge.png",
-                    (si->recharge == (int)si->recharge) ? "%.0f" : "%.1f",
-                    si->recharge);
+                CostFloat("recharge.png", SkillTimeFormat(si->recharge), si->recharge);
             CostInt("overcast.png", "%d", si->overcast);
         }
 
@@ -2290,26 +2286,28 @@ void ReplayWindow::DrawPlayerInfoPanel()
         else
         {
             const auto& profile = it->second;
-            for (const auto& est : profile.attributes)
-            {
-                if (est.attributeId < 0) continue;
-                const char* attrName = GetSkillDatabase().GetAttributeName(est.attributeId);
-                if (!attrName) attrName = "Unknown";
 
-                char rankStr[32];
-                if (est.rank >= 0)
-                {
-                    if (est.observations == 0 || est.lowConfidence)
-                        snprintf(rankStr, sizeof(rankStr), "%d?", est.rank);
-                    else
-                        snprintf(rankStr, sizeof(rankStr), "%d", est.rank);
-                }
-                else
-                    snprintf(rankStr, sizeof(rankStr), "?");
+            // The map is unordered; attribute id happens to group a profession's lines together,
+            // which is the order the game's own attribute window uses.
+            std::vector<int> attrIds;
+            attrIds.reserve(profile.attributes.size());
+            for (const auto& [attrId, range] : profile.attributes) attrIds.push_back(attrId);
+            std::sort(attrIds.begin(), attrIds.end());
+
+            for (int attrId : attrIds)
+            {
+                const AttributeModel::AttributeRange& range = profile.attributes.at(attrId);
+                const char* attrName = GetSkillDatabase().GetAttributeName(attrId);
+                if (!attrName || !attrName[0]) attrName = "Unknown";
+
+                // An exact rank, a range, or a ceiling the 200-point rule imposed on an attribute
+                // nothing was ever observed on. Formatted by the model, so this panel and the
+                // character sheet cannot end up saying the same solve two different ways.
+                const std::string rankStr = AttributeModel::FormatRange(range);
 
                 ImU32 textCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
                 char line[128];
-                snprintf(line, sizeof(line), "%s: %s", attrName, rankStr);
+                snprintf(line, sizeof(line), "%s: %s", attrName, rankStr.c_str());
                 dl->AddText(nullptr, 11.f, attrPos, textCol, line);
                 attrPos.y += 16.f;
             }

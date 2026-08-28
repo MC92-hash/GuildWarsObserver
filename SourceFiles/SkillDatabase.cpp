@@ -83,6 +83,12 @@ bool SkillDatabase::Load(const std::string& dataDir)
         ClassifyDeductionUsability(si);
     }
 
+    // Index the splits the other way round for ResolveBaseSkillId.
+    m_pvpToBase.clear();
+    for (const auto& [id, si] : m_skills)
+        if (si.pvp_split && si.split_id > 0)
+            m_pvpToBase[si.split_id] = id;
+
     m_loaded = !m_skills.empty();
     if (m_loaded)
         m_baseView = std::make_shared<const std::unordered_map<int, SkillInfo>>(m_skills);
@@ -137,10 +143,18 @@ bool SkillDatabase::Load(const std::string& dataDir)
     return m_loaded;
 }
 
+// Answers as the PvP half too, for the same reason as the view above. This is the undated
+// accessor, used where no replay date is in hand, so it reads the current split rather than the
+// one that was live on a match day.
 const SkillInfo* SkillDatabase::Get(int skillId) const
 {
     auto it = m_skills.find(skillId);
     if (it == m_skills.end()) return nullptr;
+    if (it->second.pvp_split && it->second.split_id > 0)
+    {
+        auto pvp = m_skills.find(it->second.split_id);
+        if (pvp != m_skills.end()) return &pvp->second;
+    }
     return &it->second;
 }
 
@@ -428,11 +442,33 @@ int SkillDatabase::ResolvePvpSkillId(int skillId) const
 // SkillDatabaseView
 // ---------------------------------------------------------------------------
 
+// A skill that has a PvP split answers as its PvP half.
+//
+// This tool only ever shows GvG, so the split is the skill as every match it loads actually
+// played it. The two halves are not a rounding apart: PvE Aegis blocks attacks for the party
+// while PvP Aegis makes one ally untargetable by spells, so serving the PvE entry is not an
+// imprecise answer but the wrong skill.
+//
+// It resolves here rather than at each call site because the two id forms arrive from different
+// places and only one of them was ever wrong. The StoC stream already names the PvP id, so casts,
+// the combat log and the analytics were right; a player's bar in infos.json names the PvE id, and
+// every place that reads that bar was showing PvE text for a PvP match. Putting the rule in the
+// accessor makes it hold for readers nobody has thought of yet.
+//
+// Date correctness comes for free: this reads the view's own data, so a replay from before a split
+// existed sees pvp_split false on that day's entry and keeps the only version there was. Callers
+// that need the id rather than the entry still have ResolvePvpSkillId, and resolving twice is
+// harmless because a PvP entry never carries a split of its own.
 const SkillInfo* SkillDatabaseView::Get(int skillId) const
 {
     if (!m_data) return nullptr;
     auto it = m_data->find(skillId);
     if (it == m_data->end()) return nullptr;
+    if (it->second.pvp_split && it->second.split_id > 0)
+    {
+        auto pvp = m_data->find(it->second.split_id);
+        if (pvp != m_data->end()) return &pvp->second;
+    }
     return &it->second;
 }
 
@@ -530,6 +566,12 @@ std::vector<int> SkillDatabaseView::SortSkillsForDisplay(
     return result;
 }
 
+int SkillDatabase::ResolveBaseSkillId(int skillId) const
+{
+    auto it = m_pvpToBase.find(skillId);
+    return (it != m_pvpToBase.end()) ? it->second : skillId;
+}
+
 int SkillDatabaseView::ResolvePvpSkillId(int skillId) const
 {
     if (!m_data) return skillId;
@@ -561,6 +603,11 @@ static bool AssignPatchField(SkillInfo& old, const std::string& field, const jso
     else if (field == "type")        old.type        = val.get<int>();
     else if (field == "profession")  old.profession  = val.get<int>();
     else if (field == "attribute")   old.attribute   = val.get<int>();
+    // A skill split for PvP part-way through the tool's history had no split before that
+    // date, and Get/GetView follow pvp_split to answer as the PvP half. Without these two a
+    // replay predating the split renders the PvP numbers for a skill that had none.
+    else if (field == "pvp_split")   old.pvp_split   = val.get<bool>();
+    else if (field == "split_id")    old.split_id    = val.get<int>();
     else if (field == "name")        old.name        = val.get<std::string>();
     else if (field == "description") old.description = val.get<std::string>();
     else if (field == "concise")     old.concise     = val.get<std::string>();
@@ -583,6 +630,8 @@ static void CopyPatchField(SkillInfo& dst, const std::string& field, const Skill
     else if (field == "type")        dst.type        = src.type;
     else if (field == "profession")  dst.profession  = src.profession;
     else if (field == "attribute")   dst.attribute   = src.attribute;
+    else if (field == "pvp_split")   dst.pvp_split   = src.pvp_split;
+    else if (field == "split_id")    dst.split_id    = src.split_id;
     else if (field == "name")        dst.name        = src.name;
     else if (field == "description") dst.description = src.description;
     else if (field == "concise")     dst.concise     = src.concise;
@@ -725,14 +774,20 @@ SkillDatabaseView SkillDatabase::GetBaseView() const
     return SkillDatabaseView(m_baseView);
 }
 
-void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
+// ---------------------------------------------------------------------------
+// ClassifyRangeContext
+//
+// What kind of magnitude an "X...Y" range names, decided from the words around it. Shared by
+// ParseScalesFromDescription and ClassifyDeductionUsability so the two can never drift: they
+// answer different questions about the same ranges, and the moment their context rules differ
+// a skill can be scaled one way and deduced another.
+//
+// Returns None for a range the surrounding text does not explain (a recharge, a chance, a
+// number of foes), which the callers drop.
+// ---------------------------------------------------------------------------
+static SkillScaleKind ClassifyRangeContext(const std::string& text,
+                                           size_t matchStart, size_t matchEnd)
 {
-    si.scales.clear();
-
-    // Prefer the full description; fall back to the concise form.
-    const std::string& text = !si.description.empty() ? si.description : si.concise;
-    if (text.empty()) return;
-
     auto toLower = [](const std::string& s) {
         std::string out = s;
         std::transform(out.begin(), out.end(), out.begin(),
@@ -751,12 +806,83 @@ void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
     auto contains = [](const std::string& s, const char* needle) {
         return s.find(needle) != std::string::npos;
     };
+    auto endsWith = [](const std::string& s, const char* sfx) {
+        size_t n = std::strlen(sfx);
+        return s.size() >= n && s.compare(s.size() - n, n, sfx) == 0;
+    };
+    // "damage" possibly preceded by a single qualifier word ("cold damage").
+    static const std::regex kDamageRe(R"(^\s*(?:[a-z]+\s+)?damage)");
+
+    // Percentages are ratios, not absolute magnitudes.
+    if (matchEnd < text.size() && text[matchEnd] == '%')
+        return SkillScaleKind::None;
+
+    // ~40 chars of context on each side, lower-cased.
+    const size_t beforeStart = (matchStart > 40) ? matchStart - 40 : 0;
+    const std::string before = toLower(text.substr(beforeStart, matchStart - beforeStart));
+    const std::string after =
+        toLower(text.substr(matchEnd, std::min<size_t>(40, text.size() - matchEnd)));
+    const std::string afterTrim = ltrim(after);
+
+    if (startsWith(afterTrim, "second"))
+        return SkillScaleKind::Duration;   // "for X...Y second(s)" / "X...Y seconds"
+
+    if (startsWith(afterTrim, "health"))
+    {
+        // "maximum Health" is a ceiling on a pool, not a magnitude any packet carries.
+        if (endsWith(before, "maximum ")) return SkillScaleKind::None;
+        if (contains(before, "steal")) return SkillScaleKind::LifeSteal;
+        if (contains(before, "lose") || contains(before, "sacrifice"))
+            return SkillScaleKind::LifeLoss;
+        if (contains(before, "heal") || contains(before, "gain") || contains(before, "regain"))
+            return SkillScaleKind::Heal;
+        return SkillScaleKind::None;
+    }
+
+    if (startsWith(afterTrim, "energy"))
+    {
+        // "Energy regeneration" is a pip rate, not a magnitude: nothing in the energy
+        // stream ever equals it. Without this guard "The Power Is Yours!" (1...2 Energy
+        // regeneration) would read as a 1...2 energy gain.
+        if (startsWith(afterTrim, "energy regeneration")) return SkillScaleKind::None;
+        if (contains(before, "lose")) return SkillScaleKind::EnergyLoss;   // covers "loses"
+        if (contains(before, "gain")) return SkillScaleKind::Energy;       // covers "gains"
+        return SkillScaleKind::None;
+    }
+
+    // Heals that name no unit after the number. "Target ally is healed for 20...120." and
+    // "Heal target ally for 15...60 points." are the exact wording of half the Monk bar -
+    // Healing Burst, Signet of Rejuvenation, Shield Guardian, Wielder's Boon, Death's Charge -
+    // and the missing word "Health" is the only reason the rules above never saw them.
+    {
+        const std::string tail12 = before.size() <= 12 ? before : before.substr(before.size() - 12);
+        const std::string tail24 = before.size() <= 24 ? before : before.substr(before.size() - 24);
+        if (contains(tail12, "healed for"))
+            return SkillScaleKind::Heal;
+        // "Heal target ally for" also opens sentences that go on to name something else, so the
+        // number has to be the end of the clause or carry a health unit.
+        if (contains(tail24, "heal target ally for") &&
+            (afterTrim.empty() || afterTrim[0] == '.' || startsWith(afterTrim, "points")))
+            return SkillScaleKind::Heal;
+    }
+
+    if (std::regex_search(afterTrim, kDamageRe))
+        return SkillScaleKind::Damage;
+
+    return SkillScaleKind::None;
+}
+
+void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
+{
+    si.scales.clear();
+
+    // Prefer the full description; fall back to the concise form.
+    const std::string& text = !si.description.empty() ? si.description : si.concise;
+    if (text.empty()) return;
 
     // Matches two-value ranges such as "82...172". GW descriptions never use a
     // three-value form, so a single pattern suffices.
     static const std::regex kRangeRe(R"((\d+)\.\.\.(\d+))");
-    // "damage" possibly preceded by a single qualifier word ("cold damage").
-    static const std::regex kDamageRe(R"(^\s*(?:[a-z]+\s+)?damage)");
 
     auto begin = std::sregex_iterator(text.begin(), text.end(), kRangeRe);
     auto end   = std::sregex_iterator();
@@ -773,40 +899,10 @@ void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
             continue;
         }
 
-        size_t matchStart = (size_t)m.position(0);
-        size_t matchEnd   = matchStart + (size_t)m.length(0);
+        const size_t matchStart = (size_t)m.position(0);
+        const size_t matchEnd   = matchStart + (size_t)m.length(0);
 
-        // Percentages are ratios, not absolute magnitudes.
-        if (matchEnd < text.size() && text[matchEnd] == '%')
-            continue;
-
-        // ~40 chars of context on each side, lower-cased.
-        size_t beforeStart = (matchStart > 40) ? matchStart - 40 : 0;
-        std::string before = toLower(text.substr(beforeStart, matchStart - beforeStart));
-        std::string after  = toLower(text.substr(matchEnd, std::min<size_t>(40, text.size() - matchEnd)));
-        std::string afterTrim = ltrim(after);
-
-        SkillScaleKind kind = SkillScaleKind::None;
-
-        if (startsWith(afterTrim, "second"))
-        {
-            // "for X...Y second(s)" / "X...Y seconds"
-            kind = SkillScaleKind::Duration;
-        }
-        else if (startsWith(afterTrim, "health"))
-        {
-            if (contains(before, "steal"))
-                kind = SkillScaleKind::LifeSteal;
-            else if (contains(before, "lose") || contains(before, "sacrifice"))
-                kind = SkillScaleKind::LifeLoss;
-            else if (contains(before, "heal") || contains(before, "gain") ||
-                     contains(before, "regain"))
-                kind = SkillScaleKind::Heal;
-        }
-
-        if (kind == SkillScaleKind::None && std::regex_search(afterTrim, kDamageRe))
-            kind = SkillScaleKind::Damage;
-
+        const SkillScaleKind kind = ClassifyRangeContext(text, matchStart, matchEnd);
         if (kind == SkillScaleKind::None)
             continue; // unmatched context -> drop
 
@@ -820,18 +916,92 @@ void SkillDatabase::ParseScalesFromDescription(SkillInfo& si)
 }
 
 // ---------------------------------------------------------------------------
+// ClassifyEnergyScale
+//
+// The energy half of ClassifyDeductionUsability, split out so the two streams read as two
+// independent decisions rather than one tangled one.
+//
+// Three differences from the health rules, each for a reason:
+//   * no minimum span. Energy ranges are small by nature (Chaos Storm loses 0...2), and unlike
+//     health there is no regeneration pip that could masquerade as a breakpoint - the stream
+//     carries effect gains and losses only, never a rate.
+//   * no weapon-attack veto. Auspicious Blow (id 905) is a Hammer Attack whose "+5...20 damage"
+//     is unusable and whose "3...8 Energy" is exact; vetoing the skill would lose the good half.
+//   * the "for each" veto looks at the energy CLAUSE, not the whole sentence. Energy Burn
+//     (id 42) reads "loses 1...10 Energy and takes 9 damage for each point of Energy lost":
+//     the multiplier governs the damage, the energy loss is the total. Cutting the clause at
+//     the first " and " keeps id 42 usable while still vetoing "gain 1...3 Energy for each ...".
+// ---------------------------------------------------------------------------
+static void ClassifyEnergyScale(SkillInfo& si, const std::string& text, SkillScaleKind kind,
+                                float v0, float v15, size_t rangeStart, size_t rangeEnd)
+{
+    if (v15 == v0) return;   // degenerate, cannot rank-match
+    if (SkillDatabase::GetProfessionForAttribute(si.attribute) == 0) return;
+
+    auto toLower = [](const std::string& s) {
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return out;
+    };
+
+    const size_t dot = text.find('.', rangeEnd);
+    const size_t sentEnd = (dot == std::string::npos) ? text.size() : dot;
+
+    std::string clause = toLower(text.substr(rangeEnd, sentEnd - rangeEnd));
+    const size_t andPos = clause.find(" and ");
+    if (andPos != std::string::npos) clause.erase(andPos);
+    if (clause.find("for each") != std::string::npos ||
+        clause.find("for every") != std::string::npos)
+        return;
+
+    si.energyUsable = true;
+    si.energyKind = kind;
+    si.enV0 = v0;
+    si.enV15 = v15;
+
+    // Delayed payout: the energy arrives when an effect the skill created ends, which is long
+    // past the recorder's 2 s attribution window. The wording is "When this hex ends" (Renewing
+    // Surge), "When this effect ends" (Signet of Recall) or "If this enchantment ends
+    // prematurely" (Zealous Renewal), so both openings count.
+    size_t sentStart = text.rfind('.', rangeStart);
+    sentStart = (sentStart == std::string::npos) ? 0 : sentStart + 1;
+    const std::string sentence = toLower(text.substr(sentStart, sentEnd - sentStart));
+    if (sentence.find("ends") != std::string::npos &&
+        (sentence.find("when this") != std::string::npos ||
+         sentence.find("if this") != std::string::npos))
+        si.energyDelayed = true;
+}
+
+// ---------------------------------------------------------------------------
 // ClassifyDeductionUsability
 //
 // Auto-derives the set of skills whose live description yields a single clean,
 // attribute-scaled magnitude that the AttributeDeducer can invert into a rank.
 // This replaces the former hand-curated 8-skill whitelist.
 //
-// A skill is usable only if its description parses (with the SAME range/context
-// semantics as ParseScalesFromDescription) to EXACTLY ONE scale of a consumable
-// kind (Damage / Heal / LifeSteal / LifeLoss); Duration scales are ignored.
+// A skill is usable only if its description parses (through the SAME
+// ClassifyRangeContext that ParseScalesFromDescription uses) to EXACTLY ONE
+// scale of a HEALTH kind (Damage / Heal / LifeSteal / LifeLoss); Duration
+// scales are ignored.
+//
+// The one exception is a pair of Heal scales, which is not two magnitudes but
+// one payout with a conditional half: Word of Healing (id 282) heals 5...100,
+// or that plus 30...115 below 50% health, and the recording never says which
+// branch fired. Both scales are the skill's own attribute, so the pair still
+// measures one rank and dedTwoScale tells the deducer to accept bp1(r) or
+// bp1(r) + bp2(r).
+//
+// Energy scales are classified on their own track (energyUsable / energyKind /
+// enV0 / enV15) and deliberately do NOT count towards the "exactly one" rule
+// above, because the two streams never collide: a health packet is read from
+// combat_events, an energy delta from energy_events. Drain Enchantment (id 68)
+// is the case that matters - 8...17 Energy AND 40...120 Health, both scaled by
+// Inspiration - and counting its energy scale as a second magnitude would throw
+// away a heal the combat log can read perfectly well.
 // Multi-scale skills (e.g. Shadow Strike id 102: Damage + LifeSteal) are
 // ambiguous and dropped, as are per-instance multiplier skills ("N damage for
-// each ...", e.g. Desecrate Enchantments id 112 / Energy Burn id 42).
+// each ...", e.g. Desecrate Enchantments id 112).
 //
 // The "for each" / "for every" veto MUST be sentence-bounded: it looks only from
 // the end of the matched range to the next '.'. A fixed character window would
@@ -859,6 +1029,14 @@ void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
     si.deductionKind = SkillScaleKind::None;
     si.dedV0 = 0.f;
     si.dedV15 = 0.f;
+    si.dedTwoScale = false;
+    si.dedV0b = 0.f;
+    si.dedV15b = 0.f;
+    si.energyUsable = false;
+    si.energyKind = SkillScaleKind::None;
+    si.enV0 = 0.f;
+    si.enV15 = 0.f;
+    si.energyDelayed = false;
 
     // Same source-text selection as ParseScalesFromDescription.
     const std::string& text = !si.description.empty() ? si.description : si.concise;
@@ -870,30 +1048,22 @@ void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
                        [](unsigned char c) { return (char)std::tolower(c); });
         return out;
     };
-    auto ltrim = [](const std::string& s) {
-        size_t i = 0;
-        while (i < s.size() && std::isspace((unsigned char)s[i])) ++i;
-        return s.substr(i);
-    };
-    auto startsWith = [](const std::string& s, const char* pfx) {
-        size_t n = std::strlen(pfx);
-        return s.size() >= n && s.compare(0, n, pfx) == 0;
-    };
     auto contains = [](const std::string& s, const char* needle) {
         return s.find(needle) != std::string::npos;
     };
 
     static const std::regex kRangeRe(R"((\d+)\.\.\.(\d+))");
-    static const std::regex kDamageRe(R"(^\s*(?:[a-z]+\s+)?damage)");
 
-    // Consumable-kind matches with their text positions (needed for the
-    // sentence-bounded and '+'-prefix vetoes below).
+    // Health-kind and energy-kind matches with their text positions (needed for the
+    // sentence-bounded and '+'-prefix vetoes below). Kept in two lists so each stream is
+    // classified against its own "exactly one scale" rule.
     struct UsableMatch {
         SkillScaleKind kind = SkillScaleKind::None;
         float v0 = 0, v15 = 0;
         size_t start = 0, end = 0;
     };
     std::vector<UsableMatch> matches;
+    std::vector<UsableMatch> energyMatches;
 
     auto begin = std::sregex_iterator(text.begin(), text.end(), kRangeRe);
     auto end   = std::sregex_iterator();
@@ -912,33 +1082,7 @@ void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
         size_t matchStart = (size_t)m.position(0);
         size_t matchEnd   = matchStart + (size_t)m.length(0);
 
-        if (matchEnd < text.size() && text[matchEnd] == '%')
-            continue;
-
-        size_t beforeStart = (matchStart > 40) ? matchStart - 40 : 0;
-        std::string before = toLower(text.substr(beforeStart, matchStart - beforeStart));
-        std::string after  = toLower(text.substr(matchEnd, std::min<size_t>(40, text.size() - matchEnd)));
-        std::string afterTrim = ltrim(after);
-
-        SkillScaleKind kind = SkillScaleKind::None;
-
-        if (startsWith(afterTrim, "second"))
-        {
-            kind = SkillScaleKind::Duration;
-        }
-        else if (startsWith(afterTrim, "health"))
-        {
-            if (contains(before, "steal"))
-                kind = SkillScaleKind::LifeSteal;
-            else if (contains(before, "lose") || contains(before, "sacrifice"))
-                kind = SkillScaleKind::LifeLoss;
-            else if (contains(before, "heal") || contains(before, "gain") ||
-                     contains(before, "regain"))
-                kind = SkillScaleKind::Heal;
-        }
-
-        if (kind == SkillScaleKind::None && std::regex_search(afterTrim, kDamageRe))
-            kind = SkillScaleKind::Damage;
+        const SkillScaleKind kind = ClassifyRangeContext(text, matchStart, matchEnd);
 
         if (kind == SkillScaleKind::None) continue; // unmatched context
         if (kind == SkillScaleKind::Duration) continue; // durations are not consumable
@@ -949,16 +1093,45 @@ void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
         um.v15 = (float)v15;
         um.start = matchStart;
         um.end = matchEnd;
-        matches.push_back(um);
+
+        if (kind == SkillScaleKind::Energy || kind == SkillScaleKind::EnergyLoss)
+            energyMatches.push_back(um);
+        else
+            matches.push_back(um);
     }
 
-    // Rule (a): exactly one consumable-kind scale.
-    if (matches.size() != 1) return;
+    // The energy stream is classified from its own single-scale rule, independently of whether
+    // the health path below accepts or rejects this skill.
+    if (energyMatches.size() == 1)
+    {
+        const UsableMatch& em = energyMatches.front();
+        ClassifyEnergyScale(si, text, em.kind, em.v0, em.v15, em.start, em.end);
+    }
+
+    // Rule (a): one health-kind scale, or two Heal scales that read as one payout.
+    //
+    // Two Heals are not two magnitudes competing for the same packet: they are the same packet
+    // under a condition the recording cannot see. Word of Healing heals 5...100, or that plus
+    // 30...115 when the target is below half health; Signet of Rejuvenation, Wielder's Boon and
+    // Spirit Light Weapon are shaped the same way. Both scales belong to the skill's own
+    // attribute, so the pair still measures one rank - the deducer accepts bp1(r) or
+    // bp1(r) + bp2(r) and keeps the union. Any other multi-scale skill stays ambiguous.
+    const bool twoHeals = (matches.size() == 2 &&
+                           matches[0].kind == SkillScaleKind::Heal &&
+                           matches[1].kind == SkillScaleKind::Heal);
+    if (matches.size() != 1 && !twoHeals) return;
     const UsableMatch& um = matches.front();
 
-    // Rule (b): meaningful per-rank step (>= 1 -> 17 distinct breakpoints).
-    // Kills regen-pip / tiny-range false positives. Multiplier is always 1 here.
-    if (std::fabs(um.v15 - um.v0) < 15.f) return;
+    // Rule (b): meaningful per-rank step.
+    //
+    // 15 points over 15 ranks is a step of one, which is what separates a real breakpoint table
+    // from a health regeneration pip that happens to sit on a number. Life steal is the
+    // exception the model has to make: Avatar of Grenth steals 0...12 per scythe hit and never
+    // arrives as a regeneration tick, so its 0.8-per-rank step is coarse rather than fake.
+    // Adjacent ranks collide there, which the deducer answers by emitting the whole colliding
+    // set at half weight rather than by pretending the skill said nothing.
+    const float minSpan = (um.kind == SkillScaleKind::LifeSteal) ? 8.f : 15.f;
+    if (std::fabs(um.v15 - um.v0) < minSpan) return;
 
     // Rule (c): attribute must map to a real profession (drops No Attribute and
     // title tracks).
@@ -967,23 +1140,35 @@ void SkillDatabase::ClassifyDeductionUsability(SkillInfo& si)
     // Rule (d): weapon-attack veto.
     if (IsWeaponAttack(si.type)) return;
 
-    // Rule (e): per-instance multiplier veto, SENTENCE-BOUNDED.
-    {
-        size_t dot = text.find('.', um.end);
-        size_t sentEnd = (dot == std::string::npos) ? text.size() : dot;
-        std::string sentence = toLower(text.substr(um.end, sentEnd - um.end));
-        if (contains(sentence, "for each") || contains(sentence, "for every"))
-            return;
-    }
-
-    // Rule (f): '+'-prefix veto (weapon-style additive bonuses).
-    if (um.start > 0 && text[um.start - 1] == '+') return;
+    // Rules (e) and (f), applied to EVERY scale that will be consumed - both halves of a
+    // two-Heal skill, not just the first. Leader's Comfort ("You gain 30...75 Health. For each
+    // ally within earshot, you also gain +10...20 Health") is the case that needs it: its
+    // second scale is a per-instance multiplier AND a '+' bonus, and letting it through would
+    // invent a payout of 30...75 plus 10...20 that the game never pays in one packet.
+    auto passesClauseVetoes = [&](const UsableMatch& match) {
+        // (e) per-instance multiplier veto, SENTENCE-BOUNDED.
+        const size_t dot = text.find('.', match.end);
+        const size_t sentEnd = (dot == std::string::npos) ? text.size() : dot;
+        const std::string sentence = toLower(text.substr(match.end, sentEnd - match.end));
+        if (contains(sentence, "for each") || contains(sentence, "for every")) return false;
+        // (f) '+'-prefix veto (weapon-style additive bonuses).
+        if (match.start > 0 && text[match.start - 1] == '+') return false;
+        return true;
+    };
+    for (const UsableMatch& match : matches)
+        if (!passesClauseVetoes(match)) return;
 
     // Passed all vetoes.
     si.deductionUsable = true;
     si.deductionKind = um.kind;
     si.dedV0 = um.v0;
     si.dedV15 = um.v15;
+    if (twoHeals)
+    {
+        si.dedTwoScale = true;
+        si.dedV0b = matches[1].v0;
+        si.dedV15b = matches[1].v15;
+    }
 
     // Rule (g): Divine Favor confound flag (NOT an exclusion). A single-target
     // Monk heal is confounded; a party-wide heal is not.

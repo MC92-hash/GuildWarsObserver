@@ -976,6 +976,70 @@ static void ParseModelEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Energy (ENERGY_SAMPLE / ENERGY_COVERAGE)
+//
+// Two line shapes share the file:
+//
+//   ENERGY_SAMPLE;skill;cause;agent;delta
+//   ENERGY_COVERAGE;skill;caster;samples;mode[;min;max]
+//
+// The min/max pair on the coverage line was added after the first recordings; when it is absent
+// both are taken to equal the mode, which reads as "constant". Claiming a spread we never
+// measured would make an old recording look contaminated, and claiming none is what the caller
+// already assumes for a single sample.
+// ---------------------------------------------------------------------------
+
+static void ParseEnergyEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[8];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 8);
+                if (n >= 1)
+                {
+                    std::string_view typeName(tok[0].begin, tok[0].end - tok[0].begin);
+                    if (typeName == "ENERGY_SAMPLE" && n >= 5)
+                    {
+                        EnergySample ev;
+                        ev.time    = li.time;
+                        ev.skillId = ToInt(tok[1].begin, tok[1].end);
+                        ev.causeId = ToInt(tok[2].begin, tok[2].end);
+                        ev.agentId = ToInt(tok[3].begin, tok[3].end);
+                        ev.delta   = ToInt(tok[4].begin, tok[4].end);
+                        data.energySamples.push_back(std::move(ev));
+                    }
+                    else if (typeName == "ENERGY_COVERAGE" && n >= 5)
+                    {
+                        EnergyCoverage ev;
+                        ev.skillId  = ToInt(tok[1].begin, tok[1].end);
+                        ev.casterId = ToInt(tok[2].begin, tok[2].end);
+                        ev.samples  = ToInt(tok[3].begin, tok[3].end);
+                        ev.mode     = ToInt(tok[4].begin, tok[4].end);
+                        ev.minValue = (n >= 6) ? ToInt(tok[5].begin, tok[5].end) : ev.mode;
+                        ev.maxValue = (n >= 7) ? ToInt(tok[6].begin, tok[6].end) : ev.mode;
+                        data.energyCoverage.push_back(std::move(ev));
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Equipment (weapon/armour skins, dyes and raw mod words)
 // ---------------------------------------------------------------------------
 
@@ -1010,6 +1074,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "sound_events",                  ParseSoundEvents },
     { "equipment_events",              ParseEquipmentEvents },
     { "model_events",                  ParseModelEvents },
+    { "energy_events",                 ParseEnergyEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

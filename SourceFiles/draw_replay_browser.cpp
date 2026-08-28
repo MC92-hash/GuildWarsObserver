@@ -998,20 +998,10 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
         }
 
         if (si->activation > 0)
-        {
-            if (si->activation == (int)si->activation)
-                DrawCostIcon("activation.png", "%.0f", si->activation, hasCost);
-            else
-                DrawCostIcon("activation.png", "%.1f", si->activation, hasCost);
-        }
+            DrawCostIcon("activation.png", SkillTimeFormat(si->activation), si->activation, hasCost);
 
         if (si->recharge > 0)
-        {
-            if (si->recharge == (int)si->recharge)
-                DrawCostIcon("recharge.png", "%.0f", si->recharge, hasCost);
-            else
-                DrawCostIcon("recharge.png", "%.1f", si->recharge, hasCost);
-        }
+            DrawCostIcon("recharge.png", SkillTimeFormat(si->recharge), si->recharge, hasCost);
     }
 
     ImGui::Spacing();
