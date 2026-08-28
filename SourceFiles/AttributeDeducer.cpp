@@ -7,13 +7,19 @@
 #include <unordered_set>
 #include <cmath>
 #include <algorithm>
+#include <map>
+#include <tuple>
+
+using AttributeModel::Evidence;
+using AttributeModel::Genre;
 
 namespace
 {
     // The former hand-curated whitelist is gone. Usable skills are now derived
     // automatically at load time by SkillDatabase::ClassifyDeductionUsability
     // (see the rationale comment there). This file only consumes the resulting
-    // per-skill flags: deductionUsable, deductionKind, dedV0/dedV15, dfConfounded.
+    // per-skill flags: deductionUsable, deductionKind, dedV0/dedV15,
+    // dedTwoScale/dedV0b/dedV15b, dfConfounded.
 
     // Attributes that only benefit a character's PRIMARY profession.
     bool IsPrimaryOnlyAttribute(int attr)
@@ -35,20 +41,6 @@ namespace
         }
     }
 
-    // Cumulative Guild Wars attribute-point cost to reach a given rank.
-    // Ranks above 12 come from runes/headgear and cost no extra points, so the
-    // table is capped at 12 for budget purposes.
-    int AttributePointCost(int rank)
-    {
-        static const int kCumulative[] = {
-            0, 1, 3, 6, 10, 15, 21, 28, 37, 48, 61, 77, 97
-        };
-        if (rank < 0) return 0;
-        if (rank > 12) rank = 12;
-        return kCumulative[rank];
-    }
-
-
     // Nearest snapshot to time t (by absolute time distance).
     const AgentSnapshot* NearestSnapshot(const AgentReplayData& ard, float t)
     {
@@ -67,16 +59,14 @@ namespace
         return &ard.snapshots[idx];
     }
 
-    // Match a value to the nearest attribute breakpoint over r in [0..16], where
-    // breakpoint(r) = round(v0 + r*(v15-v0)/15). Returns the rank and abs error.
-    void NearestBreakpoint(double value, float v0, float v15, int& rank, double& err)
+    // Which of the model's genres a skill scale kind reports under. LifeLoss arrives on the same
+    // damage row as Damage does, so the two share a genre.
+    Genre GenreForKind(SkillScaleKind kind)
     {
-        rank = -1;
-        err = 1e30;
-        for (int r = 0; r <= 16; ++r) {
-            double bp = std::round((double)v0 + (double)r * ((double)v15 - (double)v0) / 15.0);
-            double e = std::fabs(value - bp);
-            if (e < err) { err = e; rank = r; }
+        switch (kind) {
+        case SkillScaleKind::Heal:      return Genre::CombatHeal;
+        case SkillScaleKind::LifeSteal: return Genre::CombatLifeSteal;
+        default:                        return Genre::CombatDamage;
         }
     }
 
@@ -85,24 +75,89 @@ namespace
     struct DfHealObs
     {
         int    attr = 0;   // spell's own attribute (Healing 13 or Protection 15, etc.)
+        int    skillId = 0;
+        float  time = 0;
         float  v0 = 0;
         float  v15 = 0;
+        bool   twoScale = false;   // the packet may be bp1(r) or bp1(r) + bp2(r)
+        float  v0b = 0;
+        float  v15b = 0;
         double obs = 0;    // observed healed amount (valuePct * authoritative maxHp)
     };
+
+    // A packet is accepted when its absolute value is within 0.75 of a breakpoint - the same
+    // tolerance v1 used, and for the same reason: the game rounds the number it sends, and two
+    // roundings (its own and ours) can drift a health point apart.
+    constexpr double kPacketTolerance = 0.75;
+
+    // Ether Feast: a heal on the caster, worth 1, 2 or 3 breakpoints. See AttributeRules.cpp.
+    constexpr int kSkillEtherFeast = 40;
+
+    // One Energy Surge / Energy Burn cast, reduced to the energy its largest packet implies.
+    struct PerEnergyCast
+    {
+        int      energy = 0;
+        uint32_t ranks = 0;
+        int      attribute = -1;
+        double   damage = 0.0;
+        float    time = 0.f;
+    };
+
+    // Every rank a packet of this magnitude could have come from, for one skill.
+    uint32_t RanksForSkill(float v0, float v15, bool twoScale, float v0b, float v15b, double obs)
+    {
+        if (v15 == v0) return 0;   // degenerate, cannot rank-match
+        return twoScale
+            ? AttributeModel::RanksMatchingPairWithin(v0, v15, v0b, v15b, obs, kPacketTolerance)
+            : AttributeModel::RanksMatchingWithin(v0, v15, obs, kPacketTolerance);
+    }
+
+    // What one packet of this skill is worth.
+    //
+    // A life-steal scale narrower than 15 points has a step below one health point per rank, so
+    // neighbouring ranks land on the same number and the rank set it yields is genuinely wide -
+    // Avatar of Grenth's 0...12 cannot separate 11 from 12. The set already says that; the half
+    // weight stops a Dervish's six hundred scythe hits from outvoting the sharper genres.
+    float PacketWeight(const SkillInfo& si)
+    {
+        const bool coarseSteal = (si.deductionKind == SkillScaleKind::LifeSteal &&
+                                  std::fabs(si.dedV15 - si.dedV0) < 15.f);
+        return coarseSteal ? 0.5f : 1.f;
+    }
+
+    // Skills whose recorded packets do not follow the breakpoint table their description
+    // advertises, so no rank can honestly be read from them.
+    //
+    // Shield Guardian heals "all allies in earshot" for 10...40 when its block fires. On the
+    // reference match it paid out 26, 32 and 34 on three Monks whose other spells measure
+    // Protection Prayers 14 - where round(10 + rank * 2) wants 38. Whatever the party-wide heal
+    // does on its way into the log it is not that table, and left in it dragged all three Monks
+    // down to Protection 8-11 and produced a contradiction against the rest of their bars.
+    bool IsUnreliableCombatSkill(int skillId)
+    {
+        return skillId == 885;   // Shield Guardian
+    }
+
+    bool ProfessionGateOk(int attr, const AgentReplayData& caster)
+    {
+        const int attrProf = SkillDatabase::GetProfessionForAttribute(attr);
+        if (attrProf == 0) return false;   // No Attribute / title track -> not deducible
+        const bool matchesPrimary   = (attrProf == caster.primaryProf);
+        const bool matchesSecondary = (attrProf == caster.secondaryProf);
+        if (!matchesPrimary && !matchesSecondary) return false;
+        if (IsPrimaryOnlyAttribute(attr) && !matchesPrimary) return false;
+        return true;
+    }
 }
 
-std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
+void CollectCombatEvidence(
     const std::unordered_map<int, AgentReplayData>& agents,
     const std::vector<CombatLogRow>& combatLog,
     const SkillDatabaseView& skillView,
-    const std::function<std::pair<uint32_t, bool>(int agentId, float t)>& resolveMaxHp)
+    const std::function<std::pair<uint32_t, bool>(int agentId, float t)>& resolveMaxHp,
+    std::unordered_map<int, std::vector<Evidence>>& out)
 {
-    std::unordered_map<int, PlayerAttributeProfile> result;
-    if (!skillView.IsLoaded() || !resolveMaxHp) return result;
-
-    // Accepted ranks grouped per caster, per attribute (PASS A + PASS B).
-    // casterId -> (attributeId -> list of accepted ranks)
-    std::unordered_map<int, std::unordered_map<int, std::vector<int>>> accepted;
+    if (!skillView.IsLoaded() || !resolveMaxHp) return;
 
     // PASS B, step 1 input: every Heal-category observation from a primary
     // Monk caster, regardless of which skill produced it (rounded to the
@@ -117,10 +172,10 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
     // casterId -> list of {attr, v0, v15, obs}
     std::unordered_map<int, std::vector<DfHealObs>> monkSkillHealObs;
 
-    // Estimates that must be flagged low-confidence regardless of internal
-    // agreement (populated by a non-confident Divine Favor detection).
-    // casterId -> set of attributeIds
-    std::unordered_map<int, std::unordered_set<int>> forcedLowConf;
+    // R4 input: one entry per Energy Surge / Energy Burn cast, keyed by
+    // (caster, skill, millisecond) because every packet of one cast shares a
+    // timestamp and only the largest of them is the primary target's.
+    std::map<std::tuple<int, int, int>, PerEnergyCast> perEnergyCasts;
 
     // -----------------------------------------------------------------------
     // Row scan.
@@ -180,7 +235,80 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
 
         const int sid = skillView.ResolvePvpSkillId(row.skillId);
         const SkillInfo* si = skillView.Get(sid);
-        if (!si || !si->deductionUsable) continue;
+        if (!si) continue;
+
+        // -------------------------------------------------------------------
+        // R4: the skills whose packet is an energy reading and not a damage
+        // table. Energy Surge and Energy Burn describe no damage range at all,
+        // so deductionUsable is false for both and the generic pass below
+        // never sees them - but 7 (or 9) times the energy the foe lost is the
+        // most-repeated measurement of a Mesmer's Domination Magic in the
+        // whole recording, and the energy stream only catches a handful of the
+        // same casts. So they are read here, ahead of the usability gate,
+        // by the rule written for them in AttributeRules.cpp.
+        // -------------------------------------------------------------------
+        if (isDamageRow && row.damageType == 55 &&
+            AttributeModel::IsDamagePerEnergySkill(sid))
+        {
+            const std::pair<uint32_t, bool> mhp = resolveMaxHp(row.targetId, row.time);
+            if (mhp.first == 0 || mhp.second) continue;
+            const double obs = std::fabs((double)row.valuePct) * (double)mhp.first;
+
+            int energy = 0;
+            const uint32_t ranks =
+                AttributeModel::DamagePerEnergyRanks(sid, *si, obs, energy);
+            if (ranks == 0) continue;
+            if (!ProfessionGateOk(si->attribute, caster)) continue;
+
+            // One cast pays the primary target in full and everyone nearby 75%
+            // of that, and all of it arrives on the same timestamp - so the
+            // largest packet of the instant is the one that measures the loss.
+            const auto key = std::make_tuple(row.casterId, sid,
+                                             (int)std::llround(row.time * 1000.0));
+            PerEnergyCast& slot = perEnergyCasts[key];
+            if (energy > slot.energy)
+            {
+                slot.energy = energy;
+                slot.ranks = ranks;
+                slot.attribute = si->attribute;
+                slot.damage = obs;
+                slot.time = row.time;
+            }
+            continue;
+        }
+
+        // Ether Feast heals the caster for its breakpoint once per point of
+        // energy drained, and the foe does not always have the three points
+        // the description assumes. The multiplier is decided per packet.
+        if (!isDamageRow && sid == kSkillEtherFeast && row.casterId == row.targetId)
+        {
+            const std::pair<uint32_t, bool> mhp = resolveMaxHp(row.targetId, row.time);
+            if (mhp.first == 0 || mhp.second) continue;
+            const double obs = std::fabs((double)row.valuePct) * (double)mhp.first;
+
+            int multiplier = 0;
+            const uint32_t ranks = AttributeModel::EtherFeastRanks(*si, obs, multiplier);
+            if (ranks == 0) continue;
+            if (!ProfessionGateOk(si->attribute, caster)) continue;
+
+            Evidence ev;
+            ev.attribute = si->attribute;
+            ev.ranks = ranks;
+            ev.weight = 0.7f;   // the multiplier was inferred, not recorded
+            ev.genre = Genre::DamagePerEnergy;
+            ev.skillId = sid;
+            ev.time = row.time;
+            ev.count = 1;
+            ev.value = (float)obs;
+            out[row.casterId].push_back(ev);
+            continue;
+        }
+
+        if (!si->deductionUsable) continue;
+
+        // Both ids are tested because the resolve maps a skill onto its PvP split, and a split
+        // that does not exist today may exist tomorrow.
+        if (IsUnreliableCombatSkill(sid) || IsUnreliableCombatSkill(row.skillId)) continue;
 
         // Kind / category compatibility gate.
         bool routeToPassB = false;
@@ -233,33 +361,55 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
         {
             DfHealObs o;
             o.attr = si->attribute;
+            o.skillId = sid;
+            o.time = row.time;
             o.v0 = si->dedV0;
             o.v15 = si->dedV15;
+            o.twoScale = si->dedTwoScale;
+            o.v0b = si->dedV0b;
+            o.v15b = si->dedV15b;
             o.obs = obs;
             monkSkillHealObs[row.casterId].push_back(o);
             continue;
         }
 
         // -------------------------------------------------------------------
-        // PASS A: direct nearest-integer-rank match over r in [0, 16].
+        // PASS A: every rank whose breakpoint this packet could be.
         // -------------------------------------------------------------------
-        if (si->dedV15 == si->dedV0) continue; // degenerate, cannot rank-match
+        const uint32_t ranks = RanksForSkill(si->dedV0, si->dedV15, si->dedTwoScale,
+                                             si->dedV0b, si->dedV15b, obs);
+        if (ranks == 0) continue;
 
-        int bestRank = -1;
-        double bestErr = 1e30;
-        NearestBreakpoint(obs, si->dedV0, si->dedV15, bestRank, bestErr);
-        if (bestRank < 0 || bestErr > 0.75) continue;
+        if (!ProfessionGateOk(si->attribute, caster)) continue;
 
-        // Profession gate.
-        const int attr = si->attribute;
-        const int attrProf = SkillDatabase::GetProfessionForAttribute(attr);
-        if (attrProf == 0) continue; // no-attribute / title track -> not deducible
-        const bool matchesPrimary   = (attrProf == caster.primaryProf);
-        const bool matchesSecondary = (attrProf == caster.secondaryProf);
-        if (!matchesPrimary && !matchesSecondary) continue;
-        if (IsPrimaryOnlyAttribute(attr) && !matchesPrimary) continue;
+        Evidence ev;
+        ev.attribute = si->attribute;
+        ev.ranks = ranks;
+        ev.weight = PacketWeight(*si);
+        ev.genre = GenreForKind(si->deductionKind);
+        ev.skillId = sid;
+        ev.time = row.time;
+        ev.count = 1;
+        ev.value = (float)obs;
+        out[row.casterId].push_back(ev);
+    }
 
-        accepted[row.casterId][attr].push_back(bestRank);
+    // -----------------------------------------------------------------------
+    // R4 emit: one observation per Energy Surge / Energy Burn cast, now that
+    // the packets of each cast have been reduced to the largest of them.
+    // -----------------------------------------------------------------------
+    for (const auto& [key, cast] : perEnergyCasts)
+    {
+        Evidence ev;
+        ev.attribute = cast.attribute;
+        ev.ranks = cast.ranks;
+        ev.weight = 1.f;   // the packet is exact: an integer times a fixed multiplier
+        ev.genre = Genre::DamagePerEnergy;
+        ev.skillId = std::get<1>(key);
+        ev.time = cast.time;
+        ev.count = 1;
+        ev.value = (float)cast.damage;
+        out[std::get<0>(key)].push_back(ev);
     }
 
     // -----------------------------------------------------------------------
@@ -298,9 +448,16 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
         const int rank = std::min(16, ard.solvedDivineFavorRank);
         const int votes = std::max(1, ard.solvedDivineFavorSupport);
 
-        auto& casterAccepted = accepted[agentId];
-        for (int i = 0; i < votes; ++i)
-            casterAccepted[16].push_back(rank);
+        Evidence ev;
+        ev.attribute = 16;                    // Divine Favor
+        ev.ranks = 1u << rank;
+        ev.weight = 1.f;
+        ev.genre = Genre::DivineFavor;
+        ev.skillId = 0;
+        ev.time = 0.f;
+        ev.count = votes;
+        ev.value = (float)kDivineFavorBonus[rank];
+        out[agentId].push_back(ev);
 
         dfBonusValue[agentId] = kDivineFavorBonus[rank];
     }
@@ -339,12 +496,20 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
 
         if (bestDf < 0 || bestCount < 3) continue; // no clear Divine Favor signal
 
+        // A tie, or a thin distribution, is a weaker reading than the solver's - say so with the
+        // weight rather than by hiding the observation.
         const bool confident = (bestCount >= 5 && tieCount == 1);
 
-        auto& casterAccepted = accepted[casterId];
-        for (int i = 0; i < bestCount; ++i)
-            casterAccepted[16].push_back(bestDf);
-        if (!confident) forcedLowConf[casterId].insert(16);
+        Evidence ev;
+        ev.attribute = 16;
+        ev.ranks = 1u << bestDf;
+        ev.weight = confident ? 1.f : 0.5f;
+        ev.genre = Genre::DivineFavor;
+        ev.skillId = 0;
+        ev.time = 0.f;
+        ev.count = bestCount;
+        ev.value = (float)kDivineFavorBonus[bestDf];
+        out[casterId].push_back(ev);
 
         dfBonusValue[casterId] = kDivineFavorBonus[bestDf];
     }
@@ -364,11 +529,8 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
         const bool haveBonus = (bonusIt != dfBonusValue.end());
         const int bonusVal = haveBonus ? bonusIt->second : -1000;
 
-        auto& casterAccepted = accepted[casterId];
         for (const DfHealObs& o : obsList)
         {
-            if (o.v15 == o.v0) continue; // degenerate, cannot rank-match
-
             // This row's skill-matched combat event actually turned out to be
             // the Divine Favor bonus (not the spell's own base heal) -- skip
             // it here, it was already counted in step 1's pool.
@@ -377,88 +539,22 @@ std::unordered_map<int, PlayerAttributeProfile> DeduceAttributes(
             if (diffToBonus < 0) diffToBonus = -diffToBonus;
             if (haveBonus && diffToBonus <= 1) continue;
 
-            int r = -1;
-            double e = 1e30;
-            NearestBreakpoint(o.obs, o.v0, o.v15, r, e);
-            if (r < 0 || e > 0.75) continue;
+            const uint32_t ranks =
+                RanksForSkill(o.v0, o.v15, o.twoScale, o.v0b, o.v15b, o.obs);
+            if (ranks == 0) continue;
 
-            // Profession gate, same as PASS A.
-            const int attrProf = SkillDatabase::GetProfessionForAttribute(o.attr);
-            if (attrProf == 0) continue;
-            const bool matchesPrimary   = (attrProf == caster.primaryProf);
-            const bool matchesSecondary = (attrProf == caster.secondaryProf);
-            if (!matchesPrimary && !matchesSecondary) continue;
-            if (IsPrimaryOnlyAttribute(o.attr) && !matchesPrimary) continue;
+            if (!ProfessionGateOk(o.attr, caster)) continue;
 
-            casterAccepted[o.attr].push_back(r);
+            Evidence ev;
+            ev.attribute = o.attr;
+            ev.ranks = ranks;
+            ev.weight = 1.f;
+            ev.genre = Genre::CombatHeal;
+            ev.skillId = o.skillId;
+            ev.time = o.time;
+            ev.count = 1;
+            ev.value = (float)o.obs;
+            out[casterId].push_back(ev);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Aggregate.
-    // -----------------------------------------------------------------------
-    for (auto& [casterId, byAttr] : accepted)
-    {
-        PlayerAttributeProfile profile;
-        int totalCost = 0;
-
-        const auto flcIt = forcedLowConf.find(casterId);
-
-        for (auto& [attr, ranks] : byAttr)
-        {
-            if (ranks.empty()) continue;
-
-            // Mode of ranks; ties resolved toward the higher rank.
-            std::unordered_map<int, int> counts;
-            for (int r : ranks) counts[r]++;
-            int modeRank = ranks.front();
-            int modeCount = 0;
-            for (auto& [r, c] : counts) {
-                if (c > modeCount || (c == modeCount && r > modeRank)) {
-                    modeCount = c;
-                    modeRank = r;
-                }
-            }
-
-            int agreeing = 0;
-            for (int r : ranks) if (r == modeRank) ++agreeing;
-
-            // Standard deviation of accepted ranks.
-            double mean = 0.0;
-            for (int r : ranks) mean += r;
-            mean /= (double)ranks.size();
-            double var = 0.0;
-            for (int r : ranks) { double d = r - mean; var += d * d; }
-            var /= (double)ranks.size();
-
-            AttributeEstimate est;
-            est.attributeId = attr;
-            est.rank = modeRank;
-            est.observations = (int)ranks.size();
-            est.agreeing = agreeing;
-            est.spread = (float)std::sqrt(var);
-            est.lowConfidence = (est.agreeing * 2 < est.observations);
-            if (flcIt != forcedLowConf.end() && flcIt->second.count(attr))
-                est.lowConfidence = true;
-            profile.attributes.push_back(est);
-
-            profile.totalCleanObservations += est.observations;
-            totalCost += AttributePointCost(modeRank);
-        }
-
-        if (profile.attributes.empty()) continue;
-
-        std::sort(profile.attributes.begin(), profile.attributes.end(),
-                  [](const AttributeEstimate& a, const AttributeEstimate& b) {
-                      return a.attributeId < b.attributeId;
-                  });
-
-        // Soft budget sanity: a real level-20 character has ~200 attribute
-        // points. A larger implied spend means our ranks are inconsistent.
-        profile.budgetPlausible = (totalCost <= 200);
-
-        result[casterId] = std::move(profile);
-    }
-
-    return result;
 }

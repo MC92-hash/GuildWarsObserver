@@ -4,6 +4,8 @@
 #include "EquipmentIcons.h"
 #include "ArmourNames.h"
 #include "HealthModel.h"
+#include "AttributeModel.h"
+#include "SkillDatabase.h"
 #include "TextureCache.h"
 #include "ReplayWindow_Internal.h"
 
@@ -24,6 +26,11 @@
 // insignias, so the panel cannot show them as fact. What it shows instead is every rune and
 // insignia combination that reaches the armour health we measured, which is the honest answer and
 // the one HealthModel::ArmourCandidates exists to give.
+//
+// The attribute block under the sheet is the other side of that same coin. A rank above 12 can only
+// have come from a rune, so the ranks say which runes must be on the armour, while the health says
+// what the armour paid for them - and the two are worth reading together, in one panel, because
+// either one alone leaves the reader guessing.
 
 namespace
 {
@@ -304,16 +311,40 @@ namespace
                                          : std::format("{} Runes of Vitae", b.vitae),
                             b.vitae * 10, Equipment::Rarity::Blue });
         }
-        if (b.superiorRunes)
+        // Runes the attribute solve could put a name to. The art was always per profession and
+        // tier and still is; what the ranks add is which attribute the rune sits on -- and, for a
+        // minor rune, that it is there at all, since it costs no health for the armour to reveal.
+        int namedSuperiors = 0, namedMajors = 0;
+        for (const auto& [attr, tier] : b.namedRunes)
+        {
+            const char* art  = tier >= 3 ? "Sup"      : tier == 2 ? "Major" : "Minor";
+            const char* word = tier >= 3 ? "Superior" : tier == 2 ? "Major" : "Minor";
+            const auto rarity = tier >= 3 ? Equipment::Rarity::Gold
+                              : tier == 2 ? Equipment::Rarity::Purple
+                                          : Equipment::Rarity::Blue;
+            if (tier >= 3)      ++namedSuperiors;
+            else if (tier == 2) ++namedMajors;
+
+            out.push_back({ prof ? RuneIcon(dev, prof, art) : nullptr,
+                            std::format("{} Rune of {}", word,
+                                        SkillDatabase::GetAttributeName(attr)),
+                            tier >= 3 ? -75 : tier == 2 ? -35 : 0, rarity });
+        }
+
+        // Whatever the ranks could not account for stays anonymous: health alone cannot say which
+        // attribute a rune belongs to.
+        const int restSuperiors = std::max(0, b.superiorRunes - namedSuperiors);
+        const int restMajors    = std::max(0, b.majorRunes - namedMajors);
+        if (restSuperiors)
             out.push_back({ prof ? RuneIcon(dev, prof, "Sup") : nullptr,
-                            b.superiorRunes == 1 ? std::string("A superior rune")
-                                                 : std::format("{} superior runes", b.superiorRunes),
-                            -75 * b.superiorRunes, Equipment::Rarity::Gold });
-        if (b.majorRunes)
+                            restSuperiors == 1 ? std::string("A superior rune")
+                                               : std::format("{} superior runes", restSuperiors),
+                            -75 * restSuperiors, Equipment::Rarity::Gold });
+        if (restMajors)
             out.push_back({ prof ? RuneIcon(dev, prof, "Major") : nullptr,
-                            b.majorRunes == 1 ? std::string("A major rune")
-                                              : std::format("{} major runes", b.majorRunes),
-                            -35 * b.majorRunes, Equipment::Rarity::Purple });
+                            restMajors == 1 ? std::string("A major rune")
+                                            : std::format("{} major runes", restMajors),
+                            -35 * restMajors, Equipment::Rarity::Purple });
         if (b.survivor)
             out.push_back({ SurvivorIcon(dev), "Survivor insignias", b.survivor,
                             Equipment::Rarity::Blue, true });
@@ -396,6 +427,166 @@ namespace
 
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
+    }
+
+    // The attribute block, under the sheet.
+    //
+    // What the solver can state, in the words it can state it in: an exact rank where the packets
+    // pinned one, a range where they only narrowed it, and a ceiling where nothing was observed at
+    // all and the 200-point rule is the whole answer. Never a bare number that hides which of the
+    // three it is.
+
+    // The colour says how much the number is worth: full white for a rank the evidence pinned, a
+    // shade down for a range, muted for a bound the budget alone imposed.
+    constexpr ImU32 kAttrExact  = IM_COL32(232, 236, 242, 255);
+    constexpr ImU32 kAttrRanged = IM_COL32(196, 202, 210, 255);
+    constexpr ImU32 kAttrMarker = IM_COL32(176, 148, 74, 255);   // dim gold, for the rune markers
+    constexpr float kAttrHeadGap = 10.f;   // between the last bag row and the heading
+
+    // The attribute a character's FIRST profession grants him, which is also the one the game's own
+    // attribute window puts at the top of his list.
+    int PrimaryAttributeOf(int primaryProf)
+    {
+        switch (primaryProf)
+        {
+        case 1:  return 17;  // Warrior       Strength
+        case 2:  return 23;  // Ranger        Expertise
+        case 3:  return 16;  // Monk          Divine Favor
+        case 4:  return 6;   // Necromancer   Soul Reaping
+        case 5:  return 0;   // Mesmer        Fast Casting
+        case 6:  return 12;  // Elementalist  Energy Storage
+        case 7:  return 35;  // Assassin      Critical Strikes
+        case 8:  return 36;  // Ritualist     Spawning Power
+        case 9:  return 40;  // Paragon       Leadership
+        case 10: return 44;  // Dervish       Mysticism
+        default: return -1;
+        }
+    }
+
+    // " +sup" / " +maj" / " +min" / " +head": where a rank came from, when it came from armour.
+    std::string RuneMarker(const AttributeModel::PlayerBuild& build, int attrId)
+    {
+        std::string marker;
+        auto tier = build.runeTier.find(attrId);
+        if (tier != build.runeTier.end() && tier->second > 0)
+            marker = tier->second >= 3 ? " +sup" : tier->second == 2 ? " +maj" : " +min";
+        if (build.headgearAttribute == attrId) marker += " +head";
+        return marker;
+    }
+
+    void DrawAttributeTooltip(int attrId, const AttributeModel::AttributeRange& range,
+                              const SkillDatabaseView& skills, const ImVec4& muted)
+    {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(380.f);
+
+        ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.f), "%s %s",
+                           SkillDatabase::GetAttributeName(attrId), AttributeModel::FormatRange(range).c_str());
+
+        if (range.budgetOnly || range.why.empty())
+            ImGui::TextColored(muted, "Nothing observed; bound by the 200 attribute points left "
+                                      "after the others.");
+        for (const AttributeModel::Evidence& ev : range.why)
+            ImGui::TextUnformatted(AttributeModel::Describe(ev, skills).c_str());
+
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    // Primary profession first with its own attribute at the top, then the secondary, each group
+    // strongest rank first - the order a player reads his own template window in.
+    std::vector<int> AttributeOrder(const AttributeModel::PlayerBuild& build, int primaryProf)
+    {
+        const int primaryAttr = PrimaryAttributeOf(primaryProf);
+
+        std::vector<int> ids;
+        ids.reserve(build.attributes.size());
+        for (const auto& [attrId, range] : build.attributes) ids.push_back(attrId);
+
+        std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+            const auto key = [&](int attr) {
+                const int group = SkillDatabase::GetProfessionForAttribute(attr) == primaryProf ? 0 : 1;
+                const int first = (attr == primaryAttr) ? 0 : 1;
+                return std::tuple{ group, first, -build.attributes.at(attr).best, attr };
+            };
+            return key(a) < key(b);
+        });
+        return ids;
+    }
+
+    // Draws the block and returns the y it finished at, so the panel can size its window to what
+    // was drawn rather than to what it hoped would be.
+    float DrawAttributeBlock(ImDrawList* dl, ImVec2 topLeft, float width,
+                             const AttributeModel::PlayerBuild* build, int primaryProf,
+                             const SkillDatabaseView& skills, const ImVec4& muted)
+    {
+        const ImU32 mutedU32 = ImGui::GetColorU32(muted);
+        const float lineH = ImGui::GetTextLineHeight() + 3.f;
+
+        float y = topLeft.y;
+        dl->AddText(ImVec2(topLeft.x, y), kHeadingGold, "Attributes");
+        y += ImGui::GetTextLineHeightWithSpacing();
+
+        if (!build || build->attributes.empty())
+        {
+            dl->AddText(ImVec2(topLeft.x, y), mutedU32, "Attributes: nothing observed yet.");
+            return y + lineH;
+        }
+
+        for (int attrId : AttributeOrder(*build, primaryProf))
+        {
+            const AttributeModel::AttributeRange& range = build->attributes.at(attrId);
+            const char* name = SkillDatabase::GetAttributeName(attrId);
+            if (!name || !name[0]) name = "Unknown";
+
+            const std::string rank = AttributeModel::FormatRange(range);
+            const std::string marker = RuneMarker(*build, attrId);
+            const ImU32 colour = range.budgetOnly ? mutedU32
+                               : (range.lo == range.hi) ? kAttrExact : kAttrRanged;
+
+            // Right-aligned as a block, so the ranks line up down the sheet and the marker hangs
+            // off the end of the one it belongs to.
+            const float rankW = ImGui::CalcTextSize(rank.c_str()).x;
+            const float markW = marker.empty() ? 0.f : ImGui::CalcTextSize(marker.c_str()).x;
+            const float rankX = topLeft.x + width - rankW - markW;
+
+            dl->AddText(ImVec2(topLeft.x, y), colour, name);
+            dl->AddText(ImVec2(rankX, y), colour, rank.c_str());
+            if (!marker.empty())
+                dl->AddText(ImVec2(rankX + rankW, y), kAttrMarker, marker.c_str());
+
+            // Hover for the observations behind the number, the same way the item cells do it: an
+            // invisible button over what the draw list already put on screen.
+            ImGui::PushID(attrId);
+            ImGui::SetCursorScreenPos(ImVec2(topLeft.x, y));
+            ImGui::InvisibleButton("##attr", ImVec2(width, lineH));
+            if (ImGui::IsItemHovered()) DrawAttributeTooltip(attrId, range, skills, muted);
+            ImGui::PopID();
+
+            y += lineH;
+        }
+
+        // What the ranks cost. A GvG player spends everything, so a total well under 200 is itself
+        // a statement that one of the ranks above it is too low.
+        const std::string points = build->pointsSpentLo == build->pointsSpentHi
+            ? std::format("{} of 200 attribute points", build->pointsSpentLo)
+            : std::format("{}-{} of 200 attribute points", build->pointsSpentLo,
+                          build->pointsSpentHi);
+        dl->AddText(ImVec2(topLeft.x, y + 2.f), mutedU32, points.c_str());
+        y += lineH + 2.f;
+
+        // Contradictions are output, not noise: they say the observations and the rules disagree,
+        // and which of the two a reader should distrust.
+        for (const std::string& line : build->contradictions)
+        {
+            ImGui::SetCursorScreenPos(ImVec2(topLeft.x, y));
+            ImGui::PushTextWrapPos(topLeft.x + width - ImGui::GetWindowPos().x);
+            ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", line.c_str());
+            ImGui::PopTextWrapPos();
+            y += ImGui::GetItemRectSize().y + 2.f;
+        }
+
+        return y;
     }
 }
 
@@ -586,6 +777,12 @@ void ReplayWindow::DrawCharacterPanels()
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
 
+        // The attribute solve for this player, or nothing when he was never solved. Read once: the
+        // runes column names its runes from it, and the block under the sheet prints its ranks.
+        const AttributeModel::PlayerBuild* build = nullptr;
+        if (auto bit = m_attrProfiles.find(ard->agent_id); bit != m_attrProfiles.end())
+            build = &bit->second;
+
         // ── Weapon sets and armour, sharing one bar per row ──────────────────────────────────
         //
         // One bar, not two: the client's bag rows run the full width of the window and this reads
@@ -660,7 +857,9 @@ void ReplayWindow::DrawCharacterPanels()
                 "Guild Wars never tells an observer which runes a player is wearing.\n\n"
                 "What we can do is measure how much health his runes add, from the maximum\n"
                 "health the camera recorded, and then list the rune sets that add exactly\n"
-                "that much. So these are possibilities, not his actual runes.");
+                "that much. So these are possibilities, not his actual runes.\n\n"
+                "Runes that push an attribute above rank 12 are named from the attribute\n"
+                "solve, since only a rune could have put the rank there.");
 
         ImGui::SetCursorScreenPos(ImVec2(runesX, rowTop));
         ImGui::BeginGroup();
@@ -676,7 +875,40 @@ void ReplayWindow::DrawCharacterPanels()
             ImGui::TextDisabled("measured from %d readings", ard->armourObservations);
             ImGui::Spacing();
 
-            const auto builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6);
+            // What the ranks require, handed to the health side. A rank above 12 can only have
+            // come from a rune, so the attribute solve knows runes must be there that the health
+            // could never point to on its own -- a minor rune costs nothing at all, and two
+            // superiors cost the same 150 whichever attributes they sit on.
+            HealthModel::RuneConstraints runes;
+            if (build)
+            {
+                for (const auto& [attrId, tier] : build->runeTier)
+                    if (tier > 0) runes.tiers.emplace_back(attrId, tier);
+                runes.headgearAttribute = build->headgearAttribute;
+
+                // The solve stores them in a hash map, so sort: a list that reorders itself
+                // between two players reads as two different answers.
+                std::sort(runes.tiers.begin(), runes.tiers.end());
+            }
+
+            auto builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6, runes);
+
+            // The ranks ask for runes this armour cannot host. Both halves are worth showing: the
+            // sets that do reach the measured health, and the sentence saying why they disagree
+            // with the ranks above them.
+            std::string runeClash;
+            if (builds.empty() && !runes.tiers.empty())
+            {
+                builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6);
+                if (!builds.empty())
+                {
+                    runeClash = "The ranks need runes this armour health cannot pay for.";
+                    if (build)
+                        for (const std::string& line : build->contradictions)
+                            if (line.rfind("Runes needed for", 0) == 0) { runeClash = line; break; }
+                }
+            }
+
             if (builds.empty())
             {
                 ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
@@ -710,14 +942,26 @@ void ReplayWindow::DrawCharacterPanels()
                         ImGui::BulletText("%s", builds[i].label.c_str());
                     ImGui::TreePop();
                 }
+
+                if (!runeClash.empty())
+                {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", runeClash.c_str());
+                }
             }
         }
 
         ImGui::PopTextWrapPos();
         ImGui::EndGroup();
 
-        // Reserve the space the rows were drawn into, so the window sizes to its content.
-        ImGui::SetCursorScreenPos(ImVec2(origin.x, rowTop + rows * kRowPitch + 4.f));
+        // The ranks, under the sheet and beneath the runes that bought them.
+        const float attrBottom = DrawAttributeBlock(
+            dl, ImVec2(barX, rowTop + rows * kRowPitch + kAttrHeadGap), kColItems + kNameW,
+            build, ard->primaryProf, m_skillView, muted);
+
+        // Reserve the space the rows and the attribute block were drawn into, so the window sizes
+        // to its content.
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, attrBottom + 4.f));
         ImGui::Dummy(ImVec2(kColItems + kNameW + kRunesGap + kColRunes, 1.f));
 
         ImGui::End();

@@ -1514,6 +1514,45 @@ struct SoundLogEvent
 };
 
 // ---------------------------------------------------------------------------
+// Energy events (from energy_events.txt)
+//
+// The recorder points the camera at an agent right after a cast and reports the energy the
+// effect moved, never the cast cost: value id 54 carries gains and losses only. So the stream
+// is a ruler for the attribute that scaled the effect, not an energy model.
+//
+// `skillId` is the watch's skill, or the 2 s attribution ring's guess, or 0 when the payout
+// arrived too late to be tied to anything (Signet of Recall, Renewing Surge, Chaos Storm ticks).
+// `causeId` is who caused the change - the agent itself for self gains and for chant refunds -
+// and `agentId` is whose energy actually moved.
+// ---------------------------------------------------------------------------
+
+struct EnergySample
+{
+    float time    = 0.f;
+    int   skillId = 0;
+    int   causeId = 0;
+    int   agentId = 0;
+    int   delta   = 0;
+};
+
+// One summary line per (caster, skill) pair, written when the recording ends. `mode` is the
+// value the pair settled on; min == max says the pair is constant and safe to trust, a spread
+// says it either genuinely varies or the attribution ring picked up a second source.
+//
+// Recordings made before the spread was added carry only samples and mode; the parser leaves
+// min and max equal to mode there, which reads as "constant" - the honest default, since those
+// recordings say nothing either way.
+struct EnergyCoverage
+{
+    int skillId  = 0;
+    int casterId = 0;
+    int samples  = 0;
+    int mode     = 0;
+    int minValue = 0;
+    int maxValue = 0;
+};
+
+// ---------------------------------------------------------------------------
 // Flag events (from flag_events.txt — GvG flag StoC packets)
 // ---------------------------------------------------------------------------
 
@@ -1682,6 +1721,8 @@ struct StoCData
     FlagEventData                       flagEvents;
     std::vector<SoundLogEvent>          soundEvents;
     std::vector<ModelChangeEvent>       modelEvents;
+    std::vector<EnergySample>           energySamples;
+    std::vector<EnergyCoverage>         energyCoverage;
     Equipment::Data                     equipment;
 };
 
