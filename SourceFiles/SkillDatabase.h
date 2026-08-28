@@ -141,6 +141,12 @@ private:
     struct SkillPatch {
         int dateKey = 0; // YYYYMMDD
         std::unordered_map<int, SkillInfo> overrides; // skill ID -> old SkillInfo values
+        // Which fields each patch actually names. `overrides` is a whole SkillInfo
+        // copied from the current data with those fields replaced, so without this
+        // list there is no way to tell a patched value from an unpatched one -- and
+        // applying the whole struct lets an older patch undo a newer one's changes
+        // to a field it never mentioned. See GetView.
+        std::unordered_map<int, std::vector<std::string>> fields; // skill ID -> patched field names
         std::unordered_map<int, std::pair<std::string, std::string>> descOverrides; // skill ID -> {old description, old concise}
     };
     std::vector<SkillPatch> m_patches; // sorted by dateKey ascending

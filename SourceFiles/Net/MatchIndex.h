@@ -65,6 +65,14 @@ public:
     // path: e.g. L"/index.json"
     bool FetchFromRemote(HttpClient& http, const std::wstring& path = L"/index.json");
 
+    // Conditional fetch. Pass the ETag stored beside the cache; when the
+    // object is unchanged the server answers 304, outNotModified comes back
+    // true, no body is transferred and the already-loaded entries stand.
+    // A gzipped body (the index.json.gz key) is inflated before parsing.
+    bool FetchFromRemote(HttpClient& http, const std::wstring& path,
+                         const std::string& ifNoneMatch,
+                         bool& outNotModified, std::string& outEtag);
+
     // Load/save a local cache for offline fallback.
     bool LoadFromCache(const std::filesystem::path& cachePath);
     void SaveToCache(const std::filesystem::path& cachePath) const;

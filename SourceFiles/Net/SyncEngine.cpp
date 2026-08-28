@@ -5,6 +5,7 @@
 #include "Net/MatchIndex.h"
 #include "Net/HttpClient.h"
 #include <set>
+#include <fstream>
 
 SyncEngine::~SyncEngine()
 {
@@ -66,19 +67,54 @@ void SyncEngine::SyncThread()
         m_statusText = "Checking for new matches...";
     }
 
-    // Try to load cached index first as fallback
+    // Load the cached index first. With a matching ETag this is no longer a
+    // mere offline fallback: an unchanged index means the server answers 304
+    // and this cached copy is what we go on to use, with no body transferred.
     auto cacheDir = m_provider->GetCacheDir();
     auto indexCachePath = cacheDir / "index_cache.json";
+    auto etagPath = cacheDir / "index_cache.etag";
     m_index->LoadFromCache(indexCachePath);
 
-    // Fetch fresh index from remote
-    std::wstring indexPath = L"/index.json";
+    // The stored validator is "<key> <etag>". The key is recorded with it
+    // because the gzipped and plain objects are different objects with
+    // different ETags, so a validator is only offered back for the key it
+    // came from.
+    std::string cachedKey, cachedEtag;
+    if (m_index->IsLoaded())
+    {
+        std::ifstream ef(etagPath);
+        if (ef.is_open())
+            ef >> cachedKey >> cachedEtag;
+    }
+
+    std::wstring prefix = L"/";
     if (!m_bucket.empty())
     {
         std::wstring wBucket(m_bucket.begin(), m_bucket.end());
-        indexPath = L"/" + wBucket + L"/index.json";
+        prefix = L"/" + wBucket + L"/";
     }
-    bool fetchedRemote = m_index->FetchFromRemote(*m_http, indexPath);
+
+    // Prefer the gzipped key -- roughly a sixth of the bytes -- and fall back
+    // to the plain one, which is what a bucket that predates it still has.
+    const char* kGzKey = "index.json.gz";
+    const char* kPlainKey = "index.json";
+
+    bool notModified = false;
+    std::string newEtag;
+    std::string usedKey = kGzKey;
+    bool fetchedRemote = m_index->FetchFromRemote(
+        *m_http, prefix + L"index.json.gz",
+        cachedKey == kGzKey ? cachedEtag : std::string(),
+        notModified, newEtag);
+
+    if (!fetchedRemote)
+    {
+        usedKey = kPlainKey;
+        fetchedRemote = m_index->FetchFromRemote(
+            *m_http, prefix + L"index.json",
+            cachedKey == kPlainKey ? cachedEtag : std::string(),
+            notModified, newEtag);
+    }
 
     if (m_cancelRequested.load())
     {
@@ -104,10 +140,20 @@ void SyncEngine::SyncThread()
             return;
         }
     }
+    else if (notModified)
+    {
+        // 304: the cached index is current. Nothing was downloaded and
+        // nothing needs rewriting.
+        std::lock_guard<std::mutex> lock(m_textMutex);
+        m_statusText = "Match index up to date";
+    }
     else
     {
-        // Save the fresh index to cache
+        // Save the fresh index, and the validator that identifies it.
         m_index->SaveToCache(indexCachePath);
+        std::ofstream ef(etagPath, std::ios::trunc);
+        if (ef.is_open() && !newEtag.empty())
+            ef << usedKey << " " << newEtag;
     }
 
     // Inform the provider about the index

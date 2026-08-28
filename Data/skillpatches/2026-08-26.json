@@ -1,0 +1,255 @@
+{
+  "date": "2026-08-26",
+  "description": "August 2026 balance update",
+  "skills": {
+    "771": {
+      "energy": 10
+    },
+    "779": {
+      "energy": 10
+    },
+    "1636": {
+      "energy": 10
+    },
+    "985": {
+      "energy": 10
+    },
+    "974": {
+      "recharge": 15
+    },
+    "925": {
+      "energy": 15
+    },
+    "1654": {
+      "recharge": 20
+    },
+    "1652": {
+      "energy": 10
+    },
+    "926": {
+      "activation": 1
+    },
+    "1043": {
+      "attribute": 101
+    },
+    "1514": {
+      "recharge": 15
+    },
+    "2884": {
+      "recharge": 12
+    },
+    "1500": {
+      "energy": 10,
+      "recharge": 15
+    },
+    "1544": {
+      "recharge": 10
+    },
+    "1545": {
+      "activation": 0.75
+    },
+    "182": {
+      "recharge": 45
+    },
+    "207": {
+      "recharge": 45
+    },
+    "221": {
+      "recharge": 45
+    },
+    "903": {
+      "energy": 10
+    },
+    "229": {
+      "energy": 15
+    },
+    "205": {
+      "energy": 15
+    },
+    "232": {
+      "recharge": 10
+    },
+    "215": {
+      "energy": 25,
+      "activation": 2,
+      "recharge": 30
+    },
+    "836": {
+      "energy": 10
+    },
+    "2806": {
+      "recharge": 30
+    },
+    "38": {
+      "recharge": 15
+    },
+    "3289": {
+      "recharge": 20
+    },
+    "33": {
+      "recharge": 15
+    },
+    "3194": {
+      "energy": 15
+    },
+    "44": {
+      "recharge": 15
+    },
+    "1339": {
+      "recharge": 15
+    },
+    "1342": {
+      "recharge": 20
+    },
+    "1335": {
+      "recharge": 5
+    },
+    "50": {
+      "recharge": 4
+    },
+    "296": {
+      "recharge": 20
+    },
+    "941": {
+      "energy": 10,
+      "recharge": 3
+    },
+    "2006": {
+      "recharge": 20
+    },
+    "3232": {
+      "recharge": 20
+    },
+    "867": {
+      "activation": 1
+    },
+    "1685": {
+      "energy": 10
+    },
+    "1113": {
+      "activation": 2,
+      "recharge": 30
+    },
+    "2871": {
+      "recharge": 10
+    },
+    "101": {
+      "activation": 2
+    },
+    "1356": {
+      "recharge": 20
+    },
+    "1362": {
+      "recharge": 10
+    },
+    "806": {
+      "recharge": 25
+    },
+    "936": {
+      "recharge": 20
+    },
+    "123": {
+      "energy": 15,
+      "recharge": 12
+    },
+    "808": {
+      "recharge": 15
+    },
+    "100": {
+      "recharge": 20
+    },
+    "91": {
+      "recharge": 15
+    },
+    "1554": {
+      "adrenaline": 4
+    },
+    "1769": {
+      "recharge": 60
+    },
+    "1563": {
+      "recharge": 5
+    },
+    "1547": {
+      "adrenaline": 2
+    },
+    "1550": {
+      "adrenaline": 4
+    },
+    "393": {
+      "energy": 10
+    },
+    "909": {
+      "recharge": 2
+    },
+    "3017": {
+      "activation": 5,
+      "recharge": 45
+    },
+    "3015": {
+      "activation": 5,
+      "recharge": 60
+    },
+    "2866": {
+      "recharge": 10
+    },
+    "3020": {
+      "activation": 5
+    },
+    "340": {
+      "recharge": 1,
+      "adrenaline": 6
+    },
+    "336": {
+      "adrenaline": 8
+    },
+    "385": {
+      "adrenaline": 10
+    },
+    "346": {
+      "attribute": 101
+    },
+    "382": {
+      "adrenaline": 4
+    },
+    "384": {
+      "adrenaline": 6
+    },
+    "1415": {
+      "adrenaline": 6
+    },
+    "907": {
+      "adrenaline": 8
+    },
+    "383": {
+      "adrenaline": 8
+    },
+    "1144": {
+      "adrenaline": 8
+    },
+    "1702": {
+      "adrenaline": 8
+    },
+    "892": {
+      "adrenaline": 5
+    },
+    "1780": {
+      "recharge": 20
+    },
+    "3031": {
+      "recharge": 20
+    },
+    "1555": {
+      "recharge": 25
+    },
+    "2876": {
+      "recharge": 25
+    },
+    "2807": {
+      "energy": 15
+    },
+    "3273": {
+      "recharge": 10
+    }
+  }
+}

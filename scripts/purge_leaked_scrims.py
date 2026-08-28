@@ -32,6 +32,7 @@ from upload_to_r2 import (  # noqa: E402
     fetch_remote_index,
     is_scrim_recording,
     load_config,
+    write_index,
 )
 
 
@@ -172,15 +173,11 @@ def main() -> int:
                 print(f"  FAILED: {key} — {e}")
                 failed.append((key, str(e)))
 
-    # Rewrite index.json with only the legitimate entries.
-    cleaned_body = json.dumps({"matches": kept}, indent=2).encode("utf-8")
-    s3.put_object(
-        Bucket=bucket,
-        Key="index.json",
-        Body=cleaned_body,
-        ContentType="application/json",
-        CacheControl="no-cache",
-    )
+    # Rewrite index.json with only the legitimate entries. Through
+    # write_index so this path publishes the same shape and encoding as
+    # every other writer -- a hand-rolled put_object here would silently
+    # re-inflate the object for every client.
+    write_index(s3, bucket, kept)
     print(f"\nWrote new index.json ({len(kept)} entries).")
     print(f"Deletions: {deleted} ok, {missing} already gone, {len(failed)} failed.")
     if failed:

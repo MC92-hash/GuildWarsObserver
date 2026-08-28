@@ -23,7 +23,13 @@ public:
         int statusCode = 0;
         std::vector<uint8_t> body;
         std::string errorMessage;
+        // The object's ETag, when the server sent one. Feed it back to Get()
+        // on the next request to turn an unchanged fetch into a 304.
+        std::string etag;
         bool IsOk() const { return statusCode >= 200 && statusCode < 300; }
+        // Not an error: the cached copy is still current. Callers must test
+        // this before IsOk(), which is false for 304 by design.
+        bool IsNotModified() const { return statusCode == 304; }
     };
 
     // Configure the remote host. Call once before making requests.
@@ -38,7 +44,9 @@ public:
     void SetSigningFunction(SigningFn fn);
 
     // GET request. Returns the full response body in memory.
-    Response Get(const std::wstring& path);
+    // ifNoneMatch: an ETag from a previous response. When it still matches,
+    // the server answers 304 with no body and the caller keeps what it has.
+    Response Get(const std::wstring& path, const std::string& ifNoneMatch = {});
 
     // Download to a file with optional progress callback.
     // Writes to {dest}.tmp first, then renames on success.
@@ -59,7 +67,8 @@ private:
     // Internal: open a request, send it, and read the status code.
     // On success, the returned HINTERNET is ready for WinHttpReadData.
     // Caller must close it with WinHttpCloseHandle.
-    HINTERNET SendRequest(const std::wstring& path, uint64_t& outContentLength);
+    HINTERNET SendRequest(const std::wstring& path, uint64_t& outContentLength,
+                          const std::wstring& extraHeaders = {});
 
     // Read all remaining data from an open request handle.
     bool ReadResponseBody(HINTERNET hRequest, std::vector<uint8_t>& out);

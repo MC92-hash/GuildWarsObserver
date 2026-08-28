@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Net/MatchIndex.h"
 #include "Net/HttpClient.h"
+#include "Net/TarGzExtractor.h"
 #include "json.hpp"
 #include <fstream>
 
@@ -20,6 +21,49 @@ void MatchIndex::ParseDate(const std::string& dateStr, int& y, int& m, int& d)
         }
         catch (...) {}
     }
+}
+
+bool MatchIndex::FetchFromRemote(HttpClient& http, const std::wstring& path,
+                                 const std::string& ifNoneMatch,
+                                 bool& outNotModified, std::string& outEtag)
+{
+    outNotModified = false;
+
+    auto resp = http.Get(path, ifNoneMatch);
+    outEtag = resp.etag;
+
+    if (resp.IsNotModified())
+    {
+        // Nothing changed since the cached copy was written, so there is
+        // nothing to parse and m_entries stays as LoadFromCache left it.
+        outNotModified = true;
+        outEtag = ifNoneMatch;
+        return true;
+    }
+
+    if (!resp.IsOk())
+    {
+        m_lastError = "Failed to fetch index: " + resp.errorMessage;
+        if (resp.statusCode > 0)
+            m_lastError += " (HTTP " + std::to_string(resp.statusCode) + ")";
+        return false;
+    }
+
+    // The .gz key is a plain gzip object, inflated here rather than relying
+    // on transport decompression -- TarGz::GzipDecompress is the same path
+    // match archives already take.
+    if (resp.body.size() > 2 && resp.body[0] == 0x1f && resp.body[1] == 0x8b)
+    {
+        std::vector<uint8_t> inflated;
+        if (!TarGz::GzipDecompress(resp.body, inflated))
+        {
+            m_lastError = "Index is gzipped but could not be decompressed";
+            return false;
+        }
+        return ParseJson(std::string(inflated.begin(), inflated.end()));
+    }
+
+    return ParseJson(std::string(resp.body.begin(), resp.body.end()));
 }
 
 bool MatchIndex::FetchFromRemote(HttpClient& http, const std::wstring& path)
@@ -153,7 +197,7 @@ void MatchIndex::SaveToCache(const std::filesystem::path& cachePath) const
 
     std::ofstream f(cachePath);
     if (f.is_open())
-        f << j.dump(2);
+        f << j.dump();
 }
 
 const RemoteMatchEntry* MatchIndex::FindEntry(const std::string& folder) const
@@ -235,13 +279,15 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
         if (item.contains("team_kills") && item["team_kills"].is_object())
         {
             for (auto& [k, v] : item["team_kills"].items())
-                entry.team_kills[k] = v.get<int>();
+                if (v.is_number_integer())
+                    entry.team_kills[k] = v.get<int>();
         }
 
         if (item.contains("team_damage") && item["team_damage"].is_object())
         {
             for (auto& [k, v] : item["team_damage"].items())
-                entry.team_damage[k] = v.get<int>();
+                if (v.is_number_integer())
+                    entry.team_damage[k] = v.get<int>();
         }
 
         if (item.contains("parties") && item["parties"].is_object())
@@ -281,7 +327,8 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
                         if (pj.contains("used_skills") && pj["used_skills"].is_array())
                         {
                             for (const auto& s : pj["used_skills"])
-                                pi.used_skills.push_back(s.get<int>());
+                                if (s.is_number_integer())
+                                    pi.used_skills.push_back(s.get<int>());
                         }
                         party.players.push_back(std::move(pi));
                     }

@@ -1,12 +1,14 @@
 {
   "date": "2026-06-24",
   "description": "June 2026 balance update",
+  "notes": "Four entries carry a field June did not actually change: Black Spider Strike (energy), Mirage Cloak (energy), Mighty Throw (adrenaline) and Disrupting Chop (adrenaline). Each is set to the value in force during the June era, which is also what the 2026-08-26 patch records as its pre-patch value. They are here so a client built before the GetView field-merge fix still renders pre-June replays correctly: that loader assigned a whole SkillInfo per patch, so June - applied last - would otherwise write today's value back over August's rollback. Harmless on a fixed loader, which sets them to the same values. See scripts/check_skillpatches.py.",
   "skills": {
     "799": {
       "energy": 15
     },
     "1636": {
-      "recharge": 12
+      "recharge": 12,
+      "energy": 10
     },
     "1990": {
       "recharge": 12
@@ -35,7 +37,8 @@
     "1500": {
       "recharge": 10,
       "description": "For 1...7 seconds, you have a 40...80% chance to block incoming attacks. When you cast this enchantment, all nearby foes are struck for 10...40 earth damage.",
-      "concise": "(1...7 seconds.) You have 40...80% chance to block. Initial Effect: deals 10...40 earth damage to nearby foes."
+      "concise": "(1...7 seconds.) You have 40...80% chance to block. Initial Effect: deals 10...40 earth damage to nearby foes.",
+      "energy": 10
     },
     "1516": {
       "energy": 10
@@ -245,7 +248,8 @@
       "recharge": 20
     },
     "1547": {
-      "activation": 3
+      "activation": 3,
+      "adrenaline": 2
     },
     "1771": {
       "recharge": 20
@@ -345,7 +349,8 @@
       "concise": "(5...11 seconds.) You attack 33% faster and gain 50% more adrenaline. Ends if you use a skill. "
     },
     "340": {
-      "recharge": 0
+      "recharge": 0,
+      "adrenaline": 6
     },
     "907": {
       "adrenaline": 10

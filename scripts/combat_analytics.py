@@ -1,10 +1,26 @@
 """Derive versioned, auditable combat analytics from a recording's StoC log.
 
 The legacy ``infos.json`` counters describe outcomes but lose attribution and
-timestamps.  Newer StoC ``INTERRUPTED`` records carry all three identities we
-need: victim, interrupted skill, and interrupter.  This module keeps that
-direct observation separate from the cast-lifecycle join used for latency and
-cancel classification.
+timestamps.
+
+**An ``INTERRUPTED`` record names only its victim.**  This docstring used to
+claim the record carried "all three identities we need: victim, interrupted
+skill, and interrupter".  It never has.  ``EventHooks.cpp`` writes the trailing
+fields as the literal string ``;0;0`` -- see ``EXPORTS_CONVENTIONS.md``, which
+documents the format as ``INTERRUPTED;agent_id;0;0`` -- and the packet behind it
+(``GenericValueID::interrupted``, a ``GenericValue`` of value_id/agent_id/value)
+has no interrupter in it to record.  Measured across 1,076 recordings, 53,827 of
+53,827 interrupt events end in ``;0;0``.  ``rupts_landed`` is therefore
+structurally unobservable and stays zero.
+
+So the interrupter is **inferred**, and kept under its own name so that a join
+is never mistaken for an observation.  Each interrupt is matched to a recent
+interrupt-skill activation aimed at that victim; where exactly one player could
+have caused it they are credited ``rupts_inferred``, and where two could have
+nobody is.  Measured over 3,614 interrupts in sixty recordings: 80.3% credited,
+2.2% ambiguous, 5.1% caused by a knockdown (already counted as one, so not
+credited again) and 12.5% unexplained.  Every one of those figures is published
+in ``attribution`` so a reader can see how much of a match the join reached.
 
 Only facts supported by the event stream are emitted.  In particular, a
 voluntary cancel is *not* labelled a fake cast: intent is not observable.
@@ -13,15 +29,76 @@ voluntary cancel is *not* labelled a fake cast: intent is not observable.
 from __future__ import annotations
 
 import gzip
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 
+# NOT bumped for the inferred-interrupt work, deliberately. The consumer merges
+# analytics only when the schema is exactly 1 and refuses unknown ones wholesale
+# (watchtower stats_index.parse_shard), so a bump would discard every counter
+# including the knockdowns that already work. New per-player counters need no
+# bump: the shard parser copies whatever numeric keys a row carries.
 SCHEMA_VERSION = 1
 INTERRUPT_MATCH_EARLY_SECONDS = 0.5
 INTERRUPT_MATCH_LATE_SECONDS = 3.0
+
+# How long before an interrupt a rupt skill may have started and still be its
+# cause. Split by delivery because a projectile has to fly: measured p50 deltas
+# are 134 ms for spells and 304 ms for attack skills, and these bounds put the
+# ambiguous share at 2.2% rather than the 3.3% a flat 3.5 s window gives.
+RUPT_SPELL_WINDOW_SECONDS = 2.5
+RUPT_ATTACK_WINDOW_SECONDS = 3.5
+
+# A knockdown interrupts whatever the victim was casting, and unlike an
+# interrupt its source IS recorded. Those are recognised so they can be
+# subtracted from the unexplained residue -- but NOT credited as interrupts,
+# because `knockdowns_dealt` already counts the same action and one action
+# should not score on two axes.
+KNOCKDOWN_INTERRUPT_WINDOW_SECONDS = 0.6
+
+# Skills that interrupt, keyed by id, split by how they are delivered.
+#
+# Curated because the skill data carries no interrupt flag, then measured
+# against sixty recordings -- the percentage is how often a cast of it was the
+# unique cause of an interrupt on its target:
+#
+#   Cry of Frustration 75%   Leech Signet 68%   Complicate 67%   Power Leak 64%
+#   Power Spike 61%   Power Leech 60%   Power Drain 60%   Distracting Blow 43%
+#   Distracting Shot 42%   Savage Shot 41%   Signet of Distraction 40%
+#   Savage Slash 38%
+#
+# Three plausible candidates were measured and REMOVED: Cruel Spear (980 casts,
+# 0% -- it interrupts only a moving foe and the stream cannot see that), Chaos
+# Storm (6%, an area effect with no target to join on) and Shame (1%, a hex).
+# The rest are dedicated interrupts that simply did not appear in the sample;
+# they can only ever add a correct attribution, and one that never fires shows
+# up as nothing rather than as a wrong credit.
+_RUPT_SPELLS: dict[int, str] = {
+    5: "Power Block", 23: "Power Spike", 24: "Power Leak", 25: "Power Drain",
+    57: "Cry of Frustration", 61: "Leech Signet", 803: "Power Leech",
+    932: "Complicate", 979: "Mistrust", 1053: "Psychic Distraction",
+    1057: "Psychic Instability", 1992: "Signet of Distraction",
+}
+_RUPT_ATTACKS: dict[int, str] = {
+    325: "Distracting Blow", 329: "Skull Crack", 340: "Disrupting Chop",
+    390: "Savage Slash", 399: "Distracting Shot", 408: "Concussion Shot",
+    409: "Punishing Shot", 426: "Savage Shot", 445: "Disrupting Lunge",
+    571: "Disrupting Dagger", 975: "Exhausting Assault", 1025: "Disrupting Stab",
+    1198: "Broad Head Arrow", 1604: "Disrupting Throw", 1726: "Magebane Shot",
+    2194: "Distracting Strike",
+}
+
+
+def _rupt_window(skill_id: int) -> float | None:
+    """Seconds a cast of this skill may precede the interrupt it caused."""
+    if skill_id in _RUPT_SPELLS:
+        return RUPT_SPELL_WINDOW_SECONDS
+    if skill_id in _RUPT_ATTACKS:
+        return RUPT_ATTACK_WINDOW_SECONDS
+    return None
 
 _LINE = re.compile(
     r"^\[(?P<minute>\d+):(?P<second>\d+)(?:\.(?P<millis>\d+))?\]\s*(?P<body>.*)$"
@@ -83,6 +160,168 @@ STOC_SOURCES = REQUIRED_STOC_SOURCES + OPTIONAL_STOC_SOURCES
 BULLS_STRIKE_ID = 332
 COWARD_ID = 869
 
+# The cripple signet, and the reason the canonicalisation below exists: every
+# credited Signet of Pious Restraint cripple in the archive came from 3273, the
+# PvP twin, and none from the base id.
+SOPR_ID = 2014
+
+_META_PATH = Path(__file__).resolve().parent / "data" / "skill_meta.json"
+_SKILL_META: dict | None = None
+
+
+def _skill_meta() -> dict:
+    """``data/skill_meta.json``, or an empty map when it is missing.
+
+    Generated by ``gen_skill_meta.py`` from the client's own skill data. A
+    missing file must not take the rest of the analytics down with it, so the
+    signet counters go ABSENT -- never zero -- and canonicalisation degrades to
+    identity.
+    """
+    global _SKILL_META
+    if _SKILL_META is None:
+        try:
+            _SKILL_META = json.loads(_META_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            _SKILL_META = {}
+    return _SKILL_META
+
+
+def signet_ids() -> frozenset[int]:
+    """Every signet id, from the client's ``type == 21`` flag.
+
+    Read rather than curated: a signet is indistinguishable from any other
+    zero-energy skill in the event stream, and the flag covers every profession
+    at once.
+    """
+    return frozenset(int(x) for x in _skill_meta().get("signets", ()))
+
+
+def pvp_twins() -> dict[int, int]:
+    """PvP split id -> base id."""
+    return {int(k): int(v) for k, v in _skill_meta().get("pvp_twins", {}).items()}
+
+
+def canonical_skill_id(skill_id: int) -> int:
+    """A PvP split id mapped back to its base id, or the id unchanged.
+
+    A split skill is published twice and the recording carries whichever the
+    player equipped, so a table keyed on base ids scores zero on the PvP half of
+    the archive without this. It retires the hand-listed twins that ``_KD_TARGET``
+    used to need.
+    """
+    return pvp_twins().get(skill_id, skill_id)
+
+# How long after a use its knockdown may still arrive. Measured p90 deltas are
+# 784 ms for Hammer Bash and 798 ms for Bull's Strike, with every melee skill
+# under 840 ms and Gale the slowest at 1,034 ms; past 2.4 s the deltas are
+# coincidence, so 1.2 s keeps the real tail and cuts the noise.
+KD_WINDOW_SECONDS = 1.2
+
+# Knockdown attempts, keyed by id -> (name, baseline conversion in thousandths).
+#
+# A skill belongs here when its OWN use is the attempt: you use it, and a
+# knockdown either follows or does not. Excluded are the families where the
+# knockdown is fired by a separate later event, so the use is not the try --
+# stances whose knockdown comes from a subsequent auto-attack (Bull's Charge,
+# 1,319 uses, 4%), hexes and traps that knock down when they end or when the
+# victim moves (Lightning Surge 0%, Wastrel's Collapse 10%, Scorpion Wire 0%,
+# Fetid Ground 0%), and the anti-knockdown skills that only ever prevent one
+# (Shield Bash 3%, Balthazar's Pendulum 0%).
+#
+# The baseline is how often a use was followed by a knockdown from the same
+# agent, measured over 623 recordings. It is what the skill lands on average,
+# so `kd_landed / kd_expected` reads the player instead of the build: a hammer
+# warrior converts 75% because Hammer Bash converts 75%, not because they are
+# good at it.
+#
+# Grouped by how a knockdown is joined back to a use:
+#   EXACT   untargeted, resolves server-side in the same millisecond
+#   TARGET  the knockdown lands on the declared target, inside the window
+#   AREA    untargeted, hits whoever is nearby, inside the window
+_KD_EXACT: dict[int, tuple[str, int]] = {
+    869: ('"Coward!"', 402),                    # 14422 uses  40%
+    170: ("Earthquake", 957),                   #    70 uses  96%
+    891: ('"None Shall Pass!"', 91),            #    44 uses   9%
+}
+_KD_TARGET: dict[int, tuple[str, int]] = {
+    331: ("Hammer Bash", 750),                  #  8016 uses  75%
+    3185: ("Psychic Instability (PvP)", 150),   #  3705 uses  15%
+    1057: ("Psychic Instability", 150),         #   PvP twin
+    332: ("Bull's Strike", 333),                #  2762 uses  33%
+    171: ("Stoning", 171),                      #  1519 uses  17%
+    231: ("Shock", 345),                        #  1132 uses  34%
+    2804: ("Mind Shock (PvP)", 742),            #  1089 uses  74%
+    226: ("Mind Shock", 742),                   #   PvP twin
+    354: ("Earth Shaker", 757),                 #  1024 uses  76%
+    355: ("Devastating Hammer", 749),           #   977 uses  75%
+    237: ("Water Trident", 82),                 #   974 uses   8%
+    2808: ("Enraged Smash (PvP)", 289),         #   737 uses  29%
+    993: ("Enraged Smash", 289),                #   PvP twin
+    162: ("Gale", 321),                         #   386 uses  32%
+    2011: ("Grapple", 251),                     #   383 uses  25%
+    786: ("Iron Palm", 801),                    #   261 uses  80%
+    777: ("Horns of the Ox", 793),              #   184 uses  79%
+    784: ("Entangling Asp", 488),               #   162 uses  49%
+    296: ("Bane Signet", 43),                   #   140 uses   4%
+    2135: ("Trampling Ox", 714),                #    98 uses  71%
+    3193: ("Signet of Clumsiness (PvP)", 276),  #    98 uses  28%
+    1657: ("Signet of Clumsiness", 276),        #   PvP twin
+    356: ("Irresistible Blow", 125),            #    80 uses  12%
+    1767: ("Reaper's Sweep", 615),              #    78 uses  62%
+    358: ("Backbreaker", 746),                  #    71 uses  75%
+    1697: ("Magehunter's Smash", 732),          #    56 uses  73%
+    1146: ("Shove", 553),                       #    47 uses  55%
+    327: ("Griffon's Sweep", 65),               #    46 uses   7%
+    # Dedicated warrior knockdowns too rare to measure -- 15 and 12 uses in 623
+    # recordings. Carried so the attempt count stays complete, at the pooled
+    # rate rather than a baseline the sample cannot support.
+    1410: ("Overbearing Smash", 452),           #    15 uses
+    359: ("Heavy Blow", 452),                   #    12 uses
+}
+_KD_AREA: dict[int, tuple[str, int]] = {
+    843: ("Gust", 430),                         #  2795 uses  43%
+    163: ("Whirlwind", 232),                    #   224 uses  23%
+}
+
+# One more exact-millisecond source is in the recordings and is NOT in the
+# table: skill 3456, 114 uses, 44% conversion, every hit in the same
+# millisecond -- the Coward! signature exactly. The bundled skill data stops at
+# id 3431, so it cannot be named, and an unnamed skill is not something to
+# credit. Counted in the audit as `kd_attempts_unknown` so the gap stays
+# visible and closes itself when the skill data is refreshed.
+_KD_UNKNOWN_EXACT = frozenset({3456})
+
+_KD_ATTEMPT_KINDS = (
+    "SKILL_ACTIVATED", "ATTACK_SKILL_ACTIVATED", "INSTANT_SKILL_USED",
+)
+
+_KD_TIERS: tuple[tuple[str, dict[int, tuple[str, int]]], ...] = (
+    ("exact", _KD_EXACT), ("target", _KD_TARGET), ("area", _KD_AREA),
+)
+
+
+def _kd_spec(skill_id: int) -> tuple[str, int] | None:
+    """(tier, baseline in thousandths) for a knockdown attempt, or None.
+
+    Tries the id as sent, then its base id. The hand-listed PvP twins above stay
+    in the table on purpose rather than being retired in favour of the lookup:
+    the twin map comes from a generated data file, and if that file ever goes
+    missing the twins must still score. Canonicalising as well is what makes a
+    NEW split -- one a balance patch creates after this table was written -- get
+    counted without an edit here.
+    """
+    for tier, table in _KD_TIERS:
+        entry = table.get(skill_id)
+        if entry is not None:
+            return tier, entry[1]
+    base = canonical_skill_id(skill_id)
+    if base != skill_id:
+        for tier, table in _KD_TIERS:
+            entry = table.get(base)
+            if entry is not None:
+                return tier, entry[1]
+    return None
+
 
 def _stoc_path(match_dir: Path, stem: str) -> Path | None:
     stoc_dir = match_dir / "StoC"
@@ -106,6 +345,44 @@ def read_stoc_events(match_dir: Path) -> tuple[list[Event], frozenset[str]]:
             events.extend(parsed)
             sources.add(stem)
     return events, frozenset(sources)
+
+
+def match_seconds(infos: dict) -> float:
+    """``match_duration`` as seconds. It is written "MM:SS", not a number."""
+    raw = infos.get("match_duration")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    minute, _, second = str(raw or "").partition(":")
+    try:
+        return int(minute) * 60 + float(second)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def match_window(infos: dict) -> tuple[float, float]:
+    """(start, end) of the match itself, in instance time.
+
+    Every timestamp in a recording is instance time -- milliseconds since the GW
+    instance was created -- and that starts about a minute before a GvG does.
+    Measured, ``match_end_time_ms`` minus ``match_duration`` lands at 60.0-60.8 s
+    on every recording checked, which is the pre-match setup.
+
+    So a stream timestamp cannot be divided by ``match_duration`` without
+    aligning the two first. On one recording an avatar worn for 307.8 s of a
+    332 s match read 75.0% instead of 92.7%, because the numerator was clipped
+    to [0, 332] while the form was worn between 61 s and 390 s.
+
+    Falls back to ``[0, duration]`` when the end stamp is missing, which is what
+    the older captures have.
+    """
+    duration = match_seconds(infos)
+    try:
+        end = float(infos.get("match_end_time_ms")) / 1000.0
+    except (TypeError, ValueError):
+        end = 0.0
+    if end <= 0.0 or duration <= 0.0:
+        return 0.0, duration
+    return max(0.0, end - duration), end
 
 
 def _player_lookup(infos: dict) -> dict[int, tuple[str, int]]:
@@ -141,7 +418,11 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "casts_interrupted": 0,
             "casts_cancelled_voluntary": 0,
             "casts_ended_other": 0,
+            # Unobservable: the packet carries no interrupter. Kept, and kept
+            # zero, so that if the recorder ever gains a real source the two can
+            # be compared instead of one silently replacing the other.
             "rupts_landed": 0,
+            "rupts_inferred": 0,
             "rupt_cast_progress_ms_sum": 0,
             "rupt_cast_progress_n": 0,
             "knockdowns_dealt": 0,
@@ -150,9 +431,21 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "coward_kds": 0,
             "bulls_strike_uses": 0,
             "bulls_strike_target_unknown": 0,
+            # Every knockdown skill on the bar, not just the two named ones.
+            # `kd_expected_milli` is the sum of each attempt's baseline, so
+            # landed/expected says whether this player beats what their own
+            # skills land on average.
+            "kd_attempts": 0,
+            "kd_landed": 0,
+            "kd_expected_milli": 0,
         }
         for agent_id in players
     }
+    signets = signet_ids()
+    if signets:
+        for row in rows.values():
+            row["signet_casts"] = 0
+            row["sopr_casts"] = 0
     open_casts: dict[int, Cast] = {}
     history: dict[int, list[Cast]] = {agent_id: [] for agent_id in players}
     interrupted_total = 0
@@ -160,6 +453,18 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     interrupted_matched = 0
     interrupted_unmatched = 0
     interrupted_untracked_victim = 0
+    rupt_inferred_unique = 0
+    rupt_inferred_ambiguous = 0
+    rupt_inferred_none = 0
+    rupt_from_knockdown = 0
+    # (started_at, skill_id, caster_id, target_id) for every interrupt-capable
+    # cast aimed at somebody, and every knockdown, collected in pass one and
+    # joined in pass two -- the same two-pass shape the cast lifecycle uses.
+    rupt_casts: list[tuple[float, int, int, int]] = []
+    # A cast is spent on the interrupt it was credited for, the way a knockdown
+    # attempt is spent on the knockdown it made.
+    consumed_rupt_casts: set[int] = set()
+    knockdowns: list[tuple[float, int, int]] = []
     knockdown_events = 0
     knockdown_untracked_source = 0
     knockdown_untracked_victim = 0
@@ -179,8 +484,19 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
         if event.kind == "SKILL_ACTIVATED" and len(event.fields) >= 2:
             skill_id = _integer(event.fields[0])
             agent_id = _integer(event.fields[1])
+            # The third field is who it was aimed at, and it is the join key the
+            # interrupt inference needs. Absent for self- and party-targeted
+            # skills, which cannot interrupt anybody anyway.
+            target_id = _integer(event.fields[2]) if len(event.fields) >= 3 else 0
+            if (agent_id in rows and target_id
+                    and _rupt_window(skill_id) is not None):
+                rupt_casts.append((event.time, skill_id, agent_id, target_id))
             if agent_id not in rows or skill_id <= 0:
                 continue
+            if signets and canonical_skill_id(skill_id) in signets:
+                rows[agent_id]["signet_casts"] += 1
+                if canonical_skill_id(skill_id) == SOPR_ID:
+                    rows[agent_id]["sopr_casts"] += 1
             close_other(agent_id)
             open_casts[agent_id] = Cast(agent_id, skill_id, event.time)
             rows[agent_id]["casts_started"] += 1
@@ -202,12 +518,105 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             else:
                 cast.outcome = "stopped"
             history[agent_id].append(cast)
+        elif event.kind == "ATTACK_SKILL_ACTIVATED" and len(event.fields) >= 3:
+            # Same layout as SKILL_ACTIVATED. Collected only for the interrupt
+            # join -- attack skills stay outside the cast lifecycle, which is
+            # about spell cancellation.
+            skill_id = _integer(event.fields[0])
+            agent_id = _integer(event.fields[1])
+            target_id = _integer(event.fields[2])
+            if (agent_id in rows and target_id
+                    and _rupt_window(skill_id) is not None):
+                rupt_casts.append((event.time, skill_id, agent_id, target_id))
+        elif event.kind == "KNOCKED_DOWN" and len(event.fields) >= 2:
+            # Collected here rather than where the counters are incremented, so
+            # that a knockdown is on record before the interrupt it caused is
+            # judged. The two share a millisecond routinely.
+            kd_victim = _integer(event.fields[0])
+            kd_source = _integer(event.fields[1])
+            if kd_victim and kd_source:
+                knockdowns.append((event.time, kd_victim, kd_source))
         elif event.kind == "INSTANT_SKILL_USED":
             # Instant skills cannot be cancelled and would only dilute every
-            # lifecycle rate, so they are intentionally outside this family.
+            # lifecycle rate, so they stay outside that family -- but a signet
+            # with no cast time arrives here and nowhere else, so the signet
+            # counters have to be fed from both branches.
+            if signets and len(event.fields) >= 2:
+                skill_id = canonical_skill_id(_integer(event.fields[0]))
+                agent_id = _integer(event.fields[1])
+                if agent_id in rows and skill_id in signets:
+                    rows[agent_id]["signet_casts"] += 1
+                    if skill_id == SOPR_ID:
+                        rows[agent_id]["sopr_casts"] += 1
             continue
     for agent_id in tuple(open_casts):
         close_other(agent_id)
+
+    def _credit_interrupt(when: float, victim_id: int) -> int | None:
+        """Work out who interrupted ``victim_id``, and credit them if it is certain.
+
+        Returns the caster it credited, so the lifecycle branch can attribute
+        cast progress to the same player. That branch used to key on the
+        INTERRUPTED record's own interrupter field, which is the literal ``0``
+        this whole function exists to work around -- agent 0 is never in
+        ``rows``, so ``rupt_cast_progress_n`` was zero for every player in every
+        recording ever made. Measured over 80 matches: 2,357 inferred
+        interrupts, 0 cast-progress rows.
+
+        A knockdown is checked first and, when it explains the interrupt, ends
+        the search WITHOUT crediting anybody: the knockdown is already counted
+        in ``knockdowns_dealt``, and scoring one action on two axes would
+        inflate whatever reads them together.
+
+        Otherwise every interrupt-capable cast aimed at this victim inside its
+        skill's window is a candidate. Exactly one caster credits them; two
+        credits nobody. Guessing between two would produce a number that is
+        right on average and wrong about every individual, which is the kind of
+        figure people quote.
+
+        A cast is spent once it has been credited. Without that ledger -- the
+        one the knockdown side already has -- a single Savage Shot is the
+        "unique cause" of every interrupt its victim suffers inside a 3.5 s
+        window: measured, 43 phantom credits in 8,077 over 223 recordings.
+        """
+        nonlocal rupt_inferred_unique, rupt_inferred_ambiguous
+        nonlocal rupt_inferred_none, rupt_from_knockdown
+
+        sources = {
+            source for kd_time, kd_victim, source in knockdowns
+            if kd_victim == victim_id
+            and -0.1 <= when - kd_time <= KNOCKDOWN_INTERRUPT_WINDOW_SECONDS
+        }
+        # ANY knockdown in window explains the interrupt. Requiring exactly one
+        # let two knockdowns fall through to the cast join and hand a caster a
+        # credit for an interrupt a knockdown already caused -- the double
+        # scoring the paragraph above forbids. Not yet triggered in the archive
+        # (the distribution over 9,975 interrupts is 9,405 zero and 570 one),
+        # which is why it survived.
+        if sources:
+            rupt_from_knockdown += 1
+            return None
+
+        candidates = [
+            (index, caster)
+            for index, (started, skill_id, caster, target) in enumerate(rupt_casts)
+            if target == victim_id and caster != victim_id
+            and index not in consumed_rupt_casts
+            and 0 <= when - started <= (_rupt_window(skill_id) or 0)
+        ]
+        casters = {caster for _index, caster in candidates}
+        if len(casters) == 1:
+            index, caster = candidates[0]
+            if caster in rows:
+                consumed_rupt_casts.add(index)
+                rows[caster]["rupts_inferred"] += 1
+                rupt_inferred_unique += 1
+                return caster
+        if casters:
+            rupt_inferred_ambiguous += 1
+        else:
+            rupt_inferred_none += 1
+        return None
 
     # Pass two mirrors ReplayWindow.cpp: the complete lifecycle is available
     # before an INTERRUPTED event searches backwards for its stopped cast.
@@ -218,7 +627,12 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             victim_id = _integer(event.fields[0])
             source_id = _integer(event.fields[1])
             knockdown_events += 1
-            kd_events.append((event.time, victim_id, source_id))
+            # Guarded exactly as pass one guards `knockdowns`. A knockdown with
+            # no source can never match any attempt -- attempts with no source
+            # are skipped -- so letting it into the claim pool only inflated
+            # `kd_events_unclaimed` for ever. Measured: 100 of 10,298 (0.97%).
+            if victim_id and source_id:
+                kd_events.append((event.time, victim_id, source_id))
             if source_id in rows:
                 rows[source_id]["knockdowns_dealt"] += 1
             else:
@@ -227,6 +641,7 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 rows[victim_id]["knockdowns_received"] += 1
             else:
                 knockdown_untracked_victim += 1
+
         elif event.kind == "INTERRUPTED" and len(event.fields) >= 3:
             victim_id = _integer(event.fields[0])
             skill_id = _integer(event.fields[1])
@@ -239,6 +654,7 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 interrupted_untracked_victim += 1
                 continue
             interrupted_player_victim += 1
+            inferred_interrupter = _credit_interrupt(event.time, victim_id)
             candidates = history.get(victim_id, ())
             matched: Cast | None = None
             passed_newer_cast = False
@@ -271,50 +687,117 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             interrupted_matched += 1
             if victim_id in rows:
                 rows[victim_id]["casts_interrupted"] += 1
-            if interrupter_id in rows:
+            # The INFERRED interrupter, not the record's own field: that field is
+            # the literal 0 documented at the top of this module, so keying on it
+            # made these two counters structurally zero for every player.
+            if inferred_interrupter in rows:
                 latency_ms = max(0, round((event.time - matched.started_at) * 1000))
-                rows[interrupter_id]["rupt_cast_progress_ms_sum"] += latency_ms
-                rows[interrupter_id]["rupt_cast_progress_n"] += 1
+                rows[inferred_interrupter]["rupt_cast_progress_ms_sum"] += latency_ms
+                rows[inferred_interrupter]["rupt_cast_progress_n"] += 1
 
-    # Coward resolves server-side at the same millisecond. Bull's Strike uses
-    # are observable, but success is not: another warrior KD can share its
-    # source/target window, and blocks/KD immunity are absent from the stream.
+    # Every knockdown attempt claims from one pool of knockdowns, tightest
+    # evidence first: same-millisecond untargeted, then target-matched inside
+    # the window, then untargeted area. A knockdown is claimable once, and when
+    # two attempts could equally claim it NEITHER is credited -- the refusal
+    # the interrupt inference already makes. That is what makes this safe where
+    # a per-skill window guess was not: an ambiguous case becomes an audited
+    # number instead of landing on whichever attempt happened to sort first.
+    attempts: list[dict] = []
+    kd_attempts_unknown = 0
+    for event in ordered:
+        if event.kind not in _KD_ATTEMPT_KINDS or len(event.fields) < 3:
+            continue
+        skill_id = _integer(event.fields[0])
+        source_id = _integer(event.fields[1])
+        if not source_id:
+            continue
+        if skill_id in _KD_UNKNOWN_EXACT:
+            kd_attempts_unknown += 1
+            continue
+        spec = _kd_spec(skill_id)
+        if spec is None:
+            continue
+        tier, baseline = spec
+        target_id = _integer(event.fields[2])
+        # Stored canonical, so the named counters below and the credit at the
+        # end of the claim loop survive a future PvP split of either skill.
+        # `_kd_spec` already resolves twins; these comparisons did not, so a
+        # balance patch that split "Coward!" would have left `kd_attempts`
+        # working while silently zeroing all three named counters.
+        skill_id = canonical_skill_id(skill_id)
+        attempts.append({
+            "time": event.time, "ms": _event_ms(event), "skill": skill_id,
+            "source": source_id, "target": target_id, "tier": tier,
+            "landed": False,
+        })
+        if source_id not in rows:
+            continue
+        rows[source_id]["kd_attempts"] += 1
+        rows[source_id]["kd_expected_milli"] += baseline
+        if skill_id == COWARD_ID:
+            rows[source_id]["coward_uses"] += 1
+        elif skill_id == BULLS_STRIKE_ID:
+            rows[source_id]["bulls_strike_uses"] += 1
+            if target_id <= 0:
+                rows[source_id]["bulls_strike_target_unknown"] += 1
+
     consumed_kds: set[int] = set()
-    coward_uses = [
-        event for event in ordered
-        if event.kind == "INSTANT_SKILL_USED" and len(event.fields) >= 3
-        and _integer(event.fields[0]) == COWARD_ID
-    ]
-    bulls_uses = [
-        event for event in ordered
-        if event.kind == "ATTACK_SKILL_ACTIVATED" and len(event.fields) >= 3
-        and _integer(event.fields[0]) == BULLS_STRIKE_ID
-    ]
+    ambiguous_kds: set[int] = set()
+    kd_extra_victims = 0
 
-    for use in coward_uses:
-        source_id = _integer(use.fields[1])
-        if source_id not in rows:
+    def _kd_matches(attempt: dict, when: float, victim: int, source: int) -> bool:
+        if attempt["source"] != source:
+            return False
+        if attempt["tier"] == "exact":
+            return round(when * 1000) == attempt["ms"]
+        if not 0 <= when - attempt["time"] <= KD_WINDOW_SECONDS:
+            return False
+        return attempt["tier"] == "area" or attempt["target"] == victim
+
+    for tier, _table in _KD_TIERS:
+        pool = [attempt for attempt in attempts if attempt["tier"] == tier]
+        if not pool:
             continue
-        rows[source_id]["coward_uses"] += 1
-        candidates = [
-            index
-            for index, (kd_time, _victim, kd_source) in enumerate(kd_events)
-            if index not in consumed_kds and kd_source == source_id
-            and round(kd_time * 1000) == _event_ms(use)
-        ]
-        if candidates:
-            index = candidates[0]
+        for index, (kd_time, kd_victim, kd_source) in enumerate(kd_events):
+            if index in consumed_kds or index in ambiguous_kds:
+                continue
+            # An area skill knocks several people down at once, so it stays
+            # matchable after it has landed -- that is what lets the second and
+            # third victims of one Gust be EXPLAINED rather than left in the
+            # unclaimed residue. It does not earn a second credit: `kd_landed`
+            # is measured against `kd_expected_milli`, which is a per-USE
+            # baseline, so an attempt lands or it does not and crediting three
+            # for one Gust would read as 300% conversion.
+            candidates = [
+                attempt for attempt in pool
+                if (tier == "area" or not attempt["landed"])
+                and _kd_matches(attempt, kd_time, kd_victim, kd_source)
+            ]
+            if not candidates:
+                continue
+            if len(candidates) > 1:
+                ambiguous_kds.add(index)
+                continue
+            winner = candidates[0]
+            if winner["source"] not in rows:
+                # Not a player, so nothing is credited and the attempt is not
+                # spent either -- and therefore the knockdown is not claimed.
+                # Claiming it here counted an NPC knockdown as "explained" in an
+                # audit that is read beside `kd_landed`.
+                continue
             consumed_kds.add(index)
-            rows[source_id]["coward_kds"] += 1
-
-    for use in bulls_uses:
-        source_id = _integer(use.fields[1])
-        victim_id = _integer(use.fields[2])
-        if source_id not in rows:
-            continue
-        rows[source_id]["bulls_strike_uses"] += 1
-        if victim_id <= 0:
-            rows[source_id]["bulls_strike_target_unknown"] += 1
+            if winner["landed"]:
+                # Explained, but not credited again. Counted so the two
+                # published numbers reconcile: `kd_events_claimed` is how many
+                # knockdowns were explained, the sum of `kd_landed` is how many
+                # attempts landed, and this is exactly the difference. They used
+                # to disagree by 4% with nothing naming the gap.
+                kd_extra_victims += 1
+                continue
+            winner["landed"] = True
+            rows[winner["source"]]["kd_landed"] += 1
+            if winner["skill"] == COWARD_ID:
+                rows[winner["source"]]["coward_kds"] += 1
 
     for agent_id, casts in history.items():
         rows[agent_id]["casts_cancelled_voluntary"] += sum(
@@ -324,6 +807,10 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     output: dict[str, list[dict[str, int]]] = {}
     for agent_id, (party_id, player_number) in players.items():
         row = {"player_number": player_number, **rows[agent_id]}
+        # The expectation is a sum of fractional baselines, so it is carried in
+        # thousandths; the numerator is scaled to match here rather than stored
+        # twice, so the two cannot drift apart.
+        row["kd_landed_milli"] = row["kd_landed"] * 1000
         # A fully observed zero is meaningful here; unlike a missing event
         # stream, it says the event parser ran and nothing happened.
         output.setdefault(party_id, []).append(row)
@@ -339,6 +826,14 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "interrupt_casts_matched": interrupted_matched,
             "interrupt_casts_unmatched": interrupted_unmatched,
             "interrupt_events_untracked_victim": interrupted_untracked_victim,
+            # How far the inference reached. Published so a reader can see the
+            # share of a match it explained rather than trusting the counter.
+            "interrupt_inferred_unique": rupt_inferred_unique,
+            "interrupt_inferred_ambiguous": rupt_inferred_ambiguous,
+            "interrupt_inferred_none": rupt_inferred_none,
+            "interrupt_from_knockdown": rupt_from_knockdown,
+            "rupt_spell_window_ms": round(RUPT_SPELL_WINDOW_SECONDS * 1000),
+            "rupt_attack_window_ms": round(RUPT_ATTACK_WINDOW_SECONDS * 1000),
             "match_early_ms": round(INTERRUPT_MATCH_EARLY_SECONDS * 1000),
             "match_late_ms": round(INTERRUPT_MATCH_LATE_SECONDS * 1000),
             "knockdown_events": knockdown_events,
@@ -347,8 +842,44 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "conditional_kd_events_assigned": len(consumed_kds),
             "conditional_kd_events_unassigned": len(kd_events) - len(consumed_kds),
             "coward_match_tolerance_ms": 0,
+            # How far the knockdown ledger reached, same shape as the interrupt
+            # audit above: attempts seen, knockdowns it explained, knockdowns it
+            # refused because two attempts could equally claim them.
+            "kd_attempt_events": len(attempts),
+            "kd_attempts_unknown_skill": kd_attempts_unknown,
+            "kd_events_claimed": len(consumed_kds),
+            # len(consumed_kds) - kd_extra_victims == sum of every row's
+            # kd_landed. The gap is the extra victims of one area knockdown.
+            "kd_events_extra_victims": kd_extra_victims,
+            "kd_events_ambiguous": len(ambiguous_kds),
+            "kd_events_unclaimed": (
+                len(kd_events) - len(consumed_kds) - len(ambiguous_kds)
+            ),
+            "kd_window_ms": round(KD_WINDOW_SECONDS * 1000),
         },
     }
+
+
+def _merge_ledger(result: dict, ledger: dict) -> None:
+    """Fold a sibling ledger's per-player rows into the combat rows.
+
+    Same shape as ``flag_ledger.merge_into_analytics``: the shard parser copies
+    whatever numeric keys a row carries, so merging here is what lets a new
+    counter reach the consumer with no change at any layer in between.
+    """
+    if not ledger:
+        return
+    by_slot = {
+        (party_id, row.get("player_number")): row
+        for party_id, party_rows in ledger.get("players", {}).items()
+        for row in party_rows
+    }
+    for party_id, party_rows in result.get("players", {}).items():
+        for row in party_rows:
+            extra = by_slot.get((party_id, row.get("player_number")))
+            if extra:
+                row.update({k: v for k, v in extra.items() if k != "player_number"})
+    result.setdefault("attribution", {}).update(ledger.get("attribution", {}))
 
 
 def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
@@ -358,11 +889,53 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
     if not all(source in sources for source in REQUIRED_STOC_SOURCES):
         return {}
     result = build_combat_analytics(infos, events)
+
+    # The agent snapshots are the most expensive thing in a match to open, and
+    # two consumers need them: the max-HP solver and the cripple ledger. Read
+    # once here and hand the parsed lines to both -- reading them twice cost
+    # 1.15 s on a 6.85 s call, which is 45 minutes over a full backfill.
+    snapshot_records: dict = {}
+    try:
+        from condition_ledger import read_snapshot_records
+        snapshot_records = read_snapshot_records(match_dir, _player_lookup(infos))
+    except Exception as exc:  # noqa: BLE001 - fall back to each reading its own
+        print(f"  Warning: snapshot read unavailable: {type(exc).__name__}: {exc}")
+
+    from player_matrix import build_player_matrix
+    matrix = build_player_matrix(infos, events, match_dir,
+                                 records=snapshot_records or None)
+    if matrix:
+        result["player_matrix"] = matrix
+    # Cripple comes from the agent snapshots and avatar uptime from the model
+    # stream, so neither depends on the StoC sources gated above. Both are
+    # absent rather than zero when their source is missing, and a defect in
+    # either must not cost the match its combat counters.
+    ledgers = (
+        ("condition_ledger", "build_condition_ledger",
+         {"records": snapshot_records or None}),
+        ("avatar_ledger", "build_avatar_ledger", {}),
+    )
+    for module_name, builder_name, kwargs in ledgers:
+        try:
+            module = __import__(module_name)
+            _merge_ledger(result,
+                          getattr(module, builder_name)(infos, match_dir, **kwargs))
+        except Exception as exc:  # noqa: BLE001 - never lose the combat rows
+            print(f"  Warning: {module_name} unavailable: "
+                  f"{type(exc).__name__}: {exc}")
     if "attack_skill_events" not in sources:
+        # Most knockdown skills ARE attack skills, so without that stream the
+        # attempts are undercounted while the knockdowns they caused are still
+        # counted -- a conversion rate well above what the player managed.
+        # Withheld entirely rather than published wrong.
         for party_rows in result["players"].values():
             for row in party_rows:
                 row.pop("bulls_strike_uses", None)
                 row.pop("bulls_strike_target_unknown", None)
+                row.pop("kd_attempts", None)
+                row.pop("kd_landed", None)
+                row.pop("kd_landed_milli", None)
+                row.pop("kd_expected_milli", None)
     result["sources"] = sorted(sources)
     return result
 
