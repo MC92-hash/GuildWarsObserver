@@ -195,11 +195,11 @@ def test_a_stick_is_credited_to_whoever_was_holding(tmp_path):
     assert rows[1]["flag_sticks"] == 1
 
 
-def test_a_return_is_counted_but_never_attributed(tmp_path):
-    # The ported animation heuristic credits 1 return in 169 over the archive:
-    # its three constants never appear on a returner, and only 40% of returns
-    # have an opposing player within the 200-unit gate at all. So returns stay
-    # a team-level count and no player row claims one.
+def test_a_return_with_nobody_in_range_credits_nobody(tmp_path):
+    # The ported heuristic credits 3 returns in 169 across the archive. The
+    # animation constants are real -- 3002646795 is the second most common
+    # animation on a returning-team player near the flag -- but only about a
+    # quarter of returns have anyone inside the 200-unit gate.
     path = _write(tmp_path,
                   "[00:00.100] 3;45;493;59808;6",
                   "[00:10.000] 0;45;62;0",
@@ -208,7 +208,8 @@ def test_a_return_is_counted_but_never_attributed(tmp_path):
     result = build_flag_ledger(_infos(), path)
     assert result["attribution"]["flag_returns_seen"] == 1
     for row in _rows(result).values():
-        assert "flag_returns" not in row
+        assert row["flag_returns"] == 0
+    assert result["attribution"]["flag_returns_uncredited"] == 1
 
 
 def test_the_flag_owner_mapping_is_the_measured_one():
