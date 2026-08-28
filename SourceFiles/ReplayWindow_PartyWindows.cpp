@@ -85,7 +85,14 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
     // shown 540.
     //
     // Deep Wound is already applied inside the model, so it is not reapplied here.
-    if (m_healthInputsBuilt && ard.armourSolved)
+    //
+    // The gate asks the model rather than testing ard.armourSolved, because an armour solve is
+    // only one of the ways it can produce an answer. A pet wears no armour and a guild hall NPC
+    // has a stated maximum, so both are complete without a solve and neither would ever pass an
+    // armourSolved test -- which is why, before this, a pet's health fell through to the 480
+    // fallback and a Guild Lord was shown 480 instead of 1680. At() already returns Fallback
+    // whenever it genuinely cannot run, so the inner check is the whole test.
+    if (m_healthInputsBuilt)
     {
         const HealthModel::Breakdown b = HealthModel::At(ard, t, m_healthInputs);
         if (b.source != HealthModel::Source::Fallback && b.total > 0)

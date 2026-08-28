@@ -83,6 +83,13 @@ void ReplayWindow::UpdateIncomingEffects()
             [](const AgentSnapshot& a, float b) { return a.time < b; });
         for (; sit != snaps.end(); ++sit)
             if (sit->max_hp > 0) return sit->max_hp;
+        // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
+        // never looked at it. Without this a Guild Lord fell through to the player-only solver,
+        // which returns 0 for an NPC, and his damage numbers were dropped for want of a
+        // denominator. Deep Wound is the only thing that moves it.
+        if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
+            return (s && s->has_deep_wound)
+                       ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
         // Recorded value first (it is the effective max HP); solved per
         // weapon set only when the recording carries none.
         return it->second.solvedMaxHpAtTime(t);

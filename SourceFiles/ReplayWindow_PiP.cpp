@@ -70,6 +70,12 @@ void ReplayWindow::UpdatePiPIncomingEffects()
         if (snaps.empty()) return 0;
         const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
         if (s && s->max_hp > 0) return s->max_hp;
+        // A guild hall NPC's maximum is a stated constant, known even when the camera never
+        // looked at it; the solver below is player-only and returns 0 for one. Deep Wound is the
+        // only thing that moves it.
+        if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
+            return (s && s->has_deep_wound)
+                       ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
         // Recorded value first (it is the effective max HP); solved per
         // weapon set only when the recording carries none.
         return it->second.solvedMaxHpAtTime(t);

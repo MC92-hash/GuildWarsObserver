@@ -530,10 +530,13 @@ void ReplayWindow::BuildLordDamageData()
         if (lordIt == m_replayCtx.agents.end()) continue;
         const auto& lordArd = lordIt->second;
 
-        // Resolve base max HP for HP-bar rendering
-        uint32_t baseMaxHp = 0;
-        for (const auto& s : lordArd.snapshots)
-            if (s.max_hp > 0) { baseMaxHp = s.max_hp; break; }
+        // Resolve base max HP for HP-bar rendering. The Lord's maximum is a stated constant, so
+        // it is preferred over a recorded reading: max_hp only arrives while the recorder's
+        // camera is on the agent, and a camera that never looks at the Lord left this at 0.
+        uint32_t baseMaxHp = LookupGuildNpcMaxHealth(lordArd.modelId);
+        if (baseMaxHp == 0)
+            for (const auto& s : lordArd.snapshots)
+                if (s.max_hp > 0) { baseMaxHp = s.max_hp; break; }
         if (baseMaxHp == 0)
             for (auto rit = lordArd.snapshots.rbegin(); rit != lordArd.snapshots.rend(); ++rit)
                 if (rit->max_hp > 0) { baseMaxHp = rit->max_hp; break; }
