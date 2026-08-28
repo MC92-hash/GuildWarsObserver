@@ -137,10 +137,18 @@ bool SkillDatabase::Load(const std::string& dataDir)
     return m_loaded;
 }
 
+// Answers as the PvP half too, for the same reason as the view above. This is the undated
+// accessor, used where no replay date is in hand, so it reads the current split rather than the
+// one that was live on a match day.
 const SkillInfo* SkillDatabase::Get(int skillId) const
 {
     auto it = m_skills.find(skillId);
     if (it == m_skills.end()) return nullptr;
+    if (it->second.pvp_split && it->second.split_id > 0)
+    {
+        auto pvp = m_skills.find(it->second.split_id);
+        if (pvp != m_skills.end()) return &pvp->second;
+    }
     return &it->second;
 }
 
@@ -428,11 +436,33 @@ int SkillDatabase::ResolvePvpSkillId(int skillId) const
 // SkillDatabaseView
 // ---------------------------------------------------------------------------
 
+// A skill that has a PvP split answers as its PvP half.
+//
+// This tool only ever shows GvG, so the split is the skill as every match it loads actually
+// played it. The two halves are not a rounding apart: PvE Aegis blocks attacks for the party
+// while PvP Aegis makes one ally untargetable by spells, so serving the PvE entry is not an
+// imprecise answer but the wrong skill.
+//
+// It resolves here rather than at each call site because the two id forms arrive from different
+// places and only one of them was ever wrong. The StoC stream already names the PvP id, so casts,
+// the combat log and the analytics were right; a player's bar in infos.json names the PvE id, and
+// every place that reads that bar was showing PvE text for a PvP match. Putting the rule in the
+// accessor makes it hold for readers nobody has thought of yet.
+//
+// Date correctness comes for free: this reads the view's own data, so a replay from before a split
+// existed sees pvp_split false on that day's entry and keeps the only version there was. Callers
+// that need the id rather than the entry still have ResolvePvpSkillId, and resolving twice is
+// harmless because a PvP entry never carries a split of its own.
 const SkillInfo* SkillDatabaseView::Get(int skillId) const
 {
     if (!m_data) return nullptr;
     auto it = m_data->find(skillId);
     if (it == m_data->end()) return nullptr;
+    if (it->second.pvp_split && it->second.split_id > 0)
+    {
+        auto pvp = m_data->find(it->second.split_id);
+        if (pvp != m_data->end()) return &pvp->second;
+    }
     return &it->second;
 }
 
