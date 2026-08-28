@@ -182,3 +182,37 @@ def test_one_agent_cannot_hold_both_flags_at_once(tmp_path):
     rows = _rows(build_flag_ledger(_infos(), path))
     # 10 s on the blue flag, then 20 s on the red one -- not 30 + 20 overlapping.
     assert rows[1]["flag_carry_seconds"] == 30
+
+
+def test_a_stick_is_credited_to_whoever_was_holding(tmp_path):
+    # Named by the record, not inferred: the sticker is the carrier at the
+    # moment the announce fires.
+    path = _write(tmp_path,
+                  "[00:00.100] 3;45;493;59808;6",
+                  "[00:10.000] 0;45;62;0",
+                  "[00:30.000] 6;1;2075;1")
+    rows = _rows(build_flag_ledger(_infos(), path))
+    assert rows[1]["flag_sticks"] == 1
+
+
+def test_a_return_is_counted_but_never_attributed(tmp_path):
+    # The ported animation heuristic credits 1 return in 169 over the archive:
+    # its three constants never appear on a returner, and only 40% of returns
+    # have an opposing player within the 200-unit gate at all. So returns stay
+    # a team-level count and no player row claims one.
+    path = _write(tmp_path,
+                  "[00:00.100] 3;45;493;59808;6",
+                  "[00:10.000] 0;45;62;0",
+                  "[00:20.000] 1;62;0",
+                  "[00:30.000] 6;0;2075;1")
+    result = build_flag_ledger(_infos(), path)
+    assert result["attribution"]["flag_returns_seen"] == 1
+    for row in _rows(result).values():
+        assert "flag_returns" not in row
+
+
+def test_the_flag_owner_mapping_is_the_measured_one():
+    from flag_ledger import FLAG_OWNER_TEAM
+    # Two in-tree docs contradict each other on Red/Blue; the pickup record does
+    # not. 59808 was picked up by team 1 1,079 times against 4.
+    assert FLAG_OWNER_TEAM == {59808: 1, 57400: 2}

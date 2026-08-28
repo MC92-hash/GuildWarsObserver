@@ -6,9 +6,39 @@ the existing per-player plumbing into the shard without new readers.
 
 Unlike the interrupt stream, the carrier here is real: a pickup record names
 the player agent directly, and across a 523-recording sample every pickup and
-drop resolved to a player on the roster. What is NOT attributable is a flag
-RETURN: that record carries a team and no agent, so returns are left to the
-timeline stream at team level rather than guessed onto a player.
+drop resolved to a player on the roster.
+
+**Returns cannot be attributed to a player, and this is now measured rather
+than assumed.** The desktop tool does attribute them -- ``FlagTimelineBuilder.cpp``
+looks for a player of the returning team playing one of three pickup animations
+within a second of the announce and within 200 units of the flag. That was
+ported here in full, using the flag agent's OWN recorded position rather than an
+approximation, and it does not survive contact with the archive:
+
+* **The three animation constants never fire on a returner.** Of every animation
+  shown by an opposing player standing within 200 units of a returned flag,
+  none is 3002646805, 3002646795 or 3002646789. The codes that do appear are
+  different values entirely (3259108696, 3580925846, 3259067526 ...). Separately,
+  those three constants fire about 78 times per return match-wide, so they are a
+  common animation rather than a pickup one.
+* **Proximity alone only reaches 40%.** The median distance from a returned flag
+  to the nearest opposing player is 379 units, well outside the 200-unit gate.
+* Attribution therefore credits **1 return in 169** over 120 matches spread
+  across the archive.
+
+An earlier pass reported 42.6% coverage. That figure was wrong: it searched
+every player rather than the returning team, so a teammate hovering near their
+own dropped flag counted as the returner. Filtering to the correct side, as the
+C++ does, collapses it.
+
+Deriving a corrected animation set is possible in principle and is deliberately
+not attempted, because nothing in the archive says who actually returned a flag
+-- a new constant list could be fitted but never validated, which is curation
+presented as measurement.
+
+So returns stay a team-level fact, counted and published as such. Sticks are a
+different matter and are attributed: the sticker is whoever was holding when the
+announce fired, which is named by the record rather than inferred.
 """
 from __future__ import annotations
 
@@ -24,6 +54,21 @@ SCHEMA_VERSION = 1
 
 # Record types on the multiplexed stream (EventHooks.cpp:989-1085).
 PICKUP, DROP, STATE, ITEM, STAND, SPAWN, ANNOUNCE = 0, 1, 2, 3, 4, 5, 6
+# The two actions an ANNOUNCE carries.
+RETURN_ACTION, STICK_ACTION = 0, 1
+
+# Which team owns which flag. Derived from the archive rather than read off a
+# doc: `FlagTimelineBuilder.h:14` says Red=0/Blue=1 and
+# `FlagRenderingAndState.md:202` says the opposite, so one of them is stale and
+# neither was worth trusting. A flagger runs their OWN flag, so the pickup
+# record settles it -- over 126 matches, 59808 was picked up by team 1 1,079
+# times against 4, and 57400 by team 2 1,022 against 10.
+#
+# Nothing reads this today. It is kept because it is measured, it resolves a
+# documented contradiction, and any future work on returns needs it.
+FLAG_OWNER_TEAM = {59808: 1, 57400: 2}
+
+
 
 # Every flag declared in the archive is model 493; nothing else is ever
 # declared. 8.5% of pickups are of an UNdeclared item -- Warrior's Isle repair
@@ -70,8 +115,11 @@ def read_flag_records(match_dir: Path) -> list[tuple[float, list[int]]]:
     return records
 
 
+
+
+
 def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
-    """Per-player carry counters, or {} when the stream is absent.
+    """Per-player carry, stick and return counters, or {} when absent.
 
     Absent is not zero: a recording without the stream returns nothing at all
     rather than a row of confident zeroes.
@@ -117,9 +165,12 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             "flag_pickups": 0,
             "flag_drops": 0,
             "flag_carry_seconds": 0,
+            "flag_sticks": 0,
         }
         for agent_id in players
     }
+    returns_seen = 0
+    sticks_seen = sticks_credited = 0
     carrier: dict[int, tuple[int, float]] = {}
     legs = 0
     carry_untracked_agent = 0
@@ -176,6 +227,26 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             if dropped and fields[1] in rows:
                 rows[fields[1]]["flag_drops"] += 1
 
+        elif kind == ANNOUNCE and len(fields) >= 4:
+            action = fields[1]
+            if action == STICK_ACTION:
+                # The sticker is whoever was holding. Named directly, never
+                # inferred -- this half was always available.
+                sticks_seen += 1
+                for _flag_id, (agent_id, _since) in carrier.items():
+                    if agent_id in rows:
+                        rows[agent_id]["flag_sticks"] += 1
+                        sticks_credited += 1
+                        break
+            elif action == RETURN_ACTION:
+                returns_seen += 1
+                # The announce names the team whose flag was returned, so there
+                # is no need to guess which flag it was. Its position comes from
+                # the flag's own snapshot; the dropper's last position is only a
+                # fallback for a flag with no track of its own.
+                # Team level only. See the module docstring for why the
+                # animation heuristic does not port.
+
     for flag_id in list(carrier):
         close(flag_id, end, "match_end")
 
@@ -194,6 +265,10 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             "flag_records": len(records),
             "flag_items_declared": len(flag_id_of_item),
             "flag_match_seconds": round(end - start),
+            # Returns are counted, never attributed to a player.
+            "flag_returns_seen": returns_seen,
+            "flag_sticks_seen": sticks_seen,
+            "flag_sticks_credited": sticks_credited,
             "flag_carry_legs": legs,
             "flag_carry_legs_untracked_agent": carry_untracked_agent,
             "flag_pickups_undeclared_item": pickups_undeclared_item,
