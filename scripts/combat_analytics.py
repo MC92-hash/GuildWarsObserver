@@ -490,6 +490,11 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     # (agent, skill) -> activations, for the per-skill ledger. Attack skills sit
     # outside the cast lifecycle, so `history` never sees them.
     attack_attempts: Counter = Counter()
+    # Instant skills never become a `Cast`, deliberately (see the
+    # INSTANT_SKILL_USED branch), so they can never reach `skill_casts` through
+    # `history`. Counted here so a usage histogram can show them without any of
+    # them entering the lifecycle family.
+    instant_uses: Counter = Counter()
     # A cast is spent on the interrupt it was credited for, the way a knockdown
     # attempt is spent on the knockdown it made.
     consumed_rupt_casts: set[int] = set()
@@ -577,10 +582,21 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             # lifecycle rate, so they stay outside that family -- but a signet
             # with no cast time arrives here and nowhere else, so the signet
             # counters have to be fed from both branches.
-            if signets and len(event.fields) >= 2:
+            #
+            # Staying out of the lifecycle is right; staying out of the USAGE
+            # histogram was not. `skill_casts` is built from `history`, so an
+            # instant reached no page at all: measured over 80 matches, 64
+            # skills appear only as instants and their 29,147 uses are 17.4% of
+            # every skill use in the archive. Every stance in the game was
+            # missing, Frenzy and Dash included, and only the two instants
+            # anybody had asked about -- signets here, "Coward!" in its own
+            # counter -- had ever been rescued one at a time.
+            if len(event.fields) >= 2:
                 skill_id = canonical_skill_id(_integer(event.fields[0]))
                 agent_id = _integer(event.fields[1])
-                if agent_id in rows and skill_id in signets:
+                if agent_id in rows and skill_id > 0:
+                    instant_uses[(agent_id, skill_id)] += 1
+                if signets and agent_id in rows and skill_id in signets:
                     rows[agent_id]["signet_casts"] += 1
                     if skill_id == SOPR_ID:
                         rows[agent_id]["sopr_casts"] += 1
@@ -903,6 +919,7 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     try:
         from skill_ledger import build_skill_casts
         skill_casts = build_skill_casts(players, history, attack_attempts,
+                                        instant_uses,
                                         canonical_skill_id)
     except Exception as exc:  # noqa: BLE001 - never lose the combat rows
         print(f"  Warning: skill ledger unavailable: {type(exc).__name__}: {exc}")
