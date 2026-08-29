@@ -270,6 +270,20 @@ tester can see at a glance they are not on the production path.
 
 ### The rehearsal
 
+`scripts/demo_update.py` does the staging, the watching and the assertions:
+
+```
+py -3.11 scripts/demo_update.py --from-tag v1.2.7 --to-tag v2.0.0
+```
+
+It stages a genuine install of `--from-tag` into `%LOCALAPPDATA%\GWObserver\update-demo\`,
+plants the two markers, launches it, prints a timestamped event for every change to the install
+directory, captures `_gwobs_update.bat` before it self-deletes, and finishes with a pass/fail
+block. It exits non-zero on failure, and refuses to start if the asset on GitHub is not the
+package you are checking against. You click three times in the middle; it says when.
+
+By hand, the same thing is:
+
 1. Extract the **previous** release's zip to a scratch directory outside the repo.
 2. Replace its `GuildWarsObserver.exe` with a build that reports an older version, or just use
    the previous release's own exe if the hop being tested is from a version that already has
