@@ -542,7 +542,7 @@ void ReplayWindow::DrawFogOfWarToolbar()
         {
             std::string msg = pit->second.partyBarLabel + " \xe2\x80\x94 No vision";
             ImVec2 txtSz = ImGui::CalcTextSize(msg.c_str());
-            auto* fgDl = ImGui::GetForegroundDrawList();
+            auto* fgDl = ImGui::GetBackgroundDrawList();
             auto* mvp  = ImGui::GetMainViewport();
             ImVec2 center(mvp->Pos.x + mvp->Size.x * 0.5f, mvp->Pos.y + mvp->Size.y * 0.5f);
             fgDl->AddText(nullptr, 13.f,

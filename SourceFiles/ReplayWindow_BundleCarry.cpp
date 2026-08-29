@@ -573,7 +573,7 @@ void ReplayWindow::DrawBundleItems()
     float vpH = vp->Size.y;
 
     XMMATRIX viewProj = cam->GetView() * cam->GetProj();
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
 
     const float iconSz = std::clamp(vpH * 0.035f, 18.f, 32.f);

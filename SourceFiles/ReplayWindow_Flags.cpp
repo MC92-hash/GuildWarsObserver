@@ -209,7 +209,7 @@ void ReplayWindow::DrawFlags()
     float vpH = vp->Size.y;
     const MapTransform& t = m_replayCtx.mapTransform;
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
     ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
@@ -753,7 +753,7 @@ void ReplayWindow::DrawFlagEventMessages()
     ImFont* font = m_latoRegular ? m_latoRegular : ImGui::GetFont();
     float fontSize = font->FontSize;
     float lineH = fontSize + 6.f;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     float posX = m_uiLayout.useCustom ? m_uiLayout.timerX : 0.50f;

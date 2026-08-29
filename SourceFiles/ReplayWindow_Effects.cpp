@@ -733,7 +733,7 @@ void ReplayWindow::RenderIncomingEffects()
     constexpr float kScreenPad = 4.f;
     anchorY -= iconSz + kScreenPad * 2.f;
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     EnsureSkillIconIndex();
@@ -960,7 +960,7 @@ void ReplayWindow::RenderSpeechBubbles()
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     ImTextureID bubbleTex = LoadSpeechBubbleTexture(dev);
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImFont* font = ImGui::GetFont();
 
     const InterpolationSettings& is = m_replayCtx.interpSettings;
@@ -1061,7 +1061,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
 
     auto* vp = ImGui::GetMainViewport();
     float vpW = vp->Size.x;
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImFont* font = ImGui::GetFont();
 
     // --- Panel background (only around health bar) ---

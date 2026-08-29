@@ -782,7 +782,7 @@ void ReplayWindow::DrawSkillLasers()
 
     const InterpolationSettings& is = m_replayCtx.interpSettings;
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     float dpi = std::max(1.f, vpH / 1080.f);
     float curTime = (float)ImGui::GetTime();
 
