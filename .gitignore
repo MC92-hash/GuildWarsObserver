@@ -402,11 +402,25 @@ FodyWeavers.xsd
 # matched, so the file it meant to exclude was tracked and public. Note that ignoring a path
 # does not untrack a file that is already committed — the deletions have to be committed too,
 # and the content stays in history regardless.
+#
+# The rule covered *.md only, so docs/architecture-review.html - an internal review that
+# describes gwobserver-private's internals and carries developer machine paths - sat tracked
+# and public until 2026-08-30. Loose documents at the docs root are internal by default; the
+# asset subdirectories (docs/gifs, docs/release_notes_assets) are deliberately public and are
+# left alone.
 /docs/*.md
+/docs/*.html
+/docs/*.txt
 /scripts/gw_dat_index.py
 /SourceFiles/OVERLAY_DESIGN.md
 /TODO_unicode_extraction.md
 /match_analysis_report.md
+
+# Build logs and packaged builds. build_out.txt and GuildWarsObserver-v8.1.0.zip were both
+# tracked; the zip additionally carried a gui_settings.ini holding a developer's real
+# gw_dat_path and match_data_folder. Releases belong on the GitHub release page, not in git.
+/build_out.txt
+/*.zip
 
 # ============================================================
 # Unused textures, fonts, and build artifacts

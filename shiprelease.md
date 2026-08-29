@@ -126,6 +126,28 @@ The CRT is statically linked (`RuntimeLibrary=MultiThreaded`), so no VC++ redist
 
 ---
 
+## What is public, and what is not
+
+This repository is **public** - `LICENCE.md` grants "view and study this source code" - so
+anything committed here is world-readable, this document included. Confidential material lives
+in the private sibling `gwobserver-private`, which tracks `r2_config.env`,
+`build_config.local.h` and `contributor_key_hashes.*`. All four are gitignored here and have
+never appeared in this repository's history on any branch.
+
+One thing that looks like a leak and is not: **the R2 read credentials are compiled into the
+shipped binary and are therefore public.** `GWO_R2_READ_ACCESS_KEY`, `GWO_R2_READ_SECRET_KEY`,
+the bucket name and the cloud host can all be pulled out of any release download in seconds.
+That is by construction - `MapBrowser.cpp:381-396` hands them to the S3 client so the app can
+read match data, and any credential shipped in a client is public whether or not it is
+obfuscated. Rotating them achieves nothing on its own, since the new value ships in the next
+binary too. The controls that do matter are that the token stays **read-only and scoped to the
+one bucket**, and that egress has a quota. Both live in the Cloudflare dashboard, not here.
+
+The **write** credentials are a different matter and must never reach a build.
+`GWO_R2_ACCESS_KEY` and `GWO_R2_SECRET_KEY` are empty defaults in `build_config.h`, are not
+defined in the private header at all, and are referenced by no shipped code; `upload_to_r2.py`
+reads them from `r2_config.env` instead. Keep it that way.
+
 ## Phase 0 - Pre-flight
 
 1. `gwobserver-private` must sit as a **sibling of the repo root**. The build hard-fails
@@ -162,13 +184,22 @@ that predates the fixes. **Do not rebuild it.**
    MSBUILDER='/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/MSBuild/Current/Bin/MSBuild.exe' && "$MSBUILDER" GuildWarsObserver.sln '-p:Configuration=Release' '-p:Platform=x64' '-v:minimal'
    ```
    Add `-p:OutDir=x64\ReleaseShip\` if an instance is running.
-3. Verify the binary before packaging, because both of these fail silently:
+3. Verify the binary before packaging. All three of these fail silently:
    ```bash
    grep -a -c "2\.0\.0" x64/Release/GuildWarsObserver.exe
    grep -a -o -m1 -E "https://[a-z0-9]+\.r2\.cloudflarestorage\.com" x64/Release/GuildWarsObserver.exe
+   grep -a -c "Weapon hand is +x in bind pose" x64/Release/GuildWarsObserver.exe   # must be 0
    ```
-   The first proves the version bump reached the binary, the second proves
-   `build_config.local.h` was picked up and the cloud library is on.
+   The first proves the version bump reached the binary. The second proves
+   `build_config.local.h` was picked up and the cloud library is on. The third proves developer
+   mode is **off**: that string lives inside a `#if GWO_DEVELOPER` block, so it is present only
+   when developer mode was compiled in. Every release up to and including 1.2.7 shipped with
+   `GWO_DEVELOPER 1` and nobody noticed, because nothing checked.
+
+   Do not try to check this by grepping for `Simulate Update` or the other Debug menu items.
+   `IsDeveloperMode()` is a runtime check, so that code is compiled into every build by design
+   and those strings are always present; the menu is simply unreachable without `GWO_DEV` set.
+   Only the `#if`-gated strings distinguish the two builds.
 4. Package:
    ```bash
    py -3.11 scripts/package_release.py --version 2.0.0 \
