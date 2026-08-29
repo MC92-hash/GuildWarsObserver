@@ -440,6 +440,17 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
             "rupt_attempts_on_casting_target": 0,
             "rupt_cast_progress_ms_sum": 0,
             "rupt_cast_progress_n": 0,
+            # Cast progress is when the interrupt LANDED. Reaction is when the
+            # interrupter pressed it, and the difference is the projectile
+            # flying -- which is a property of the skill, not the player. The
+            # window split at the top of this module measured that difference
+            # at 134 ms for spells and 304 ms for attacks and then never
+            # carried it into the published figure, so a bow interrupter reads
+            # ~170 ms slower than a mesmer for identical human reflex.
+            "rupt_reaction_ms_sum": 0,
+            "rupt_reaction_n": 0,
+            "rupt_flight_ms_sum": 0,
+            "rupt_flight_n": 0,
             "knockdowns_dealt": 0,
             "knockdowns_received": 0,
             "coward_uses": 0,
@@ -577,11 +588,15 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
     for agent_id in tuple(open_casts):
         close_other(agent_id)
 
-    def _credit_interrupt(when: float, victim_id: int) -> int | None:
+    def _credit_interrupt(when: float,
+                          victim_id: int) -> tuple[int, float] | tuple[None, None]:
         """Work out who interrupted ``victim_id``, and credit them if it is certain.
 
-        Returns the caster it credited, so the lifecycle branch can attribute
-        cast progress to the same player. That branch used to key on the
+        Returns ``(caster, rupt_started_at)`` for the cast it credited, so the
+        lifecycle branch can attribute cast progress to the same player AND
+        measure the reaction separately from the flight. The activation time is
+        already in ``rupt_casts``; it used to be discarded here, which is the
+        only reason reaction was not available. That branch used to key on the
         INTERRUPTED record's own interrupter field, which is the literal ``0``
         this whole function exists to work around -- agent 0 is never in
         ``rows``, so ``rupt_cast_progress_n`` was zero for every player in every
@@ -620,7 +635,7 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
         # which is why it survived.
         if sources:
             rupt_from_knockdown += 1
-            return None
+            return None, None
 
         candidates = [
             (index, caster)
@@ -636,12 +651,19 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 consumed_rupt_casts.add(index)
                 rows[caster]["rupts_inferred"] += 1
                 rupt_inferred_unique += 1
-                return caster
+                # The credit consumes the EARLIEST in-window cast, which is what
+                # keeps the counts stable; the timing wants the one nearest the
+                # interrupt, because that is the press that landed it.
+                started = max(
+                    (rupt_casts[i][0] for i, c in candidates
+                     if c == caster and rupt_casts[i][0] <= when),
+                    default=rupt_casts[index][0])
+                return caster, started
         if casters:
             rupt_inferred_ambiguous += 1
         else:
             rupt_inferred_none += 1
-        return None
+        return None, None
 
     # Pass two mirrors ReplayWindow.cpp: the complete lifecycle is available
     # before an INTERRUPTED event searches backwards for its stopped cast.
@@ -679,7 +701,8 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 interrupted_untracked_victim += 1
                 continue
             interrupted_player_victim += 1
-            inferred_interrupter = _credit_interrupt(event.time, victim_id)
+            inferred_interrupter, rupt_started_at = _credit_interrupt(
+                event.time, victim_id)
             candidates = history.get(victim_id, ())
             matched: Cast | None = None
             passed_newer_cast = False
@@ -719,6 +742,16 @@ def build_combat_analytics(infos: dict, events: Iterable[Event]) -> dict:
                 latency_ms = max(0, round((event.time - matched.started_at) * 1000))
                 rows[inferred_interrupter]["rupt_cast_progress_ms_sum"] += latency_ms
                 rows[inferred_interrupter]["rupt_cast_progress_n"] += 1
+                if rupt_started_at is not None:
+                    # reaction + flight == cast progress, to the millisecond.
+                    # That identity is the cheapest regression test there is.
+                    reaction_ms = max(
+                        0, round((rupt_started_at - matched.started_at) * 1000))
+                    flight_ms = max(0, latency_ms - reaction_ms)
+                    rows[inferred_interrupter]["rupt_reaction_ms_sum"] += reaction_ms
+                    rows[inferred_interrupter]["rupt_reaction_n"] += 1
+                    rows[inferred_interrupter]["rupt_flight_ms_sum"] += flight_ms
+                    rows[inferred_interrupter]["rupt_flight_n"] += 1
 
     # Every knockdown attempt claims from one pool of knockdowns, tightest
     # evidence first: same-millisecond untargeted, then target-matched inside
@@ -1022,6 +1055,10 @@ def build_from_match_dir(infos: dict, match_dir: Path) -> dict:
         ("kill_ledger", "build_kill_ledger",
          {"records": snapshot_records or None}),
         ("flag_ledger", "build_flag_ledger", {}),
+        # Snapshot-only, like cripple and kills: it reads no event stream, so it
+        # must NOT be gated on REQUIRED_STOC_SOURCES.
+        ("ias_ledger", "build_ias_ledger",
+         {"records": snapshot_records or None}),
     )
     for module_name, builder_name, kwargs in ledgers:
         try:
