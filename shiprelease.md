@@ -16,23 +16,32 @@ change one, change the other, or they drift and the document stops being true.
 Done:
 
 - [x] `GWO_VERSION` bumped to `2.0.0`, Release x64 built and verified
-- [x] `dist/GWObserver.zip` built (4798 entries, 101.7 MB) and verified flat
-- [x] Committed on `dev` (`6ca980a`), merged to `master`, both pushed
-- [x] `v2.0.0` published as a **prerelease** on `MC92-hash/GuildWarsObserver`, asset
-      `GWObserver.zip` uploaded and byte-identical to the local zip
+- [x] Updater audited and fixed (`5ee43a2`): `%~dp0`-relative batch, qualified `tar` with a
+      checked errorlevel and an error log, the real HWND for the auto-install restart, a
+      cancel that reaches the transfer, and the `GWO_UPDATE_TAG`/`GWO_UPDATE_REPO` overrides
+- [x] `GWO_DEVELOPER` set to 0 for public builds, `IsDeveloperMode()` made runtime so `GWO_DEV`
+      unlocks the Debug menu in the shipped binary. Verified: the `#if`-gated weapon
+      diagnostics are absent from the ship build and present in the old prober
+- [x] Repackaged: 4798 entries, 101.7 MB, flat. Shipped exe SHA-256
+      `d51be22ff9c716636fcfe712b1978b24856669705effc3f5048267f16c172d89`
+- [x] `v2.0.0` published as a **prerelease** on `MC92-hash/GuildWarsObserver`
 - [x] Confirmed `/releases/latest` still returns `v1.2.7`, so no user sees anything yet
 
 Remaining, in this order:
 
-- [ ] **Phase 3 test.** A throwaway "prober" build sits at `dist/prober/GuildWarsObserver.exe`:
-      it is the 2.0.0 codebase still reporting version `1.2.7`, with the update endpoint
-      pointed at `/releases/tags/v2.0.0` so it can see a release the public endpoint hides.
-      Use it to run the update test below. It is the only reason that build exists; delete it
-      afterwards.
-- [ ] **Phase 4 promote**, then re-test once on the genuine `/releases/latest` path
-- [ ] **Phase 5 website.** The `GWObserver-Website` repo has uncommitted 2.0.0 work on
-      `master` (index, script, style, plus untracked `releases/2.0.0/` and
-      `assets/releases/2.0.0/`). Push it only after the release is promoted.
+- [ ] **Re-upload** the repackaged zip with `gh release upload v2.0.0 --clobber`
+- [ ] **Rehearse the update.** Use `dist/prober/GuildWarsObserver.exe` for this one hop: it
+      reports `1.2.7` and its `UpdateChecker.cpp` is identical to the released `v1.2.7`, so it
+      is the only faithful stand-in for the clients actually in the field. Every later release
+      uses `GWO_UPDATE_TAG` instead. Keep the app focused during the download, since the NULL
+      window handle is unfixable for those clients.
+- [ ] **Promote**, then re-test once on the genuine `/releases/latest` path
+- [ ] **Website.** The `GWObserver-Website` repo has uncommitted 2.0.0 work on `master` (index,
+      script, style, plus untracked `releases/2.0.0/` and `assets/releases/2.0.0/`). Push it
+      only after the release is promoted.
+- [ ] Mention in the announcement that users on 1.2.7 whose install path contains non-ASCII
+      characters, or who alt-tab during the download, may need the manual download. Their
+      client predates the fixes.
 
 ---
 
@@ -52,8 +61,12 @@ follows from it.
 - Asset selection is a **case-sensitive** `.zip` suffix match, preferred over `.exe`.
   `Update.ZIP` would not match. If several `.zip` assets are attached the **last one wins**,
   so attach exactly one.
-- Install writes a batch script that waits for the app to exit, then runs
-  `tar -xf "<zip>" -C "<exeDir>"` over the live install directory and relaunches the exe.
+- Install writes a batch script that waits for the app to exit, then extracts the archive over
+  the live install directory with `"%SystemRoot%\System32\tar.exe"` and relaunches the exe.
+  Every path in it is `%~dp0`-relative, because cmd parses `.bat` in the OEM codepage while the
+  app writes it in the ANSI one, and an absolute path with any non-ASCII character would arrive
+  mangled. The tar errorlevel is checked: on failure the archive is kept and the reason is
+  written to `_gwobs_update_error.log`, which the next launch reports and clears.
 
 ### The two silent failure modes
 
@@ -129,18 +142,17 @@ The CRT is statically linked (`RuntimeLibrary=MultiThreaded`), so no VC++ redist
 4. Close any running `GuildWarsObserver.exe`, or build to a separate `OutDir`. A running
    instance holds a lock on the exe and the link step fails with `LNK1104`.
 
-## Phase 1 - Build the prober
+## Phase 1 - Nothing to do
 
-Do this **before** the version bump, while the tree still reads the old version and only one
-line needs touching.
+From 2.0.0 onward there is no prober build. `GWO_UPDATE_TAG` replaces it; see
+[Testing the updater](#testing-the-updater).
 
-1. In `SourceFiles/Net/UpdateChecker.cpp`, change `/releases/latest` to
-   `/releases/tags/vX.Y.Z`. Leave `GWO_VERSION` at the **old** version.
-2. Build Release x64, copy the exe to `dist/prober/GuildWarsObserver.exe`.
-3. **Revert the source edit** and confirm the tree is clean.
-
-The prober is a throwaway client that reports the old version and can see a release the public
-endpoint is still hiding. Nothing else about the download or install path differs.
+Releases before 2.0.0 needed a throwaway client built from a patched
+`SourceFiles/Net/UpdateChecker.cpp` with `/releases/latest` swapped for
+`/releases/tags/vX.Y.Z`, because a normal client cannot see a prerelease. `dist/prober/`
+still holds the one built for the 1.2.7 -> 2.0.0 hop. It is kept deliberately: its
+`UpdateChecker.cpp` is identical to `v1.2.7`, so it is the only faithful stand-in for a client
+that predates the fixes. **Do not rebuild it.**
 
 ## Phase 2 - Bump, build, package
 
@@ -240,6 +252,66 @@ The site is `mevi826/gwobserver-website`, served by GitHub Pages from `master` r
    its screenshots, and the home page changelog shows the new entry. That changelog renders
    the **GitHub release body** as markdown through `/releases?per_page=10`, which is why the
    release body is worth writing properly rather than pointing only at the site.
+
+## Testing the updater
+
+The updater is the one part of a release that cannot fix itself in the field, so it gets
+rehearsed before every promotion. Two environment variables make that possible without
+building anything special:
+
+| Variable | Effect |
+|---|---|
+| `GWO_UPDATE_TAG` | Check `/releases/tags/<tag>` instead of `/releases/latest`. This is the only way a client can see a **prerelease**, which is what makes the staged test work |
+| `GWO_UPDATE_REPO` | Check a different `owner/name` |
+| `GWO_DEV` | Unlock the Debug menu in a public build (`GWO_DEVELOPER` is 0 in release builds) |
+
+When either update variable is set, the effective endpoint is shown in the update panel, so a
+tester can see at a glance they are not on the production path.
+
+### The rehearsal
+
+1. Extract the **previous** release's zip to a scratch directory outside the repo.
+2. Replace its `GuildWarsObserver.exe` with a build that reports an older version, or just use
+   the previous release's own exe if the hop being tested is from a version that already has
+   `GWO_UPDATE_TAG`.
+3. Put a recognisable `gw_dat_path` in that copy's `gui_settings.ini` and a marker in
+   `settings/ui_layout.json`. These are what prove the package is not clobbering user state.
+4. Run it pointed at the hidden prerelease:
+   ```
+   set GWO_UPDATE_TAG=vX.Y.Z
+   GuildWarsObserver.exe
+   ```
+5. Take the update: check, Download, Install and Restart.
+
+Assert all of it:
+
+- the app relaunches on its own and reports the new version
+- the exe's SHA-256 matches the one packaged (`sha256sum` the staged exe before uploading)
+- `gw_dat_path` and `ui_layout.json` survived unchanged
+- no nested folder appeared in the install directory
+- `GWObserver_update.zip`, `_gwobs_update.bat` and `_gwobs_update_error.log` are all gone
+
+### The three cases worth forcing
+
+The happy path has always worked. These are the ones that were silently broken, so they are
+the ones worth re-checking whenever the updater is touched:
+
+- **Alt-tab during the download.** Click Download and Install, then switch to another
+  application until it finishes. It must still close and relaunch. This is the case that used
+  to hang forever with the app stuck on "Update ready!".
+- **A non-ASCII install path.** Copy the scratch install under a directory with an accented or
+  non-Latin name and repeat. Every path in the generated batch is `%~dp0`-relative now
+  precisely so this works.
+- **A corrupt archive.** Truncate the downloaded `GWObserver_update.zip` before clicking
+  Install. Extraction must fail *visibly*: the archive is kept, `_gwobs_update_error.log`
+  appears, and the next launch reports it instead of offering the same update again.
+
+### What a test cannot cover
+
+Clients older than 2.0.0 run the pre-fix updater, and nothing shipped later can change that.
+For those users a non-ASCII install path, or alt-tabbing during the download, will make the
+in-app update fail, usually with no message at all. The manual download from the website is
+the fallback, and it is worth saying so in the release announcement.
 
 ## Verification summary
 
