@@ -120,13 +120,29 @@ release, or hotfixes.
 
 No CI/CD - releases are manual build-and-publish.
 
-1. Bump `GWO_VERSION` in `SourceFiles/build_config.h`
-2. Build Release x64 via msbuild
-3. Commit, tag `vX.Y.Z`, push tag
-4. Create a GitHub Release on `MC92-hash/GuildWarsObserver` from the tag
-5. Attach a `.zip` asset (preferred by the updater) or `.exe` fallback
+**`shiprelease.md` at the repo root is the procedure.** Follow it rather than working from the
+summary here, because most of what can go wrong in a release goes wrong silently.
 
-The in-app `UpdateChecker` polls the GitHub Releases API (`/releases/latest`), compares `tag_name` against `GWO_VERSION` via semver, and offers download + swap-and-restart. The updater prefers `.zip` assets over `.exe`. Ensure the version string, tag, and release asset are all consistent.
+The short version: bump `GWO_VERSION` in `SourceFiles/build_config.h`, build Release x64,
+package with `scripts/package_release.py`, merge `dev` into `master`, publish as a
+**prerelease** first, test the update end to end, then promote with `gh release edit
+--prerelease=false --latest`, and only then push the website.
+
+The in-app `UpdateChecker` polls `/releases/latest`, compares `tag_name` against `GWO_VERSION`
+via semver, and offers download plus swap-and-restart. Two constraints decide whether a
+release works:
+
+- The zip must be **flat**, exe at the root. The updater installs it with
+  `tar -xf <zip> -C <exeDir>` over the live install directory, so a wrapper folder extracts
+  without error, never replaces the running exe, and relaunches the old version silently.
+- The package must **never** contain `gui_settings.ini` or `settings/ui_layout.json`. Both are
+  written next to the exe at runtime, so shipping them makes every auto-update overwrite the
+  user's DAT path and layout.
+
+`scripts/package_release.py` enforces both, and refuses to package an exe whose embedded
+version string does not match the version being tagged. Prereleases and drafts are never
+returned by `/releases/latest`, which is what makes the staged test safe and gives a one-command
+rollback.
 
 ## Cloud Storage & Upload Pipeline
 
