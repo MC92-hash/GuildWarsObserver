@@ -58,6 +58,23 @@ ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device, int skillId,
                           std::unordered_map<int, std::string>& index,
                           std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache);
 
+// --- Skill card description text (shared: CharacterPanel, PlayerInfo) ---
+// A skill's description is one sentence made of differently coloured spans: the game's own
+// wording, plus every "5...50" answered at the rank this caster was actually read at, in green.
+// Defined in ReplayWindow_CharacterPanel.cpp so both panels put the same face on a skill.
+struct SkillTextRun { std::string text; ImU32 colour; };
+
+// Wraps the runs by hand at wrapW and returns the block's size. ImGui wraps per item, so drawing
+// each coloured number as an item of its own would restart the wrap wherever that item began.
+ImVec2 DrawSkillTextRuns(ImDrawList* dl, ImVec2 pos, float wrapW,
+                         const std::vector<SkillTextRun>& runs);
+
+// `rank` is the caster's solved range for the attribute the skill scales on, or nullptr when the
+// tool never solved it - in which case the game's own wording is returned unchanged.
+std::vector<SkillTextRun> BuildSkillTextRuns(const SkillInfo& si,
+                                             const AttributeModel::AttributeRange* rank,
+                                             ImU32 plain, ImU32 answered);
+
 // --- Skill / message text (shared: CombatLog, EventTimeline, ...) ---
 std::string GetSkillDisplayName(int skillId);
 const char* JumboMessageDisplayText(const std::string& msgType, int team);

@@ -859,7 +859,7 @@ static void RenderOneDrawing(const AnnotationManager::MapDrawing& d,
 void AnnotationManager::RenderDrawings(XMMATRIX viewProj, float vpW, float vpH,
                                        float currentTimeSec)
 {
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
     for (auto& d : drawings)
         RenderOneDrawing(d, viewProj, vpW, vpH, currentTimeSec, dl);

@@ -151,7 +151,7 @@ void ReplayWindow::DrawAgentModelLoadingBanner()
     const ImU32 cGoldDim = IM_COL32(122,  96,  32, static_cast<int>(255 * alpha));
     const ImU32 cText    = IM_COL32(200, 184, 140, static_cast<int>(220 * alpha));
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
     dl->AddRectFilled(ImVec2(bannerX, bannerY),
                       ImVec2(bannerX + bannerW, bannerY + bannerH), cBg, 4.f);

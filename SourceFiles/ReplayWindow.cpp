@@ -4582,6 +4582,16 @@ void ReplayWindow::Tick()
         std::sort(m_itemIds.begin(),    m_itemIds.end());
         std::sort(m_unknownIds.begin(), m_unknownIds.end());
 
+        // Non-player agents (spirits, minions, pets, NPCs) are keyed by agent id in infos.json's
+        // OTHER lists, and their level is what the summon-level ruler reads.
+        for (auto& [partyId, party] : m_matchMeta.parties)
+            for (auto& pm : party.others)
+            {
+                auto oit = m_replayCtx.agents.find(pm.id);
+                if (oit != m_replayCtx.agents.end() && pm.level > 0)
+                    oit->second.playerLevel = pm.level;
+            }
+
         // Build modelId -> PlayerMeta* lookup for player metadata
         std::unordered_map<uint32_t, const PlayerMeta*> modelToPlayer;
         for (auto& [partyId, party] : m_matchMeta.parties)
@@ -5540,6 +5550,14 @@ void ReplayWindow::Tick()
         };
         attrInputs.skillBar = [this](int agentId) { return SkillBarForAgent(agentId); };
 
+        // The Flux: the recording names it when the recorder saw it; the month decides otherwise.
+        attrInputs.flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+        if (attrInputs.flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+            attrInputs.flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+        attrInputs.matchYear  = m_matchMeta.year;
+        attrInputs.matchMonth = m_matchMeta.month;
+        attrInputs.matchDay   = m_matchMeta.day;
+
         m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;
 
@@ -5755,7 +5773,10 @@ void ReplayWindow::WriteAttributeDebugDump() const
         if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
 
     const std::string path = std::string(tempDir) + "gwo_attributes_" + folder + ".txt";
-    AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView);
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+    AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView, flux);
 }
 
 void ReplayWindow::Update(double elapsedMs)
@@ -6259,16 +6280,14 @@ void ReplayWindow::DrawImGuiOverlay()
     m_annotationMgr.SetIconDevice(m_deviceResources->GetD3DDevice());
     m_annotationMgr.RenderToolbar(&m_panelLayout);
     m_annotationMgr.RenderDrawModeIndicator();
-    {
-        Camera* cam = m_mapRenderer->GetCamera();
-        XMMATRIX annVP = cam->GetView() * cam->GetProj();
-        auto annViewport = m_deviceResources->GetScreenViewport();
-        m_annotationMgr.RenderDrawings(annVP, annViewport.Width,
-                                       annViewport.Height, m_debugTimeline);
-    }
-
     DrawSoundFxPanel(m_audioEngine.get(), m_showSoundFxPanel);
 
+    // Everything below paints into the background draw list, so the panels
+    // stay readable on top of it.  Call order is the stacking order there:
+    // ground decals first, then the agents, then what floats above them.
+    DrawRangeRings();
+    DrawSpiritRanges();
+    DrawWurmsShrineCaptureRadius();
     DrawAgentOverlay();
     DrawFlags();
     DrawBundleItems();
@@ -6277,11 +6296,15 @@ void ReplayWindow::DrawImGuiOverlay()
     RenderIncomingEffects();
     UpdateSpeechBubbles();
     RenderSpeechBubbles();
+    {
+        Camera* cam = m_mapRenderer->GetCamera();
+        XMMATRIX annVP = cam->GetView() * cam->GetProj();
+        auto annViewport = m_deviceResources->GetScreenViewport();
+        m_annotationMgr.RenderDrawings(annVP, annViewport.Width,
+                                       annViewport.Height, m_debugTimeline);
+    }
     DrawFollowedAgentHUD();
     DrawFocusedPlayerHud();
-    DrawRangeRings();
-    DrawSpiritRanges();
-    DrawWurmsShrineCaptureRadius();
     DrawRangeRingToolbar();
     DrawSkillLaserPanel();
     DrawFogOfWarToolbar();
@@ -6513,7 +6536,7 @@ void ReplayWindow::DrawImGuiOverlay()
             float fadeT = (overlayElapsed <= kOverlayVisibleSec)
                 ? 1.f
                 : 1.f - std::clamp((overlayElapsed - kOverlayVisibleSec) / kOverlayFadeSec, 0.f, 1.f);
-            ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+            ImDrawList* fgDl = ImGui::GetBackgroundDrawList();
             ImVec2 disp = ImGui::GetIO().DisplaySize;
             DrawMatchInfoOverlay(fgDl, disp, fadeT);
         }
@@ -7078,7 +7101,7 @@ bool ReplayWindow::HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
 {
     if (m_draggingUIElement != elementIdx) return false;
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     dl->AddRect(ImVec2(boxTL.x - 2, boxTL.y - 2), ImVec2(boxBR.x + 2, boxBR.y + 2),
                 IM_COL32(0xF5, 0xE4, 0x5A, 180), 4.f, 0, 2.f);
     dl->AddRectFilled(boxTL, boxBR, IM_COL32(0xF5, 0xE4, 0x5A, 30), 4.f);
@@ -7418,7 +7441,7 @@ void ReplayWindow::DrawMatchTimer()
     ImVec2 boxTL(cx - boxW * 0.5f - padX, topY);
     ImVec2 boxBR(cx + boxW * 0.5f + padX, topY + boxH + padY * 2.f);
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
 
     if (isCountdown)
     {
@@ -7466,7 +7489,7 @@ void ReplayWindow::DrawJumboMessages()
         float ty = vp->Pos.y + vp->Size.y * posY;
         float tx = cx - textSize.x * 0.5f;
 
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         dl->AddText(font, fontSize, ImVec2(tx, ty + 1), IM_COL32(0, 0, 0, 150), preview);
         dl->AddText(font, fontSize, ImVec2(tx, ty), IM_COL32(0xFF, 0x99, 0x9A, 180), preview);
 
@@ -7527,7 +7550,7 @@ void ReplayWindow::DrawJumboMessages()
     float tx = cx - textSize.x * 0.5f;
     float ty = topY;
 
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
     ImU32 shadow = IM_COL32(0, 0, 0, static_cast<int>(alpha * 230));
     dl->AddText(font, fontSize, ImVec2(tx, ty + 1), shadow, text);
     dl->AddText(font, fontSize, ImVec2(tx, ty), teamCol, text);

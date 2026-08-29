@@ -864,19 +864,34 @@ void ReplayWindow::DrawPlayerInfoPanel()
 
         ImGui::Spacing();
 
-        if (!si->description.empty())
+        // Same skill card the Character panel draws: every "5...50" in the text answered with the
+        // number this player actually cast it at, in green, when his rank on that attribute solved.
+        if (!si->description.empty() || !si->concise.empty())
         {
-            std::string desc = si->description;
-            size_t pos;
-            while ((pos = desc.find('<')) != std::string::npos)
+            const AttributeModel::AttributeRange* rank = nullptr;
+            if (auto bit = m_attrProfiles.find(m_playerInfoAgentId); bit != m_attrProfiles.end())
+                if (auto ait = bit->second.attributes.find(si->attribute);
+                    ait != bit->second.attributes.end() && !ait->second.budgetOnly)
+                    rank = &ait->second;
+
+            constexpr float kDescWrap = 340.f;
+            const std::vector<SkillTextRun> runs = BuildSkillTextRuns(
+                *si, rank,
+                ImGui::GetColorU32(ImVec4(0.85f, 0.82f, 0.75f, 1.f)),
+                ImGui::GetColorU32(ImVec4(136 / 255.f, 255 / 255.f, 136 / 255.f, 1.f)));
+
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const ImVec2 size = DrawSkillTextRuns(ImGui::GetWindowDrawList(), at, kDescWrap, runs);
+            ImGui::Dummy(ImVec2(kDescWrap, size.y));
+
+            if (rank)
             {
-                size_t end = desc.find('>', pos);
-                if (end == std::string::npos) break;
-                desc.erase(pos, end - pos + 1);
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.f));
+                ImGui::TextWrapped("Green is this player's own %s, read off the match.",
+                                   SkillDatabase::GetAttributeName(si->attribute));
+                ImGui::PopStyleColor();
             }
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.82f, 0.75f, 1.f));
-            ImGui::TextWrapped("%s", desc.c_str());
-            ImGui::PopStyleColor();
         }
 
         if (modTooltip && modTooltip[0])
@@ -2262,59 +2277,6 @@ void ReplayWindow::DrawPlayerInfoPanel()
     }
 
     // (Section 5 — Skill Cast Stats removed, replaced by skill icon grid + tooltip)
-
-    // ═══════════════════════════════════════════════════════════════
-    // SECTION 4B — ATTRIBUTES (DEDUCED)
-    // ═══════════════════════════════════════════════════════════════
-    {
-        float winX = ImGui::GetWindowPos().x;
-        ImVec2 attrPos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
-        float innerW = contentW - 2 * kPadX;
-
-        dl->AddLine(ImVec2(attrPos.x, attrPos.y), ImVec2(attrPos.x + innerW, attrPos.y), kDivider);
-        attrPos.y += 8.f;
-
-        dl->AddText(nullptr, 10.f, attrPos, kGold, "ATTRIBUTES");
-        attrPos.y += 16.f;
-
-        auto it = m_attrProfiles.find(m_playerInfoAgentId);
-        if (it == m_attrProfiles.end() || it->second.attributes.empty())
-        {
-            dl->AddText(nullptr, 11.f, attrPos, IM_COL32(0x80, 0x80, 0x80, 0xFF), "Attributes: unknown");
-            attrPos.y += 16.f;
-        }
-        else
-        {
-            const auto& profile = it->second;
-
-            // The map is unordered; attribute id happens to group a profession's lines together,
-            // which is the order the game's own attribute window uses.
-            std::vector<int> attrIds;
-            attrIds.reserve(profile.attributes.size());
-            for (const auto& [attrId, range] : profile.attributes) attrIds.push_back(attrId);
-            std::sort(attrIds.begin(), attrIds.end());
-
-            for (int attrId : attrIds)
-            {
-                const AttributeModel::AttributeRange& range = profile.attributes.at(attrId);
-                const char* attrName = GetSkillDatabase().GetAttributeName(attrId);
-                if (!attrName || !attrName[0]) attrName = "Unknown";
-
-                // An exact rank, a range, or a ceiling the 200-point rule imposed on an attribute
-                // nothing was ever observed on. Formatted by the model, so this panel and the
-                // character sheet cannot end up saying the same solve two different ways.
-                const std::string rankStr = AttributeModel::FormatRange(range);
-
-                ImU32 textCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-                char line[128];
-                snprintf(line, sizeof(line), "%s: %s", attrName, rankStr.c_str());
-                dl->AddText(nullptr, 11.f, attrPos, textCol, line);
-                attrPos.y += 16.f;
-            }
-        }
-
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + kPadX, attrPos.y));
-    }
 
     // ═══════════════════════════════════════════════════════════════
     // SECTION 6 — CENTERED PLAYHEAD CAST TIMELINE (±10s)

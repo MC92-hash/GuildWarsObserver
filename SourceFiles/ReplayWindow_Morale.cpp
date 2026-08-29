@@ -565,7 +565,7 @@ void ReplayWindow::DrawMoraleBoostTimers()
 
     auto drawShadowed = [&](ImVec2 pos, ImU32 col, const char* txt)
     {
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 2), shA, txt);
         dl->AddText(font, fontSize, ImVec2(pos.x, pos.y + 1), shB, txt);
         dl->AddText(font, fontSize, pos, col, txt);

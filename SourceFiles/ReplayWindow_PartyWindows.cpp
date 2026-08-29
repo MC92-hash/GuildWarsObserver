@@ -324,9 +324,25 @@ void ReplayWindow::DrawPartyWindows()
                 hpEstimated = sample.estimated;
             }
 
+            // A summon's level is the one number on this row that says something about the
+            // player who made it: "Create a level 1...16 spirit" is a breakpoint table, so a
+            // level 13 Rejuvenation spirit is Restoration Magic 12 read straight off the ally
+            // list. The recording gives it (infos.json), and only for the first agent of a
+            // recycled id - so it is 0 for a spirit whose slot had been used before, and a row
+            // with nothing to say says nothing.
+            const char* barLabel = ard.partyBarLabel.c_str();
+            char levelledLabel[160];
+            if (ard.playerLevel > 0 &&
+                (ard.type == AgentType::Spirit || IsMinionModelId(ard.modelId)))
+            {
+                snprintf(levelledLabel, sizeof(levelledLabel), "%s L%d",
+                         ard.partyBarLabel.c_str(), ard.playerLevel);
+                barLabel = levelledLabel;
+            }
+
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,
-                               ard.partyBarLabel.c_str(), icons,
+                               barLabel, icons,
                                m_followedAgentId, agentId, isFogHidden,
                                carriedFlagTex, absMaxHp, hpEstimated);
 
