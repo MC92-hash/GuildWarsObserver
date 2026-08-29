@@ -6,9 +6,40 @@ the existing per-player plumbing into the shard without new readers.
 
 Unlike the interrupt stream, the carrier here is real: a pickup record names
 the player agent directly, and across a 523-recording sample every pickup and
-drop resolved to a player on the roster. What is NOT attributable is a flag
-RETURN: that record carries a team and no agent, so returns are left to the
-timeline stream at team level rather than guessed onto a player.
+drop resolved to a player on the roster.
+
+**Returns are attributed, and the coverage is poor. Both halves are measured.**
+
+``FlagTimelineBuilder.cpp`` attributes a return by looking for a player of the
+returning team playing one of three pickup animations within a second of the
+announce and within 200 units of the flag. That is ported here in full, reading
+the flag agent's OWN recorded position rather than approximating it from the
+dropper.
+
+**End to end it credits 3 returns in 169** over 120 matches spread across the
+archive, with 0 ambiguous. The animation half works; the proximity half is what
+fails. Of returning-team players standing within 200 units of the flag,
+``3002646795`` is the second most common animation they show -- so the constants
+are real -- but only about a quarter of returns have any returning-team player
+inside the gate at all.
+
+Two errors were made getting here and are recorded so they are not repeated:
+
+* **The announce record's team field is the RETURNING team, not the flag's
+  owner** (``FlagTimelineBuilder.cpp:1192-1194``: ``returnTeam`` from
+  ``e.team``, then ``flagTeam = 1 - returnTeam``). Reading it the other way
+  searches the wrong half of the server.
+* An earlier pass reported 42.6% coverage by searching every player rather than
+  the returning team, so a teammate hovering near their own dropped flag counted
+  as the returner. That number was an artefact and is not a target to restore.
+
+The counter is published with its audit and is deliberately NOT on any card: at
+2% coverage it is a fact about the ledger, not about a player. The proximity
+gate is the parameter to revisit, and doing so needs a known-correct returner to
+validate against, which nothing in the archive supplies.
+
+Sticks are a different matter and ARE attributable: the sticker is whoever was
+holding when the announce fired, which the record names rather than implies.
 """
 from __future__ import annotations
 
@@ -19,11 +50,99 @@ from pathlib import Path
 # than re-derived so the two cannot disagree about the roster.
 from combat_analytics import _player_lookup as player_lookup
 from combat_analytics import match_window
+from condition_ledger import INCARNATION_BREAK, read_snapshot_records
 
 SCHEMA_VERSION = 1
 
 # Record types on the multiplexed stream (EventHooks.cpp:989-1085).
 PICKUP, DROP, STATE, ITEM, STAND, SPAWN, ANNOUNCE = 0, 1, 2, 3, 4, 5, 6
+# The two actions an ANNOUNCE carries.
+RETURN_ACTION, STICK_ACTION = 0, 1
+
+# Which team owns which flag. Derived from the archive rather than read off a
+# doc: `FlagTimelineBuilder.h:14` says Red=0/Blue=1 and
+# `FlagRenderingAndState.md:202` says the opposite, so one of them is stale and
+# neither was worth trusting. A flagger runs their OWN flag, so the pickup
+# record settles it -- over 126 matches, 59808 was picked up by team 1 1,079
+# times against 4, and 57400 by team 2 1,022 against 10.
+#
+# Nothing reads this today. It is kept because it is measured, it resolves a
+# documented contradiction, and any future work on returns needs it.
+FLAG_OWNER_TEAM = {59808: 1, 57400: 2}
+
+# Ported from FlagTimelineBuilder.cpp:1192-1285, constants included, so the
+# desktop tool and the website cannot disagree about who returned a flag.
+#
+# The announce record's team field is the RETURNING team, not the flag's owner
+# -- `returnTeam` at :1192, `flagTeam = 1 - returnTeam` at :1194. Reading it the
+# other way round searches the wrong half of the server and credits almost
+# nothing, which is exactly what an earlier pass here did.
+RETURN_ANIM_CODES = frozenset({3002646805, 3002646795, 3002646789})
+RETURN_PROX_SQ = 200.0 * 200.0
+RETURN_WINDOW_SECONDS = 1.0
+
+# Snapshot field positions, zero-based, confirmed against the desktop parser
+# `AgentSnapshotParser.cpp:207-248` rather than the format doc.
+POS_X, POS_Y, ANIMATION_CODE = 0, 1, 39
+MIN_SNAPSHOT_FIELDS = 40
+
+
+def agent_tracks(snapshots: dict) -> dict:
+    """agent -> [(time, x, y, animation_code)], sorted, for the return join."""
+    out: dict[int, list[tuple[float, float, float, int]]] = {}
+    for agent_id, rows in (snapshots or {}).items():
+        track = []
+        for when, fields in rows:
+            if not fields or fields[0].startswith(INCARNATION_BREAK):
+                continue
+            if len(fields) < MIN_SNAPSHOT_FIELDS:
+                continue
+            try:
+                track.append((when, float(fields[POS_X]), float(fields[POS_Y]),
+                              int(fields[ANIMATION_CODE])))
+            except ValueError:
+                continue
+        if track:
+            track.sort()
+            out[agent_id] = track
+    return out
+
+
+def _position_at(track, when: float):
+    """Where an agent last was at or before ``when``."""
+    found = None
+    for time, x, y, _animation in track:
+        if time > when:
+            break
+        found = (x, y)
+    return found
+
+
+def _returners(tracks: dict, teams: dict, returning_team: int,
+               ground, when: float) -> set:
+    """Players of the RETURNING team who could have made this return.
+
+    Every condition from FlagTimelineBuilder.cpp:1262-1285, ANDed. A set rather
+    than the C++'s first match, so two candidates can be refused instead of
+    settled by iteration order.
+    """
+    found = set()
+    for agent_id, track in tracks.items():
+        if teams.get(agent_id) != returning_team:
+            continue
+        for time, x, y, animation in track:
+            if time < when - RETURN_WINDOW_SECONDS:
+                continue
+            if time > when + RETURN_WINDOW_SECONDS:
+                break
+            if animation not in RETURN_ANIM_CODES:
+                continue
+            if (x - ground[0]) ** 2 + (y - ground[1]) ** 2 <= RETURN_PROX_SQ:
+                found.add(agent_id)
+                break
+    return found
+
+
 
 # Every flag declared in the archive is model 493; nothing else is ever
 # declared. 8.5% of pickups are of an UNdeclared item -- Warrior's Isle repair
@@ -70,8 +189,12 @@ def read_flag_records(match_dir: Path) -> list[tuple[float, list[int]]]:
     return records
 
 
-def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
-    """Per-player carry counters, or {} when the stream is absent.
+
+
+
+def build_flag_ledger(infos: dict, match_dir: Path,
+                      snapshots: dict | None = None) -> dict:
+    """Per-player carry, stick and return counters, or {} when absent.
 
     Absent is not zero: a recording without the stream returns nothing at all
     rather than a row of confident zeroes.
@@ -111,15 +234,36 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
     # is a repair kit picked up before its id was recycled into a real flag, so
     # the rescue was itself a false positive.
     flag_id_of_item: dict[int, int] = {}
+    # Which item id currently IS each team's flag. Ids are recycled, so the
+    # newest declaration wins.
+    current_item: dict[int, int] = {}
+    if snapshots is None:
+        snapshots = read_snapshot_records(match_dir, players)
+    tracks = agent_tracks(snapshots)
+    teams = {p["id"]: p.get("team_id")
+             for party in infos.get("parties", {}).values()
+             for p in party.get("PLAYER", ())
+             if isinstance(p, dict) and "id" in p}
+    # The flag is an agent with a snapshot file of its own, so where it was
+    # lying is recorded rather than approximated from the dropper's position.
+    flag_items = {fields[1] for _when, fields in records
+                  if fields[0] == ITEM and len(fields) >= 5
+                  and fields[2] == FLAG_MODEL_ID}
+    flag_tracks = agent_tracks(read_snapshot_records(match_dir, flag_items))
+    returns_credited = returns_ambiguous = returns_uncredited = 0
 
     rows = {
         agent_id: {
             "flag_pickups": 0,
             "flag_drops": 0,
             "flag_carry_seconds": 0,
+            "flag_sticks": 0,
+            "flag_returns": 0,
         }
         for agent_id in players
     }
+    returns_seen = 0
+    sticks_seen = sticks_credited = 0
     carrier: dict[int, tuple[int, float]] = {}
     legs = 0
     carry_untracked_agent = 0
@@ -149,6 +293,9 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             # or returned -- so whoever was holding it is no longer holding it.
             close(fields[3], when, "respawn")
             flag_id_of_item[fields[1]] = fields[3]
+            owner_team = FLAG_OWNER_TEAM.get(fields[3])
+            if owner_team:
+                current_item[owner_team] = fields[1]
         elif kind == PICKUP and len(fields) >= 3:
             flag_id = flag_id_of_item.get(fields[1])
             if flag_id is None:
@@ -176,6 +323,41 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             if dropped and fields[1] in rows:
                 rows[fields[1]]["flag_drops"] += 1
 
+        elif kind == ANNOUNCE and len(fields) >= 4:
+            action = fields[1]
+            if action == STICK_ACTION:
+                # The sticker is whoever was holding. Named directly, never
+                # inferred -- this half was always available.
+                sticks_seen += 1
+                for _flag_id, (agent_id, _since) in carrier.items():
+                    if agent_id in rows:
+                        rows[agent_id]["flag_sticks"] += 1
+                        sticks_credited += 1
+                        break
+            elif action == RETURN_ACTION:
+                returns_seen += 1
+                # The announce names the team whose flag was returned, so there
+                # is no need to guess which flag it was. Its position comes from
+                # the flag's own snapshot; the dropper's last position is only a
+                # fallback for a flag with no track of its own.
+                returning_team = fields[3]
+                # The flag returned belongs to the OTHER team.
+                flag_team = 3 - returning_team if returning_team in (1, 2) else 0
+                spot = _position_at(flag_tracks.get(current_item.get(flag_team), ()),
+                                    when)
+                credited = set()
+                if spot is not None:
+                    credited = _returners(tracks, teams, returning_team, spot, when)
+                if len(credited) == 1:
+                    agent_id = next(iter(credited))
+                    returns_credited += 1
+                    if agent_id in rows:
+                        rows[agent_id]["flag_returns"] += 1
+                elif credited:
+                    returns_ambiguous += 1
+                else:
+                    returns_uncredited += 1
+
     for flag_id in list(carrier):
         close(flag_id, end, "match_end")
 
@@ -194,6 +376,13 @@ def build_flag_ledger(infos: dict, match_dir: Path) -> dict:
             "flag_records": len(records),
             "flag_items_declared": len(flag_id_of_item),
             "flag_match_seconds": round(end - start),
+            # Returns are counted, never attributed to a player.
+            "flag_returns_seen": returns_seen,
+            "flag_returns_credited": returns_credited,
+            "flag_returns_ambiguous": returns_ambiguous,
+            "flag_returns_uncredited": returns_uncredited,
+            "flag_sticks_seen": sticks_seen,
+            "flag_sticks_credited": sticks_credited,
             "flag_carry_legs": legs,
             "flag_carry_legs_untracked_agent": carry_untracked_agent,
             "flag_pickups_undeclared_item": pickups_undeclared_item,

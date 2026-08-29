@@ -27,6 +27,16 @@ Attack skills are in ``attack_skill_events.txt.gz``, **not**
 ``skill_events.txt.gz``.  Distracting Shot and Savage Shot are invisible to a
 reader that opens only the latter -- it returns zero rather than failing.
 
+**Instant skills get uses and nothing else, in their own block.**  They never
+become a ``Cast``: ``combat_analytics`` keeps them out of the lifecycle family
+on purpose, because an instant cannot be cancelled or interrupted and counting
+it would dilute every completion rate.  That is right, but ``skills`` is built
+from the same history, so until now an instant reached no page at all --
+measured over 80 matches, **64 skills appear only as instants and their 29,147
+uses are 17.4% of every skill use in the archive**.  Every stance in the game
+was missing.  Only signets and ``"Coward!"`` had ever been rescued, one
+hand-written counter at a time.
+
 **Attack skills get attempts and nothing else.**  ``ATTACK_SKILL_FINISHED``
 fires far less often than ``ATTACK_SKILL_ACTIVATED`` (99 against 406 in one
 measured match), so the pairing that works for spells does not work here: a
@@ -83,6 +93,7 @@ def _rollup(casts: Iterable, fold) -> dict[str, list[int]]:
 def build_skill_casts(players: Mapping[int, tuple[str, int]],
                       history: Mapping[int, list],
                       attack_attempts: Mapping[tuple[int, int], int] | None = None,
+                      instant_uses: Mapping[tuple[int, int], int] | None = None,
                       canonicalise=None) -> dict:
     """Per-player, per-skill cast counts keyed by party id.
 
@@ -99,6 +110,10 @@ def build_skill_casts(players: Mapping[int, tuple[str, int]],
     for (agent_id, skill_id), count in (attack_attempts or {}).items():
         if skill_id > 0:
             attacks_by_agent.setdefault(agent_id, Counter())[fold(skill_id)] += count
+    instants_by_agent: dict[int, Counter[int]] = {}
+    for (agent_id, skill_id), count in (instant_uses or {}).items():
+        if skill_id > 0:
+            instants_by_agent.setdefault(agent_id, Counter())[fold(skill_id)] += count
 
     out: dict[str, list[dict]] = {}
     for agent_id, (party_id, player_number) in players.items():
@@ -110,7 +125,10 @@ def build_skill_casts(players: Mapping[int, tuple[str, int]],
         attacks = {str(skill_id): count
                    for skill_id, count in sorted(
                        attacks_by_agent.get(agent_id, Counter()).items())}
-        if not skills and not attacks:
+        instants = {str(skill_id): count
+                    for skill_id, count in sorted(
+                        instants_by_agent.get(agent_id, Counter()).items())}
+        if not skills and not attacks and not instants:
             continue
         row: dict = {"player_number": player_number}
         if skills:
@@ -120,6 +138,13 @@ def build_skill_casts(players: Mapping[int, tuple[str, int]],
             # the JSON: three numbers there, one here, because an attack skill
             # has no trustworthy outcome. See the module docstring.
             row["attack_attempts"] = attacks
+        if instants:
+            # A third shape, and a third number, for the same reason as the
+            # second: an instant skill has no cast to complete or be
+            # interrupted during. Publishing `completed = started` for one
+            # would be true and useless, and would quietly flatter anybody
+            # running more stances if a reader ever averaged completion.
+            row["instant_uses"] = instants
         out.setdefault(party_id, []).append(row)
     for party_rows in out.values():
         party_rows.sort(key=lambda row: row["player_number"])

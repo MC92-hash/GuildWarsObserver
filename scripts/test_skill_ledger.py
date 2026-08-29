@@ -70,3 +70,58 @@ def test_a_player_who_cast_nothing_is_absent_not_zero():
 
 def test_no_players_yields_nothing():
     assert build_skill_casts({}, {59: [_cast(59, BLINDING_FLASH)]}) == {}
+
+
+FRENZY = 346
+FRENZY_PVP = 3443
+
+
+def test_an_instant_skill_is_published_even_though_it_is_not_a_cast():
+    """Every stance in the game was missing from the page before this.
+
+    `INSTANT_SKILL_USED` never becomes a `Cast`, correctly -- an instant cannot
+    be cancelled or interrupted, so counting it would dilute every completion
+    rate. But `skills` is built from that same history, so an instant reached
+    no consumer at all. Measured over 80 matches, 64 skills appear only as
+    instants and their 29,147 uses are 17.4% of every skill use in the archive.
+    """
+    row = _rows(build_skill_casts(
+        PLAYERS, {}, None, {(59, FRENZY): 35}))[("2", 10)]
+    assert row["instant_uses"] == {str(FRENZY): 35}
+    # Not a cast, so it must not appear as one.
+    assert not row.get("skills")
+
+
+def test_an_instant_carries_a_use_count_and_no_outcome():
+    row = _rows(build_skill_casts(
+        PLAYERS, {}, None, {(59, FRENZY): 3}))[("2", 10)]
+    # One number, like attack_attempts -- not a [started, completed, interrupted]
+    # triple. An instant has no cast to complete or be interrupted during, and
+    # publishing completed == started would be true, useless, and would flatter
+    # anybody running more stances if a reader ever averaged completion.
+    assert isinstance(row["instant_uses"][str(FRENZY)], int)
+
+
+def test_instant_pvp_twins_fold_to_the_base_id():
+    # The cast stream carries Frenzy (PvP) 3443 while the BAR carries 346, so
+    # without folding the page shows a skill the player's bar does not list.
+    assert canonical_skill_id(FRENZY_PVP) == FRENZY
+    row = _rows(build_skill_casts(
+        PLAYERS, {}, None, {(59, FRENZY_PVP): 20, (59, FRENZY): 15},
+        canonicalise=canonical_skill_id))[("2", 10)]
+    assert row["instant_uses"] == {str(FRENZY): 35}
+    assert str(FRENZY_PVP) not in row["instant_uses"]
+
+
+def test_a_player_with_only_instants_still_gets_a_row():
+    # The reported bug: a warrior whose bar is Frenzy + Hundred Blades + Sprint
+    # plus attack skills published zero skills and looked like they cast
+    # nothing.
+    result = build_skill_casts(PLAYERS, {}, None, {(59, FRENZY): 1})
+    assert result["players"]["2"][0]["player_number"] == 10
+
+
+def test_no_instants_publishes_no_block_rather_than_an_empty_one():
+    row = _rows(build_skill_casts(
+        PLAYERS, {59: [_cast(59, BLINDING_FLASH)]}))[("2", 10)]
+    assert "instant_uses" not in row
