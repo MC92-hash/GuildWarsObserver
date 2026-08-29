@@ -681,7 +681,7 @@ static void draw_settings_window()
 			keySaved = false;
 	}
 
-	if constexpr (GuiGlobalConstants::IsDeveloperMode())
+	if (GuiGlobalConstants::IsDeveloperMode())
 	{
 		ImGui::SeparatorText("Contributor");
 		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
@@ -759,7 +759,8 @@ static void draw_settings_window()
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info,
 	std::vector<std::vector<std::string>>& csv_data, int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed,
 	int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine, UpdateChecker* updateChecker)
+	ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine, UpdateChecker* updateChecker,
+	HWND appWindow)
 {
 	s_syncEnginePtr = syncEngine;
 	s_folderWatcherPtr = &folder_watcher;
@@ -824,7 +825,13 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 				updateInfo.releaseUrl = updateChecker->GetReleaseUrl();
 				updateInfo.repo = "MC92-hash/GuildWarsObserver";
 				updateInfo.checker = updateChecker;
-				updateInfo.appWindow = GetActiveWindow();
+				// Must be the real main window. GetActiveWindow() returns the calling
+				// thread's active window, which is NULL whenever the app is not in the
+				// foreground -- and alt-tabbing away during a 100 MB download is the
+				// normal thing to do. ApplyAndRestart would then PostMessage(NULL, ...),
+				// the app would never close, and the already-spawned updater batch would
+				// poll for an exit that only came whenever the user next quit.
+				updateInfo.appWindow = appWindow;
 			}
 
 			if (draw_first_launch(lp, updateInfo.available ? &updateInfo : nullptr))

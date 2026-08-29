@@ -455,6 +455,11 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         }
     }
 
+    // If the previous run's updater batch failed to extract, it left a log
+    // behind. Surface it before checking again, otherwise the same update is
+    // offered, appears to install, and silently does nothing -- forever.
+    m_pendingInstallError = UpdateChecker::ConsumeInstallError();
+
     // Start background update check
     m_updateChecker.Check(GWO_VERSION);
 }
@@ -988,7 +993,8 @@ void MapBrowser::Render()
     }
     else {
         draw_ui(m_dat_managers, m_dat_manager_to_show_in_dat_browser, m_map_renderer.get(), picking_info, m_csv_data, m_FPS_target, m_timer, m_extract_panel_info,
-            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher, m_syncEngine.get(), &m_updateChecker);
+            msaa_changed, msaa_level_index, msaa_levels, m_hash_index, m_replay_library, m_folderWatcher, m_syncEngine.get(), &m_updateChecker,
+            m_deviceResources->GetWindow());
 
         // Cloud sync status overlay
         draw_sync_status(m_syncEngine.get());
@@ -1002,10 +1008,41 @@ void MapBrowser::Render()
                     dlState == PlayDownloadState::Error, m_playDl.errorMsg);
         }
 
-        // Update overlay — only for user-initiated checks (Help > Check for Updates).
-        // Automatic updates are handled by the sticky loading screen card.
-        if (m_updateChecker.IsUserInitiated())
+        // Update overlay. User-initiated checks always show it. Automatic checks
+        // are normally handled by the sticky loading screen card, but that card is
+        // gone once loading finishes: a slow GitHub reply would otherwise arrive
+        // after the screen had passed and the update would never be mentioned that
+        // session. Show the overlay for those too, once the loading screen is done.
+        if (m_updateChecker.IsUserInitiated() || (g_loadingScreenDone && m_updateChecker.HasUpdate()))
             draw_update_notification(&m_updateChecker, m_deviceResources->GetWindow(), !g_loadingScreenDone);
+
+        // A previous update tried to install and failed. Say so plainly, once.
+        if (!m_pendingInstallError.empty() && g_loadingScreenDone)
+        {
+            ImGui::OpenPopup("Update did not install");
+            if (ImGui::BeginPopupModal("Update did not install", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize))
+            {
+                ImGui::TextWrapped(
+                    "The last update was downloaded but could not be unpacked, so this is "
+                    "still the previous version.");
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "%s",
+                                   m_pendingInstallError.c_str());
+                ImGui::Spacing();
+                ImGui::TextWrapped(
+                    "The downloaded archive was kept next to the executable. You can unzip "
+                    "it over this folder by hand, or download the latest version from "
+                    "gwobserver.com.");
+                ImGui::Spacing();
+                if (ImGui::Button("OK"))
+                {
+                    m_pendingInstallError.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+        }
 
         // --- Draw extraction progress UI *inside* the ImGui frame ---
         // Check if either extraction queue is active

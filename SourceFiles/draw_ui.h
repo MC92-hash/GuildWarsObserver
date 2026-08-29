@@ -11,4 +11,5 @@ inline bool g_loadingScreenDone = false;
 
 void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_manager_to_show, MapRenderer* map_renderer, PickingInfo picking_info, std::vector<std::vector<std::string>>& csv_data,
     int& FPS_target, DX::StepTimer& timer, ExtractPanelInfo& extract_panel_info, bool& msaa_changed, int& msaa_level_index, const std::vector<std::pair<int, int>>& msaa_levels, std::unordered_map<int, std::vector<int>>& hash_index,
-    ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine = nullptr, UpdateChecker* updateChecker = nullptr);
+    ReplayLibrary& replay_library, FolderWatcher& folder_watcher, SyncEngine* syncEngine = nullptr, UpdateChecker* updateChecker = nullptr,
+    HWND appWindow = nullptr);

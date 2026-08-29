@@ -14,6 +14,39 @@ UpdateChecker::~UpdateChecker()
         m_thread.join();
 }
 
+// Small helper so the env-var overrides read the same way as GWO_ATTR_DEBUG.
+static std::string GetEnvVar(const char* name)
+{
+    char buf[256] = {};
+    const DWORD len = GetEnvironmentVariableA(name, buf, (DWORD)sizeof(buf));
+    if (len == 0 || len >= sizeof(buf))
+        return {};
+    return std::string(buf, len);
+}
+
+std::string UpdateChecker::ConsumeInstallError()
+{
+    const auto logPath = GuiGlobalConstants::GetExeDir() / kInstallErrorLog;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(logPath, ec))
+        return {};
+
+    std::string text;
+    {
+        std::ifstream in(logPath);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        text = ss.str();
+    }
+
+    std::filesystem::remove(logPath, ec);
+
+    if (text.empty())
+        text = "The previous update could not be installed.";
+    return text;
+}
+
 void UpdateChecker::Check(const std::string& currentVersion,
                            const std::string& repo,
                            bool userInitiated)
@@ -100,6 +133,17 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
             return false;
         }
 
+        // Every path here is written as %~dp0-relative on purpose. The batch, the
+        // downloaded archive and the exe all live in the install directory, so
+        // addressing them through %~dp0 keeps absolute paths out of the script
+        // entirely. That matters because cmd.exe parses .bat files in the OEM
+        // codepage while this stream writes the ANSI one: an install path holding
+        // any non-ASCII character (a username like Jörg) would otherwise reach tar
+        // mangled, and every step below would fail against a path that does not
+        // exist. Only ASCII filenames are emitted now, so the two codepages agree.
+        const std::string archiveName = m_downloadedPath.filename().string();
+        const std::string exeName = currentExe.filename().string();
+
         bat << "@echo off\r\n";
         bat << ":wait\r\n";
         bat << "tasklist /FI \"PID eq " << pid << "\" 2>NUL | find /I \"" << pid << "\" >NUL\r\n";
@@ -110,25 +154,44 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
 
         if (m_isZipUpdate)
         {
-            // Extract zip over the install directory using tar (fast, built into Win10+)
-            bat << "tar -xf \"" << m_downloadedPath.string()
-                << "\" -C \"" << exeDir.string() << "\"\r\n";
+            // Extract over the install directory. tar.exe is qualified rather than
+            // resolved through PATH, which is not guaranteed to carry System32.
+            bat << "\"%SystemRoot%\\System32\\tar.exe\" -xf \"%~dp0" << archiveName
+                << "\" -C \"%~dp0.\"\r\n";
+
+            // An unchecked tar was the worst failure in this script: extraction
+            // could fail for any reason and the app would relaunch on the old
+            // version with nothing written down anywhere, so the update would be
+            // offered again and fail again forever. Record it and keep the archive
+            // so the next launch can report what happened.
+            // Written as a goto rather than a parenthesised if-block: cmd expands
+            // %errorlevel% once per block at parse time, so inside `if (...)` it
+            // would report the value from before tar ran.
+            bat << "if not errorlevel 1 goto extracted\r\n";
+            bat << "echo tar failed with errorlevel %errorlevel% > \"%~dp0"
+                << kInstallErrorLog << "\"\r\n";
+            bat << "echo archive: %~dp0" << archiveName << " >> \"%~dp0"
+                << kInstallErrorLog << "\"\r\n";
+            bat << "explorer.exe \"%~dp0" << exeName << "\"\r\n";
+            bat << "del \"%~f0\"\r\n";
+            bat << "exit /b 1\r\n";
+            bat << ":extracted\r\n";
+
             // Retry delete — tar releases the handle immediately, but guard against AV locks
-            bat << "del \"" << m_downloadedPath.string() << "\" >NUL 2>&1\r\n";
-            bat << "if exist \"" << m_downloadedPath.string()
-                << "\" (timeout /t 2 /nobreak >NUL & del \""
-                << m_downloadedPath.string() << "\" >NUL 2>&1)\r\n";
+            bat << "del \"%~dp0" << archiveName << "\" >NUL 2>&1\r\n";
+            bat << "if exist \"%~dp0" << archiveName
+                << "\" (timeout /t 2 /nobreak >NUL & del \"%~dp0"
+                << archiveName << "\" >NUL 2>&1)\r\n";
         }
         else
         {
             // Legacy exe-only swap
-            bat << "del \"" << currentExe.string() << "\"\r\n";
-            bat << "move \"" << m_downloadedPath.string() << "\" \""
-                << currentExe.string() << "\"\r\n";
+            bat << "del \"%~dp0" << exeName << "\"\r\n";
+            bat << "move \"%~dp0" << archiveName << "\" \"%~dp0" << exeName << "\"\r\n";
         }
 
         // Use explorer.exe to relaunch — 'start' fails silently from CREATE_NO_WINDOW
-        bat << "explorer.exe \"" << currentExe.string() << "\"\r\n";
+        bat << "explorer.exe \"%~dp0" << exeName << "\"\r\n";
         bat << "del \"%~f0\"\r\n";
     }
 
@@ -161,6 +224,41 @@ bool UpdateChecker::ApplyAndRestart(HWND appWindow)
 void UpdateChecker::Cancel()
 {
     m_cancelRequested.store(true);
+
+    // Reach into the transfer itself. HttpClient::Cancel only stores an atomic,
+    // so this is safe to call from the UI thread; the mutex is what guarantees
+    // the client is still alive while we do.
+    std::lock_guard<std::mutex> lock(m_downloadMutex);
+    if (m_activeDownload)
+        m_activeDownload->Cancel();
+}
+
+namespace
+{
+    // Publishes a download to Cancel() for exactly as long as it is running.
+    class ActiveDownloadScope
+    {
+    public:
+        ActiveDownloadScope(std::mutex& m, HttpClient*& slot, HttpClient* client)
+            : m_mutex(m), m_slot(slot)
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_slot = client;
+        }
+
+        ~ActiveDownloadScope()
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_slot = nullptr;
+        }
+
+        ActiveDownloadScope(const ActiveDownloadScope&) = delete;
+        ActiveDownloadScope& operator=(const ActiveDownloadScope&) = delete;
+
+    private:
+        std::mutex& m_mutex;
+        HttpClient*& m_slot;
+    };
 }
 
 void UpdateChecker::Dismiss()
@@ -290,6 +388,12 @@ std::string UpdateChecker::GetLastError() const
     return m_lastError;
 }
 
+std::string UpdateChecker::GetEndpointOverride() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_endpointOverride;
+}
+
 // --- Version comparison ---
 
 bool UpdateChecker::IsNewer(const std::string& latest, const std::string& current)
@@ -319,7 +423,26 @@ void UpdateChecker::CheckThread()
     HttpClient http;
     http.SetBaseUrl(L"api.github.com", true);
 
-    std::string pathStr = "/repos/" + m_repo + "/releases/latest";
+    // Test overrides. GWO_UPDATE_REPO points the check at another repository and
+    // GWO_UPDATE_TAG asks for one specific release instead of whatever is latest,
+    // which is the only way to see a prerelease: /releases/latest never returns
+    // one. Together they let any installed build rehearse a real update against a
+    // release that is not public yet, so testing no longer needs a patched build.
+    // See "Testing the updater" in shiprelease.md.
+    const std::string repoOverride = GetEnvVar("GWO_UPDATE_REPO");
+    const std::string tagOverride = GetEnvVar("GWO_UPDATE_TAG");
+
+    const std::string repo = repoOverride.empty() ? m_repo : repoOverride;
+    const std::string pathStr = tagOverride.empty()
+        ? "/repos/" + repo + "/releases/latest"
+        : "/repos/" + repo + "/releases/tags/" + tagOverride;
+
+    if (!repoOverride.empty() || !tagOverride.empty())
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_endpointOverride = "api.github.com" + pathStr;
+    }
+
     std::wstring path(pathStr.begin(), pathStr.end());
 
     auto resp = http.Get(path);
@@ -507,6 +630,10 @@ void UpdateChecker::DownloadThread()
         HttpClient dlHttp;
         dlHttp.SetBaseUrl(parsed.host, parsed.tls);
 
+        ActiveDownloadScope active(m_downloadMutex, m_activeDownload, &dlHttp);
+        if (m_cancelRequested.load())
+            dlHttp.Cancel();  // cancelled between StartDownload and getting here
+
         auto dlResp = dlHttp.DownloadToFile(
             parsed.path,
             m_downloadedPath,
@@ -621,6 +748,10 @@ void UpdateChecker::DownloadThread()
 
         HttpClient finalHttp;
         finalHttp.SetBaseUrl(finalUrl.host, finalUrl.tls);
+
+        ActiveDownloadScope active(m_downloadMutex, m_activeDownload, &finalHttp);
+        if (m_cancelRequested.load())
+            finalHttp.Cancel();
 
         auto finalResp = finalHttp.DownloadToFile(
             finalUrl.path,

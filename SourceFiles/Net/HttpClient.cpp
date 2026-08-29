@@ -92,7 +92,15 @@ std::wstring HttpClient::UrlEncodePath(const std::wstring& path)
     std::wstring encoded;
     encoded.reserve(path.size() * 2);
 
-    for (wchar_t ch : path)
+    // Everything from the first '?' onward is a query string that the caller
+    // already built, and it is copied through untouched. Encoding it corrupts
+    // pre-signed URLs: GitHub's release-asset redirect carries its signature in
+    // the query, and percent-encoding the '?', '=', '&' and especially the '%'
+    // of the existing escapes turned it into a 403 every time.
+    const size_t queryStart = path.find(L'?');
+    const std::wstring toEncode = path.substr(0, queryStart);
+
+    for (wchar_t ch : toEncode)
     {
         // Keep unreserved characters and path separator as-is
         if ((ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z') ||
@@ -121,6 +129,9 @@ std::wstring HttpClient::UrlEncodePath(const std::wstring& path)
             }
         }
     }
+
+    if (queryStart != std::wstring::npos)
+        encoded += path.substr(queryStart);
 
     return encoded;
 }

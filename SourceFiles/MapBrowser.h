@@ -141,6 +141,10 @@ private:
     // Update checker
     UpdateChecker m_updateChecker;
 
+    // Set at startup when the previous run's update failed to install. Shown
+    // once, then cleared.
+    std::string m_pendingInstallError;
+
     std::string m_error_msg = "";
     bool m_show_error_msg = false;
 

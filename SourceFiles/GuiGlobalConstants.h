@@ -30,8 +30,27 @@ public:
 	// Contributor key for build naming (empty = read-only)
 	inline static std::string contributor_key;
 
-	// Developer mode: compile-time gated via GWO_DEVELOPER from build_config.h
-	static constexpr bool IsDeveloperMode() { return GWO_DEVELOPER != 0; }
+	// Developer mode. GWO_DEVELOPER turns it on at compile time; setting GWO_DEV
+	// in the environment turns it on at runtime, so the team can reach the Debug
+	// menu in the exact binary that ships instead of needing a separate build.
+	// Public builds are compiled with GWO_DEVELOPER 0 and stay clean unless
+	// somebody deliberately sets the variable.
+	//
+	// Note this only governs the runtime-gated UI. Blocks written as
+	// #if GWO_DEVELOPER (the weapon diagnostics) are compiled out of a public
+	// build entirely and the variable will not bring them back.
+	static bool IsDeveloperMode()
+	{
+		if constexpr (GWO_DEVELOPER != 0)
+			return true;
+
+		static const bool enabled = []
+		{
+			char v[8] = {};
+			return GetEnvironmentVariableA("GWO_DEV", v, (DWORD)sizeof(v)) != 0;
+		}();
+		return enabled;
+	}
 
 	// Validate a contributor key against known hashes (returns true if valid)
 	static bool ValidateContributorKey(const std::string& key);
