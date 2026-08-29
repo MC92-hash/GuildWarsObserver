@@ -964,8 +964,22 @@ def cmd_upload(args, config: dict) -> dict:
     from collections import defaultdict
     local_by_fp: dict[str, list[tuple[Path, dict, int]]] = defaultdict(list)
     included_scrimmage_count = 0
+    forced_replacements: set[str] = set(getattr(args, "force_replace", None) or ())
+    forced_seen: set[str] = set()
+    if forced_replacements:
+        print("")
+        print(f"--force-replace: {len(forced_replacements)} folder(s) will bypass "
+              f"the completeness rule.")
     for m in local_matches:
-        if m.name in remote_folders or sanitize_folder_name(m.name) in remote_folders:
+        # The name check runs BEFORE the fingerprint grouping, so a re-record
+        # that keeps the original folder name -- which is the normal shape of a
+        # re-record, since the name is derived from the match -- never reaches
+        # the supersede decision at all. --force-replace has to survive this
+        # gate or it can only ever act on a renamed copy, which is the one case
+        # nobody has.
+        if m.name not in forced_replacements and (
+                m.name in remote_folders
+                or sanitize_folder_name(m.name) in remote_folders):
             continue
         infos = read_infos_json(m)
         if is_scrim_recording(infos):
@@ -998,23 +1012,48 @@ def cmd_upload(args, config: dict) -> dict:
                   f"{best_rp} in {best_path.name}): {loser_path.name}")
 
         remote_entry = remote_by_fp.get(fp)
+        # An operator override for the one case the completeness rule cannot
+        # see. That rule asks "did we capture more PLAYERS this time", which is
+        # the right question for a partial recording and the wrong one for a
+        # re-record made by a newer recorder: the player count is identical and
+        # the new capture is richer per player, so the supersede never fires and
+        # the better recording is silently discarded as a duplicate.
+        forced = best_path.name in forced_replacements
+        if forced:
+            forced_seen.add(best_path.name)
         if remote_entry is not None:
             remote_rp = remote_entry.get("recorded_players")
-            if remote_rp is None:
+            if remote_rp is None and not forced:
                 # Legacy entry without completeness data: trust it, skip.
                 print(f"  Skipping duplicate (content match): {best_path.name}")
                 continue
-            if best_rp <= remote_rp:
+            if remote_rp is not None and best_rp <= remote_rp and not forced:
                 print(f"  Skipping duplicate (remote has {remote_rp} players, "
                       f"local {best_rp}): {best_path.name}")
                 continue
-            print(f"  Replacing remote (local has {best_rp} players vs remote "
-                  f"{remote_rp}): {best_path.name} supersedes {remote_entry['folder']}")
+            if forced:
+                print(f"  FORCED replace ({best_rp} players local vs "
+                      f"{remote_rp} remote): {best_path.name} supersedes "
+                      f"{remote_entry['folder']}")
+            else:
+                print(f"  Replacing remote (local has {best_rp} players vs remote "
+                      f"{remote_rp}): {best_path.name} supersedes {remote_entry['folder']}")
             folders_to_replace.add(remote_entry["folder"])
+        elif forced:
+            print(f"  --force-replace named {best_path.name}, which is not in "
+                  f"the remote index; uploading it as a new match")
 
         new_matches.append(best_path)
         match_recorded_players[best_path.name] = best_rp
     report["already_remote"] = len(local_matches) - len(new_matches)
+    unmatched = sorted(forced_replacements - forced_seen)
+    if unmatched:
+        # A typo here would otherwise look exactly like a successful run that
+        # replaced nothing.
+        print(f"  WARNING: --force-replace named {len(unmatched)} folder(s) with "
+              f"no local recording: {', '.join(unmatched)}")
+        report["warnings"].append({"match": "", "warning":
+                                   f"--force-replace matched no local folder: {unmatched}"})
 
     if not new_matches:
         print("\nNo new matches to upload. Everything is up to date.")
@@ -1501,6 +1540,17 @@ def main():
         "--sync-index",
         action="store_true",
         help="Remove index entries whose archive was deleted from the bucket",
+    )
+    parser.add_argument(
+        "--force-replace",
+        action="append",
+        default=None,
+        metavar="FOLDER",
+        help="Replace this already-uploaded match even though the completeness "
+             "rule would skip it. Repeatable. Use when a NEW RECORDER captures "
+             "more per-player data than the old one: the player count is "
+             "identical, so the ordinary supersede never fires. Names are local "
+             "match folder names. Pair with --dry-run first.",
     )
     parser.add_argument(
         "--dedup-index",
