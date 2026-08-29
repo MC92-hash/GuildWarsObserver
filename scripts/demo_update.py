@@ -37,11 +37,17 @@ ARCHIVE_NAME = "GWObserver_update.zip"
 BAT_NAME = "_gwobs_update.bat"
 ERROR_LOG = "_gwobs_update_error.log"
 
-# Markers that prove the package is not clobbering the user's own settings.
-# match_data_folder is used rather than gw_dat_path because the real DAT path has
-# to stay valid, or the setup wizard sits in front of the update card.
-MARKER_MATCH_DIR = r"D:\gwo-demo-marker-do-not-clobber"
+# Markers that prove extraction is not destroying files the user owns. Both have
+# to be state the app keeps NEXT TO THE EXE.
+#
+# gui_settings.ini's match_data_folder looked like the obvious marker and is not:
+# SetupConfig stores it machine-wide in %APPDATA%\GWObserver\config.ini, shared by
+# every install on the box (SetupConfig.cpp:15), so the app legitimately rewrites
+# the local copy from there and the check fails for a reason that has nothing to
+# do with the package.
 MARKER_LAYOUT_KEY = "gwo_demo_marker"
+MARKER_FILE = "USER_FILE_DO_NOT_TOUCH.txt"
+MARKER_FILE_TEXT = "staged by demo_update.py; tar must not remove or alter this"
 
 TAR = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
 
@@ -240,10 +246,11 @@ def stage(install: Path, source_zip: Path, client_exe: Path, log: Log) -> dict:
         "[WindowVisibility]\n"
         "replay_browser=1\n"
         "\n[Config]\n"
-        f"gw_dat_path={dat}\n"
-        f"match_data_folder={MARKER_MATCH_DIR}\n",
+        f"gw_dat_path={dat}\n",
         encoding="utf-8",
     )
+
+    (install / MARKER_FILE).write_text(MARKER_FILE_TEXT, encoding="utf-8")
 
     (install / "settings").mkdir(exist_ok=True)
     (install / "settings" / "ui_layout.json").write_text(
@@ -255,7 +262,7 @@ def stage(install: Path, source_zip: Path, client_exe: Path, log: Log) -> dict:
     log("staged", f"{install}")
     log("staged", f"client = {client_exe.name} from {client_exe.parent.name}/  "
                   f"(reports 1.2.7)")
-    log("staged", f"markers = match_data_folder + ui_layout.json:{MARKER_LAYOUT_KEY}")
+    log("staged", f"markers = {MARKER_FILE} + ui_layout.json:{MARKER_LAYOUT_KEY}")
     if not dat:
         log("warn", "no gw_dat_path found on this machine; the setup wizard may "
                     "appear in front of the update card")
@@ -394,13 +401,21 @@ def verify(install: Path, before: dict, state: dict, expect_zip: Path, log: Log)
         f"pid {state['relaunch_pid']}" if state["relaunch_pid"] else "no new process seen",
     ))
 
-    ini = (install / "gui_settings.ini")
-    ini_text = ini.read_text(encoding="utf-8", errors="replace") if ini.exists() else ""
+    marker = install / MARKER_FILE
+    kept = marker.exists() and marker.read_text(errors="replace").strip() == MARKER_FILE_TEXT
     checks.append((
-        "gui_settings.ini survived",
-        MARKER_MATCH_DIR in ini_text,
-        "match_data_folder marker intact" if MARKER_MATCH_DIR in ini_text
-        else "MARKER GONE - the package clobbered user settings",
+        "user file untouched by extraction",
+        kept,
+        f"{MARKER_FILE} intact" if kept else f"{MARKER_FILE} removed or altered",
+    ))
+
+    with zipfile.ZipFile(expect_zip) as z:
+        leaked = [n for n in z.namelist()
+                  if n.rsplit("/", 1)[-1] in ("gui_settings.ini", "ui_layout.json")]
+    checks.append((
+        "package ships no user state",
+        not leaked,
+        "no gui_settings.ini or ui_layout.json in the zip" if not leaked else str(leaked),
     ))
 
     layout = install / "settings" / "ui_layout.json"
