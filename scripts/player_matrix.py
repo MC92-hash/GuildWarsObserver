@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+import _private_path  # noqa: F401  - puts the private solver on the path
 from max_hp_solver import (Observation, correct_max_hp_for_packet, cpp_round,
                            max_hp_at_time, read_snapshots, snapshot_at,
                            solve_observations)

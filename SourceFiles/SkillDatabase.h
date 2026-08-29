@@ -9,7 +9,9 @@
 // bar, a loss moves the victim's, and only the sign of the sample tells them apart.
 enum class SkillScaleKind : uint8_t
 {
-    None, Damage, Heal, LifeSteal, LifeLoss, Duration, Energy, EnergyLoss
+    None, Damage, Heal, LifeSteal, LifeLoss, Duration, Energy, EnergyLoss,
+    Level,  // "Create a level 1...10 spirit", "animate a level 1...17 bone horror"
+    Cap     // "(maximum 30...120 holy damage)" - a ceiling on a payout, never the payout
 };
 
 struct SkillScale
@@ -62,6 +64,32 @@ struct SkillInfo
     bool  dedTwoScale = false;
     float dedV0b = 0;
     float dedV15b = 0;
+
+    // bp1 + n * bp2 rather than bp1 or bp1 + bp2. Wastrel's Demise pays its scale once per
+    // second and adds another copy of the second scale for every second the hex has run, so
+    // n is 0..4 and nothing in the recording says which second a tick came from.
+    int   dedPairRepeat = 0;
+
+    // The packet is a WHOLE MULTIPLE of the breakpoint: Restore Condition heals once per
+    // condition it removed, Mending Touch once per condition of two, Feast of Souls once per
+    // spirit destroyed. The count is in the description and never in the recording, so the
+    // deducer tries k = 1..dedPerCount and takes the first that lands on a breakpoint. Trying
+    // the smallest first makes the rule purely additive: a packet the single-multiple rule
+    // already explains is read exactly as it was before.
+    int   dedPerCount = 0;
+
+    // Armour reduces this packet (it arrives as a damage type other than 55), so no single hit
+    // measures the rank. The largest hit of the match is a FLOOR - a level 20 player has AL >= 60
+    // on every piece, so the breakpoint is the most the skill can ever have paid.
+    bool  dedArmourRespecting = false;
+
+    // "(maximum X...Y)" - the ceiling on a payout that is otherwise a flat amount times a count
+    // the recording cannot see. Read as the payout it is the model's worst false ruler (Signet
+    // of Mystic Wrath pays 25 per enchantment and was being measured against its own cap table),
+    // so it is parsed apart from the payout scales and yields a floor: observed <= cap(rank).
+    bool  dedCap = false;
+    float dedCapV0 = 0;
+    float dedCapV15 = 0;
 
     // The same classification for the energy stream, kept apart from the health one because a
     // skill can be a clean ruler on both at once: Drain Enchantment scales its heal AND its
