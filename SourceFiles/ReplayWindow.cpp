@@ -5934,10 +5934,10 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::EndMenu();
         }
 
-#if GWO_DEVELOPER
-        // Developer-only: hidden from release builds, where the ribbon toolbar
-        // is the single entry point to every panel.
-        if (ImGui::BeginMenu("Debug"))
+        // Developer-only, and runtime-gated like the browser's own Debug menu,
+        // so GWO_DEV reaches it in the exact binary that ships. A public build
+        // shows only File; the ribbon toolbar is the way to everything else.
+        if (GuiGlobalConstants::IsDeveloperMode() && ImGui::BeginMenu("Debug"))
         {
             ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
             ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
@@ -5948,11 +5948,13 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
             ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
             ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
+#if GWO_DEVELOPER
+            // Compiled out of a public build, so GWO_DEV cannot bring these back.
             ImGui::MenuItem("Weapon Sockets", nullptr, &m_showWeaponSocketWindow);
             ImGui::MenuItem("Health Model",   nullptr, &m_showHealthModelWindow);
+#endif
             ImGui::EndMenu();
         }
-#endif
 
         if (m_replayCtx.agentParseProgress && !m_replayCtx.agentsLoaded)
         {
