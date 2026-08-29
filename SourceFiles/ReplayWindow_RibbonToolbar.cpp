@@ -679,13 +679,6 @@ ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
 
 void ReplayWindow::DrawRibbonToolbar()
 {
-    if (m_ribbonClosed)
-    {
-        // Nothing occupies the top edge, so HUD elements can sit flush against it.
-        m_ribbonBottomY = ImGui::GetMainViewport()->WorkPos.y;
-        return;
-    }
-
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGuiIO&       io = ImGui::GetIO();
 

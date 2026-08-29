@@ -1415,7 +1415,6 @@ private:
 
     // --- Ribbon toolbar (collapsible strip docked to the top edge) ---
     bool  m_ribbonPinned    = false;            // persisted in ui_layout.json
-    bool  m_ribbonClosed    = false;            // hidden entirely; restore via View
     float m_ribbonReveal    = 0.f;              // 0 = collapsed, 1 = expanded
     float m_ribbonIdleTimer = 1e9f;             // starts collapsed until revealed
     bool  m_ribbonMoreOpen  = false;            // overflow popup holds it open

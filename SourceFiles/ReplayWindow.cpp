@@ -373,7 +373,6 @@ void ReplayWindow::SaveUILayout()
 
     // Ribbon toolbar
     ps["ribbonPinned"]        = m_ribbonPinned;
-    ps["ribbonClosed"]        = m_ribbonClosed;
 
     j["panelState"] = ps;
 
@@ -499,7 +498,6 @@ void ReplayWindow::LoadUILayout()
 
             // Ribbon toolbar
             bv("ribbonPinned",       m_ribbonPinned);
-            bv("ribbonClosed",       m_ribbonClosed);
         }
     } catch (...) {}
 
@@ -5936,106 +5934,25 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("View"))
-        {
-            // The ribbon's own close button sets m_ribbonClosed, so this is the
-            // only way back to it.
-            if (ImGui::MenuItem("Ribbon Toolbar", nullptr, !m_ribbonClosed))
-            {
-                m_ribbonClosed = !m_ribbonClosed;
-                if (!m_ribbonClosed) m_ribbonIdleTimer = 0.f;
-                SaveUILayout();
-            }
-            ImGui::Separator();
-
-            ImGui::MenuItem("Agent Overlay", nullptr, &m_showAgentOverlay);
-
-            if (ImGui::MenuItem("Stylized Agent Icons",
-                                nullptr, m_uiLayout.lodEnabled))
-            {
-                m_uiLayout.lodEnabled = !m_uiLayout.lodEnabled;
-                SaveUILayout();
-            }
-
-            ImGui::Separator();
-            ImGui::MenuItem("Skill Icons", nullptr, &m_showSkillIcons);
-            ImGui::MenuItem("Skill Lasers", nullptr, &m_showSkillLasers);
-
-            {
-                const auto& hk = ReplayHotkeys::Get();
-                auto kn = [](int k) { return ImGui::GetKeyName((ImGuiKey)k); };
-
-                ImGui::MenuItem(std::format("Range Rings ({})", kn(hk.toggleRangeRings)).c_str(), nullptr, &m_showRangeRings);
-                ImGui::MenuItem(std::format("Skill Laser Filters ({})", kn(hk.toggleSkillLasers)).c_str(), nullptr, &m_showLaserPanel);
-                ImGui::MenuItem(std::format("Drawing Toolbar ({})", kn(hk.toggleDrawingBar)).c_str(), nullptr, &m_annotationMgr.toolbar_visible);
-                {
-                    bool fogOn = (m_fogPerspective > 0);
-                    if (ImGui::MenuItem(std::format("Fog of War ({})", kn(hk.toggleFogOfWar)).c_str(), nullptr, &fogOn)) {
-                        if (fogOn) m_fogPerspective = m_fogLastActive;
-                        else { m_fogLastActive = m_fogPerspective; m_fogPerspective = 0; m_fogPlayerAgent = -1; }
-                    }
-                }
-                ImGui::MenuItem(std::format("Morale ({})", kn(hk.toggleMoralePanel)).c_str(), nullptr, &m_showMoralePanel);
-                ImGui::MenuItem(std::format("Lord Damage ({})", kn(hk.toggleLordDamage)).c_str(), nullptr, &m_showLordDamagePanel);
-                ImGui::MenuItem(std::format("Event Timeline ({})", kn(hk.toggleEventTimeline)).c_str(), nullptr, &m_showEventTimeline);
-                ImGui::MenuItem(std::format("Auto Camera ({})", kn(hk.toggleAutoCamera)).c_str(), nullptr, &m_showAutoCameraPanel);
-                {
-                    bool tvOn = m_topViewActive;
-                    if (ImGui::MenuItem(std::format("Top View ({})", kn(hk.toggleTopView)).c_str(), nullptr, &tvOn)) {
-                        if (tvOn) EnterTopView(); else ExitTopView();
-                    }
-                }
-                ImGui::MenuItem("Team 1 Party", nullptr, &m_showTeam1Party);
-                ImGui::MenuItem("Team 2 Party", nullptr, &m_showTeam2Party);
-                ImGui::MenuItem(std::format("Piano Roll ({})", kn(hk.togglePianoRoll)).c_str(), nullptr, &m_showPianoRoll);
-                ImGui::Separator();
-
-                ImGui::MenuItem(std::format("Heatmap ({})", kn(hk.toggleHeatmap)).c_str(), nullptr, &m_heatmapSettings.show);
-            }
-
-            ImGui::Separator();
-            ImGui::MenuItem("Combat Log", nullptr, &m_showCombatLog);
-            ImGui::MenuItem("Skill Analytics (BETA)", nullptr, &m_showSkillAnalytics);
-            ImGui::MenuItem("Damage Meter", nullptr, &m_showDamageMeter);
-            ImGui::MenuItem("Heal Meter",   nullptr, &m_showHealMeter);
-            ImGui::MenuItem("Agent Names", nullptr, &m_showNameFilterPanel);
-            ImGui::MenuItem("Split Camera", nullptr, &m_pipEnabled);
-            ImGui::MenuItem("Minimap", nullptr, &m_minimapEnabled);
-            ImGui::Separator();
-            ImGui::MenuItem("Sound FX (BETA)", nullptr, &m_showSoundFxPanel);
-            ImGui::EndMenu();
-        }
-
+#if GWO_DEVELOPER
+        // Developer-only: hidden from release builds, where the ribbon toolbar
+        // is the single entry point to every panel.
         if (ImGui::BeginMenu("Debug"))
         {
-            if (GuiGlobalConstants::IsDeveloperMode())
-            {
-                ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
-                ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
-                ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
-                ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
-                ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
-            }
-            if (GuiGlobalConstants::IsDeveloperMode())
-            {
-                ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
-                ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
-                ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
-#if GWO_DEVELOPER
-                ImGui::MenuItem("Weapon Sockets", nullptr, &m_showWeaponSocketWindow);
-                ImGui::MenuItem("Health Model",   nullptr, &m_showHealthModelWindow);
+            ImGui::MenuItem("Agent Data", nullptr, &m_showAgentDataWindow);
+            ImGui::MenuItem("Map Calibration", nullptr, &m_showMapCalibrationWindow);
+            ImGui::MenuItem("Interpolation", nullptr, &m_showInterpolationWindow);
+            ImGui::MenuItem("StoC Events", nullptr, &m_showStoCWindow);
+            ImGui::MenuItem("Auto Camera Debug", nullptr, &m_autoCamShowDebug);
+            ImGui::Separator();
+            ImGui::MenuItem("Flag Timeline", nullptr, &m_showFlagDebugWindow);
+            ImGui::MenuItem("Assets", nullptr, &m_showAssetInspector);
+            ImGui::MenuItem("Agent 3D Models", nullptr, &m_showAgentModelWindow);
+            ImGui::MenuItem("Weapon Sockets", nullptr, &m_showWeaponSocketWindow);
+            ImGui::MenuItem("Health Model",   nullptr, &m_showHealthModelWindow);
+            ImGui::EndMenu();
+        }
 #endif
-            }
-            ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Tools"))
-        {
-            ImGui::MenuItem("Drawing toolbar", nullptr, &m_annotationMgr.toolbar_visible);
-            ImGui::MenuItem("Bookmarks",       nullptr, &m_annotationMgr.bookmarks_visible);
-            ImGui::MenuItem("Notepad",         nullptr, &m_showNotepad);
-            ImGui::EndMenu();
-        }
 
         if (m_replayCtx.agentParseProgress && !m_replayCtx.agentsLoaded)
         {
