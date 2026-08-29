@@ -583,6 +583,14 @@ def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
         # Imported lazily so listing/deleting remote objects does not depend on
         # the event parser. A missing StoC stream is normal for legacy captures
         # and stays absent rather than becoming a page full of zeroes.
+        # A missing private checkout is a DEPLOYMENT fault, not a data fault. The broad except
+        # below is there so an event-parser defect never costs a match its index entry, and it
+        # would swallow the ImportError just as happily - publishing every match of the run with
+        # no combat_analytics at all, and one warning line to show for it. So the private modules
+        # are required up front, loudly, before anything is written.
+        import _private_path
+        _private_path.ensure()
+
         try:
             from combat_analytics import build_from_match_dir
             analytics = build_from_match_dir(infos, match_dir)

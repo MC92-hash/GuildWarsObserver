@@ -32,6 +32,83 @@
 // what the armour paid for them - and the two are worth reading together, in one panel, because
 // either one alone leaves the reader guessing.
 
+// Lays out a sentence made of differently coloured spans, wrapping it by hand. ImGui wraps
+// per item, so drawing each green number as an item of its own would restart the wrap
+// wherever that item began - the same thing that turned the evidence conclusions into a
+// two-character column against the right margin.
+ImVec2 DrawSkillTextRuns(ImDrawList* dl, ImVec2 pos, float wrapW, const std::vector<SkillTextRun>& runs)
+{
+    const float lineH = ImGui::GetTextLineHeight();
+    const float spaceW = ImGui::CalcTextSize(" ").x;
+    float x = pos.x, y = pos.y, widest = 0.f;
+
+    for (const SkillTextRun& run : runs)
+    {
+        size_t i = 0;
+        while (i < run.text.size())
+        {
+            if (run.text[i] == '\n') { x = pos.x; y += lineH; ++i; continue; }
+            if (run.text[i] == ' ')  { if (x > pos.x) x += spaceW; ++i; continue; }
+
+            size_t j = run.text.find_first_of(" \n", i);
+            if (j == std::string::npos) j = run.text.size();
+            const std::string word = run.text.substr(i, j - i);
+            const float w = ImGui::CalcTextSize(word.c_str()).x;
+            if (x > pos.x && x + w > pos.x + wrapW) { x = pos.x; y += lineH; }
+            dl->AddText(ImVec2(x, y), run.colour, word.c_str());
+            x += w;
+            widest = std::max(widest, x - pos.x);
+            i = j;
+        }
+    }
+    return ImVec2(widest, y + lineH - pos.y);
+}
+
+// The description, with every attribute range answered at the rank this player was read at.
+std::vector<SkillTextRun> BuildSkillTextRuns(const SkillInfo& si,
+                                   const AttributeModel::AttributeRange* rank,
+                                   ImU32 plain, ImU32 answered)
+{
+    // The client's own markup means nothing outside the game's renderer.
+    std::string text = si.description.empty() ? si.concise : si.description;
+    for (size_t pos; (pos = text.find('<')) != std::string::npos; )
+    {
+        const size_t end = text.find('>', pos);
+        if (end == std::string::npos) break;
+        text.erase(pos, end - pos + 1);
+    }
+
+    std::vector<SkillTextRun> runs;
+    if (!rank) { runs.push_back({ text, plain }); return runs; }
+
+    size_t at = 0;
+    while (at < text.size())
+    {
+        const size_t dots = text.find("...", at);
+        if (dots == std::string::npos) break;
+
+        // Back over the first number and forward over the second.
+        size_t a = dots;
+        while (a > 0 && std::isdigit((unsigned char)text[a - 1])) --a;
+        size_t b = dots + 3;
+        while (b < text.size() && std::isdigit((unsigned char)text[b])) ++b;
+        if (a == dots || b == dots + 3) { at = dots + 3; continue; }
+
+        const float v0  = (float)std::atoi(text.substr(a, dots - a).c_str());
+        const float v15 = (float)std::atoi(text.substr(dots + 3, b - dots - 3).c_str());
+        const int lo = AttributeModel::Breakpoint(v0, v15, std::clamp(rank->lo, 0, 16));
+        const int hi = AttributeModel::Breakpoint(v0, v15, std::clamp(rank->hi, 0, 16));
+
+        runs.push_back({ text.substr(at, a - at), plain });
+        runs.push_back({ lo == hi ? std::to_string(lo)
+                                  : std::format("{}-{}", std::min(lo, hi), std::max(lo, hi)),
+                         answered });
+        at = b;
+    }
+    runs.push_back({ text.substr(at), plain });
+    return runs;
+}
+
 namespace
 {
     // Equipment slot numbers as they appear in the recording's EQUIP_SET events. Confirmed by
@@ -89,10 +166,20 @@ namespace
     // The gold the rest of the UI uses for section headings.
     constexpr ImU32 kHeadingGold = IM_COL32(225, 190, 80, 255);
 
+    // A hairline between the parts of the sheet. The panel holds four different kinds of thing -
+    // who he is, what he pressed, what he wore, what he spent - and without a rule between them
+    // they run together into one long column.
+    constexpr ImU32 kSheetRule = IM_COL32(255, 255, 255, 26);
+    inline void SheetRule(ImDrawList* dl, float x, float y, float w)
+    {
+        dl->AddLine(ImVec2(x, y), ImVec2(x + w, y), kSheetRule);
+    }
+
     // The player list column. Names run from three letters to "Candyboy Timewaster", so the width
     // is measured against the names actually in the match rather than fixed and hopeful.
-    constexpr float kPlayerRowH   = 17.f;
-    constexpr float kPlayerIndent = 27.f;  // the ">" marker and the profession icon
+    constexpr float kPlayerRowH   = 20.f;
+    constexpr float kPlayerIndent = 30.f;  // the accent edge, the profession icon and the gaps
+    constexpr float kPlayerSlotW  = 22.f;  // the party number, right-aligned in its own column
     constexpr float kColPlayersMin = 130.f;
     constexpr float kColPlayersMax = 280.f;
     constexpr float kColRunes   = 250.f;
@@ -129,7 +216,10 @@ namespace
 
     // Art for this panel lives under Textures\Character pannel. FindTexturesDDSDir() is no use
     // here: it resolves Textures\DDS, which holds the ATEX conversions and nothing else.
-    std::filesystem::path ArtDir()
+    // Everything the panel draws lives under one Textures folder, found once by walking up from
+    // the exe: the bag sheet and rune scrolls under "Character pannel", the skill art under
+    // "skills", the energy and recharge glyphs under "Game_UI\Skill Description".
+    std::filesystem::path TexturesDir()
     {
         static std::filesystem::path base;
         static bool searched = false;
@@ -142,14 +232,19 @@ namespace
                 auto dir = std::filesystem::path(exePath).parent_path();
                 for (int i = 0; i < 6; ++i)
                 {
-                    auto cand = dir / "Textures" / "Character pannel";
-                    if (std::filesystem::is_directory(cand)) { base = cand; break; }
+                    if (std::filesystem::is_directory(dir / "Textures")) { base = dir / "Textures"; break; }
                     if (!dir.has_parent_path() || dir == dir.parent_path()) break;
                     dir = dir.parent_path();
                 }
             }
         }
         return base;
+    }
+
+    std::filesystem::path ArtDir()
+    {
+        const auto root = TexturesDir();
+        return root.empty() ? root : root / "Character pannel";
     }
 
     // Loads this panel's art against the DEVICE THAT WILL DRAW IT.
@@ -160,21 +255,20 @@ namespace
     // why the backdrop never appeared and the rune scrolls came out as noise, and it is why
     // LoadProfIconGeneric, whose icons do work in this very panel, takes a device and drops its
     // cache whenever that device changes. This does the same.
-    ImTextureID Art(ID3D11Device* device, const std::string& file)
+    ImTextureID ArtFromPath(ID3D11Device* device, const std::filesystem::path& path)
     {
         static ID3D11Device* cachedDevice = nullptr;
         static std::unordered_map<std::string, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> cache;
         if (!device) return nullptr;
         if (device != cachedDevice) { cache.clear(); cachedDevice = device; }
 
-        auto it = cache.find(file);
+        const std::string key = path.string();
+        auto it = cache.find(key);
         if (it != cache.end()) return (ImTextureID)it->second.Get();
 
-        auto& slot = cache[file];   // remembers failures too, so a missing file is not retried
-        const auto dir = ArtDir();
-        if (dir.empty()) return nullptr;
-        const auto path = dir / file;
-        if (!std::filesystem::exists(path)) return nullptr;
+        auto& slot = cache[key];   // remembers failures too, so a missing file is not retried
+        std::error_code ec;
+        if (path.empty() || !std::filesystem::exists(path, ec)) return nullptr;
 
         DirectX::ScratchImage image;
         const bool isDds = path.extension() == ".dds" || path.extension() == ".DDS";
@@ -235,6 +329,12 @@ namespace
                       : ImVec2(kRuneIconH * 51.f / 62.f, kRuneIconH);
     }
 
+    ImTextureID Art(ID3D11Device* device, const std::string& file)
+    {
+        const auto dir = ArtDir();
+        return dir.empty() ? nullptr : ArtFromPath(device, dir / file);
+    }
+
     ImTextureID Backdrop(ID3D11Device* d) { return Art(d, "GW.EXE_0x4361D3FB.dds"); }
 
     struct SlotSpec { uint8_t slot; const char* label; };
@@ -250,7 +350,164 @@ namespace
         return Art(d, std::format("Rune_{}_{}.png", who, tier));
     }
 
-    ImTextureID SurvivorIcon(ID3D11Device* d) { return Art(d, "Survivor_Insignia.png"); }
+    // Skill art, from Textures\skills\<id>.jpg. It goes through the panel's own loader for the
+    // same reason the rune scrolls do: the shared TextureCache belongs to the MapBrowser's
+    // device, and a view made there draws as nothing here.
+    //
+    // A PvP split has no file of its own because it wears the icon of the skill it was split
+    // from, and only the PvE row carries the link, so the way back is an index built once.
+    ImTextureID SkillIcon(ID3D11Device* device, int skillId, const SkillDatabaseView& skills)
+    {
+        if (skillId <= 0) return nullptr;
+
+        const auto root = TexturesDir();
+        if (root.empty()) return nullptr;
+        const auto folder = root / "skills";
+
+        static std::unordered_map<int, int> pvpToBase;
+        if (pvpToBase.empty())
+            skills.ForEachSkill([](const SkillInfo& si) {
+                if (si.pvp_split && si.split_id > 0) pvpToBase[si.split_id] = si.id;
+            });
+
+        auto back = pvpToBase.find(skillId);
+        const int candidates[2] = { skillId, back == pvpToBase.end() ? skillId : back->second };
+        for (int k = 0; k < 2; ++k)
+        {
+            if (k == 1 && candidates[1] == candidates[0]) break;
+            if (ImTextureID tex = ArtFromPath(device,
+                    folder / (std::to_string(candidates[k]) + ".jpg")))
+                return tex;
+        }
+        return nullptr;
+    }
+
+    // The "(?)" that hangs off a heading, drawn as an ImGui item over the heading the draw list
+    // already put down so that it can be hovered.
+    ImVec4 RarityVec(Equipment::Rarity r);   // defined with the rune list, below
+
+    // A tooltip's opening word. The bold face the browser uses has no atlas on this panel's
+    // device and comes out as empty boxes, so the heading is the ordinary font in the panel's
+    // gold instead.
+    void TipHeading(const char* label)
+    {
+        ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.f), "%s", label);
+        ImGui::SameLine(0.f, 5.f);
+    }
+
+    void HelpMarker(ImVec2 headingPos, const char* heading, void (*body)())
+    {
+        ImGui::SetCursorScreenPos(ImVec2(headingPos.x + ImGui::CalcTextSize(heading).x + 6.f,
+                                         headingPos.y));
+        ImGui::TextDisabled("(?)");
+        if (!ImGui::IsItemHovered()) return;
+
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(470.f);
+        body();
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    void TipWeaponSets()
+    {
+        TipHeading("Weapon sets:");
+        ImGui::TextUnformatted("Recorded directly from the game data: weapon skins, upgrades, "
+                               "and which set was active.");
+    }
+
+    void TipArmour()
+    {
+        TipHeading("Armour:");
+        ImGui::TextUnformatted("Armour pieces and dye colors as sent by the game. Runes are "
+                               "shown in their own section since they aren't part of the armour "
+                               "packet and are deducted by our tool.");
+    }
+
+    void TipRunes()
+    {
+        const ImVec4 minor = RarityVec(Equipment::Rarity::Blue);
+        const ImVec4 major = RarityVec(Equipment::Rarity::Purple);
+        const ImVec4 head  = ImVec4(0.69f, 0.58f, 0.29f, 1.f);   // the headgear's own gold
+
+        TipHeading("Runes:");
+        ImGui::TextUnformatted("The game doesn't send rune data, so we infer it from what's "
+                               "visible in the recording.");
+        ImGui::TextUnformatted("You'll see the likely rune setup based on the agent's health "
+                               "(recorded value) and attributes (calculated).");
+        ImGui::TextUnformatted("Some builds can look identical, so in rare cases the displayed "
+                               "setup may be one of several possibilities.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Example: a Monk showing Protection 14 and Divine Favor 14 could "
+                               "be using either:");
+
+        ImGui::Bullet();
+        ImGui::TextUnformatted("Protection Prayers: 12");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(major, "+2");
+        ImGui::SameLine(0.f, 4.f);
+        ImGui::TextUnformatted("or 12");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(minor, "+1");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(head, "+1");
+
+        ImGui::Bullet();
+        ImGui::TextUnformatted("Divine Favor: 12");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(minor, "+1");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(head, "+1");
+        ImGui::SameLine(0.f, 4.f);
+        ImGui::TextUnformatted("or 12");
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::TextColored(major, "+2");
+
+        ImGui::TextUnformatted("Both look the same in-game.");
+    }
+
+    void TipAttributes()
+    {
+        TipHeading("Attributes:");
+        ImGui::TextUnformatted("The game doesn't send attribute values so we cannot record them. "
+                               "These values are our best estimate of the player's attribute "
+                               "ranks.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("We look at how each skill behaved in the recording - how much it "
+                               "healed, how much damage it dealt, how long it lasted, how much "
+                               "energy it returned - and from that we infer the most likely "
+                               "attribute level.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Every character has a fixed pool of attribute points. That budget "
+                               "limits how high the unseen attributes can be, so when a skill "
+                               "suggests \"this should be at least N\", we show it as <= N if the "
+                               "remaining budget can't support anything higher.");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("If different skills point to slightly different values, we show a "
+                               "range instead of pretending it's exact.");
+        ImGui::TextUnformatted("Missing data is shown as missing, never guessed.");
+    }
+
+    ImTextureID SurvivorIcon(ID3D11Device* d)  { return Art(d, "Survivor_Insignia.png"); }
+    ImTextureID StonefistIcon(ID3D11Device* d) { return Art(d, "Stonefist_Insignia.png"); }
+
+    const char* ProfessionName(int prof)
+    {
+        switch (prof)
+        {
+        case 1:  return "Warrior";
+        case 2:  return "Ranger";
+        case 3:  return "Monk";
+        case 4:  return "Necromancer";
+        case 5:  return "Mesmer";
+        case 6:  return "Elementalist";
+        case 7:  return "Assassin";
+        case 8:  return "Ritualist";
+        case 9:  return "Paragon";
+        case 10: return "Dervish";
+        default: return "";
+        }
+    }
 
     const char* ProfessionArtName(int primaryProf)
     {
@@ -279,6 +536,11 @@ namespace
         int health = 0;
         Equipment::Rarity rarity = Equipment::Rarity::Blue;
         bool square = false;   // the insignia art is square; the rune scrolls are not
+
+        // What an attribute rune is FOR. A minor rune costs no health at all, so "+0 health" was
+        // the whole of what the panel had to say about one - true, and useless. The rank it buys
+        // is the reason it is on the armour.
+        std::string gain;
     };
 
     ImVec4 RarityVec(Equipment::Rarity r)
@@ -328,7 +590,9 @@ namespace
             out.push_back({ prof ? RuneIcon(dev, prof, art) : nullptr,
                             std::format("{} Rune of {}", word,
                                         SkillDatabase::GetAttributeName(attr)),
-                            tier >= 3 ? -75 : tier == 2 ? -35 : 0, rarity });
+                            tier >= 3 ? -75 : tier == 2 ? -35 : 0, rarity, false,
+                            std::format("+{} {}", tier,
+                                        SkillDatabase::GetAttributeName(attr)) });
         }
 
         // Whatever the ranks could not account for stays anonymous: health alone cannot say which
@@ -443,6 +707,11 @@ namespace
     constexpr ImU32 kAttrMarker = IM_COL32(176, 148, 74, 255);   // dim gold, for the rune markers
     constexpr float kAttrHeadGap = 10.f;   // between the last bag row and the heading
 
+    // Every bar is drawn against the same ceiling, or two players' columns cannot be compared.
+    // Sixteen, not twelve: attribute points stop at twelve and runes carry the rest, and a bar
+    // that ended at twelve would show a runed attribute as full whatever the rune was.
+    constexpr int kBarCeiling = 16;
+
     // The attribute a character's FIRST profession grants him, which is also the one the game's own
     // attribute window puts at the top of his list.
     int PrimaryAttributeOf(int primaryProf)
@@ -463,31 +732,497 @@ namespace
         }
     }
 
-    // " +sup" / " +maj" / " +min" / " +head": where a rank came from, when it came from armour.
-    std::string RuneMarker(const AttributeModel::PlayerBuild& build, int attrId)
+    // How a rank was reached, written the way the game writes it: the points, then what the
+    // armour added. "12+1+1" is twelve points, a minor rune and the headgear - which is a rank 14
+    // and reads as one, where "14 +min +head" made the reader do the arithmetic backwards. The
+    // rune's own number carries the colour of its rarity, blue, purple or gold.
+    struct RankMarks
     {
-        std::string marker;
+        std::string base;          // the rank the attribute points bought
+        std::string rune;          // "+1" / "+2" / "+3", in the rune's colour
+        std::string head;          // "+1" for the headgear
+        ImU32       runeColour = 0;
+    };
+
+    RankMarks RuneMarks(const AttributeModel::PlayerBuild& build, int attrId,
+                        const AttributeModel::AttributeRange& range)
+    {
+        RankMarks m;
+        int base = range.best;
+
         auto tier = build.runeTier.find(attrId);
         if (tier != build.runeTier.end() && tier->second > 0)
-            marker = tier->second >= 3 ? " +sup" : tier->second == 2 ? " +maj" : " +min";
-        if (build.headgearAttribute == attrId) marker += " +head";
-        return marker;
+        {
+            base -= tier->second;
+            m.rune = std::format("+{}", tier->second);
+            const Equipment::Rgb c = Equipment::RarityColor(
+                tier->second >= 3 ? Equipment::Rarity::Gold
+                                  : tier->second == 2 ? Equipment::Rarity::Purple
+                                                      : Equipment::Rarity::Blue);
+            m.runeColour = IM_COL32(c.r, c.g, c.b, 255);
+        }
+        if (build.headgearAttribute == attrId) { base -= 1; m.head = "+1"; }
+
+        // The points paid for what the armour did not, so the base carries the whole width of the
+        // range: "12-14+1+1" is a rank the evidence pinned to 14-16, of which two came from the
+        // armour. A bound the points alone imposed never has a rune to split off.
+        const int lo = range.lo - (range.best - base);
+        const int hi = range.hi - (range.best - base);
+        if (!m.rune.empty() || !m.head.empty())
+        {
+            if (range.budgetOnly || lo < 0)
+            {
+                m.rune.clear();
+                m.head.clear();
+            }
+            else
+            {
+                m.base = (lo == hi) ? std::to_string(lo) : std::format("{}-{}", lo, hi);
+            }
+        }
+        return m;
     }
 
-    void DrawAttributeTooltip(int attrId, const AttributeModel::AttributeRange& range,
+    // The quantity a reading turned on, in the green the panel uses for a measured number.
+    const ImVec4 kReadingGreen = ImVec4(136 / 255.f, 255 / 255.f, 136 / 255.f, 1.f);
+
+    // ── The skill card ──────────────────────────────────────────────────────────────────────
+    //
+    // The same face the library page puts on a skill - icon, type, the cost glyphs, the
+    // description - plus one thing the library cannot do. This panel knows what the caster's
+    // attribute was, so every "5...50" in the text is answered with the number he actually played
+    // it at, in green. A rank the tool could only bound reads as a range, because that is what it
+    // is, and a skill on an attribute that was never solved keeps the game's own wording.
+    constexpr float kSkillCardWidth = 340.f;
+
+    ImTextureID CostIcon(ID3D11Device* dev, const char* file)
+    {
+        const auto root = TexturesDir();
+        return root.empty() ? nullptr
+                            : ArtFromPath(dev, root / "Game_UI" / "Skill Description" / file);
+    }
+
+    void CostItem(ID3D11Device* dev, const char* file, const std::string& value, bool& any)
+    {
+        if (any) ImGui::SameLine(0.f, 10.f);
+        if (ImTextureID tex = CostIcon(dev, file))
+        {
+            ImGui::Image(tex, ImVec2(16.f, 16.f));
+            ImGui::SameLine(0.f, 3.f);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.f);
+        }
+        ImGui::TextUnformatted(value.c_str());
+        any = true;
+    }
+
+    // Quarters of a second, said exactly - the same rule the rest of the app prints times by.
+    std::string TimeText(float seconds)
+    {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), SkillTimeFormat(seconds), seconds);
+        return buf;
+    }
+
+    void DrawSkillCard(ID3D11Device* dev, const SkillInfo& si, const SkillDatabaseView& skills,
+                       const AttributeModel::PlayerBuild* build, const ImVec4& muted)
+    {
+        ImGui::BeginTooltip();
+
+        constexpr float kIconH = 40.f;
+        if (ImTextureID icon = SkillIcon(dev, si.id, skills)) ImGui::Image(icon, ImVec2(kIconH, kIconH));
+        else                                                  ImGui::Dummy(ImVec2(kIconH, kIconH));
+        ImGui::SameLine(0.f, 8.f);
+
+        ImGui::BeginGroup();
+        if (si.is_elite) ImGui::TextColored(ImVec4(1.f, 0.85f, 0.30f, 1.f), "{Elite} %s", si.name.c_str());
+        else             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", si.name.c_str());
+
+        const char* typeName = SkillDatabase::GetTypeName(si.type);
+        const char* attrName = SkillDatabase::GetAttributeName(si.attribute);
+        if (attrName && attrName[0]) ImGui::TextColored(muted, "%s  (%s)", typeName, attrName);
+        else                         ImGui::TextColored(muted, "%s", typeName);
+        ImGui::EndGroup();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Cost, cast and recharge, in the game's own glyphs.
+        {
+            bool any = false;
+            if (si.energy > 0)     CostItem(dev, "energy.png",     std::to_string(si.energy), any);
+            if (si.adrenaline > 0) CostItem(dev, "adrenaline.png", std::to_string(si.adrenaline), any);
+            if (si.sacrifice > 0)  CostItem(dev, "sacrifice.png",  std::format("{}%", si.sacrifice), any);
+            if (si.overcast > 0)   CostItem(dev, "overcast.png",   std::to_string(si.overcast), any);
+            if (si.upkeep < 0)     CostItem(dev, "upkeep.png",     std::to_string(-si.upkeep), any);
+            if (si.activation > 0) CostItem(dev, "activation.png", TimeText(si.activation), any);
+            if (si.recharge > 0)   CostItem(dev, "recharge.png",   TimeText(si.recharge), any);
+            if (any) ImGui::Spacing();
+        }
+
+        // The rank this player was read at, if his solve covers the attribute the skill scales on.
+        const AttributeModel::AttributeRange* rank = nullptr;
+        if (build)
+            if (auto it = build->attributes.find(si.attribute); it != build->attributes.end())
+                if (!it->second.budgetOnly) rank = &it->second;
+
+        const std::vector<SkillTextRun> runs =
+            BuildSkillTextRuns(si, rank, ImGui::GetColorU32(ImVec4(0.85f, 0.82f, 0.75f, 1.f)),
+                          ImGui::GetColorU32(kReadingGreen));
+
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 size = DrawSkillTextRuns(ImGui::GetWindowDrawList(), at, kSkillCardWidth, runs);
+        ImGui::Dummy(ImVec2(kSkillCardWidth, size.y));
+
+        if (rank)
+        {
+            ImGui::Spacing();
+            ImGui::TextColored(muted, "Green is this player's own %s, read off the match.",
+                               SkillDatabase::GetAttributeName(si.attribute));
+        }
+
+        ImGui::EndTooltip();
+    }
+
+    // Which of a skill's scales the reading came off, so the table under it is the right table.
+    bool ScaleForGenre(const SkillInfo& si, AttributeModel::Genre genre, float& v0, float& v15)
+    {
+        using G = AttributeModel::Genre;
+        auto firstOfKind = [&](SkillScaleKind kind) {
+            for (const SkillScale& sc : si.scales)
+                if (sc.kind == kind && sc.v15 != sc.v0) { v0 = sc.v0; v15 = sc.v15; return true; }
+            return false;
+        };
+
+        switch (genre)
+        {
+        case G::CombatDamage: case G::CombatHeal: case G::CombatLifeSteal:
+            if (si.deductionUsable && si.dedV15 != si.dedV0)
+            { v0 = si.dedV0; v15 = si.dedV15; return true; }
+            return false;
+        case G::EnergyGain: case G::EnergyLoss: case G::ChantRefund:
+            if (si.energyUsable && si.enV15 != si.enV0)
+            { v0 = si.enV0; v15 = si.enV15; return true; }
+            return false;
+        case G::SummonLevel:
+            return firstOfKind(SkillScaleKind::Level);
+        case G::AvatarForm: case G::ConditionDuration: case G::MovementWindow:
+        case G::AttackSpeedWindow: case G::SnareWindow: case G::BlockWindow:
+        case G::StanceWindow:
+        case G::WeaponSpellEpisode: case G::HexEpisode: case G::EnchantmentEpisode:
+        case G::EnchantmentUptime:
+            return firstOfKind(SkillScaleKind::Duration);
+        default:
+            return false;
+        }
+    }
+
+    // What the numbers in a skill's progression are, so the table can name its own second row.
+    const char* QuantityName(AttributeModel::Genre genre)
+    {
+        using G = AttributeModel::Genre;
+        switch (genre)
+        {
+        case G::CombatDamage:                        return "Damage";
+        case G::CombatHeal:                          return "Healing";
+        case G::CombatLifeSteal:                     return "Health stolen";
+        case G::EnergyGain: case G::ChantRefund:     return "Energy gained";
+        case G::EnergyLoss:                          return "Energy lost";
+        case G::SummonLevel:                         return "Level";
+        default:                                     return "Duration";
+        }
+    }
+
+    // What a primary attribute does on its own, at each rank, as the wiki publishes it. Ten
+    // attributes have an effect of their own; every other attribute does nothing but scale the
+    // skills that name it, and so has no table of its own to show.
+    const char* PrimaryEffectName(int attrId)
+    {
+        switch (attrId)
+        {
+        case 0:  return "Casting speed";        // Fast Casting
+        case 6:  return "Energy per death";     // Soul Reaping
+        case 12: return "Max Energy";           // Energy Storage
+        case 16: return "Healing";              // Divine Favor
+        case 17: return "Armour penetration";   // Strength
+        case 23: return "Energy cost";          // Expertise
+        case 35: return "Critical chance";      // Critical Strikes
+        case 36: return "Health and duration";  // Spawning Power
+        case 40: return "Energy per ally";      // Leadership
+        case 44: return "Energy cost";          // Mysticism
+        default: return nullptr;
+        }
+    }
+
+    std::string PrimaryEffectAt(int attrId, int rank)
+    {
+        switch (attrId)
+        {
+        // Casting time is halved at 15, which is the same as saying the speed doubles.
+        case 0:  return std::format("{}%", (int)std::lround(100.0 * std::pow(2.0, rank / 15.0)));
+        case 6:  return std::to_string(rank);
+        case 12: return std::format("+{}", rank * 3);
+        case 16: return std::to_string((int)std::lround(3.2 * rank));
+        case 17: return std::format("{}%", rank);
+        case 23: return std::format("{}%", 100 - 4 * rank);
+        case 35: return std::format("{}%", rank);
+        case 36: return std::format("+{}%", rank * 4);
+        case 40: return std::to_string(rank / 2);
+        case 44: return std::format("{}%", 100 - 4 * rank);
+        default: return std::string();
+        }
+    }
+
+    // A progression table, drawn the way the wiki draws one: the ranks along the top, what they
+    // buy underneath, and the ranks in question picked out. A reader can then see the arithmetic
+    // instead of being asked to trust it.
+    template <typename ValueFn>
+    void DrawRankTable(const char* tableId, const char* rowLabel, const char* quantityLabel,
+                       ValueFn valueAt, uint32_t marked, const ImVec4& muted)
+    {
+        int lo = 17, hi = -1;
+        for (int r = 0; r <= 16; ++r)
+            if (marked & (1u << r)) { lo = std::min(lo, r); hi = std::max(hi, r); }
+        if (hi < lo) return;
+
+        // A window around the reading, wide enough to show it is not alone on the table.
+        lo = std::max(0, lo - 2);
+        hi = std::min(16, hi + 2);
+        if (hi - lo > 8) hi = lo + 8;
+
+        // Every column is sized for the widest thing that goes in it, and said so up front. Left
+        // to work it out, the table is squeezed by the tooltip around it and the last value ends
+        // up half-drawn.
+        const float pad = ImGui::GetStyle().CellPadding.x * 2.f + 4.f;
+        const float labelW = std::max(ImGui::CalcTextSize(rowLabel).x,
+                                      ImGui::CalcTextSize(quantityLabel).x) + pad;
+
+        std::vector<std::string> values;
+        values.reserve((size_t)(hi - lo + 1));
+        float cellW = 0.f;
+        for (int r = lo; r <= hi; ++r)
+        {
+            values.push_back(valueAt(r));
+            cellW = std::max(cellW,
+                             std::max(ImGui::CalcTextSize(std::to_string(r).c_str()).x,
+                                      ImGui::CalcTextSize(values.back().c_str()).x));
+        }
+        cellW += pad;
+
+        const ImU32 hit = ImGui::GetColorU32(ImVec4(0.20f, 0.42f, 0.24f, 0.55f));
+
+        if (!ImGui::BeginTable(tableId, hi - lo + 2,
+                               ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit |
+                               ImGuiTableFlags_NoHostExtendX))
+            return;
+
+        ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, labelW);
+        for (int r = lo; r <= hi; ++r)
+            ImGui::TableSetupColumn("##r", ImGuiTableColumnFlags_WidthFixed, cellW);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(muted, "%s", rowLabel);
+        for (int r = lo; r <= hi; ++r)
+        {
+            ImGui::TableNextColumn();
+            const bool on = (marked & (1u << r)) != 0;
+            if (on) ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, hit);
+            ImGui::TextColored(on ? kReadingGreen : muted, "%d", r);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(muted, "%s", quantityLabel);
+        for (int r = lo; r <= hi; ++r)
+        {
+            ImGui::TableNextColumn();
+            const bool on = (marked & (1u << r)) != 0;
+            if (on) ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, hit);
+            ImGui::TextColored(on ? kReadingGreen : muted, "%s", values[(size_t)(r - lo)].c_str());
+        }
+
+        ImGui::EndTable();
+    }
+
+    void DrawProgression(const SkillInfo& si, const AttributeModel::Evidence& ev,
+                         float v0, float v15, const ImVec4& muted)
+    {
+        DrawRankTable("prog", SkillDatabase::GetAttributeName(si.attribute),
+                      QuantityName(ev.genre),
+                      [&](int r) { return std::to_string(AttributeModel::Breakpoint(v0, v15, r)); },
+                      ev.ranks, muted);
+    }
+
+    // One reading: the skill's own icon, the sentence with the measured number picked out, and
+    // the skill's progression underneath with the rank it points at lit up.
+    void DrawEvidenceLine(ID3D11Device* dev, const AttributeModel::Evidence& ev,
+                          const SkillDatabaseView& skills, const ImVec4& muted)
+    {
+        const SkillInfo* si = ev.skillId > 0 ? skills.Get(ev.skillId) : nullptr;
+
+        const float iconH = ImGui::GetTextLineHeight() * 1.35f;
+        if (ImTextureID icon = SkillIcon(dev, ev.skillId, skills))
+            ImGui::Image(icon, ImVec2(iconH, iconH));
+        else
+            ImGui::Dummy(ImVec2(iconH, iconH));
+        if (si && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", si->name.c_str());
+        ImGui::SameLine(0.f, 6.f);
+
+        ImGui::BeginGroup();
+
+        // Split at the arrow, so the observation reads apart from the conclusion drawn from it.
+        const std::string line = AttributeModel::Describe(ev, skills);
+        const size_t arrow = line.find(" -> ");
+        std::string body = (arrow == std::string::npos) ? line : line.substr(0, arrow);
+        const std::string tail = (arrow == std::string::npos) ? std::string()
+                                                              : line.substr(arrow + 4);
+
+        // The icon already says which skill it was, so the name is dropped from the sentence.
+        if (si && body.rfind(si->name, 0) == 0)
+        {
+            body.erase(0, si->name.size());
+            if (!body.empty() && body.front() == ' ') body.erase(0, 1);
+            if (!body.empty()) body[0] = (char)std::toupper((unsigned char)body[0]);
+        }
+
+        // Green marks the number that was MEASURED, which is not always the first one in the
+        // sentence: "block healed 4 allies for 25" measures the 25, and pointing at the 4 says
+        // the reading came from counting allies. The measurement is on the evidence itself, so
+        // the sentence is searched for the number that matches it rather than read left to right.
+        size_t numStart = std::string::npos, numEnd = std::string::npos;
+        {
+            double closest = 0.51;   // half a unit: near enough to be the same number, printed
+            for (size_t i = 0; i < body.size(); )
+            {
+                if (!std::isdigit((unsigned char)body[i])) { ++i; continue; }
+                size_t j = i;
+                while (j < body.size() &&
+                       (std::isdigit((unsigned char)body[j]) || body[j] == '.'))
+                    ++j;
+
+                // "(x4)" is how many times the reading was taken, never the reading.
+                const bool isCount = (i >= 2 && body[i - 1] == 'x' && body[i - 2] == '(');
+                if (!isCount)
+                {
+                    const double gap = std::fabs(std::atof(body.substr(i, j - i).c_str()) -
+                                                 (double)ev.value);
+                    if (gap < closest) { closest = gap; numStart = i; numEnd = j; }
+                }
+                i = j;
+            }
+
+            // Nothing in the sentence is the measurement - a rule that states no number, or one
+            // that rounded it away. Fall back to the first number, which is what it used to be.
+            if (numStart == std::string::npos)
+            {
+                numStart = body.find_first_of("0123456789");
+                numEnd = numStart;
+                while (numEnd != std::string::npos && numEnd < body.size() &&
+                       (std::isdigit((unsigned char)body[numEnd]) || body[numEnd] == '.'))
+                    ++numEnd;
+            }
+        }
+
+        if (numStart != std::string::npos)
+        {
+            ImGui::TextUnformatted(body.substr(0, numStart).c_str());
+            ImGui::SameLine(0.f, 0.f);
+            ImGui::TextColored(kReadingGreen, "%s",
+                               body.substr(numStart, numEnd - numStart).c_str());
+            ImGui::SameLine(0.f, 0.f);
+            ImGui::TextUnformatted(body.substr(numEnd).c_str());
+        }
+        else
+        {
+            ImGui::TextUnformatted(body.c_str());
+        }
+
+        // The conclusion goes on a line of its own. Hung off the end of the sentence it starts
+        // wherever the sentence happened to finish, and ImGui restarts every wrapped line at that
+        // same x - which is how "at least Fire Magic 15-16" comes out as a six-line column two
+        // characters wide against the right margin.
+        if (!tail.empty())
+            ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.f), "-> %s", tail.c_str());
+
+        float v0 = 0.f, v15 = 0.f;
+        if (si && ScaleForGenre(*si, ev.genre, v0, v15))
+        {
+            ImGui::PopTextWrapPos();          // a table must not wrap mid-cell
+            DrawProgression(*si, ev, v0, v15, muted);
+            ImGui::PushTextWrapPos(470.f);
+        }
+
+        ImGui::EndGroup();
+    }
+
+    void DrawAttributeTooltip(ID3D11Device* dev, int attrId,
+                              const AttributeModel::AttributeRange& range,
                               const SkillDatabaseView& skills, const ImVec4& muted)
     {
         ImGui::BeginTooltip();
-        ImGui::PushTextWrapPos(380.f);
+        ImGui::PushTextWrapPos(470.f);
 
         ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.f), "%s %s",
-                           SkillDatabase::GetAttributeName(attrId), AttributeModel::FormatRange(range).c_str());
+                           AttributeModel::FormatRange(range).c_str(),
+                           SkillDatabase::GetAttributeName(attrId));
 
         if (range.budgetOnly || range.why.empty())
-            ImGui::TextColored(muted, "Nothing observed; bound by the 200 attribute points left "
-                                      "after the others.");
-        for (const AttributeModel::Evidence& ev : range.why)
-            ImGui::TextUnformatted(AttributeModel::Describe(ev, skills).c_str());
+            ImGui::TextColored(muted, "Never seen in use. This is only what the 200 attribute "
+                                      "points leave over once the others are paid for.");
+
+        // What the attribute itself is worth, before any skill names it. Only the ten primaries
+        // have such a thing, and for their owners it is the first question - a Monk's Divine
+        // Favor is read as health on every spell he casts, not as a number.
+        if (const char* effect = PrimaryEffectName(attrId))
+        {
+            uint32_t settled = 0;
+            for (int r = std::max(0, range.lo); r <= std::min(16, range.hi); ++r)
+                settled |= (1u << r);
+            if (settled)
+            {
+                ImGui::Spacing();
+                ImGui::PopTextWrapPos();          // a table must not wrap mid-cell
+                DrawRankTable("primary", SkillDatabase::GetAttributeName(attrId), effect,
+                              [&](int r) { return PrimaryEffectAt(attrId, r); }, settled, muted);
+                ImGui::PushTextWrapPos(470.f);
+            }
+        }
+
+        // Strongest reading first, so the one that settled the answer is not read last.
+        //
+        // Three tiers: a reading that agrees with the answer, then one taken under a condition
+        // that excludes it from scoring, then one that contradicts it outright. Within a tier the
+        // order is decisiveness - the model's own weight over how many ranks the reading still
+        // leaves open - so an exact packet leads a floor that only says "15 or 16".
+        const auto spreadOf = [](uint32_t ranks) {
+            int n = 0;
+            for (; ranks; ranks &= ranks - 1) ++n;
+            return n > 0 ? n : 1;
+        };
+        const auto tierOf = [&](const AttributeModel::Evidence& ev) {
+            if (ev.suspicious) return 1;
+            return (ev.ranks & (1u << range.best)) ? 0 : 2;
+        };
+
+        std::vector<const AttributeModel::Evidence*> order;
+        order.reserve(range.why.size());
+        for (const AttributeModel::Evidence& ev : range.why) order.push_back(&ev);
+        std::stable_sort(order.begin(), order.end(),
+            [&](const AttributeModel::Evidence* a, const AttributeModel::Evidence* b) {
+                const int ta = tierOf(*a), tb = tierOf(*b);
+                if (ta != tb) return ta < tb;
+                const float da = a->weight / (float)spreadOf(a->ranks);
+                const float db = b->weight / (float)spreadOf(b->ranks);
+                if (da != db) return da > db;
+                return a->count > b->count;
+            });
+
+        for (const AttributeModel::Evidence* ev : order)
+        {
+            ImGui::Spacing();
+            DrawEvidenceLine(dev, *ev, skills, muted);
+        }
 
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
@@ -516,15 +1251,31 @@ namespace
 
     // Draws the block and returns the y it finished at, so the panel can size its window to what
     // was drawn rather than to what it hoped would be.
-    float DrawAttributeBlock(ImDrawList* dl, ImVec2 topLeft, float width,
+    float DrawAttributeBlock(ID3D11Device* dev, ImDrawList* dl, ImVec2 topLeft, float width,
                              const AttributeModel::PlayerBuild* build, int primaryProf,
                              const SkillDatabaseView& skills, const ImVec4& muted)
     {
         const ImU32 mutedU32 = ImGui::GetColorU32(muted);
         const float lineH = ImGui::GetTextLineHeight() + 3.f;
 
+        // The game puts the rank first, in a frame of its own, with the attribute beside it, and
+        // the panel now reads the same way round: one column of numbers down the left, one column
+        // of names beside it, and what the armour added spelled out between them with air around
+        // it. The frame is sized for the widest thing that can go in it ("12-14"), so the names
+        // line up whatever each rank costs in width.
+        const float boxW    = ImGui::CalcTextSize("00-00").x + 12.f;
+        const float markGap = 6.f;
+        const float splitW  = ImGui::CalcTextSize("00-00+0+0").x;
+        const float nameX   = topLeft.x + boxW + markGap + splitW + 12.f;
+        const ImU32 frameU32 = IM_COL32(120, 128, 140, 190);
+
+        // The rank a rune helped reach is not the rank his points bought, and the panel says so
+        // in the colour of the total as well as in the sum beside it.
+        const ImU32 kRunedTotal = IM_COL32(68, 170, 238, 255);
+
         float y = topLeft.y;
         dl->AddText(ImVec2(topLeft.x, y), kHeadingGold, "Attributes");
+        HelpMarker(ImVec2(topLeft.x, y), "Attributes", TipAttributes);
         y += ImGui::GetTextLineHeightWithSpacing();
 
         if (!build || build->attributes.empty())
@@ -539,39 +1290,87 @@ namespace
             const char* name = SkillDatabase::GetAttributeName(attrId);
             if (!name || !name[0]) name = "Unknown";
 
-            const std::string rank = AttributeModel::FormatRange(range);
-            const std::string marker = RuneMarker(*build, attrId);
+            const RankMarks marks = RuneMarks(*build, attrId, range);
+            const std::string total = AttributeModel::FormatRange(range);
             const ImU32 colour = range.budgetOnly ? mutedU32
                                : (range.lo == range.hi) ? kAttrExact : kAttrRanged;
 
-            // Right-aligned as a block, so the ranks line up down the sheet and the marker hangs
-            // off the end of the one it belongs to.
-            const float rankW = ImGui::CalcTextSize(rank.c_str()).x;
-            const float markW = marker.empty() ? 0.f : ImGui::CalcTextSize(marker.c_str()).x;
-            const float rankX = topLeft.x + width - rankW - markW;
+            // The box holds what he plays at; the sum beside it says where it came from - the
+            // points he bought, then the rune in its own rarity's colour, then the headgear.
+            const float totalW = ImGui::CalcTextSize(total.c_str()).x;
+            const ImU32 totalColour = marks.rune.empty() ? colour : kRunedTotal;
 
-            dl->AddText(ImVec2(topLeft.x, y), colour, name);
-            dl->AddText(ImVec2(rankX, y), colour, rank.c_str());
-            if (!marker.empty())
-                dl->AddText(ImVec2(rankX + rankW, y), kAttrMarker, marker.c_str());
+            dl->AddRect(ImVec2(topLeft.x, y - 1.f),
+                        ImVec2(topLeft.x + boxW, y + lineH - 2.f), frameU32, 2.f);
+            dl->AddText(ImVec2(topLeft.x + (boxW - totalW) * 0.5f, y), totalColour, total.c_str());
+
+            // Nothing to spell out when the points bought the whole rank: "12  12" reads as a
+            // mistake, where "14  12+1+1" reads as an answer.
+            if (!marks.base.empty())
+            {
+                float x = topLeft.x + boxW + markGap;
+                dl->AddText(ImVec2(x, y), colour, marks.base.c_str());
+                x += ImGui::CalcTextSize(marks.base.c_str()).x;
+                if (!marks.rune.empty())
+                {
+                    dl->AddText(ImVec2(x, y), marks.runeColour, marks.rune.c_str());
+                    x += ImGui::CalcTextSize(marks.rune.c_str()).x;
+                }
+                if (!marks.head.empty())
+                    dl->AddText(ImVec2(x, y), kAttrMarker, marks.head.c_str());
+            }
+
+            dl->AddText(ImVec2(nameX, y), colour, name);
+
+            // A bar the width of the rank, so a column of them reads at a glance. A range is
+            // drawn twice - solid up to the lowest rank it can be, ghosted out to the highest -
+            // so the eye takes in the floor and the room left above it at once. An attribute
+            // never seen in use has no floor at all and is all ghost, which is the honest
+            // picture of it.
+            const float barW   = std::min(150.f, width * 0.36f);
+            const float barX   = topLeft.x + width - barW;
+            const float barTop = y + 2.f;
+            const float barBot = y + lineH - 5.f;
+            dl->AddRectFilled(ImVec2(barX, barTop), ImVec2(barX + barW, barBot),
+                              IM_COL32(255, 255, 255, 16), 2.f);
+
+            const float solidW = barW * std::clamp(range.lo / (float)kBarCeiling, 0.f, 1.f);
+            const float ghostW = barW * std::clamp(range.hi / (float)kBarCeiling, 0.f, 1.f);
+            if (ghostW > solidW)
+                dl->AddRectFilled(ImVec2(barX + solidW, barTop), ImVec2(barX + ghostW, barBot),
+                                  IM_COL32(126, 200, 130, 55), 2.f);
+            if (solidW > 0.f)
+                dl->AddRectFilled(ImVec2(barX, barTop), ImVec2(barX + solidW, barBot),
+                                  IM_COL32(126, 200, 130, 190), 2.f);
+
+            // Where attribute points stop paying: anything past twelve came out of a rune.
+            const float runeTick = barX + barW * 12.f / (float)kBarCeiling;
+            dl->AddLine(ImVec2(runeTick, barTop), ImVec2(runeTick, barBot),
+                        IM_COL32(255, 255, 255, 45));
 
             // Hover for the observations behind the number, the same way the item cells do it: an
             // invisible button over what the draw list already put on screen.
             ImGui::PushID(attrId);
-            ImGui::SetCursorScreenPos(ImVec2(topLeft.x, y));
+            ImGui::SetCursorScreenPos(ImVec2(topLeft.x, y - 1.f));
             ImGui::InvisibleButton("##attr", ImVec2(width, lineH));
-            if (ImGui::IsItemHovered()) DrawAttributeTooltip(attrId, range, skills, muted);
+            if (ImGui::IsItemHovered()) DrawAttributeTooltip(dev, attrId, range, skills, muted);
             ImGui::PopID();
 
             y += lineH;
         }
 
-        // What the ranks cost. A GvG player spends everything, so a total well under 200 is itself
-        // a statement that one of the ranks above it is too low.
-        const std::string points = build->pointsSpentLo == build->pointsSpentHi
-            ? std::format("{} of 200 attribute points", build->pointsSpentLo)
-            : std::format("{}-{} of 200 attribute points", build->pointsSpentLo,
-                          build->pointsSpentHi);
+        // What is LEFT of the 200, which is the half of it worth reading and the half the game's
+        // own attribute window shows in its title. A build with points to spare is not a fact
+        // about the character - every GvG player spends all of them - it is a statement that one
+        // of the ranks above is read too low, and the number says how much room there is for it
+        // to be wrong. Nothing to spare, nothing to say.
+        const int unusedLo = 200 - build->pointsSpentHi;
+        const int unusedHi = 200 - build->pointsSpentLo;
+        const std::string points =
+            (unusedHi <= 0)      ? std::string("all 200 attribute points spent")
+          : (unusedLo == unusedHi) ? std::format("{} unused attribute points", unusedLo)
+                                   : std::format("{}-{} unused attribute points", unusedLo,
+                                                 unusedHi);
         dl->AddText(ImVec2(topLeft.x, y + 2.f), mutedU32, points.c_str());
         y += lineH + 2.f;
 
@@ -682,7 +1481,7 @@ void ReplayWindow::DrawCharacterPanels()
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize,  1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 4.f);
 
-        ImGui::SetNextWindowSize(ImVec2(kColPlayersMin + kColItems + kNameW + kRunesGap + kColRunes + 90.f, 400.f),
+        ImGui::SetNextWindowSize(ImVec2(kColPlayersMin + kColItems + kNameW + kRunesGap + kColRunes + 90.f, 620.f),
                                  ImGuiCond_FirstUseEver);
         const bool shown = ImGui::Begin(title.c_str(), &panel.open);
         if (!shown)
@@ -703,17 +1502,38 @@ void ReplayWindow::DrawCharacterPanels()
                 auto ait = m_replayCtx.agents.find(id);
                 if (ait == m_replayCtx.agents.end() || ait->second.type != AgentType::Player) continue;
                 colPlayers = std::max(colPlayers,
-                                      kPlayerIndent + ImGui::CalcTextSize(ait->second.playerName.c_str()).x + 12.f);
+                                      kPlayerIndent + ImGui::CalcTextSize(ait->second.playerName.c_str()).x
+                                          + kPlayerSlotW + 12.f);
             }
         colPlayers = std::min(colPlayers, kColPlayersMax);
 
         ImGui::BeginChild("##players", ImVec2(colPlayers, 0.f), ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoScrollbar);
         {
+            // The selection is a filled row with an accent down its left edge, not a caret in
+            // front of the name. A marker that takes width of its own shunts every name sideways
+            // the moment the selection moves, and the eye reads that shift before it reads the
+            // row. ImGui's own blue selection is pushed out of the way for the same reason: it
+            // belongs to a different palette than the rest of this panel.
+            ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.f, 0.f, 0.f, 0.f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.f, 0.f, 0.f, 0.f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.f, 0.f, 0.f, 0.f));
+
+            const float rowW = colPlayers - 10.f;
+
             auto teamList = [&](const std::vector<int>& ids, const char* heading, ImU32 colour) {
+                // The guild's name over a rule in its own colour, so two teams of eight read as
+                // two blocks rather than one list of sixteen.
+                const ImVec2 headPos = ImGui::GetCursorScreenPos();
                 ImGui::PushStyleColor(ImGuiCol_Text, colour);
                 ImGui::TextUnformatted(heading);
                 ImGui::PopStyleColor();
+
+                ImDrawList* rdl = ImGui::GetWindowDrawList();
+                const float ruleY = headPos.y + ImGui::GetTextLineHeight() + 2.f;
+                rdl->AddLine(ImVec2(headPos.x, ruleY), ImVec2(headPos.x + rowW, ruleY),
+                             (colour & 0x00FFFFFFu) | 0x55000000u);
+                ImGui::Dummy(ImVec2(0.f, 3.f));
 
                 for (int id : ids)
                 {
@@ -730,28 +1550,40 @@ void ReplayWindow::DrawCharacterPanels()
                     const ImVec2 rowPos = ImGui::GetCursorScreenPos();
                     if (ImGui::Selectable("##row", active, 0, ImVec2(0.f, kPlayerRowH)))
                         panel.agentId = id;
+                    const bool hovered = ImGui::IsItemHovered();
 
-                    ImDrawList* rdl = ImGui::GetWindowDrawList();
-                    float x = rowPos.x + 2.f;
+                    if (active || hovered)
+                        rdl->AddRectFilled(rowPos, ImVec2(rowPos.x + rowW, rowPos.y + kPlayerRowH),
+                                           active ? IM_COL32(225, 190, 80, 30)
+                                                  : IM_COL32(255, 255, 255, 14), 3.f);
                     if (active)
-                    {
-                        rdl->AddText(ImVec2(x, rowPos.y + 1.f), kHeadingGold, ">");
-                        x += 10.f;
-                    }
-                    else x += 10.f;
+                        rdl->AddRectFilled(ImVec2(rowPos.x, rowPos.y + 2.f),
+                                           ImVec2(rowPos.x + 2.5f, rowPos.y + kPlayerRowH - 2.f),
+                                           kHeadingGold, 1.f);
 
+                    float x = rowPos.x + 9.f;
                     if (dev && a.primaryProf >= 1)
-                    {
                         if (ImTextureID prof = LoadProfIcon(dev, a.primaryProf))
-                        {
-                            rdl->AddImage(prof, ImVec2(x, rowPos.y + 1.f),
-                                          ImVec2(x + 14.f, rowPos.y + 15.f));
-                        }
-                    }
-                    x += 17.f;
-                    rdl->AddText(ImVec2(x, rowPos.y + 1.f),
+                            rdl->AddImage(prof, ImVec2(x, rowPos.y + 3.f),
+                                          ImVec2(x + 14.f, rowPos.y + 17.f));
+                    x += 18.f;
+
+                    rdl->AddText(ImVec2(x, rowPos.y + 3.f),
                                  active ? kHeadingGold : IM_COL32(216, 220, 226, 255),
                                  a.playerName.c_str());
+
+                    // The party slot, right-aligned in a column of its own: it is how callers
+                    // name a player, and pinned to the right it never moves the name about.
+                    if (a.playerNumber > 0)
+                    {
+                        const std::string slot = std::to_string(a.playerNumber);
+                        rdl->AddText(ImVec2(rowPos.x + rowW - 6.f -
+                                                ImGui::CalcTextSize(slot.c_str()).x,
+                                            rowPos.y + 3.f),
+                                     active ? IM_COL32(225, 190, 80, 150)
+                                            : IM_COL32(255, 255, 255, 70),
+                                     slot.c_str());
+                    }
                     ImGui::PopID();
                 }
             };
@@ -761,9 +1593,19 @@ void ReplayWindow::DrawCharacterPanels()
             ImGui::Spacing();
             teamList(m_team2PlayerIds, m_folderTag2.empty() ? "Blue" : m_folderTag2.c_str(),
                      IM_COL32(74, 200, 255, 255));
+
+            ImGui::PopStyleColor(3);
         }
         ImGui::EndChild();
-        ImGui::SameLine(0.f, 8.f);
+
+        // The rule between who is being looked at and what is being looked at.
+        ImGui::SameLine(0.f, 14.f);
+        {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(p.x - 7.f, p.y), ImVec2(p.x - 7.f, p.y + ImGui::GetContentRegionAvail().y),
+                kSheetRule);
+        }
 
         if (!ard)
         {
@@ -774,195 +1616,382 @@ void ReplayWindow::DrawCharacterPanels()
             continue;
         }
 
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        // The panel reads in three columns: who is being looked at, the character sheet, and
+        // what the tool had to work out for itself. Runes and insignias are that third column and
+        // not part of the sheet, because the recording never sends them - keeping the deduction
+        // in a column of its own is the difference between reading a fact and reading a guess.
 
         // The attribute solve for this player, or nothing when he was never solved. Read once: the
-        // runes column names its runes from it, and the block under the sheet prints its ranks.
+        // runes column names its runes from it, and the sheet prints its ranks.
         const AttributeModel::PlayerBuild* build = nullptr;
         if (auto bit = m_attrProfiles.find(ard->agent_id); bit != m_attrProfiles.end())
             build = &bit->second;
 
-        // ── Weapon sets and armour, sharing one bar per row ──────────────────────────────────
-        //
-        // One bar, not two: the client's bag rows run the full width of the window and this reads
-        // as one piece of furniture rather than two lists that happen to be side by side. Weapon
-        // sets hang off the left end of each bar and armour off the right, so the two columns stay
-        // legible while the art stays whole.
         if (m_hudWeaponSets.agentId != ard->agent_id)
             BuildWeaponSets(ard->agent_id, m_hudWeaponSets);
 
-        if (m_hudWeaponSets.agentId != ard->agent_id)
-            BuildWeaponSets(ard->agent_id, m_hudWeaponSets);
+        const float sheetW = kColItems + kNameW;
 
-        // Headings in the UI's gold, each over what it names.
-        const float barX    = origin.x;
-        const float mainX   = barX + kWeaponPad;
-        const float offX    = mainX + kCellSize + kCellGap;
-        const float armourX = barX + kColItems - kCellSize - kArmourPad;
-
-        dl->AddText(ImVec2(mainX, origin.y), kHeadingGold, "Weapon sets");
-        dl->AddText(ImVec2(armourX - 6.f, origin.y), kHeadingGold, "Armour");
-
-        const float rowTop   = origin.y + ImGui::GetTextLineHeightWithSpacing();
-        const int   setCount = (int)m_hudWeaponSets.sets.size();
-        const int   rows     = std::max(setCount, (int)std::size(kArmourSlots));
-
-        for (int i = 0; i < rows; ++i)
+        ImGui::BeginChild("##sheet", ImVec2(sheetW, 0.f));
         {
-            const ImVec2 tl(barX, rowTop + i * kRowPitch);
-            drawBand(dl, i, tl, kColItems, kRowHeight);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float lineH = ImGui::GetTextLineHeight();
 
-            const float cellY = tl.y + (kRowHeight - kCellSize) * 0.5f;
-            const float textY = tl.y + kRowHeight * 0.5f - 7.f;
+            // ── Who this is ──────────────────────────────────────────────────────────────────
+            //
+            // The window title carries the name too, but a panel that can be opened four times
+            // over needs to say whose sheet it is inside its own frame, where the eye already is.
+            if (dev && ard->primaryProf >= 1)
+                if (ImTextureID prof = LoadProfIcon(dev, ard->primaryProf))
+                {
+                    ImGui::Image(prof, ImVec2(lineH + 3.f, lineH + 3.f));
+                    ImGui::SameLine(0.f, 6.f);
+                }
+            ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.97f, 1.f), "%s", ard->playerName.c_str());
 
-            // One weapon set, with its mods spelled out in the column to the left of the bar.
-            if (i < setCount)
-            {
-                const auto& ws = m_hudWeaponSets.sets[i];
-                const Equipment::ItemDef* main = equipment.FindByAgentItemId(ws.mainId);
-                const Equipment::ItemDef* off  = equipment.FindByAgentItemId(ws.offId);
+            std::string subtitle = ProfessionName(ard->primaryProf);
+            if (ard->secondaryProf > 0)
+                subtitle += std::string(" / ") + ProfessionName(ard->secondaryProf);
+            if (!ard->guildTag.empty()) subtitle += "  -  [" + ard->guildTag + "]";
+            ImGui::TextColored(muted, "%s", subtitle.c_str());
 
-                ImGui::PushID(1000 + i);
-                drawCell(dl, ImVec2(mainX, cellY), main, "no weapon", "Main hand");
-                drawCell(dl, ImVec2(offX, cellY), off, "no offhand", "Off hand");
-                ImGui::PopID();
-
-            }
-
-            // One armour piece, its name running to the right end of the bar.
-            if (i < (int)std::size(kArmourSlots))
-            {
-                const Equipment::ItemDef* item =
-                    equipment.FindAtTime(ard->agent_id, kArmourSlots[i].slot, t);
-
-                ImGui::PushID(2000 + i);
-                drawCell(dl, ImVec2(armourX, cellY), item, "not worn", kArmourSlots[i].label);
-                ImGui::PopID();
-
-                const ArmourNames::Piece* piece = item ? ArmourNames::Find(item->modelFileId) : nullptr;
-                dl->AddText(ImVec2(barX + kColItems + 10.f, textY),
-                            IM_COL32(232, 236, 242, 255),
-                            piece ? piece->name : kArmourSlots[i].label);
-            }
-        }
-
-        // ── Runes, beside the armour they were measured from ─────────────────────────────────
-        const float runesX = barX + kColItems + kNameW + kRunesGap;
-        dl->AddText(ImVec2(runesX, origin.y), kHeadingGold, "Runes");
-        ImGui::SetCursorScreenPos(ImVec2(runesX + ImGui::CalcTextSize("Runes").x + 6.f, origin.y));
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Guild Wars never tells an observer which runes a player is wearing.\n\n"
-                "What we can do is measure how much health his runes add, from the maximum\n"
-                "health the camera recorded, and then list the rune sets that add exactly\n"
-                "that much. So these are possibilities, not his actual runes.\n\n"
-                "Runes that push an attribute above rank 12 are named from the attribute\n"
-                "solve, since only a rune could have put the rank there.");
-
-        ImGui::SetCursorScreenPos(ImVec2(runesX, rowTop));
-        ImGui::BeginGroup();
-        ImGui::PushTextWrapPos(runesX + kColRunes - 16.f);
-
-        if (!ard->armourSolved)
-        {
-            ImGui::TextColored(muted, "Not enough readings to measure this player's runes.");
-        }
-        else
-        {
-            ImGui::Text("%+d Max health added from runes", ard->solvedArmourHealth);
-            ImGui::TextDisabled("measured from %d readings", ard->armourObservations);
+            ImGui::Spacing();
+            ImGui::Separator();
             ImGui::Spacing();
 
-            // What the ranks require, handed to the health side. A rank above 12 can only have
-            // come from a rune, so the attribute solve knows runes must be there that the health
-            // could never point to on its own -- a minor rune costs nothing at all, and two
-            // superiors cost the same 150 whichever attributes they sit on.
-            HealthModel::RuneConstraints runes;
-            if (build)
+            // ── The bar he was seen playing ──────────────────────────────────────────────────
+            //
+            // The match metadata lists the skills the recording saw this player use, which is not
+            // the same as the eight he brought: a skill he never pressed leaves no trace at all.
+            // So the row is eight slots whatever happens and the count beside it says how many of
+            // them are known, rather than quietly showing a five-skill bar as if it were the build.
+            std::vector<int> bar;
             {
-                for (const auto& [attrId, tier] : build->runeTier)
-                    if (tier > 0) runes.tiers.emplace_back(attrId, tier);
-                runes.headgearAttribute = build->headgearAttribute;
+                std::unordered_set<int> placed;
+                const PlayerMeta* meta = nullptr;
+                for (const auto& [pid, party] : m_matchMeta.parties)
+                {
+                    for (const auto& pm : party.players)
+                        if (pm.id == ard->agent_id) { meta = &pm; break; }
+                    if (!meta)
+                        for (const auto& pm : party.others)
+                            if (pm.id == ard->agent_id) { meta = &pm; break; }
+                    if (meta) break;
+                }
 
-                // The solve stores them in a hash map, so sort: a list that reorders itself
-                // between two players reads as two different answers.
-                std::sort(runes.tiers.begin(), runes.tiers.end());
+                if (meta)
+                    for (int sid : meta->used_skills)
+                    {
+                        const int resolved = m_skillView.ResolvePvpSkillId(sid);
+                        if (resolved > 0 && placed.insert(resolved).second) bar.push_back(resolved);
+                    }
+
+                // Anything he was seen casting that the metadata missed still belongs on the bar.
+                for (const auto& use : ard->skillUseHistory)
+                {
+                    const int resolved = m_skillView.ResolvePvpSkillId(use.skillId);
+                    if (resolved > 0 && placed.insert(resolved).second) bar.push_back(resolved);
+                }
+
+                if (bar.size() > 1)
+                    bar = m_skillView.SortSkillsForDisplay(bar, ard->primaryProf,
+                                                           ard->secondaryProf);
+                if (bar.size() > 8) bar.resize(8);
             }
 
-            auto builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6, runes);
+            const ImVec2 skHead = ImGui::GetCursorScreenPos();
+            dl->AddText(skHead, kHeadingGold, "Skills");
 
-            // The ranks ask for runes this armour cannot host. Both halves are worth showing: the
-            // sets that do reach the measured health, and the sentence saying why they disagree
-            // with the ranks above them.
-            std::string runeClash;
-            if (builds.empty() && !runes.tiers.empty())
+            const std::string seen = std::format("{} of 8 seen this match", bar.size());
+            dl->AddText(ImVec2(skHead.x + sheetW - ImGui::CalcTextSize(seen.c_str()).x - 14.f,
+                               skHead.y), ImGui::GetColorU32(muted), seen.c_str());
+
+            constexpr float kSkillCell = 40.f;
+            constexpr float kSkillGap  = 6.f;
+            const float skTop = skHead.y + ImGui::GetTextLineHeightWithSpacing();
+
+            for (int i = 0; i < 8; ++i)
             {
-                builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6);
-                if (!builds.empty())
+                const ImVec2 tl(skHead.x + i * (kSkillCell + kSkillGap), skTop);
+                const ImVec2 br(tl.x + kSkillCell, tl.y + kSkillCell);
+                dl->AddRectFilled(tl, br, IM_COL32(18, 26, 24, 210), 2.f);
+                dl->AddRect(tl, br, IM_COL32(118, 138, 128, 200), 2.f);
+
+                const int sid = (i < (int)bar.size()) ? bar[i] : 0;
+                const SkillInfo* si = (sid > 0) ? m_skillView.Get(sid) : nullptr;
+
+                if (ImTextureID icon = SkillIcon(dev, sid, m_skillView))
+                    dl->AddImage(icon, ImVec2(tl.x + 2.f, tl.y + 2.f),
+                                 ImVec2(br.x - 2.f, br.y - 2.f));
+                else if (!si)
+                    dl->AddText(ImVec2(tl.x + kSkillCell * 0.5f - 4.f,
+                                       tl.y + kSkillCell * 0.5f - lineH * 0.5f),
+                                ImGui::GetColorU32(muted), "?");
+
+                // No name under the icon: eight of them at forty pixels wide is two lines of
+                // shrunken text apiece, which reads as clutter and says nothing the art does not.
+                // The card on hover says the rest, and says it properly.
+                ImGui::PushID(3000 + i);
+                ImGui::SetCursorScreenPos(tl);
+                ImGui::InvisibleButton("##skill", ImVec2(kSkillCell, kSkillCell));
+                if (ImGui::IsItemHovered())
                 {
-                    runeClash = "The ranks need runes this armour health cannot pay for.";
-                    if (build)
-                        for (const std::string& line : build->contradictions)
-                            if (line.rfind("Runes needed for", 0) == 0) { runeClash = line; break; }
+                    dl->AddRect(tl, br, IM_COL32(255, 215, 100, 200), 2.f, 0, 1.6f);
+                    if (si) DrawSkillCard(dev, *si, m_skillView, build, muted);
+                    else    ImGui::SetTooltip("This player was never seen using an eighth skill.");
+                }
+                ImGui::PopID();
+            }
+
+            // ── Weapon sets and armour, sharing one bar per row ──────────────────────────────
+            //
+            // One bar, not two: the client's bag rows run the full width of the window and this
+            // reads as one piece of furniture rather than two lists that happen to be side by
+            // side. Weapon sets hang off the left end of each bar and armour off the right, so the
+            // two columns stay legible while the art stays whole.
+            SheetRule(dl, skHead.x, skTop + kSkillCell + 9.f, sheetW - 14.f);
+            const ImVec2 origin(skHead.x, skTop + kSkillCell + 20.f);
+
+            const float barX    = origin.x;
+            const float mainX   = barX + kWeaponPad;
+            const float offX    = mainX + kCellSize + kCellGap;
+            const float armourX = barX + kColItems - kCellSize - kArmourPad;
+
+            dl->AddText(ImVec2(mainX, origin.y), kHeadingGold, "Weapon sets");
+            HelpMarker(ImVec2(mainX, origin.y), "Weapon sets", TipWeaponSets);
+
+            dl->AddText(ImVec2(armourX - 6.f, origin.y), kHeadingGold, "Armour");
+            HelpMarker(ImVec2(armourX - 6.f, origin.y), "Armour", TipArmour);
+
+            const float rowTop   = origin.y + ImGui::GetTextLineHeightWithSpacing();
+            const int   setCount = (int)m_hudWeaponSets.sets.size();
+            const int   rows     = std::max(setCount, (int)std::size(kArmourSlots));
+
+            for (int i = 0; i < rows; ++i)
+            {
+                const ImVec2 tl(barX, rowTop + i * kRowPitch);
+                drawBand(dl, i, tl, kColItems, kRowHeight);
+
+                const float cellY = tl.y + (kRowHeight - kCellSize) * 0.5f;
+                const float textY = tl.y + kRowHeight * 0.5f - 7.f;
+
+                // One weapon set, with its mods spelled out in the tooltip on each cell.
+                if (i < setCount)
+                {
+                    const auto& ws = m_hudWeaponSets.sets[i];
+                    const Equipment::ItemDef* main = equipment.FindByAgentItemId(ws.mainId);
+                    const Equipment::ItemDef* off  = equipment.FindByAgentItemId(ws.offId);
+
+                    ImGui::PushID(1000 + i);
+                    drawCell(dl, ImVec2(mainX, cellY), main, "no weapon", "Main hand");
+                    drawCell(dl, ImVec2(offX, cellY), off, "no offhand", "Off hand");
+                    ImGui::PopID();
+                }
+
+                // One armour piece, its name running to the right end of the bar.
+                if (i < (int)std::size(kArmourSlots))
+                {
+                    const Equipment::ItemDef* item =
+                        equipment.FindAtTime(ard->agent_id, kArmourSlots[i].slot, t);
+
+                    ImGui::PushID(2000 + i);
+                    drawCell(dl, ImVec2(armourX, cellY), item, "not worn", kArmourSlots[i].label);
+                    ImGui::PopID();
+
+                    const ArmourNames::Piece* piece =
+                        item ? ArmourNames::Find(item->modelFileId) : nullptr;
+                    dl->AddText(ImVec2(barX + kColItems + 10.f, textY),
+                                IM_COL32(232, 236, 242, 255),
+                                piece ? piece->name : kArmourSlots[i].label);
                 }
             }
 
-            if (builds.empty())
+            SheetRule(dl, barX, rowTop + rows * kRowPitch + 3.f, sheetW - 14.f);
+
+            // The ranks, under the sheet they were read off.
+            const float attrBottom = DrawAttributeBlock(
+                dev, dl, ImVec2(barX, rowTop + rows * kRowPitch + kAttrHeadGap), sheetW - 20.f,
+                build, ard->primaryProf, m_skillView, muted);
+
+            // Reserve the space the rows and the attribute block were drawn into, so the child
+            // scrolls to its content rather than clipping it.
+            ImGui::SetCursorScreenPos(ImVec2(origin.x, attrBottom + 4.f));
+            ImGui::Dummy(ImVec2(sheetW - 8.f, 1.f));
+        }
+        ImGui::EndChild();
+
+        // ── What the tool worked out: runes, and the one insignia it can name ────────────────
+        // The rule that marks where measurement stops and deduction starts.
+        ImGui::SameLine(0.f, kRunesGap);
+        {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(p.x - kRunesGap * 0.5f, p.y),
+                ImVec2(p.x - kRunesGap * 0.5f, p.y + ImGui::GetContentRegionAvail().y),
+                kSheetRule);
+        }
+        ImGui::BeginChild("##runes", ImVec2(kColRunes, 0.f));
+        {
+            ImDrawList* rdl = ImGui::GetWindowDrawList();
+            const float colW = ImGui::GetContentRegionAvail().x;
+
+            const ImVec2 headPos = ImGui::GetCursorScreenPos();
+            ImGui::TextColored(ImVec4(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f),
+                               "Runes & insignias");
+            const ImVec2 afterHead = ImGui::GetCursorScreenPos();
+            HelpMarker(headPos, "Runes & insignias", TipRunes);
+            ImGui::SetCursorScreenPos(afterHead);
+
+            ImGui::Spacing();
+            ImGui::PushTextWrapPos(0.f);
+
+            if (!ard->armourSolved)
             {
-                ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-                                   "No rune set adds %+d health.", ard->solvedArmourHealth);
+                ImGui::TextColored(muted, "Not enough readings to measure this player's runes.");
             }
             else
             {
-                if (builds.size() == 1) ImGui::TextDisabled("Only one possible setup:");
-                else                    ImGui::TextDisabled("Most likely setup (out of %d guesses)",
-                                                    (int)builds.size());
+                // The measurement the whole column rests on, in a frame of its own so it reads as
+                // the input to what follows rather than as the first line of a list.
+                const float boxH = ImGui::GetTextLineHeightWithSpacing() * 2.f +
+                                   ImGui::GetStyle().WindowPadding.y * 2.f;
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.10f, 0.12f, 0.85f));
+                ImGui::BeginChild("##armourhealth", ImVec2(0.f, boxH), ImGuiChildFlags_Border);
+                ImGui::Text("%+d max health from runes", ard->solvedArmourHealth);
+                ImGui::TextDisabled("measured from %d readings", ard->armourObservations);
+                ImGui::EndChild();
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
 
-                for (const auto& e : BuildEntries(dev, builds.front(), ard->primaryProf))
+                // What the ranks require, handed to the health side. A rank above 12 can only have
+                // come from a rune, so the attribute solve knows runes must be there that the
+                // health could never point to on its own -- a minor rune costs nothing at all, and
+                // two superiors cost the same 150 whichever attributes they sit on.
+                HealthModel::RuneConstraints runes;
+                if (build)
                 {
-                    ImGui::BeginGroup();
-                    if (e.icon) ImGui::Image(e.icon, RuneIconSize(e.square));
-                    else        ImGui::Dummy(RuneIconSize(e.square));
-                    ImGui::EndGroup();
+                    for (const auto& [attrId, tier] : build->runeTier)
+                        if (tier > 0) runes.tiers.emplace_back(attrId, tier);
+                    runes.headgearAttribute = build->headgearAttribute;
 
-                    ImGui::SameLine(0.f, 8.f);
-                    ImGui::BeginGroup();
-                    ImGui::TextColored(RarityVec(e.rarity), "%s", e.name.c_str());
-                    ImGui::TextColored(e.health >= 0 ? ImVec4(0.55f, 0.85f, 0.60f, 1.f)
-                                                     : ImVec4(0.90f, 0.55f, 0.55f, 1.f),
-                                       "%+d health", e.health);
-                    ImGui::EndGroup();
+                    // The solve stores them in a hash map, so sort: a list that reorders itself
+                    // between two players reads as two different answers.
+                    std::sort(runes.tiers.begin(), runes.tiers.end());
                 }
 
-                if (builds.size() > 1 && ImGui::TreeNode("Other sets"))
+                auto builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6, runes);
+
+                // The ranks ask for runes this armour cannot host. Both halves are worth showing:
+                // the sets that do reach the measured health, and the sentence saying why they
+                // disagree with the ranks beside them.
+                std::string runeClash;
+                if (builds.empty() && !runes.tiers.empty())
                 {
-                    for (size_t i = 1; i < builds.size(); ++i)
-                        ImGui::BulletText("%s", builds[i].label.c_str());
-                    ImGui::TreePop();
+                    builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6);
+                    if (!builds.empty())
+                    {
+                        runeClash = "The ranks need runes this armour health cannot pay for.";
+                        if (build)
+                            for (const std::string& line : build->contradictions)
+                                if (line.rfind("Runes needed for", 0) == 0) { runeClash = line; break; }
+                    }
                 }
 
-                if (!runeClash.empty())
+                if (builds.empty())
                 {
-                    ImGui::Spacing();
-                    ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", runeClash.c_str());
+                    ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+                                       "No rune set adds %+d health.", ard->solvedArmourHealth);
+                }
+                else
+                {
+                    const ImVec2 setHead = ImGui::GetCursorScreenPos();
+                    ImGui::TextDisabled(builds.size() == 1 ? "Only one possible setup"
+                                                           : "Most likely setup");
+                    if (builds.size() > 1)
+                    {
+                        const std::string badge = std::format("1 of {}", builds.size());
+                        rdl->AddText(ImVec2(setHead.x + colW -
+                                                ImGui::CalcTextSize(badge.c_str()).x, setHead.y),
+                                     ImGui::GetColorU32(muted), badge.c_str());
+                    }
+
+                    for (const auto& e : BuildEntries(dev, builds.front(), ard->primaryProf))
+                    {
+                        ImGui::BeginGroup();
+                        if (e.icon) ImGui::Image(e.icon, RuneIconSize(e.square));
+                        else        ImGui::Dummy(RuneIconSize(e.square));
+                        ImGui::EndGroup();
+
+                        ImGui::SameLine(0.f, 8.f);
+                        ImGui::BeginGroup();
+                        ImGui::TextColored(RarityVec(e.rarity), "%s", e.name.c_str());
+                        if (!e.gain.empty())
+                            ImGui::TextColored(RarityVec(e.rarity), "%s", e.gain.c_str());
+                        // The health cost still has to be visible where there is one - it is what
+                        // the whole armour solve is measured in - but a minor rune has none, and
+                        // saying "+0 health" about it three times over read as a bug.
+                        if (e.health != 0 || e.gain.empty())
+                            ImGui::TextColored(e.health >= 0 ? ImVec4(0.55f, 0.85f, 0.60f, 1.f)
+                                                             : ImVec4(0.90f, 0.55f, 0.55f, 1.f),
+                                               "%+d health", e.health);
+                        ImGui::EndGroup();
+                    }
+
+                    if (builds.size() > 1)
+                    {
+                        const std::string more =
+                            std::format("{} other possible sets", builds.size() - 1);
+                        if (ImGui::TreeNode(more.c_str()))
+                        {
+                            for (size_t i = 1; i < builds.size(); ++i)
+                                ImGui::BulletText("%s", builds[i].label.c_str());
+                            ImGui::TreePop();
+                        }
+                    }
+
+                    if (!runeClash.empty())
+                    {
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", runeClash.c_str());
+                    }
                 }
             }
+
+            // The one piece of armour we can name outright. Runes are inferred from health and
+            // stay possibilities; a Stonefist Insignia is measured directly, because a knockdown
+            // that lasts three seconds instead of two can be nothing else. It sits below the runes
+            // behind a rule for that reason, and it is drawn whether or not the armour health
+            // solved, since the knockdowns say it on their own. Primary Warriors only: the
+            // insignia is Warrior armour, and one character wears at most one of it.
+            if (build && ard->primaryProf == 1 && build->stonefist.detected)
+            {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::BeginGroup();
+                if (ImTextureID icon = StonefistIcon(dev)) ImGui::Image(icon, RuneIconSize(true));
+                else                                       ImGui::Dummy(RuneIconSize(true));
+                ImGui::SameLine(0.f, 8.f);
+                ImGui::BeginGroup();
+                ImGui::TextColored(RarityVec(Equipment::Rarity::Blue), "Stonefist Insignia");
+                ImGui::TextDisabled("knockdowns last 3s, not 2s");
+                ImGui::EndGroup();
+                ImGui::EndGroup();
+
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Measured, not guessed: %d of the %d knockdowns this player caused that\n"
+                        "we could time lasted the extra second.\n\n"
+                        "Only knockdowns from skills whose length is the game's standard two\n"
+                        "seconds are counted, so Backbreaker and the 2...3 second skills are\n"
+                        "left out of it.",
+                        build->stonefist.longOnes, build->stonefist.knockdowns);
+            }
+
+            ImGui::PopTextWrapPos();
         }
-
-        ImGui::PopTextWrapPos();
-        ImGui::EndGroup();
-
-        // The ranks, under the sheet and beneath the runes that bought them.
-        const float attrBottom = DrawAttributeBlock(
-            dl, ImVec2(barX, rowTop + rows * kRowPitch + kAttrHeadGap), kColItems + kNameW,
-            build, ard->primaryProf, m_skillView, muted);
-
-        // Reserve the space the rows and the attribute block were drawn into, so the window sizes
-        // to its content.
-        ImGui::SetCursorScreenPos(ImVec2(origin.x, attrBottom + 4.f));
-        ImGui::Dummy(ImVec2(kColItems + kNameW + kRunesGap + kColRunes, 1.f));
+        ImGui::EndChild();
 
         ImGui::End();
         ImGui::PopStyleVar(3);
