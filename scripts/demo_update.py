@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
+import winreg
 import zipfile
 from pathlib import Path
 
@@ -88,6 +89,54 @@ def running_pids(image: str = EXE_NAME) -> set:
             except ValueError:
                 pass
     return pids
+
+
+def desktop_path() -> str:
+    """The PATH a process gets when started from Explorer, read from the registry
+    rather than inherited.
+
+    This matters more than it looks. Pre-2.0.0 clients invoke `tar` unqualified,
+    so which binary runs is decided by the PATH the app inherited. Launching this
+    script from Git Bash, whose PATH puts /usr/bin ahead of system32, hands the
+    app GNU tar - which cannot read a zip and parses "C:\\..." as a remote host,
+    failing instantly. The first rehearsal did exactly that and reported a bug
+    that no ordinary user would ever hit. Read the real machine and user PATH so
+    the run reflects a double-click.
+    """
+    parts = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE,
+                       r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                value, _ = winreg.QueryValueEx(k, "Path")
+                parts.append(os.path.expandvars(value))
+        except OSError:
+            pass
+    return ";".join(p for p in parts if p)
+
+
+def child_env(shadow_tar: str = "") -> dict:
+    env = dict(os.environ)
+    path = desktop_path() or env.get("PATH", "")
+    if shadow_tar:
+        path = shadow_tar + ";" + path
+    env["PATH"] = path
+    return env
+
+
+def resolve_tar(env: dict) -> str:
+    """Which tar.exe the batch script would actually get under this environment."""
+    for d in env.get("PATH", "").split(";"):
+        if not d:
+            continue
+        cand = Path(d) / "tar.exe"
+        try:
+            if cand.is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return "<not found on PATH>"
 
 
 def tree_manifest(root: Path) -> dict:
@@ -218,7 +267,7 @@ def stage(install: Path, source_zip: Path, client_exe: Path, log: Log) -> dict:
 # watching
 # --------------------------------------------------------------------------
 
-def watch(install: Path, workdir: Path, log: Log, timeout: float) -> dict:
+def watch(install: Path, workdir: Path, log: Log, timeout: float, env: dict) -> dict:
     exe = install / EXE_NAME
     archive = install / ARCHIVE_NAME
     partial = install / (ARCHIVE_NAME + ".tmp")
@@ -230,8 +279,9 @@ def watch(install: Path, workdir: Path, log: Log, timeout: float) -> dict:
     size_before = exe.stat().st_size
     baseline_pids = running_pids()
 
-    proc = subprocess.Popen([str(exe)], cwd=str(install))
+    proc = subprocess.Popen([str(exe)], cwd=str(install), env=env)
     log("launch", f"{EXE_NAME}  pid {proc.pid}")
+    log("env", f"tar the batch will get -> {resolve_tar(env)}")
     print()
     print("    >> Click 'Download & Install' on the update card when it appears.")
     print("    >> Keep the window focused until it closes.")
@@ -303,11 +353,19 @@ def watch(install: Path, workdir: Path, log: Log, timeout: float) -> dict:
         if seen["swap"] and seen["relaunch"]:
             time.sleep(2.0)  # let cleanup finish
             break
+
+        # The silent no-op: the archive is gone and the app is back, but the exe
+        # is untouched. That is the whole answer, so stop rather than sitting here
+        # until the timeout looking like the test is still in progress.
+        if seen["relaunch"] and seen["archive_gone"] and not seen["swap"]:
+            log("NO-OP", "archive consumed and app relaunched, but the exe never "
+                         "changed - extraction did nothing")
+            break
     else:
         log("timeout", f"gave up after {timeout:.0f}s")
 
     return {"seen": seen, "relaunch_pid": relaunch_pid, "captured": captured,
-            "exe_before": exe_before}
+            "exe_before": exe_before, "tar": resolve_tar(env)}
 
 
 # --------------------------------------------------------------------------
@@ -377,6 +435,13 @@ def verify(install: Path, before: dict, state: dict, expect_zip: Path, log: Log)
     for name, ok, detail in checks:
         print(f"  [{'PASS' if ok else 'FAIL'}]  {name:<42} {detail}")
 
+    print()
+    print(f"  tar the batch resolved to: {state.get('tar', '?')}")
+    if not state["seen"]["swap"]:
+        print("  Nothing was extracted. Pre-2.0.0 clients call tar unqualified, so this")
+        print("  is the first thing to check: GNU tar cannot read a zip and treats a")
+        print("  drive-letter path as a remote host, failing instantly and silently.")
+
     after = tree_manifest(install)
     added = sorted(set(after) - set(before))
     changed = sorted(k for k in set(after) & set(before) if after[k] != before[k])
@@ -415,6 +480,11 @@ def main() -> None:
     ap.add_argument("--to-tag", default="v2.0.0",
                     help="the release the client is expected to update TO")
     ap.add_argument("--timeout", type=float, default=600.0)
+    ap.add_argument("--shadow-tar", nargs="?", const=r"C:\Program Files\Git\usr\bin",
+                    default="",
+                    help="prepend a directory holding a non-bsdtar tar.exe to the "
+                         "child PATH, reproducing the machines where a pre-2.0.0 "
+                         "client silently fails to extract")
     ap.add_argument("--keep", action="store_true",
                     help="do not wipe the staged install from a previous run")
     args = ap.parse_args()
@@ -466,9 +536,12 @@ def main() -> None:
     else:
         log("preflight", f"{args.to_tag} asset matches the local package ({local:,} bytes)")
 
+    env = child_env(args.shadow_tar)
+    if args.shadow_tar:
+        log("env", f"shadowing PATH with {args.shadow_tar} on purpose")
     source = fetch_release(args.from_tag, cache, log)
     before = stage(install, source, client, log) if not args.keep else tree_manifest(install)
-    state = watch(install, workdir, log, args.timeout)
+    state = watch(install, workdir, log, args.timeout, env)
     ok = verify(install, before, state, expect_zip, log)
 
     if state["relaunch_pid"]:
