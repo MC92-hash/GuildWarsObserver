@@ -28,6 +28,7 @@ import os
 import shutil
 import sys
 import tarfile
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -65,7 +66,7 @@ def load_config(env_path: Path | None) -> dict:
     # Environment variables override .env file
     for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY",
                 "MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR",
-                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB"):
+                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE"):
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -536,6 +537,17 @@ def stats_key(month: str) -> str:
     return f"stats/{month}.json"
 
 
+def equipment_key(safe_name: str) -> str:
+    """R2 key for one match's equipment object.
+
+    Per match rather than per month, unlike everything else here, and that is
+    deliberate: the stats shard is pulled *whole* by every Scout page, and a
+    month of equipment is several megabytes. Only `/match/<folder>` asks for
+    this, so only `/match/<folder>` should pay for it.
+    """
+    return f"equipment/{safe_name}.json"
+
+
 def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
     """Per-match combat stats, or {} when this recording carries none.
 
@@ -639,6 +651,134 @@ def build_stats_entry(infos: dict, match_dir: Path | None = None) -> dict:
         if timeline:
             out["timeline"] = timeline
     return out
+
+
+# Where the desktop app's headless exporter lives. Config wins; otherwise the
+# usual build outputs beside this checkout, newest first. Release before Debug
+# because a Debug solve is several times slower and both are equally correct.
+_OBSERVER_EXE_CANDIDATES = (
+    Path("x64/Release/GuildWarsObserver.exe"),
+    Path("dist/GWObserver/GuildWarsObserver.exe"),
+    Path("x64/Debug/GuildWarsObserver.exe"),
+)
+
+
+def observer_exe(config: dict | None = None) -> Path | None:
+    """The GW Observer binary that can solve attributes, or None if absent.
+
+    None is a normal state, not a fault: a machine that uploads but has never
+    built the app publishes equipment and no attributes, and the match page
+    renders without the rune column rather than failing.
+    """
+    configured = (config or {}).get("OBSERVER_EXE", "")
+    if configured:
+        path = Path(os.path.expandvars(os.path.expanduser(configured)))
+        return path if path.is_file() else None
+    root = Path(__file__).resolve().parent.parent
+    for candidate in _OBSERVER_EXE_CANDIDATES:
+        if (root / candidate).is_file():
+            return root / candidate
+    return None
+
+
+def attributes_key(safe_name: str) -> str:
+    """R2 key for one match's solved attribute and rune builds."""
+    return f"attributes/{safe_name}.json"
+
+
+def build_attributes_entry(infos: dict, match_dir: Path | None = None,
+                           config: dict | None = None) -> dict:
+    """Per-match attribute and rune builds, or {} when they cannot be solved.
+
+    Shells out to the desktop app's headless exporter, which runs the same
+    solver the Character panel shows -- deliberately, so the two can never
+    disagree about a player's ranks. Porting the solver to Python would mean a
+    second implementation of ~12,000 lines of C++ that is still changing.
+
+    Every failure here is a warning and an empty dict. An unsolvable match is
+    ordinary: a recording with no combat gives the solver nothing to read, and
+    legacy captures have no max HP to anchor magnitudes against.
+    """
+    if match_dir is None:
+        return {}
+    exe = observer_exe(config)
+    if exe is None:
+        return {}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "attributes.json"
+        try:
+            # A long match legitimately takes a while: the solve is gated on
+            # parsing the whole agent and StoC stream first. The cap is here to
+            # stop a hung process holding up a nightly upload, not to bound
+            # normal work.
+            result = subprocess.run(
+                [str(exe), "--export-attributes", str(match_dir), "--out", str(out)],
+                capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  Warning: attribute solve timed out for {match_dir.name}")
+            return {}
+        except Exception as exc:
+            print(f"  Warning: attribute solve failed: {type(exc).__name__}: {exc}")
+            return {}
+
+        if result.returncode != 0:
+            # Exit codes are the exporter's contract; 5 and 6 are "nothing to
+            # solve", which is data, not breakage.
+            detail = (result.stderr or "").strip().splitlines()
+            reason = detail[-1] if detail else f"exit {result.returncode}"
+            if result.returncode not in (5, 6):
+                print(f"  Warning: attribute solve: {reason}")
+            return {}
+        if not out.is_file():
+            return {}
+        try:
+            payload = json.loads(out.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            print(f"  Warning: attribute output unreadable: {type(exc).__name__}: {exc}")
+            return {}
+
+    return payload if payload.get("players") else {}
+
+
+def upload_attributes(s3, bucket: str, safe_name: str, attributes: dict):
+    """Write one match's attribute object."""
+    s3.put_object(
+        Bucket=bucket,
+        Key=attributes_key(safe_name),
+        Body=json.dumps(attributes, ensure_ascii=False,
+                        separators=(",", ":")).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def build_equipment_entry(infos: dict, match_dir: Path | None = None) -> dict:
+    """Per-match weapon sets and armour, or {} when the recording has none.
+
+    Wrapped the same way the other analytics are: an equipment-parser defect
+    must never cost a match its index entry. Absent is the normal state --
+    the recorder only started writing `equipment_events` on 2026-08-17.
+    """
+    if match_dir is None:
+        return {}
+    try:
+        from equipment_ledger import build_equipment
+        return build_equipment(infos, match_dir)
+    except Exception as exc:
+        print(f"  Warning: equipment ledger unavailable: {type(exc).__name__}: {exc}")
+        return {}
+
+
+def upload_equipment(s3, bucket: str, safe_name: str, equipment: dict):
+    """Write one match's equipment object."""
+    s3.put_object(
+        Bucket=bucket,
+        Key=equipment_key(safe_name),
+        Body=json.dumps(equipment, ensure_ascii=False,
+                        separators=(",", ":")).encode("utf-8"),
+        ContentType="application/json",
+    )
 
 
 def fetch_remote_stats(s3, bucket: str, month: str) -> dict:
@@ -1178,6 +1318,39 @@ def cmd_upload(args, config: dict) -> dict:
                         "match": folder_name,
                         "warning": "No usable date; combat stats not published",
                     })
+
+            # Equipment goes to its own per-match object rather than into the
+            # shard, so the pages that never ask for it never pay for it. A
+            # failure here is worth a warning and nothing more: the archive and
+            # the index entry are already published by this point.
+            equipment = build_equipment_entry(infos, match_dir)
+            if equipment:
+                try:
+                    upload_equipment(s3, bucket, safe_name, equipment)
+                    print(f"  Equipment: {len(equipment.get('players', {}))} players, "
+                          f"{len(equipment.get('items', {}))} items")
+                except Exception as e:
+                    print(f"  Warning: equipment not published: {e}")
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": f"Equipment not published: {e}",
+                    })
+
+            # Attributes and runes, solved by the desktop app's own solver in a
+            # headless pass. Same failure contract as equipment: a warning and
+            # no object, never a lost index entry.
+            attributes = build_attributes_entry(infos, match_dir, config)
+            if attributes:
+                try:
+                    upload_attributes(s3, bucket, safe_name, attributes)
+                    print(f"  Attributes: {len(attributes.get('players', {}))} players")
+                except Exception as e:
+                    print(f"  Warning: attributes not published: {e}")
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": f"Attributes not published: {e}",
+                    })
+
             report["uploaded"] += 1
 
             # Clean up temp archive
