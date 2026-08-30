@@ -619,6 +619,124 @@ static std::wstring BuildWindowTitle(const MatchMeta& match)
 // Factory
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Headless analysis
+//
+// Create() with the three graphical steps removed. Everything else it does is data: the skill
+// view for the match date, the folder's guild tags, the map ids and the recording path. The
+// analysis chain that follows reads and writes plain data from beginning to end -- verified by
+// grepping the whole span from Tick() to AttributeModel::SolveAll for the renderer, the device
+// and ImGui, which returns nothing.
+// ---------------------------------------------------------------------------
+
+ReplayWindow* ReplayWindow::CreateHeadless(const MatchMeta& match, DATManager* sharedDatManager,
+                                           const std::unordered_map<int, std::vector<int>>& hashIndex)
+{
+    auto* rw = new ReplayWindow();
+    rw->m_headless    = true;
+    rw->m_matchMeta   = match;
+    rw->m_skillView   = GetSkillDatabase().GetView(match.year, match.month, match.day);
+    rw->m_datManager  = sharedDatManager;
+    rw->m_hashIndex   = &hashIndex;
+
+    // Same parse as Create: the solver never reads these, but agent classification labels
+    // players by team and a missing tag would change the labels it caches.
+    {
+        const auto& fn = match.folder_name;
+        auto vs = fn.find("]vs[");
+        if (vs != std::string::npos) {
+            auto open1 = fn.rfind('[', vs);
+            auto close2 = fn.find(']', vs + 4);
+            if (open1 != std::string::npos && close2 != std::string::npos) {
+                rw->m_folderTag1 = fn.substr(open1 + 1, vs - open1 - 1);
+                rw->m_folderTag2 = fn.substr(vs + 4, close2 - (vs + 4));
+            }
+        }
+    }
+
+    rw->m_replayCtx.mapId           = match.map_id;
+    rw->m_replayCtx.datMapId        = GetDatMapId(match.map_id);
+    rw->m_replayCtx.matchFolderPath = match.folder_path;
+
+    // Alive without a window: Tick() checks only this, and the loading phase stays at Validate
+    // forever because nothing headless advances it. That is the intent -- every block below the
+    // analysis is gated on Ready.
+    // The parsers are started here rather than left to StepValidate, for two reasons. Tick()
+    // returns at the headless guard long before it reaches the loading-phase switch, so nothing
+    // would ever call StepValidate; and StepValidate would refuse the match anyway -- it resolves
+    // the map in the dat hash index first and errors out when it cannot, which is a question
+    // about geometry that an attribute solve has no stake in.
+    rw->m_replayCtx.agentParseProgress = std::make_shared<AgentParseProgress>();
+    LaunchAgentSnapshotParsing(rw->m_replayCtx.matchFolderPath,
+                               rw->m_replayCtx.agentParseProgress);
+    rw->m_replayCtx.stocParseProgress = std::make_shared<StoCParseProgress>();
+    LaunchStoCParsing(rw->m_replayCtx.matchFolderPath, rw->m_replayCtx.stocParseProgress);
+
+    rw->m_alive = true;
+    rw->m_loadingPhase = LoadingPhase::Validate;
+    return rw;
+}
+
+void ReplayWindow::TickHeadless()
+{
+    Tick();
+
+    // Progress is measured by how many analysis stages have completed, not by elapsed time: a
+    // 30-minute recording legitimately spends a while in the parsers, and a timeout that could
+    // not tell waiting from stuck would abandon exactly the longest matches.
+    const int mark = (int)m_replayCtx.agentsLoaded + (int)m_replayCtx.stocLoaded
+                   + (int)m_agentsClassified + (int)m_combatLogBuilt
+                   + (int)m_maxHpBreakpointSolved + (int)m_armourSolved
+                   + (int)m_attributesDeduced;
+    if (mark != m_headlessProgressMark)
+    {
+        m_headlessProgressMark = mark;
+        m_headlessLastProgress = (double)GetTickCount64() / 1000.0;
+    }
+}
+
+bool ReplayWindow::AnalysisStalled() const
+{
+    if (m_attributesDeduced) return false;
+    if (m_loadingPhase == LoadingPhase::Error) return true;
+
+    // Both parsers finished and there is nobody to solve for. Nothing downstream is waiting on
+    // time -- agent classification refuses an empty agent map outright -- so this can only ever
+    // wait for something that will not arrive. Checked BEFORE the timeout, because otherwise a
+    // folder with no agent data costs two minutes to reject instead of none, and a caller
+    // probing a path that turns out to hold no recording is exactly the common case.
+    if (m_replayCtx.agentsLoaded && m_replayCtx.stocLoaded && m_replayCtx.agents.empty())
+        return true;
+
+    if (m_headlessProgressMark < 0) return false;   // nothing has run yet
+    // Two minutes with no stage completing. The parsers are asynchronous and a stage either
+    // finishes or never will, so a stall here is terminal rather than slow.
+    return ((double)GetTickCount64() / 1000.0 - m_headlessLastProgress) > 120.0;
+}
+
+bool ReplayWindow::ExportAttributes(const std::filesystem::path& outPath) const
+{
+    if (m_attrProfiles.empty()) return false;
+
+    // The join the website is keyed on. It comes from infos.json rather than from the agent
+    // records: `parties` is an object whose KEY is the party id, and an agent's own teamId is a
+    // different field that happens to agree -- keying on the wrong one would publish an object
+    // the match report cannot look anything up in.
+    std::unordered_map<int, AttributeModel::RosterSlot> roster;
+    for (const auto& [partyId, party] : m_matchMeta.parties)
+        for (const PlayerMeta& pm : party.players)
+            if (pm.id > 0 && pm.player_number > 0)
+                roster[pm.id] = AttributeModel::RosterSlot{ partyId, pm.player_number };
+    if (roster.empty()) return false;
+
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+
+    return AttributeModel::WriteJson(outPath.string(), m_replayCtx.agents, m_attrProfiles,
+                                     roster, flux);
+}
+
 ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
                                     DATManager* sharedDatManager,
                                     const std::unordered_map<int, std::vector<int>>& hashIndex)
@@ -5575,6 +5693,11 @@ void ReplayWindow::Tick()
 
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_bundleCarryBuilt)
         BuildBundleCarryTimeline();
+
+    // Every analysis pass has now had its turn. A headless run wants nothing below this line:
+    // map calibration, prop models, flag stands and the renderer itself all need a device, and
+    // the export exists precisely so a machine with no display can produce the same numbers.
+    if (m_headless) return;
 
     // Auto-load saved calibration transform for this map, or fall back to
     // WebGL-derived defaults if no saved data exists.

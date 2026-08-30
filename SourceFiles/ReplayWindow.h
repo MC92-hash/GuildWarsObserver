@@ -93,6 +93,33 @@ public:
     static ReplayWindow* Create(HINSTANCE hInstance, const MatchMeta& match, DATManager* sharedDatManager,
                                 const std::unordered_map<int, std::vector<int>>& hashIndex);
 
+    // The same object with no window, no device and no map: everything the analysis passes need
+    // and nothing they do not.
+    //
+    // This exists because the whole analysis chain -- agent and StoC parsing, the combat log, the
+    // max-HP breakpoint solve, the morale timelines, HealthModel::SolveArmour and finally
+    // AttributeModel::SolveAll -- reads and writes plain data and never touches the renderer.
+    // Only its HOUSING was graphical. `Create` is this plus InitWindow/InitGraphics/
+    // InitLoadingOverlay, and those three are exactly what a batch export must not do.
+    //
+    // Drive it with TickHeadless() until AnalysisComplete(), then ExportAttributes().
+    static ReplayWindow* CreateHeadless(const MatchMeta& match, DATManager* sharedDatManager,
+                                        const std::unordered_map<int, std::vector<int>>& hashIndex);
+
+    // One analysis step. Same passes Tick() runs, stopping before anything that wants a device.
+    void TickHeadless();
+
+    // Every pass the attribute solve depends on has run.
+    bool AnalysisComplete() const { return m_attributesDeduced; }
+
+    // The parsers failed or the recording carries nothing to solve, so TickHeadless will never
+    // reach AnalysisComplete and the caller should stop rather than spin.
+    bool AnalysisStalled() const;
+
+    // Write the solved builds as JSON, keyed by (party_id, player_number) from `infos.json`.
+    // False when nothing was solved or the file could not be written.
+    bool ExportAttributes(const std::filesystem::path& outPath) const;
+
     ~ReplayWindow();
 
     ReplayWindow(const ReplayWindow&) = delete;
@@ -165,6 +192,13 @@ private:
 
     HWND m_hwnd = nullptr;
     bool m_alive = false;
+    // No window, no device, no map. Set only by CreateHeadless; Tick() returns as soon as the
+    // analysis passes are done rather than falling through to anything that draws.
+    bool m_headless = false;
+    // Wall-clock of the last time an analysis flag flipped, so a headless run can tell "still
+    // parsing a big recording" from "stuck, and will be stuck forever".
+    double m_headlessLastProgress = 0.0;
+    int    m_headlessProgressMark = -1;
 
     // Edge detection for GetAsyncKeyState-based hotkey polling.
     // Indexed by ImGuiKey value; true = key was down last frame.

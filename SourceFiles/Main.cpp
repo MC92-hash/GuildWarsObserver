@@ -11,6 +11,13 @@
 #include "CursorSystem.h"
 #include <filesystem>
 #include <DbgHelp.h>
+#include <shellapi.h>
+#include "ReplayWindow.h"
+#include "ReplayLibrary.h"
+#include "SkillDatabase.h"
+#include <cstdio>
+#include <unordered_map>
+#include <vector>
 
 LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
     // Create mini dump file
@@ -187,13 +194,163 @@ extern "C"
 }
 
 // Entry point
+
+// ---------------------------------------------------------------------------
+// Headless attribute export
+//
+//   GuildWarsObserver.exe --export-attributes <match folder> [--out <file>]
+//
+// Runs the replay analysis with no window, no device and no map, and writes the solved
+// attribute and rune builds as JSON. This is what puts runes and attributes on the website
+// automatically: `upload_to_r2.py` shells out to it for every match it publishes, the same way
+// it already builds the equipment object, so a recording made overnight arrives in Scout with
+// its builds solved and nobody has to open a replay.
+//
+// Exit codes are the contract the publish step reads:
+//   0  wrote the file
+//   2  bad usage
+//   3  the folder or its infos.json is unreadable
+//   4  no skill database, so no breakpoints and nothing to solve against
+//   5  the analysis stalled (a parser failed, or the recording carries no combat)
+//   6  solved nothing worth writing, or the file could not be written
+// ---------------------------------------------------------------------------
+
+static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::wstring& outArg)
+{
+    // A GUI-subsystem binary has no stdout of its own. Borrowing the caller's console makes the
+    // diagnostics visible when a human runs this by hand and costs nothing when Python does.
+    if (AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        FILE* dummy = nullptr;
+        freopen_s(&dummy, "CONOUT$", "w", stdout);
+        freopen_s(&dummy, "CONOUT$", "w", stderr);
+    }
+
+    const std::filesystem::path folder = folderArg;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(folder, ec))
+    {
+        std::fprintf(stderr, "export-attributes: not a directory: %ls\n", folder.c_str());
+        return 3;
+    }
+
+    MatchMeta match;
+    if (!LocalReplayProvider::ParseInfosJson(folder / "infos.json", match))
+    {
+        std::fprintf(stderr, "export-attributes: cannot read %ls/infos.json\n", folder.c_str());
+        return 3;
+    }
+    match.folder_path = folder.string();
+    match.folder_name = folder.filename().string();
+
+    // The solver reads skill descriptions for their breakpoint endpoints; without the database
+    // every attribute would come back budget-only, which is worse than refusing outright.
+    {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        auto dir = std::filesystem::path(exePath).parent_path();
+        bool loaded = false;
+        for (int i = 0; i < 5; i++)
+        {
+            if (std::filesystem::exists(dir / "Data" / "skilldata.json"))
+            {
+                GetSkillDatabase().Load((dir / "Data").string());
+                GetSkillDatabase().LoadPatches((dir / "Data").string());
+                loaded = true;
+                break;
+            }
+            if (!dir.has_parent_path() || dir == dir.parent_path()) break;
+            dir = dir.parent_path();
+        }
+        if (!loaded)
+        {
+            std::fprintf(stderr, "export-attributes: no Data/skilldata.json near the exe\n");
+            return 4;
+        }
+    }
+
+    // No dat manager and an empty hash index: both are the map's business, and the analysis
+    // never asks about geometry.
+    static const std::unordered_map<int, std::vector<int>> kNoHashIndex;
+    ReplayWindow* rw = ReplayWindow::CreateHeadless(match, nullptr, kNoHashIndex);
+    if (!rw)
+    {
+        std::fprintf(stderr, "export-attributes: could not open the replay\n");
+        return 3;
+    }
+
+    while (!rw->AnalysisComplete() && !rw->AnalysisStalled())
+    {
+        rw->TickHeadless();
+        // The parsers run on their own threads and the passes are gated on their completion, so
+        // this loop is mostly waiting. Sleeping keeps it off a core it cannot use.
+        Sleep(10);
+    }
+
+    int rc = 6;
+    if (rw->AnalysisComplete())
+    {
+        const std::filesystem::path out =
+            outArg.empty() ? (folder / "attributes.json") : std::filesystem::path(outArg);
+        if (rw->ExportAttributes(out))
+        {
+            std::printf("export-attributes: wrote %ls\n", out.c_str());
+            rc = 0;
+        }
+        else
+        {
+            std::fprintf(stderr, "export-attributes: nothing solved for %s\n",
+                         match.folder_name.c_str());
+        }
+    }
+    else
+    {
+        std::fprintf(stderr, "export-attributes: analysis stalled for %s\n",
+                     match.folder_name.c_str());
+        rc = 5;
+    }
+
+    delete rw;
+    return rc;
+}
+
+// Returns true when the command line asked for a batch export, in which case `exitCode` is the
+// process's result and no window should be created.
+static bool TryHeadlessCommandLine(LPWSTR lpCmdLine, int& exitCode)
+{
+    if (!lpCmdLine || !*lpCmdLine) return false;
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(lpCmdLine, &argc);
+    if (!argv) return false;
+
+    std::wstring folder, out;
+    for (int i = 0; i < argc; i++)
+    {
+        if (wcscmp(argv[i], L"--export-attributes") == 0 && i + 1 < argc) folder = argv[++i];
+        else if (wcscmp(argv[i], L"--out") == 0 && i + 1 < argc)          out    = argv[++i];
+    }
+    LocalFree(argv);
+
+    if (folder.empty()) return false;
+    exitCode = RunHeadlessAttributeExport(folder, out);
+    return true;
+}
+
 int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine,
     _In_ int nCmdShow)
 {
     SetUnhandledExceptionFilter(UnhandledExceptionHandler);
 
     UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
+
+    // Batch export: no window, no device, no message loop. Checked before anything else so
+    // a headless run costs none of the GUI setup below.
+    {
+        int exitCode = 0;
+        if (TryHeadlessCommandLine(lpCmdLine, exitCode))
+            return exitCode;
+    }
 
     if (! XMVerifyCPUSupport())
         return 1;
