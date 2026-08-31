@@ -146,7 +146,19 @@ def infos_from_archive(s3, bucket: str, folder: str) -> dict | None:
         return None
 
 
-def write_shard(out_dir: Path, month: str, body: str) -> None:
+def shard_name(month: str, skip: int, limit: int) -> str:
+    """File name for one shard, disambiguated when it holds only a slice.
+
+    A sliced run must not overwrite the whole-month file a previous run wrote,
+    and two slices of the same month must not overwrite each other -- so the
+    offset goes in the name. `read_shards` merges them back by the month inside.
+    """
+    if not skip and not limit:
+        return f"{month}.json"
+    return f"{month}+{skip:05d}.json"
+
+
+def write_shard(out_dir: Path, month: str, body: str, name: str | None = None) -> None:
     """Persist one month's shard as it is serialised, so a crash costs no CPU.
 
     `build_stats_entry` is the whole cost of a backfill -- measured at ~6.85 s a
@@ -155,7 +167,7 @@ def write_shard(out_dir: Path, month: str, body: str) -> None:
     halves separable.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{month}.json"
+    path = out_dir / (name or f"{month}.json")
     path.write_text(body, encoding="utf-8")
     print(f"    wrote {path}")
 
@@ -177,9 +189,14 @@ def read_shards(out_dir: Path) -> dict[str, dict]:
         if not isinstance(matches, dict) or not matches:
             print(f"  skipping {path.name}: no matches")
             continue
-        month = payload.get("month") or path.stem
-        shards[month] = matches
-        print(f"  {path.name}: {len(matches):,} match(es) for {month}")
+        month = payload.get("month") or path.stem.split("+")[0]
+        # Merge rather than assign: a month computed in slices arrives as several
+        # files, and the last one read must not be the only one uploaded.
+        before = len(shards.get(month, ()))
+        shards.setdefault(month, {}).update(matches)
+        grew = len(shards[month]) - before
+        note = "" if grew == len(matches) else f" ({len(matches) - grew} already seen)"
+        print(f"  {path.name}: {len(matches):,} match(es) for {month}{note}")
     return shards
 
 
@@ -223,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="restrict to this month; repeatable")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N matches (smoke test)")
+    parser.add_argument("--skip", type=int, default=0, metavar="N",
+                        help="drop the first N matches of the work list, so a "
+                             "month can be computed in slices that each upload "
+                             "on their own. The list is sorted, so --skip 250 "
+                             "--limit 250 is the second hundred-and-fifty and "
+                             "resumes exactly where that slice stopped.")
     parser.add_argument("--from-r2", action="store_true",
                         help="also fetch archives for matches with no local copy")
     parser.add_argument("--only-missing", action="store_true",
@@ -295,6 +318,12 @@ def main(argv: list[str] | None = None) -> int:
                                    else [(f, "local") for f in hits])
     if from_r2:
         work += [(f, "r2") for f in missing]
+    # Skip first, so `--skip N --limit M` is the half-open slice [N, N+M) of a
+    # list that is `sorted()` and therefore stable between runs -- which is what
+    # makes the slices tile a month exactly once instead of overlapping.
+    if args.skip:
+        dropped, work = len(work), work[args.skip:]
+        print(f"--skip: dropped {dropped - len(work)}, {len(work)} left")
     if args.limit:
         work = work[:args.limit]
         print(f"--limit: {len(work)} match(es)")
@@ -343,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {month}: {len(shards[month]):5} match(es)  "
               f"{len(body) / 1e6:5.2f} MB")
         if args.out:
-            write_shard(Path(args.out), month, body)
+            write_shard(Path(args.out), month, body,
+                        shard_name(month, args.skip, args.limit))
     if skipped_no_stats:
         print(f"  {skipped_no_stats} recording(s) carry no stat block "
               f"(older capture software)")
