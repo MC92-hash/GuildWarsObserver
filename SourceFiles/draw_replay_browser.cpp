@@ -7343,6 +7343,7 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
     ImGui::BeginGroup();
     {
+        const ImVec2 mapPos = ImGui::GetCursorScreenPos();
         ImTextureID mapIcon = GetMapIcon(m.map_id);
         if (mapIcon)
             ImGui::Image(mapIcon, ImVec2(mapImgSize, mapImgSize));
@@ -7356,14 +7357,59 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
             ImGui::PopStyleColor();
         }
 
+        // Keep each cape inside its team's corner of the map, without consuming
+        // metadata space. Draw directly so the layout cursor stays below the map.
+        if (mapImgSize > 0.0f)
+        {
+            const float uiScale = ImGui::GetFontSize() / 16.0f;
+            const float inset = std::min(6.0f * uiScale, mapImgSize * 0.04f);
+            const float capeH = std::min(96.0f * uiScale, mapImgSize * 0.45f);
+            const float capeW = capeH * 0.5f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            auto drawCape = [&](ImTextureID tex, const GuildLabel& label, bool right) {
+                if (!tex) return;
+                const ImVec2 pos(mapPos.x + (right ? mapImgSize - inset - capeW : inset),
+                                 mapPos.y + (right ? mapImgSize - inset - capeH : inset));
+                const ImVec2 end(pos.x + capeW, pos.y + capeH);
+                const float backingPad = inset * 0.5f;
+                dl->PushClipRect(mapPos, ImVec2(mapPos.x + mapImgSize, mapPos.y + mapImgSize), true);
+                dl->AddRectFilled(ImVec2(pos.x - backingPad, pos.y - backingPad),
+                                  ImVec2(end.x + backingPad, end.y + backingPad),
+                                  IM_COL32(0, 0, 0, 90), backingPad);
+                dl->AddImage(tex, pos, end);
+                dl->PopClipRect();
+
+                if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+                    ImGui::IsMouseHoveringRect(pos, end))
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 280.0f * uiScale);
+                    ImGui::TextUnformatted(label.display.empty()
+                        ? (right ? "Team 2" : "Team 1") : label.display.c_str());
+                    ImGui::PopTextWrapPos();
+                    // Reserve a square at least as wide as the guild label, then
+                    // center the preview in both directions without stretching it.
+                    const float previewSide = std::max(192.0f * uiScale, ImGui::GetItemRectSize().x);
+                    const ImVec2 previewSize(96.0f * uiScale, 192.0f * uiScale);
+                    const ImVec2 previewOrigin = ImGui::GetCursorScreenPos();
+                    ImGui::Dummy(ImVec2(previewSide, previewSide));
+                    const ImVec2 previewPos(previewOrigin.x + (previewSide - previewSize.x) * 0.5f,
+                                            previewOrigin.y + (previewSide - previewSize.y) * 0.5f);
+                    ImGui::GetWindowDrawList()->AddImage(tex, previewPos,
+                        ImVec2(previewPos.x + previewSize.x, previewPos.y + previewSize.y));
+                    ImGui::EndTooltip();
+                }
+            };
+            drawCape(GetGuildCape(m, g1), g1, false);
+            drawCape(GetGuildCape(m, g2), g2, true);
+        }
+
         ImGui::Spacing();
 
         ImFont* bold = GuiGlobalConstants::boldFont;
 
-        // The metadata lines are narrow, so the two capes hang in the space beside them
-        // rather than taking a row of their own. Their top is remembered here and the
-        // cursor is put back below the taller of the two blocks afterwards.
-        const float metaTopY = ImGui::GetCursorPosY();
+        // Long map and Flux names stay in the sidebar and grow downward.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + mapImgSize);
 
         const char* mapName = GetMapName(m.map_id);
         char dateBuf[16];
@@ -7397,41 +7443,7 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         }
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
-
-        // ── Guild capes, in the gap to the right of the metadata ──
-        {
-            const float metaBottomY = ImGui::GetCursorPosY();
-
-            ImTextureID cape1 = GetGuildCape(m, g1);
-            ImTextureID cape2 = GetGuildCape(m, g2);
-            if (cape1 || cape2)
-            {
-                // Banners are composed 128x256, so height is twice width. Sized to the
-                // metadata block it sits beside, and clamped so it neither vanishes on a
-                // narrow panel nor outgrows the map image above it.
-                const float gap = 6.0f;
-                float capeH = std::clamp(metaBottomY - metaTopY, 44.0f, 96.0f);
-                float capeW = capeH * 0.5f;
-                float needed = capeW * 2.0f + gap;
-
-                // Only worth doing if the capes fit without crowding the text.
-                if (needed < mapAreaW * 0.75f)
-                {
-                    float x = mapAreaW - needed;
-                    auto drawCape = [&](ImTextureID tex, const GuildLabel& label, float cx) {
-                        if (!tex) return;
-                        ImGui::SetCursorPos(ImVec2(cx, metaTopY));
-                        ImGui::Image(tex, ImVec2(capeW, capeH));
-                        if (ImGui::IsItemHovered() && !label.display.empty())
-                            ImGui::SetTooltip("%s", label.display.c_str());
-                    };
-                    drawCape(cape1, g1, x);
-                    drawCape(cape2, g2, x + capeW + gap);
-
-                    ImGui::SetCursorPosY(std::max(metaBottomY, metaTopY + capeH));
-                }
-            }
-        }
+        ImGui::PopTextWrapPos();
 
         // ── Rating ──
         ImGui::Spacing();
