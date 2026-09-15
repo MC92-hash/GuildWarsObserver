@@ -889,8 +889,9 @@ static void EnsureSkillIconIndex()
     }
 }
 
-static ImTextureID GetSkillIcon(int skillId)
+static ImTextureID GetSkillIcon(int skillId, const SkillDatabaseView* view = nullptr)
 {
+    if (view && view->IsUnresolvedHistoricalId(skillId)) return nullptr;
     EnsureSkillIconIndex();
     auto it = g_skillIconIndex.find(skillId);
     if (it == g_skillIconIndex.end()) return nullptr;
@@ -938,6 +939,17 @@ static void DrawCostIconInt(const char* iconFile, const char* valueFmt, int val,
 
 static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullptr)
 {
+    if (view && view->IsUnresolvedHistoricalId(skillId))
+    {
+        ImGui::BeginTooltip();
+        ImGui::Text("Unknown historical skill (ID %d)", skillId);
+        ImGui::PushTextWrapPos(340.0f);
+        ImGui::TextUnformatted("This older recording contains an unresolved skill ID. "
+            "Its original identity is not available in the current skill table.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+        return;
+    }
     const SkillInfo* si = view ? view->Get(skillId) : GetSkillDatabase().Get(skillId);
     if (!si) return;
 
@@ -945,7 +957,7 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
     ImGui::PushTextWrapPos(340.0f);
 
     // Skill icon + name header
-    ImTextureID icon = GetSkillIcon(skillId);
+    ImTextureID icon = GetSkillIcon(skillId, view);
     if (icon)
     {
         ImGui::Image(icon, ImVec2(40, 40));
@@ -1692,7 +1704,8 @@ static void BuildSkillIndex(const std::vector<MatchMeta>& matches)
         for (const auto& [pid, party] : m.parties)
             for (const auto& p : party.players)
                 for (int sk : p.used_skills)
-                    if (sk > 0) rawIds.insert(sk);
+                    if (sk > 0 && !IsUnresolvedHistoricalSkillId(sk,
+                            m.year * 10000 + m.month * 100 + m.day)) rawIds.insert(sk);
 
     if (rawIds.empty()) return;
 
@@ -1746,7 +1759,9 @@ static void BuildSkillIndex(const std::vector<MatchMeta>& matches)
                 std::vector<int> skills;
                 skills.reserve(p.used_skills.size());
                 for (int sk : p.used_skills)
-                    if (sk > 0) skills.push_back(CanonicalSkillId(sk));
+                    if (sk > 0 && !IsUnresolvedHistoricalSkillId(sk,
+                            m.year * 10000 + m.month * 100 + m.day))
+                        skills.push_back(CanonicalSkillId(sk));
                 std::sort(skills.begin(), skills.end());
                 skills.erase(std::unique(skills.begin(), skills.end()), skills.end());
                 if (skills.empty()) continue;
@@ -4834,7 +4849,9 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
                 for (int si = 0; si < 8 && si < (int)p.used_skills.size(); si++)
                 {
                     float sx = sp.x + si * (skillIconSize + 2);
-                    ImTextureID skillTex = GetSkillIcon(p.used_skills[si]);
+                    ImTextureID skillTex = IsUnresolvedHistoricalSkillId(p.used_skills[si],
+                        m.year * 10000 + m.month * 100 + m.day)
+                        ? nullptr : GetSkillIcon(p.used_skills[si]);
                     if (skillTex)
                         ImGui::GetWindowDrawList()->AddImage(skillTex,
                             ImVec2(sx, sp.y), ImVec2(sx + skillIconSize, sp.y + skillIconSize));
@@ -6946,7 +6963,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                     {
                         if (ski > 0) ImGui::SameLine(0, 2);
                         int skillId = sortedSkills[ski];
-                        ImTextureID skillTex = GetSkillIcon(skillId);
+                        ImTextureID skillTex = GetSkillIcon(skillId, &matchView);
                         if (skillTex)
                         {
                             ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
@@ -6986,7 +7003,17 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                             }
                         }
                         else
+                        {
+                            ImVec2 pos = ImGui::GetCursorScreenPos();
+                            ImGui::GetWindowDrawList()->AddRectFilled(pos,
+                                ImVec2(pos.x + skillIconSize, pos.y + skillIconSize),
+                                IM_COL32(42, 42, 46, 255), 2.f);
+                            ImGui::GetWindowDrawList()->AddText(
+                                ImVec2(pos.x + skillIconSize * 0.3f, pos.y),
+                                IM_COL32(180, 180, 180, 255), "?");
                             ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
+                            if (ImGui::IsItemHovered()) DrawSkillTooltip(skillId, &matchView);
+                        }
                     }
                 }
             }

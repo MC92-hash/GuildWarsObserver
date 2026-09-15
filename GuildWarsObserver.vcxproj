@@ -321,6 +321,7 @@
     <ClInclude Include="SourceFiles\FontConfig.h" />
     <ClInclude Include="SourceFiles\FolderWatcher.h" />
     <ClInclude Include="SourceFiles\SkillDatabase.h" />
+    <ClInclude Include="SourceFiles\HistoricalSkillIds.h" />
     <ClInclude Include="SourceFiles\SpatialAudioEngine.h" />
     <ClInclude Include="SourceFiles\SoundCache.h" />
     <ClInclude Include="SourceFiles\SkillSoundTable.h" />

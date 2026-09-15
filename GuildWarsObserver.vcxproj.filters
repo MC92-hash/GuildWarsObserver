@@ -381,6 +381,9 @@
     <ClInclude Include="SourceFiles\SkillDatabase.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\HistoricalSkillIds.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\ReplayLibrary.h" />
     <ClInclude Include="SourceFiles\DXMathHelpers.h">
       <Filter>Render\Math helpers</Filter>

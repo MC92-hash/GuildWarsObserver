@@ -133,6 +133,9 @@ struct MatchMeta
     int recording_version = 0;
 };
 
+// Apply evidence-backed legacy bar repairs to the in-memory copy only.
+void RepairHistoricalMatchSkillBars(MatchMeta& meta);
+
 class IReplayProvider
 {
 public:

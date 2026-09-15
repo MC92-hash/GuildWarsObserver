@@ -121,6 +121,11 @@ public:
 
     void ApplyReplayCameraFovFromSettings();
 
+    bool IsUnresolvedHistoricalSkill(int skillId) const {
+        return m_skillView.IsUnresolvedHistoricalId(skillId);
+    }
+    std::string GetSkillDisplayName(int skillId) const;
+
 private:
     ReplayWindow() = default;
 

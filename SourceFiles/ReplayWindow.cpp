@@ -8080,6 +8080,7 @@ ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
                                  std::unordered_map<int, std::string>& index,
                                  std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache)
 {
+    if (rw && rw->IsUnresolvedHistoricalSkill(skillId)) return nullptr;
     auto cit = cache.find(skillId);
     if (cit != cache.end()) return (ImTextureID)cit->second.Get();
 
@@ -9057,6 +9058,15 @@ std::string GetAgentDisplayName(const ReplayContext& ctx, int agentId)
     case AgentType::Gadget: return std::format("{} (Gadget)", ard.categoryName);
     default:                return std::format("Agent {} (Unknown)", agentId);
     }
+}
+
+std::string ReplayWindow::GetSkillDisplayName(int skillId) const
+{
+    if (m_skillView.IsUnresolvedHistoricalId(skillId))
+        return std::format("Unknown historical skill (ID {})", skillId);
+    if (const auto* si = m_skillView.Get(skillId); skillId > 0 && si && !si->name.empty())
+        return si->name;
+    return ::GetSkillDisplayName(skillId);
 }
 
 std::string GetSkillDisplayName(int skillId)

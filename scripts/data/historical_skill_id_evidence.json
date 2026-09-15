@@ -1,0 +1,1845 @@
+[
+  {
+    "match": "2026-03-21_Burning_Isle_03.51_[xxx]vs[BcS]",
+    "agent": 46,
+    "player": "Post Covid Player (3)",
+    "bar": [
+      180,
+      225,
+      1081,
+      1369,
+      1595,
+      1664,
+      2059,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 9
+    }
+  },
+  {
+    "match": "2026-03-21_Burning_Isle_03.51_[xxx]vs[BcS]",
+    "agent": 53,
+    "player": "Spec Tac Ular (5)",
+    "bar": [
+      42,
+      51,
+      61,
+      69,
+      141,
+      932,
+      1359,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-03-29_Warrior's_Isle_05.38_[150785]vs[RISE]",
+    "agent": 79,
+    "player": "Healingcircle Jerk (3)",
+    "bar": [
+      180,
+      198,
+      220,
+      225,
+      226,
+      1081,
+      2059,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 4
+    }
+  },
+  {
+    "match": "2026-03-29_Warrior's_Isle_05.38_[150785]vs[RISE]",
+    "agent": 82,
+    "player": "Daga Elementz (2)",
+    "bar": [
+      222,
+      225,
+      231,
+      232,
+      843,
+      1082,
+      1524,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-04-01_Imperial_Isle_05.30_[LaG]vs[xxx]",
+    "agent": 86,
+    "player": "I Usual Suspects I (5)",
+    "bar": [
+      39,
+      49,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 1
+    }
+  },
+  {
+    "match": "2026-04-01_Imperial_Isle_09.38_[HSR]vs[Team]",
+    "agent": 86,
+    "player": "Bsp Moon I Il Ill I (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 3
+    }
+  },
+  {
+    "match": "2026-04-01_Imperial_Isle_09.38_[HSR]vs[Team]",
+    "agent": 90,
+    "player": "With All My Mind (4)",
+    "bar": [
+      42,
+      51,
+      61,
+      932,
+      1359,
+      3460,
+      3492
+    ],
+    "unresolved": [
+      3460,
+      3492
+    ],
+    "candidates": {
+      "16": 9,
+      "69": 8
+    }
+  },
+  {
+    "match": "2026-04-01_Isle_of_Solitude_11.47_[Rudi]vs[kput]",
+    "agent": 48,
+    "player": "Cute Little Strike (2)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1037,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 23
+    }
+  },
+  {
+    "match": "2026-04-01_Isle_of_Solitude_11.47_[Rudi]vs[kput]",
+    "agent": 53,
+    "player": "Malcolm Hex (1)",
+    "bar": [
+      39,
+      42,
+      45,
+      49,
+      68,
+      932,
+      1037,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-04-01_Isle_of_Solitude_11.47_[Rudi]vs[kput]",
+    "agent": 55,
+    "player": "Los Bronos (5)",
+    "bar": [
+      40,
+      42,
+      68,
+      932,
+      933,
+      1043,
+      3449,
+      3460
+    ],
+    "unresolved": [
+      3449,
+      3460
+    ],
+    "candidates": {
+      "28": 3,
+      "69": 4
+    }
+  },
+  {
+    "match": "2026-04-01_Isle_of_the_Dead_27.29_[OG]vs[Yeey]",
+    "agent": 55,
+    "player": "Sad Snowman (1)",
+    "bar": [
+      116,
+      257,
+      261,
+      885,
+      2057,
+      2063,
+      2189,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 7
+    }
+  },
+  {
+    "match": "2026-04-01_Isle_of_the_Dead_27.29_[OG]vs[Yeey]",
+    "agent": 60,
+    "player": "Demigod Theseus (4)",
+    "bar": [
+      162,
+      180,
+      222,
+      225,
+      843,
+      1082,
+      2059,
+      3446
+    ],
+    "unresolved": [
+      3446
+    ],
+    "candidates": {
+      "2": 5
+    }
+  },
+  {
+    "match": "2026-04-03_Isle_of_Wurms_07.45_[Book]vs[Apes]",
+    "agent": 50,
+    "player": "Jony Type R (6)",
+    "bar": [
+      325,
+      346,
+      382,
+      384,
+      1036,
+      1043,
+      1412,
+      3490
+    ],
+    "unresolved": [
+      3490
+    ],
+    "candidates": {
+      "1": 5
+    }
+  },
+  {
+    "match": "2026-04-03_Isle_of_Wurms_07.45_[Book]vs[Apes]",
+    "agent": 51,
+    "player": "Jaddy Dutch Edition (3)",
+    "bar": [
+      23,
+      39,
+      42,
+      49,
+      68,
+      1043,
+      1056,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 8
+    }
+  },
+  {
+    "match": "2026-04-03_Isle_of_Wurms_07.45_[Book]vs[Apes]",
+    "agent": 54,
+    "player": "D I M A Dyma Cie (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 1
+    }
+  },
+  {
+    "match": "2026-04-12_Isle_of_the_Dead_15.56_[Team]vs[RISE]",
+    "agent": 54,
+    "player": "Syntax Got Style X (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 22
+    }
+  },
+  {
+    "match": "2026-04-12_Isle_of_the_Dead_15.56_[Team]vs[RISE]",
+    "agent": 59,
+    "player": "I Atchoum I (5)",
+    "bar": [
+      24,
+      39,
+      46,
+      51,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 25
+    }
+  },
+  {
+    "match": "2026-04-12_Isle_of_the_Dead_15.56_[Team]vs[RISE]",
+    "agent": 62,
+    "player": "Laz El Fantasma (4)",
+    "bar": [
+      61,
+      63,
+      68,
+      251,
+      881,
+      1398,
+      1993,
+      3492
+    ],
+    "unresolved": [
+      3492
+    ],
+    "candidates": {
+      "16": 14
+    }
+  },
+  {
+    "match": "2026-04-14_Isle_of_Solitude_13.29_[MMA]vs[Crew]",
+    "agent": 55,
+    "player": "Tweetyz Exway (4)",
+    "bar": [
+      24,
+      39,
+      42,
+      49,
+      68,
+      791,
+      932,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 21
+    }
+  },
+  {
+    "match": "2026-04-14_Isle_of_Solitude_13.29_[MMA]vs[Crew]",
+    "agent": 56,
+    "player": "Sunny Dayle (5)",
+    "bar": [
+      23,
+      39,
+      45,
+      49,
+      68,
+      932,
+      1043,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 15
+    }
+  },
+  {
+    "match": "2026-04-14_Isle_of_Solitude_13.29_[MMA]vs[Crew]",
+    "agent": 52,
+    "player": "Annoying Goldi (5)",
+    "bar": [
+      23,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      1056,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 10
+    }
+  },
+  {
+    "match": "2026-04-16_Isle_of_Wurms_15.38_[Team]vs[Crew]",
+    "agent": 49,
+    "player": "With All My Mind (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 16
+    }
+  },
+  {
+    "match": "2026-04-16_Isle_of_Wurms_15.38_[Team]vs[Crew]",
+    "agent": 55,
+    "player": "Holye Mesmerise (5)",
+    "bar": [
+      23,
+      68,
+      1043,
+      1057,
+      1335,
+      1994,
+      3449,
+      3460
+    ],
+    "unresolved": [
+      3449,
+      3460
+    ],
+    "candidates": {
+      "28": 14,
+      "69": 13
+    }
+  },
+  {
+    "match": "2026-04-26_Insel_der_W__rmer_07.03_[Rudi]vs[BcS]",
+    "agent": 54,
+    "player": "Cute Little Strike (4)",
+    "bar": [
+      23,
+      25,
+      68,
+      1043,
+      1057,
+      1335,
+      3449,
+      3460
+    ],
+    "unresolved": [
+      3449,
+      3460
+    ],
+    "candidates": {
+      "28": 9,
+      "69": 11
+    }
+  },
+  {
+    "match": "2026-04-26_Insel_der_W__rmer_07.03_[Rudi]vs[BcS]",
+    "agent": 59,
+    "player": "M A L D O R O R (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 11
+    }
+  },
+  {
+    "match": "2026-04-26_Insel_der_W__rmer_07.03_[Rudi]vs[BcS]",
+    "agent": 46,
+    "player": "Bc S Erenor (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 5
+    }
+  },
+  {
+    "match": "2026-04-28_Kaiserinsel_27.59_[Yeey]vs[push]",
+    "agent": 87,
+    "player": "Ryoki Tenkai Maga (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 35
+    }
+  },
+  {
+    "match": "2026-04-28_Kaiserinsel_27.59_[Yeey]vs[push]",
+    "agent": 88,
+    "player": "S Quiosk Po Sjfdj D (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 38
+    }
+  },
+  {
+    "match": "2026-04-28_Kaiserinsel_27.59_[Yeey]vs[push]",
+    "agent": 80,
+    "player": "Won Dong (4)",
+    "bar": [
+      23,
+      39,
+      68,
+      77,
+      932,
+      1043,
+      1056,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-04-28_Kaiserinsel_27.59_[Yeey]vs[push]",
+    "agent": 82,
+    "player": "M Hebe (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3460
+    ],
+    "unresolved": [
+      3460
+    ],
+    "candidates": {
+      "69": 23
+    }
+  },
+  {
+    "match": "2026-04-29_Insel_der_Einsamkeit_04.33_[LaG]vs[xxx]",
+    "agent": 49,
+    "player": "The City Is Mine (1)",
+    "bar": [
+      231,
+      319,
+      332,
+      337,
+      831,
+      1403,
+      2197,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-04-29_Insel_der_Einsamkeit_20.03_[Crew]vs[Book]",
+    "agent": 59,
+    "player": "Erevos Smitewalker (2)",
+    "bar": [
+      200,
+      210,
+      238,
+      1129,
+      1269,
+      1398,
+      1999,
+      3493
+    ],
+    "unresolved": [
+      3493
+    ],
+    "candidates": {
+      "177": 13
+    }
+  },
+  {
+    "match": "2026-04-29_Insel_der_Einsamkeit_20.03_[Crew]vs[Book]",
+    "agent": 53,
+    "player": "Devlls Reject Uk (1)",
+    "bar": [
+      319,
+      337,
+      831,
+      1493,
+      2014,
+      2197,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-04-29_Insel_der_Einsamkeit_20.03_[Crew]vs[Book]",
+    "agent": 55,
+    "player": "Im The Best Around (4)",
+    "bar": [
+      61,
+      251,
+      1055,
+      1337,
+      1343,
+      1993,
+      1996,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 4
+    }
+  },
+  {
+    "match": "2026-05-01_Insel_des_Kriegers_07.21_[150785]vs[YAP]",
+    "agent": 63,
+    "player": "Guild Battle (3)",
+    "bar": [
+      169,
+      171,
+      219,
+      233,
+      837,
+      1374,
+      3448,
+      3493
+    ],
+    "unresolved": [
+      3448,
+      3493
+    ],
+    "candidates": {
+      "2": 1,
+      "177": 11
+    }
+  },
+  {
+    "match": "2026-05-01_Insel_des_Kriegers_07.21_[150785]vs[YAP]",
+    "agent": 88,
+    "player": "K A N D U T O O (2)",
+    "bar": [
+      169,
+      171,
+      176,
+      219,
+      233,
+      837,
+      1374,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-05-02_Insel_der_W__rmer_03.56_[150785]vs[JJK]",
+    "agent": 52,
+    "player": "M Z M (5)",
+    "bar": [
+      169,
+      171,
+      219,
+      233,
+      837,
+      1374,
+      3448,
+      3493
+    ],
+    "unresolved": [
+      3448,
+      3493
+    ],
+    "candidates": {
+      "2": 1,
+      "177": 6
+    }
+  },
+  {
+    "match": "2026-05-02_Insel_des_Kriegers_13.44_[Book]vs[hold]",
+    "agent": 57,
+    "player": "C R T A (4)",
+    "bar": [
+      163,
+      225,
+      231,
+      232,
+      843,
+      1082,
+      1524,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 2
+    }
+  },
+  {
+    "match": "2026-05-02_Insel_des_Kriegers_13.44_[Book]vs[hold]",
+    "agent": 58,
+    "player": "Eternal Zara (2)",
+    "bar": [
+      163,
+      225,
+      231,
+      232,
+      843,
+      1082,
+      1524,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "2": 2
+    }
+  },
+  {
+    "match": "2026-05-12_Kaiserinsel_03.51_[Crew]vs[EDGE]",
+    "agent": 84,
+    "player": "Deep Into Matter (6)",
+    "bar": [
+      319,
+      320,
+      328,
+      362,
+      378,
+      383,
+      907,
+      3488
+    ],
+    "unresolved": [
+      3488
+    ],
+    "candidates": {
+      "1": 6
+    }
+  },
+  {
+    "match": "2026-05-22_Kaiserinsel_11.15_[hook]vs[QenK]",
+    "agent": 91,
+    "player": "Only Specialist (5)",
+    "bar": [
+      62,
+      63,
+      860,
+      934,
+      1481,
+      1657,
+      1992,
+      3441
+    ],
+    "unresolved": [
+      3441
+    ],
+    "candidates": {
+      "15": 7
+    }
+  },
+  {
+    "match": "2026-06-07_Insel_des_Kriegers_03.53_[DUM]vs[og]",
+    "agent": 60,
+    "player": "Glennifer (4)",
+    "bar": [
+      30,
+      46,
+      51,
+      69,
+      795,
+      1246,
+      3448
+    ],
+    "unresolved": [
+      3448
+    ],
+    "candidates": {
+      "13": 4
+    }
+  },
+  {
+    "match": "2026-06-08_Insel_des_trauernden_Steins_05.14_[Crew]vs[EDGE]",
+    "agent": 112,
+    "player": "Impact (4)",
+    "bar": [
+      2,
+      18,
+      30,
+      62,
+      63,
+      1658,
+      3443
+    ],
+    "unresolved": [
+      3443
+    ],
+    "candidates": {
+      "15": 3
+    }
+  },
+  {
+    "match": "2026-06-26_Unbekannte_Insel_05.48_[LaG]vs[Book]",
+    "agent": 46,
+    "player": "Mkgee (4)",
+    "bar": [
+      30,
+      51,
+      68,
+      69,
+      932,
+      1259,
+      3450
+    ],
+    "unresolved": [
+      3450
+    ],
+    "candidates": {
+      "13": 19
+    }
+  },
+  {
+    "match": "2026-06-30_Insel_des_trauernden_Steins_26.11_[drm]vs[Book]",
+    "agent": 118,
+    "player": "Bst Plyr Wrld (4)",
+    "bar": [
+      2,
+      23,
+      30,
+      68,
+      69,
+      258,
+      282,
+      295,
+      435,
+      446,
+      847,
+      885,
+      887,
+      1259,
+      1350,
+      1993,
+      3492
+    ],
+    "unresolved": [
+      3492
+    ],
+    "candidates": {
+      "1": 1
+    }
+  },
+  {
+    "match": "2026-07-03_Nomadeninsel_20.35_[EDGE]vs[YAP]",
+    "agent": 50,
+    "player": "I Atchoum I (5)",
+    "bar": [
+      23,
+      30,
+      46,
+      51,
+      68,
+      932,
+      1481,
+      3450
+    ],
+    "unresolved": [
+      3450
+    ],
+    "candidates": {
+      "13": 42
+    }
+  },
+  {
+    "match": "2026-07-08_Nomadeninsel_05.14_[MBP]vs[150785]",
+    "agent": 52,
+    "player": "Tearz (5)",
+    "bar": [
+      23,
+      42,
+      51,
+      68,
+      69,
+      932,
+      3450
+    ],
+    "unresolved": [
+      3450
+    ],
+    "candidates": {
+      "13": 12
+    }
+  },
+  {
+    "match": "2026-07-09_Brennende_Insel_05.26_[EDGE]vs[Team]",
+    "agent": 60,
+    "player": "Teeny Bop Ele (5)",
+    "bar": [
+      180,
+      198,
+      220,
+      222,
+      225,
+      1664,
+      2059,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-09_Brennende_Insel_05.26_[EDGE]vs[Team]",
+    "agent": 55,
+    "player": "Syntax Got Style X (4)",
+    "bar": [
+      23,
+      26,
+      42,
+      49,
+      803,
+      932,
+      1043,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 5
+    }
+  },
+  {
+    "match": "2026-07-12_Insel_der_Einsamkeit_10.54_[lip]vs[Jwz]",
+    "agent": 53,
+    "player": "Aya Fuyuko (3)",
+    "bar": [
+      23,
+      39,
+      49,
+      51,
+      68,
+      932,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 14
+    }
+  },
+  {
+    "match": "2026-07-12_Insel_der_Einsamkeit_10.54_[lip]vs[Jwz]",
+    "agent": 50,
+    "player": "Cho Young Kwon (2)",
+    "bar": [
+      23,
+      39,
+      42,
+      49,
+      1043,
+      3455,
+      3458,
+      3466
+    ],
+    "unresolved": [
+      3455,
+      3458,
+      3466
+    ],
+    "candidates": {
+      "2": 1,
+      "28": 6,
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-07-12_Insel_der_Einsamkeit_10.54_[lip]vs[Jwz]",
+    "agent": 57,
+    "player": "Not Today Xxx (3)",
+    "bar": [
+      23,
+      24,
+      39,
+      42,
+      49,
+      67,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 19
+    }
+  },
+  {
+    "match": "2026-07-19_Insel_der_W__rmer_28.06_[Free]vs[Apes]",
+    "agent": 49,
+    "player": "First Time Gvg (4)",
+    "bar": [
+      23,
+      39,
+      42,
+      49,
+      68,
+      932,
+      1043,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 21
+    }
+  },
+  {
+    "match": "2026-07-19_Insel_der_W__rmer_28.06_[Free]vs[Apes]",
+    "agent": 50,
+    "player": "Rc Rc Rc Rc Rc Rc (3)",
+    "bar": [
+      141,
+      399,
+      426,
+      435,
+      453,
+      853,
+      1727,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 3
+    }
+  },
+  {
+    "match": "2026-07-19_Insel_der_W__rmer_28.06_[Free]vs[Apes]",
+    "agent": 56,
+    "player": "Glad Rank Eleven (4)",
+    "bar": [
+      42,
+      51,
+      57,
+      68,
+      203,
+      932,
+      3458,
+      3466
+    ],
+    "unresolved": [
+      3458,
+      3466
+    ],
+    "candidates": {
+      "2": 1,
+      "69": 44
+    }
+  },
+  {
+    "match": "2026-07-21_Insel_der_W__rmer_17.37_[Crew]vs[Book]",
+    "agent": 57,
+    "player": "Scooms (5)",
+    "bar": [
+      23,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      1056,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 5
+    }
+  },
+  {
+    "match": "2026-07-21_Insel_der_W__rmer_17.37_[Crew]vs[Book]",
+    "agent": 44,
+    "player": "Gentle Shutdown (6)",
+    "bar": [
+      23,
+      26,
+      49,
+      68,
+      932,
+      1057,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 14
+    }
+  },
+  {
+    "match": "2026-07-21_Insel_der_W__rmer_17.37_[Crew]vs[Book]",
+    "agent": 48,
+    "player": "Devlls Reject Uk (1)",
+    "bar": [
+      320,
+      349,
+      381,
+      851,
+      1360,
+      1404,
+      2197,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 2
+    }
+  },
+  {
+    "match": "2026-07-27_Unbekannte_Insel_13.32_[Apes]vs[Rudi]",
+    "agent": 52,
+    "player": "月foresta月 (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 8
+    }
+  },
+  {
+    "match": "2026-07-27_Unbekannte_Insel_13.32_[Apes]vs[Rudi]",
+    "agent": 56,
+    "player": "Dahasdf Asdkas (2)",
+    "bar": [
+      326,
+      331,
+      352,
+      379,
+      905,
+      952,
+      1404,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-27_Unbekannte_Insel_13.32_[Apes]vs[Rudi]",
+    "agent": 45,
+    "player": "Mick On Steroidz (2)",
+    "bar": [
+      349,
+      869,
+      1141,
+      1404,
+      1547,
+      1550,
+      1603,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-27_Unbekannte_Insel_13.32_[Apes]vs[Rudi]",
+    "agent": 50,
+    "player": "Failing Society (4)",
+    "bar": [
+      23,
+      42,
+      68,
+      803,
+      932,
+      1043,
+      3455,
+      3466
+    ],
+    "unresolved": [
+      3455,
+      3466
+    ],
+    "candidates": {
+      "28": 19,
+      "69": 19
+    }
+  },
+  {
+    "match": "2026-07-27_Unbekannte_Insel_13.32_[Apes]vs[Rudi]",
+    "agent": 51,
+    "player": "Arka Lon (3)",
+    "bar": [
+      141,
+      399,
+      426,
+      435,
+      453,
+      853,
+      1727,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-30_Insel_der_W__rmer_04.06_[DUM]vs[OG]",
+    "agent": 45,
+    "player": "B O O Z O O (3)",
+    "bar": [
+      23,
+      26,
+      68,
+      77,
+      932,
+      1348,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 3
+    }
+  },
+  {
+    "match": "2026-07-30_Insel_der_W__rmer_04.06_[DUM]vs[OG]",
+    "agent": 48,
+    "player": "Mr Deez Nuts (2)",
+    "bar": [
+      337,
+      427,
+      944,
+      1405,
+      2195,
+      2199,
+      3458,
+      3495
+    ],
+    "unresolved": [
+      3458,
+      3495
+    ],
+    "candidates": {
+      "1": 8,
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-30_Insel_der_W__rmer_04.06_[DUM]vs[OG]",
+    "agent": 50,
+    "player": "Sunny Runs (4)",
+    "bar": [
+      5,
+      30,
+      43,
+      57,
+      68,
+      860,
+      881,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 3
+    }
+  },
+  {
+    "match": "2026-07-30_Insel_der_W__rmer_04.06_[DUM]vs[OG]",
+    "agent": 53,
+    "player": "Lyssa (4)",
+    "bar": [
+      23,
+      26,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-07-30_Insel_der_W__rmer_04.06_[DUM]vs[OG]",
+    "agent": 55,
+    "player": "Brett (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      932,
+      1993,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-07-30_Unbekannte_Insel_08.38_[DUM]vs[chic]",
+    "agent": 52,
+    "player": "Mr Deez Nuts (2)",
+    "bar": [
+      337,
+      427,
+      944,
+      1405,
+      2195,
+      2199,
+      3458,
+      3495
+    ],
+    "unresolved": [
+      3458,
+      3495
+    ],
+    "candidates": {
+      "1": 14,
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-07-30_Unbekannte_Insel_08.38_[DUM]vs[chic]",
+    "agent": 54,
+    "player": "Sunny Runs (4)",
+    "bar": [
+      5,
+      30,
+      57,
+      68,
+      860,
+      881,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 9
+    }
+  },
+  {
+    "match": "2026-07-30_Unbekannte_Insel_08.38_[DUM]vs[chic]",
+    "agent": 55,
+    "player": "Glen The Glen (1)",
+    "bar": [
+      61,
+      860,
+      944,
+      1404,
+      1405,
+      2195,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 2
+    }
+  },
+  {
+    "match": "2026-07-30_Unbekannte_Insel_08.38_[DUM]vs[chic]",
+    "agent": 53,
+    "player": "Aka The Midline (4)",
+    "bar": [
+      23,
+      42,
+      68,
+      77,
+      932,
+      1057,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 7
+    }
+  },
+  {
+    "match": "2026-08-01_Vereiste_Insel_15.51_[Apes]vs[hook]",
+    "agent": 63,
+    "player": "Dshot Ur Dshot (3)",
+    "bar": [
+      399,
+      426,
+      435,
+      446,
+      453,
+      853,
+      1727,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-08-01_Vereiste_Insel_15.51_[Apes]vs[hook]",
+    "agent": 79,
+    "player": "Jamaal (4)",
+    "bar": [
+      117,
+      121,
+      135,
+      141,
+      1524,
+      1542,
+      2188,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-08-01_Vereiste_Insel_15.51_[Apes]vs[hook]",
+    "agent": 53,
+    "player": "Ringle Rangle Bob (4)",
+    "bar": [
+      23,
+      39,
+      49,
+      68,
+      349,
+      932,
+      3455,
+      3466
+    ],
+    "unresolved": [
+      3455,
+      3466
+    ],
+    "candidates": {
+      "28": 23,
+      "69": 9
+    }
+  },
+  {
+    "match": "2026-08-01_Vereiste_Insel_15.51_[Apes]vs[hook]",
+    "agent": 59,
+    "player": "Beastmode Confirmed (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 20
+    }
+  },
+  {
+    "match": "2026-08-02_Verdorbene_Insel_07.47_[BcS]vs[Free]",
+    "agent": 59,
+    "player": "Mindpirate Boka Arr (4)",
+    "bar": [
+      24,
+      42,
+      49,
+      68,
+      932,
+      1057,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 9
+    }
+  },
+  {
+    "match": "2026-08-02_Verdorbene_Insel_07.47_[BcS]vs[Free]",
+    "agent": 51,
+    "player": "Mick On Steroidz (1)",
+    "bar": [
+      349,
+      869,
+      1141,
+      1404,
+      1547,
+      1550,
+      1603,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 5
+    }
+  },
+  {
+    "match": "2026-08-02_Verdorbene_Insel_07.47_[BcS]vs[Free]",
+    "agent": 53,
+    "player": "Rc Rockar Fella (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-08-02_Vereiste_Insel_09.33_[Men]vs[Crew]",
+    "agent": 56,
+    "player": "Maverick (5)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      932,
+      1993,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 10
+    }
+  },
+  {
+    "match": "2026-08-02_Vereiste_Insel_09.33_[Men]vs[Crew]",
+    "agent": 61,
+    "player": "Fake Fake Fake Fake (5)",
+    "bar": [
+      24,
+      39,
+      49,
+      51,
+      68,
+      932,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 10
+    }
+  },
+  {
+    "match": "2026-08-02_Vereiste_Insel_09.33_[Men]vs[Crew]",
+    "agent": 62,
+    "player": "Relic (4)",
+    "bar": [
+      23,
+      26,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 6
+    }
+  },
+  {
+    "match": "2026-08-02_Vereiste_Insel_09.33_[Men]vs[Crew]",
+    "agent": 87,
+    "player": "Dark Warrior Night (1)",
+    "bar": [
+      316,
+      349,
+      1141,
+      1404,
+      1547,
+      1548,
+      1550,
+      3458
+    ],
+    "unresolved": [
+      3458
+    ],
+    "candidates": {
+      "2": 1
+    }
+  },
+  {
+    "match": "2026-08-03_Verdorbene_Insel_14.14_[273381]vs[push]",
+    "agent": 57,
+    "player": "Psychic Dps (5)",
+    "bar": [
+      23,
+      51,
+      57,
+      1037,
+      1057,
+      1335,
+      1993,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 11
+    }
+  },
+  {
+    "match": "2026-08-03_Verdorbene_Insel_14.14_[273381]vs[push]",
+    "agent": 59,
+    "player": "Tasty Jooz (4)",
+    "bar": [
+      24,
+      25,
+      30,
+      39,
+      68,
+      932,
+      1481,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 11
+    }
+  },
+  {
+    "match": "2026-08-03_Verdorbene_Insel_14.14_[273381]vs[push]",
+    "agent": 48,
+    "player": "Minah Athena (4)",
+    "bar": [
+      23,
+      24,
+      39,
+      49,
+      68,
+      932,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 19
+    }
+  },
+  {
+    "match": "2026-08-03_Verdorbene_Insel_14.14_[273381]vs[push]",
+    "agent": 51,
+    "player": "Imc John (3)",
+    "bar": [
+      23,
+      26,
+      39,
+      49,
+      68,
+      932,
+      1043,
+      3466
+    ],
+    "unresolved": [
+      3466
+    ],
+    "candidates": {
+      "69": 12
+    }
+  }
+]
