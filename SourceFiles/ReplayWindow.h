@@ -953,6 +953,10 @@ private:
     CameraMode m_cameraMode = CameraMode::Free;
     int        m_followedAgentId = -1;
     int        m_hoveredAgentId  = -1;
+    ComPtr<ID3D11ShaderResourceView> m_overheadHealthAtlas;
+    bool m_overheadHealthAtlasAttempted = false;
+    ComPtr<ID3D11ShaderResourceView> m_focusHealthMarkers[2];
+    bool m_focusHealthMarkersAttempted = false;
 
     float      m_followDist      = 0.f;
     float      m_followDistTarget = 0.f;
