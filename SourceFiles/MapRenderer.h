@@ -794,6 +794,18 @@ public:
         m_rasterizer_state_manager->SetRasterizerState(state);
     }
 
+    // Pass-throughs for a caller that draws a mesh itself (MeshInstance::Draw) rather than through
+    // the render batch, and therefore has to set and restore the pipeline state around its own
+    // draw. The batch's own state handling is untouched.
+    void SetDepthStencilState(DepthStencilStateType state)
+    {
+        m_stencil_state_manager->SetDepthStencilState(state);
+    }
+    void SetBlendState(BlendState state)
+    {
+        m_blend_state_manager->SetBlendState(state);
+    }
+
     void SetMeshShouldRender(int mesh_id, bool should_render)
     {
         m_should_rerender_shadows = true;
@@ -994,6 +1006,15 @@ public:
 
     PerCameraCB GetPerCameraCB() { return m_per_camera_cb_data; }
     void SetPerCameraCB(const PerCameraCB& per_camera_cb_data) { m_per_camera_cb_data = per_camera_cb_data; }
+    void UploadRenderCamera(const PerCameraCB& data) {
+        m_per_camera_cb_data=data;
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(m_deviceContext->Map(m_per_camera_cb.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) {
+            memcpy(mapped.pData,&data,sizeof(data)); m_deviceContext->Unmap(m_per_camera_cb.Get(),0);
+        }
+        m_deviceContext->VSSetConstantBuffers(2,1,m_per_camera_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(2,1,m_per_camera_cb.GetAddressOf());
+    }
 
     void Update(const double dt_seconds)
     {

@@ -17,6 +17,7 @@
 #include "HeatmapData.h"
 #include "CatapultLeverState.h"
 #include "HeatmapRenderer.h"
+#include "ProjectedAgentShadows.h"
 #include "HeatmapMenu.h"
 #include "AnnotationManager.h"
 #include "FlagTimelineBuilder.h"
@@ -42,6 +43,11 @@
 
 class SpatialAudioEngine;
 class SkillSoundTable;
+
+// A recorded player's own character, built once at match load from the appearance snapshot the
+// recorder wrote. Opaque here on purpose: this window holds one, asks it four questions and never
+// looks inside. Everything it is lives in the module the project links against.
+namespace PlayerVisuals { class Set; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -156,6 +162,18 @@ private:
     void InitCylinderRenderer();
     void LoadAgentModels();
     void DrawAgentModels();
+    void DrawAgentShadows();
+    void RenderTerrainShadows();
+    bool m_showTerrainShadows = true;
+    bool m_showSilhouetteShadows = true;
+    unsigned m_silhouetteShadowCount = 0;
+    ProjectedAgentShadows m_agentShadows;
+    std::vector<ProjectedAgentShadows::Caster> m_shadowCasters;
+    bool m_showAgentShadows = true;
+    bool m_originalShadowDistanceLimit = false;
+    bool m_shadowInitAttempted = false;
+    float m_shadowStrength = 0.45f; // Preview: original environment-color mapping remains unresolved.
+    std::string m_shadowLoadError;
     void DrawMapCalibrationWindow();
     void DrawInterpolationWindow();
     void DrawTimelineController();
@@ -1073,6 +1091,7 @@ private:
         std::vector<int> meshIds;
         std::vector<PerObjectCB> templateCBs;
         float nativeHeight = 0.f;
+        float nativeShadowRadius = 0.f;
         float nativeMinY = 0.f;
         DirectX::XMFLOAT3 nativeCenter = { 0.f, 0.f, 0.f };
 
@@ -1142,6 +1161,50 @@ private:
     };
     std::unordered_map<int, AgentAnimState> m_agentAnimStates;
     void DrawSkinnedAgentModels();
+
+    // --- Recorded player appearance -------------------------------------------------------
+    //
+    // When the recording carries an appearance snapshot, a player is drawn as the character they
+    // actually played instead of the stand-in model picked for their profession and sex. It is
+    // built ONCE, during the load, because nothing it depends on can change during a match; the
+    // agent's own AgentAnimState above then holds it, so the animation driver, the weapon pass and
+    // the visibility gate all work on it unchanged.
+    //
+    // Every method below is defined in the module, not in this repository. A player whose record
+    // is incomplete, and a match with no snapshot at all, keeps its stand-in - so this is additive
+    // in the strict sense: with no snapshot present, not one of these does anything.
+    enum class PlayerVisualsPhase : int
+    {
+        Idle = 0,
+        Reading,    // the worker thread is turning the snapshot into character descriptions
+        Composing,  // one character per frame, under the load frame budget
+        Done
+    };
+
+    std::shared_ptr<PlayerVisuals::Set> m_playerVisuals;
+    int m_playerVisualsPhase = 0;
+    std::string m_playerVisualsNote;   // what the load ended up doing, for the debug window
+    std::thread m_playerVisualsThread;
+    std::atomic<bool> m_playerVisualsCpuDone{false};
+    std::atomic<bool> m_playerVisualsCpuOk{false};
+
+    void StepPlayerVisuals();      // one call per frame from ProgressiveAgentModelPump
+    void DrawPlayerVisuals();      // after DrawSkinnedAgentModels, before the weapons
+    void ReleasePlayerVisuals();   // match teardown
+
+    // Whether this agent has one. The stand-in skinned pass skips exactly these.
+    bool HasPlayerVisual(int agentId) const;
+
+    // The uniform scale this character is drawn at, and the offset that puts its lowest point at
+    // the origin so the scale is about its feet. False when the agent has no character, and the
+    // caller then keeps the model scale it already computed.
+    bool PlayerVisualsPlacement(int agentId, float& scaleOut,
+                                DirectX::XMFLOAT3& centreOut) const;
+
+    // Its height and its radius in world units, after that scale - the two numbers the overlays,
+    // the nameplates and the shadows anchor on. `hostScale` is this window's own multiplier.
+    bool PlayerVisualsTopY(int agentId, float hostScale, float& topOut) const;
+    bool PlayerVisualsRadius(int agentId, float hostScale, float& radiusOut) const;
 
     // Top of the model an agent is wearing at `time`, for overlays that anchor above the head.
     float AgentModelTopY(int agentId, const AgentReplayData& ard, float groundY, float time) const;

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "draw_replay_browser.h"
+#include "RunLog.h"
 #include "ReplayLibrary.h"
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
@@ -7720,7 +7721,32 @@ void draw_replay_browser(ReplayLibrary& library)
     }
 
     if (!library.IsLoaded() || library.GetMatches().empty())
+    {
+        // NOTHING IS DRAWN HERE, and a frame with nothing in it is the bare clear colour
+        // with only the menu bar and any toast on top - which is what "the window came up
+        // blank" means. Say so, once per state change, with the reason, so a log answers it.
+        static int s_reported = -1;
+        const int state = library.IsLoaded() ? 1 : 0;
+        if (s_reported != state)
+        {
+            s_reported = state;
+            RunLog::Line("replay browser: drawing nothing - the library is %s",
+                         library.IsLoaded() ? "loaded but holds no matches"
+                                            : "not scanned yet");
+        }
         return;
+    }
+
+    {
+        // ...and say when it recovers, so the log shows how long the blank frames lasted.
+        static bool s_announced = false;
+        if (!s_announced)
+        {
+            s_announced = true;
+            RunLog::Line("replay browser: first frame drawn with %d match(es)",
+                         (int)library.GetMatches().size());
+        }
+    }
 
     // Card gallery always uses Watchtower theme; table view uses user's choice
     int themeToApply = s_state.cardGalleryMode ? 1 : GuiGlobalConstants::replay_browser_theme;

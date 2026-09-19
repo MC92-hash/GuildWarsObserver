@@ -444,21 +444,13 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 			for (int i = 0; i < models.size(); i++)
 			{
 				AMAT_file amat_file;
+				// The submodel's own material row, and the AMAT that row names, from the one call that
+				// cannot let the two disagree. See FFNA_ModelFile::ModernMaterialForSubmodel.
+				int mat_row = FFNA_ModelFile::kModernMaterialRowOrdinal;
+				int decoded_filename = 0;
 				// "Other" format doesn't have AMAT filenames chunk, only standard format does
-				if (!using_other_model_format && selected_ffna_model_file.AMAT_filenames_chunk.texture_filenames.size() > 0) {
-					int sub_model_index = models[i].unknown;
-					if (geometry_chunk_uts0.size() > 0)
-					{
-						sub_model_index %= geometry_chunk_uts0.size();
-					}
-					const auto uts1 = geometry_chunk_uts1[sub_model_index % geometry_chunk_uts1.size()];
-
-					const int amat_file_index = ((uts1.some_flags0 >> 8) & 0xFF) % selected_ffna_model_file.AMAT_filenames_chunk.texture_filenames.size();
-					const auto amat_filename = selected_ffna_model_file.AMAT_filenames_chunk.texture_filenames[amat_file_index];
-
-					const auto decoded_filename = decode_filename(amat_filename.id0, amat_filename.id1);
-
-
+				if (!using_other_model_format &&
+					selected_ffna_model_file.ModernMaterialForSubmodel(i, mat_row, decoded_filename)) {
 					auto mft_entry_it = hash_index.find(decoded_filename);
 					if (mft_entry_it != hash_index.end())
 					{
@@ -468,7 +460,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 				}
 				Mesh prop_mesh = using_other_model_format ?
 					selected_ffna_model_file_other.GetMesh(i, amat_file) :
-					selected_ffna_model_file.GetMesh(i, amat_file);
+					selected_ffna_model_file.GetMesh(i, amat_file, mat_row);
 				prop_mesh.center = {
 					(models[i].maxX - models[i].minX) / 2.0f, (models[i].maxY - models[i].minY) / 2.0f,
 					(models[i].maxZ - models[i].minZ) / 2.0f
@@ -1634,20 +1626,12 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 
 						// Get AMAT file if any
 						AMAT_file amat_file;
-						if (ffna_model_file_ptr->AMAT_filenames_chunk.texture_filenames.size() > 0) {
-							int sub_model_index = models[j].unknown;
-							if (geometry_chunk.tex_and_vertex_shader_struct.uts0.size() > 0)
-							{
-								sub_model_index %= geometry_chunk.tex_and_vertex_shader_struct.uts0.size();
-							}
-							const auto uts1 = geometry_chunk.uts1[sub_model_index % geometry_chunk.uts1.size()];
-
-							const int amat_file_index = ((uts1.some_flags0 >> 8) & 0xFF) % ffna_model_file_ptr->AMAT_filenames_chunk.texture_filenames.size();
-							const auto amat_filename = ffna_model_file_ptr->AMAT_filenames_chunk.texture_filenames[amat_file_index];
-
-							const auto decoded_filename = decode_filename(amat_filename.id0, amat_filename.id1);
-
-
+						// The submodel's own material row, and the AMAT that row names, from the one
+						// call that cannot let the two disagree. See
+						// FFNA_ModelFile::ModernMaterialForSubmodel.
+						int mat_row = FFNA_ModelFile::kModernMaterialRowOrdinal;
+						int decoded_filename = 0;
+						if (ffna_model_file_ptr->ModernMaterialForSubmodel(j, mat_row, decoded_filename)) {
 							auto mft_entry_it = hash_index.find(decoded_filename);
 							if (mft_entry_it != hash_index.end())
 							{
@@ -1656,7 +1640,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 							}
 						}
 
-						Mesh prop_mesh = ffna_model_file_ptr->GetMesh(j, amat_file);
+						Mesh prop_mesh = ffna_model_file_ptr->GetMesh(j, amat_file, mat_row);
 						prop_mesh.center = {
 							(models[j].maxX - models[j].minX) / 2.0f, (models[j].maxY - models[j].minY) / 2.0f,
 							(models[j].maxZ - models[j].minZ) / 2.0f

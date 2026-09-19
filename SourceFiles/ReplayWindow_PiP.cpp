@@ -434,13 +434,14 @@ void ReplayWindow::RenderPiP()
     ctx->ClearDepthStencilView(m_pipDSV.Get(), D3D11_CLEAR_DEPTH, 0.f, 0);
 
     // Render terrain/props/water to PiP target
+    DrawAgentModels();
     m_mapRenderer->Render(m_pipRTV.Get(), nullptr, m_pipDSV.Get());
 
     // Rebind PiP render targets for agent model + cylinder passes
     ID3D11RenderTargetView* pipRTV = m_pipRTV.Get();
     ctx->OMSetRenderTargets(1, &pipRTV, m_pipDSV.Get());
 
-    DrawAgentModels();
+    DrawAgentShadows();
     DrawSkinnedAgentModels();
     DrawWeaponModels();
     DrawAgentCylinders();

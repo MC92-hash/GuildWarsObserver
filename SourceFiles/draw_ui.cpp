@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "draw_ui.h"
+#include "RunLog.h"
 #include "draw_gui_for_open_dat_file.h"
 #include "draw_first_launch.h"
 #include "Net/UpdateChecker.h"
@@ -837,6 +838,8 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			if (draw_first_launch(lp, updateInfo.available ? &updateInfo : nullptr))
 			{
 				s_loadingScreenDone = true;
+				RunLog::Line("loading screen: finished (dat %d/%d file(s), %d match(es) in the library)",
+				             lp.dat_files_read, lp.dat_files_total, lp.match_count);
 				g_loadingScreenDone = true;
 			}
 			else

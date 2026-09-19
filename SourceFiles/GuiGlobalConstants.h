@@ -13,6 +13,12 @@ class GuiGlobalConstants
 public:
 	inline static bool settings_loaded = false;
 
+	// Window-visibility flags for the two private character panels. Inert in the Observer, which
+	// has no menu entry for either and never opens them; they exist so that the one shared copy of
+	// those panels compiles against this class in both applications.
+	inline static bool is_character_composer_open = false;
+	inline static bool is_wardrobe_open = false;
+
 	// Persistent gw.dat path (saved across sessions)
 	inline static std::string saved_gw_dat_path;
 

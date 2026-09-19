@@ -54,7 +54,7 @@ void OrbitalCamera::SetDistance(float distance)
     m_viewDirty = true;
 }
 
-void OrbitalCamera::FitToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax)
+void OrbitalCamera::FitToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax, float minDistance)
 {
     // Calculate center of bounds
     m_target.x = (boundsMin.x + boundsMax.x) * 0.5f;
@@ -74,7 +74,7 @@ void OrbitalCamera::FitToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& bound
 
     // Use larger padding and floor so default view is 2x farther back.
     float fitDistance = (radius / std::tan(halfFov)) * 2.4f;
-    m_distance = std::clamp(std::max(4000.0f, fitDistance), m_minDistance, m_maxDistance);
+    m_distance = std::clamp(std::max(minDistance, fitDistance), m_minDistance, m_maxDistance);
 
     // Default load view: directly in front of the model, looking straight at it.
     // (Model front in current GWMB coordinates points along -X.)
@@ -106,6 +106,15 @@ void OrbitalCamera::OnViewportChanged(float width, float height)
 {
     m_aspectRatio = width / height;
     SetPerspective(m_fovY, m_aspectRatio, m_nearZ, m_farZ, m_useReverseZ);
+}
+
+void OrbitalCamera::SetOrbitAngles(float yaw, float pitch)
+{
+    m_yaw = yaw;
+    // Same clamp OnOrbitDrag applies, so a named view can never reach the degenerate straight
+    // up / straight down pose the look-at maths cannot express.
+    m_pitch = std::clamp(pitch, -XM_PIDIV2 + 0.01f, XM_PIDIV2 - 0.01f);
+    m_viewDirty = true;
 }
 
 void OrbitalCamera::OnOrbitDrag(float deltaX, float deltaY)

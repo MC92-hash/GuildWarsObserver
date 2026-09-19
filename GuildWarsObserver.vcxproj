@@ -71,6 +71,15 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <!-- Where the adjacent private repo lives. Its sources are compiled into this exe, so the path
+       has to resolve before anything else in this project. Default is the sibling checkout next to
+       the repo root. A working tree that pairs with a different private checkout (e.g. a -dev
+       worktree) drops an untracked private_path.props beside this file setting GwoPrivateDir,
+       which wins because it is imported first. -->
+  <Import Project="$(ProjectDir)private_path.props" Condition="exists('$(ProjectDir)private_path.props')" />
+  <PropertyGroup Condition="'$(GwoPrivateDir)'==''">
+    <GwoPrivateDir>$(ProjectDir)..\gwobserver-private</GwoPrivateDir>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
     <LibraryPath>$(ProjectDir)\tinytiff;$(LibraryPath)</LibraryPath>
@@ -92,7 +101,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(ProjectDir)\..\gwobserver-private;$(ProjectDir)\..\gwobserver-private\SourceFiles;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -117,7 +126,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(ProjectDir)\..\gwobserver-private;$(ProjectDir)\..\gwobserver-private\SourceFiles;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -140,7 +149,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(ProjectDir)\..\gwobserver-private;$(ProjectDir)\..\gwobserver-private\SourceFiles;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -171,7 +180,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(ProjectDir)\..\gwobserver-private;$(ProjectDir)\..\gwobserver-private\SourceFiles;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -258,7 +267,16 @@
     <ClInclude Include="SourceFiles\DirectionalLight.h" />
     <ClInclude Include="SourceFiles\draw_audio_controller_panel.h" />
     <ClInclude Include="SourceFiles\draw_sound_fx_panel.h" />
-    <ClInclude Include="SourceFiles\animation_state.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\animation_state.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ArmourMaterialAlpha.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterHostShims.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\character_catalog.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\character_colour.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\CloudParser.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_builder.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.h" />
     <ClInclude Include="SourceFiles\Audio\AnimationSoundManager.h" />
     <ClInclude Include="SourceFiles\draw_chunk_20000000.h" />
     <ClInclude Include="SourceFiles\draw_chunk_20000003.h" />
@@ -292,27 +310,29 @@
     <ClInclude Include="SourceFiles\AgentOverlay.h" />
     <ClInclude Include="SourceFiles\MatchReplay.h" />
     <ClInclude Include="SourceFiles\ReplayLibrary.h" />
+    <ClInclude Include="SourceFiles\RunLog.h" />
     <ClInclude Include="SourceFiles\draw_debug_match_metadata.h" />
     <ClInclude Include="SourceFiles\draw_replay_browser.h" />
     <ClInclude Include="SourceFiles\ReplayWindow.h" />
     <ClInclude Include="SourceFiles\CatapultLeverState.h" />
     <ClInclude Include="SourceFiles\HeatmapData.h" />
     <ClInclude Include="SourceFiles\HeatmapRenderer.h" />
+    <ClInclude Include="SourceFiles\ProjectedAgentShadows.h" />
     <ClInclude Include="SourceFiles\HeatmapMenu.h" />
     <ClInclude Include="SourceFiles\AnnotationManager.h" />
     <ClInclude Include="SourceFiles\ReplayMapData.h" />
     <ClInclude Include="SourceFiles\EquipmentData.h" />
     <ClInclude Include="SourceFiles\EquipmentComponents.h" />
     <ClInclude Include="SourceFiles\EquipmentIcons.h" />
-    <ClInclude Include="..\gwobserver-private\SourceFiles\EquipmentHealth.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EquipmentHealth.h" />
     <ClInclude Include="SourceFiles\AgentSnapshotParser.h" />
     <ClInclude Include="SourceFiles\miniz.h" />
     <ClInclude Include="SourceFiles\StoCParser.h" />
-    <ClInclude Include="..\gwobserver-private\SourceFiles\AttributeDeducer.h" />
-    <ClInclude Include="..\gwobserver-private\SourceFiles\MaxHpSolver.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AttributeDeducer.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.h" />
     <ClInclude Include="SourceFiles\ArmourNames.h" />
-    <ClInclude Include="..\gwobserver-private\SourceFiles\HealthModel.h" />
-    <ClInclude Include="..\gwobserver-private\SourceFiles\AttributeModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HealthModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.h" />
     <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
     <ClInclude Include="SourceFiles\GuildBannerAssetProvider.h" />
@@ -330,7 +350,7 @@
     <ClInclude Include="SourceFiles\FlagTimelineBuilder.h" />
     <ClInclude Include="SourceFiles\FFNAType.h" />
     <ClInclude Include="SourceFiles\FFNA_MapFile.h" />
-    <ClInclude Include="SourceFiles\FFNA_ModelFile.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\FFNA_ModelFile.h" />
     <ClInclude Include="SourceFiles\GuiGlobalConstants.h" />
     <ClInclude Include="SourceFiles\GWUnpacker.h" />
     <ClInclude Include="SourceFiles\imgui_memory_editor.h" />
@@ -348,7 +368,14 @@
     <ClInclude Include="SourceFiles\pch.h" />
     <ClInclude Include="SourceFiles\PerCameraCB.h" />
     <ClInclude Include="SourceFiles\PerFrameCB.h" />
-    <ClInclude Include="SourceFiles\PerObjectCB.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PerObjectCB.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Config.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Compose.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Shaders.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_ShaderText.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Sinks.h" />
     <ClInclude Include="SourceFiles\PerTerrainCB.h" />
     <ClInclude Include="SourceFiles\PickingPixelShader.h" />
     <ClInclude Include="SourceFiles\PixelShader.h" />
@@ -484,7 +511,24 @@
     <ClCompile Include="SourceFiles\Dome.cpp" />
     <ClCompile Include="SourceFiles\draw_audio_controller_panel.cpp" />
     <ClCompile Include="SourceFiles\draw_sound_fx_panel.cpp" />
-    <ClCompile Include="SourceFiles\animation_state.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\animation_state.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterHostShims.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\character_catalog.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\character_colour.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_builder.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.cpp">
+      <!-- No precompiled header: this translation unit is deliberately free of every host
+           dependency so that the same text can be compiled outside either application and
+           diffed against the reference converter. -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record_Tables.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Shaders.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_PlayerVisuals.cpp" />
     <ClCompile Include="SourceFiles\Audio\AnimationSoundManager.cpp" />
     <ClCompile Include="SourceFiles\draw_chunk_20000000.cpp" />
     <ClCompile Include="SourceFiles\draw_chunk_20000003.cpp" />
@@ -528,12 +572,15 @@
     <ClCompile Include="SourceFiles\AgentOverlay.cpp" />
     <ClCompile Include="SourceFiles\MatchReplay.cpp" />
     <ClCompile Include="SourceFiles\ReplayLibrary.cpp" />
+    <ClCompile Include="SourceFiles\RunLog.cpp" />
     <ClCompile Include="SourceFiles\draw_debug_match_metadata.cpp" />
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Notepad.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_RibbonToolbar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FogOfWar.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp" />
+    <ClCompile Include="SourceFiles\ProjectedAgentShadows.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_LordDamage.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CombatLog.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Morale.cpp" />
@@ -569,24 +616,24 @@
     <ClCompile Include="SourceFiles\AnnotationManager.cpp" />
     <ClCompile Include="SourceFiles\AgentSnapshotParser.cpp" />
     <ClCompile Include="SourceFiles\StoCParser.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\SkillDeduction.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeDeducer.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\MaxHpSolver.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\HealthModel.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeModel.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Summons.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Regen.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Snares.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_MaxHp.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Episodes.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Knockdown.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_PartyHeals.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_SelfHeal.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Recharge.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeRules_Blocks.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\SkillDeduction.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeDeducer.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HealthModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Summons.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Regen.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Snares.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_MaxHp.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Episodes.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Knockdown.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_PartyHeals.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_SelfHeal.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Recharge.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Blocks.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CharacterPanel.cpp" />
-    <ClCompile Include="..\gwobserver-private\SourceFiles\ReplayWindow_HealthDebug.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ReplayWindow_HealthDebug.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerComposer.cpp" />
@@ -841,6 +888,32 @@
     </FxCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- RUNTIME DATA FILES FOR THE PLAYER-VISUALS PATH.
+
+       The replay's player-visuals reader opens a handful of data files at runtime and looks for
+       them relative to the executable. They are not in this repository, so the adjacent private
+       repository supplies a targets file that stages them into $(OutDir) after a build. Without
+       that repository the import does not happen and the build is unchanged; a launch then records
+       every path it tried in PlayerVisuals.log and falls back to the stand-in models. -->
+  <Import Project="$(GwoPrivateDir)\build\CharacterData.targets" Condition="Exists('$(GwoPrivateDir)\build\CharacterData.targets')" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <!-- RELEASE STRING GATE.
+
+       This exe compiles sources from the adjacent private repository. A binary carries every
+       string literal its translation units contain whether or not any code path can reach them,
+       so "nothing calls it" is not enough: a Release build has to be checked. The private repo
+       owns the check and the word list it uses; this project only runs it and fails if it fails.
+
+       Release only, after Link, on the exe that was just produced. Needs python on PATH, which
+       the release procedure already requires (scripts\package_release.py). If the check itself
+       cannot run, that is a failure too - a gate that quietly skips is worse than none.
+
+       Run it by hand exactly the same way; see shiprelease.md. -->
+  <Target Name="GwoReleaseStringGate" AfterTargets="Link" Condition="'$(Configuration)'=='Release'">
+    <Exec Command="python &quot;$(GwoPrivateDir)\scripts\check_release_strings.py&quot; &quot;$(TargetPath)&quot;"
+          WorkingDirectory="$(ProjectDir)"
+          CustomErrorRegularExpression="^FAIL"
+          ContinueOnError="false" />
+  </Target>
 </Project>

@@ -5,7 +5,15 @@ enum class DepthStencilStateType
 {
     Enabled,
     EnabledForward,
-    Disabled
+    Disabled,
+    // Depth TEST on, depth WRITE off - the state a transparent pass needs.
+    //
+    // A blended surface must be occluded by solid geometry in front of it, so the test stays; but
+    // it must not STAMP ITSELF into the depth buffer, or the next transparent surface behind it is
+    // discarded even where it contributed nothing. Two-sided translucent geometry is the case that
+    // needs this: with depth writes on, the near-invisible front face punches a hole in the face
+    // behind it.
+    EnabledNoWrite
 };
 
 class DepthStencilStateManager
@@ -48,6 +56,19 @@ public:
         ID3D11DepthStencilState* pDSStateDisabled;
         m_device->CreateDepthStencilState(&dsDescDisabled, &pDSStateDisabled);
         m_depthStencilStates[static_cast<size_t>(DepthStencilStateType::Disabled)] = pDSStateDisabled;
+
+        // Depth test on, depth write off. Same comparison as Enabled - the depth buffer is
+        // cleared to 0 and the near/far are swapped, so GREATER_EQUAL is "in front".
+        D3D11_DEPTH_STENCIL_DESC dsDescNoWrite;
+        ZeroMemory(&dsDescNoWrite, sizeof(dsDescNoWrite));
+        dsDescNoWrite.DepthEnable = true;
+        dsDescNoWrite.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+        dsDescNoWrite.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;
+
+        ID3D11DepthStencilState* pDSStateNoWrite;
+        m_device->CreateDepthStencilState(&dsDescNoWrite, &pDSStateNoWrite);
+        m_depthStencilStates[static_cast<size_t>(DepthStencilStateType::EnabledNoWrite)] =
+          pDSStateNoWrite;
     }
 
     ~DepthStencilStateManager()
@@ -70,5 +91,6 @@ private:
     ID3D11Device* m_device;
     ID3D11DeviceContext* m_deviceContext;
 
-    std::array<ID3D11DepthStencilState*, 3> m_depthStencilStates = { nullptr, nullptr, nullptr };
+    std::array<ID3D11DepthStencilState*, 4> m_depthStencilStates = {nullptr, nullptr, nullptr,
+                                                                    nullptr};
 };

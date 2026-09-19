@@ -31,8 +31,12 @@ public:
     void SetDistance(float distance);
     float GetDistance() const { return m_distance; }
 
-    // Auto-fit camera to bounding box
-    void FitToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax);
+    // Auto-fit camera to bounding box.
+    // `minDistance` is the floor applied to the computed fit distance. The default matches the
+    // classic standalone model view, whose models are normalized into a 10000 unit box; a caller
+    // that frames geometry in native DAT units passes a smaller floor, otherwise a head sized
+    // object ends up a few pixels wide.
+    void FitToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax, float minDistance = 4000.0f);
 
     // Projection setup
     void SetPerspective(float fovY, float aspect, float nearZ, float farZ, bool reverse_z = true);
@@ -75,6 +79,11 @@ public:
     // Orbit angles
     float GetYaw() const { return m_yaw; }
     float GetPitch() const { return m_pitch; }
+
+    // Point the camera at a specific orbit angle without moving the target or the distance.
+    // FitToBounds always lands on the default "30 degrees above" view, so a caller that wants a
+    // named view fits first and then sets the angles. Pitch is clamped exactly like an orbit drag.
+    void SetOrbitAngles(float yaw, float pitch);
 
     // Settings
     float m_orbitSensitivity = 0.005f;

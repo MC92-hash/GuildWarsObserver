@@ -106,7 +106,13 @@ static constexpr int kAgentModelBatchSize = 2;
 void ReplayWindow::ProgressiveAgentModelPump()
 {
     if (!m_useAgentModels) return;
-    if (m_agentModelsLoaded) return;
+    if (m_agentModelsLoaded) {
+        // Recorded players become their own characters once the stand-in models are in - their
+        // animation banks are what a character is posed against. One step per frame, so the
+        // timeline never waits for more than one.
+        StepPlayerVisuals();
+        return;
+    }
 
     // If agents weren't classified when StepPlaceProps finished, retry here
     if (!m_agentModelsLoading && m_agentsClassified)
@@ -653,23 +659,22 @@ void ReplayWindow::LoadAgentModelsIO()
         std::vector<Mesh> propMeshes;
         for (size_t j = 0; j < numModels; j++) {
             AMAT_file amat;
+            int matRow = FFNA_ModelFile::kModernMaterialRowOrdinal;
             if (!isOtherFormat && !modelFile.AMAT_filenames_chunk.texture_filenames.empty()) {
-                const auto& geom = modelFile.geometry_chunk;
-                int subIdx = geom.models[j].unknown;
-                if (!geom.tex_and_vertex_shader_struct.uts0.empty())
-                    subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
-                const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
-                int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
-                    % (int)modelFile.AMAT_filenames_chunk.texture_filenames.size();
-                auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
-                auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
-                auto aIt = m_hashIndex->find(amatHash);
-                if (aIt != m_hashIndex->end())
-                    amat = m_datManager->parse_amat_file(aIt->second.at(0));
+            // A modern-format submodel's material row is the client's own assignment, and
+            // the AMAT lookup and GetMesh have to agree on it - the AMAT's stage reorder only
+            // fires when its stage count matches the row's, so two different rows silently
+            // produce two different texture lists. One helper answers both.
+                int amatHash = 0;
+                if (modelFile.ModernMaterialForSubmodel((int)j, matRow, amatHash)) {
+                    auto aIt = m_hashIndex->find(amatHash);
+                    if (aIt != m_hashIndex->end() && !aIt->second.empty())
+                        amat = m_datManager->parse_amat_file(aIt->second.at(0));
+                }
             }
             Mesh mesh = isOtherFormat
                 ? modelFileOther.GetMesh((int)j, amat)
-                : modelFile.GetMesh((int)j, amat);
+                : modelFile.GetMesh((int)j, amat, matRow);
             if (mesh.indices.size() % 3 == 0 && !mesh.indices.empty())
                 propMeshes.push_back(mesh);
         }
@@ -738,6 +743,7 @@ void ReplayWindow::LoadAgentModelsIO()
         }
 
         wi.tmpl.nativeHeight = bbMaxY - bbMinY;
+        wi.tmpl.nativeShadowRadius = 0.5f * std::hypot(bbMaxX - bbMinX, bbMaxZ - bbMinZ);
         wi.tmpl.nativeMinY = bbMinY;
         wi.tmpl.nativeCenter = { (bbMinX + bbMaxX) * 0.5f, (bbMinY + bbMaxY) * 0.5f, (bbMinZ + bbMaxZ) * 0.5f };
         wi.tmpl.originalMeshes = propMeshes;
@@ -1355,6 +1361,14 @@ float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
         ? LookupAvatarModelInfo(avatar)
         : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
 
+    // A recorded player is as tall as the character they played, so anything anchored above their
+    // head has to measure THAT and not the stand-in it replaced.
+    if (!avatar) {
+        float pvTop = 0.f;
+        if (PlayerVisualsTopY(agentId, m_agentModelScale, pvTop))
+            return groundY + pvTop;
+    }
+
     return groundY + tmplIt->second.nativeHeight * info.npcAdjustment * m_agentModelScale;
 }
 
@@ -1364,6 +1378,7 @@ float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
 
 void ReplayWindow::DrawAgentModels()
 {
+    m_shadowCasters.clear();
     if (!m_useAgentModels) return;
     if (!m_showAgentOverlay) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
@@ -1537,11 +1552,46 @@ void ReplayWindow::DrawAgentModels()
                 -tmpl.nativeCenter.x, -tmpl.nativeMinY, -tmpl.nativeCenter.z);
         }
 
+        // A recorded player is drawn at the size they actually were, which is a property of the
+        // character and not of the stand-in model: it replaces the model adjustment entirely, and
+        // its own geometry supplies the centring, so the scale is about the character's feet.
+        // Everything downstream - the shadow radius below, the weapon that rides this transform,
+        // the overlays that anchor on AgentModelTopY - follows from these two.
+        float pvScale = 1.f;
+        XMFLOAT3 pvCentre{ 0.f, 0.f, 0.f };
+        const bool pvPlaced = !slotAvatar && PlayerVisualsPlacement(agentId, pvScale, pvCentre);
+        if (pvPlaced) {
+            scale = pvScale * m_agentModelScale;
+            centering = XMMatrixTranslation(-pvCentre.x, -pvCentre.y, -pvCentre.z);
+        }
+
         XMMATRIX worldMat = centering
             * XMMatrixRotationY(XM_PIDIV2)
             * XMMatrixScaling(scale, scale, scale)
             * XMMatrixRotationY(-rotRad)
             * XMMatrixTranslation(pos.x, pos.y, pos.z);
+
+        // Reuse the same visibility gate, position and scale as the displayed model.
+        // This is a bounds-derived fallback radius, pending native model-bound parity.
+        if (tmplIt != m_agentModelTemplates.end() && !inFog) {
+            const float distance = std::sqrt((pos.x-camP.x)*(pos.x-camP.x) +
+                (pos.y-camP.y)*(pos.y-camP.y) + (pos.z-camP.z)*(pos.z-camP.z));
+            const float fade = ProjectedAgentShadows::DistanceOpacity(distance, m_originalShadowDistanceLimit);
+            float radius = std::min(0.75f * tmplIt->second.nativeShadowRadius * scale, 150.f);
+            float casterHeight = tmplIt->second.nativeHeight * scale;
+            // A recorded player's shadow and height come from the character's own bounds, not
+            // from the stand-in's.
+            if (pvPlaced) {
+                float pvRadius = 0.f, pvTop = 0.f;
+                if (PlayerVisualsRadius(agentId, m_agentModelScale, pvRadius) && pvRadius > 0.f)
+                    radius = std::min(0.75f * pvRadius, 150.f);
+                if (PlayerVisualsTopY(agentId, m_agentModelScale, pvTop) && pvTop > 0.f)
+                    casterHeight = pvTop;
+            }
+            if (radius > 0 && fade > 0)
+                m_shadowCasters.push_back({pos, radius, fade * (dead ? deadAlpha : 1.f), slotKey,
+                    casterHeight});
+        }
 
         // Decide skinned vs. rigid rendering
         auto animIt = m_agentAnimStates.find(slotKey);
@@ -1939,6 +1989,7 @@ void ReplayWindow::DrawSkinnedAgentModels()
     bool anyVisible = false;
     for (auto& [slotKey, animState] : m_agentAnimStates) {
         if (!animState.hasSkinning) continue;
+        if (HasPlayerVisual(slotKey)) continue;   // drawn by its own pass, see DrawPlayerVisuals
         auto statusIt = m_agentModelRenderStatus.find(slotKey);
         if (statusIt == m_agentModelRenderStatus.end()) continue;
         if (statusIt->second.starts_with("skinned")) { anyVisible = true; break; }
@@ -1952,6 +2003,11 @@ void ReplayWindow::DrawSkinnedAgentModels()
     for (auto& [slotKey, animState] : m_agentAnimStates)
     {
         if (!animState.hasSkinning) continue;
+
+        // A recorded player's own character needs three sub-passes and its own program, so it is
+        // drawn by DrawPlayerVisuals immediately after this one. Everything else - NPCs, spirits,
+        // minions, avatar forms and any player without a record - is drawn here exactly as before.
+        if (HasPlayerVisual(slotKey)) continue;
 
         auto statusIt = m_agentModelRenderStatus.find(slotKey);
         if (statusIt == m_agentModelRenderStatus.end() || !statusIt->second.starts_with("skinned"))

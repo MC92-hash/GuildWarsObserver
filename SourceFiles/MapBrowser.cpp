@@ -21,6 +21,7 @@
 #include "SkillDatabase.h"
 #include "draw_replay_browser.h"
 #include "CursorSystem.h"
+#include "RunLog.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -248,6 +249,10 @@ MapBrowser::~MapBrowser()
 // Initialize the Direct3D resources required to run.
 void MapBrowser::Initialize(HWND window, int width, int height)
 {
+    // First line of the run log, which is what makes every later timestamp mean "milliseconds
+    // since the application started initialising".
+    RunLog::Line("Initialize: begin");
+
     m_deviceResources->SetWindow(window, width, height);
     m_deviceResources->CreateDeviceResources();
     CreateDeviceDependentResources();
@@ -290,8 +295,14 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     GetTextureCache().Init(m_deviceResources->GetD3DDevice());
 
+    RunLog::Line("Initialize: device, ImGui and texture cache ready");
+
     SetupConfig::Load();
     GuiGlobalConstants::LoadSettings();
+
+    RunLog::Line("settings: storage mode '%s', match folder '%s'",
+                 GuiGlobalConstants::storage_mode.c_str(),
+                 SetupConfig::match_data_folder.c_str());
 
     if (!SetupConfig::dat_file_path.empty())
         GuiGlobalConstants::saved_gw_dat_path = SetupConfig::dat_file_path;
@@ -439,9 +450,27 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         // Evict expired cached matches (Cloud Only: 30-day retention)
         m_cloudProvider->EvictExpired();
 
+        // Scan what is ALREADY in the cache, before the network is asked anything.
+        //
+        // Without this the library stayed unloaded until the background sync flipped its
+        // has-new-data flag, and draw_replay_browser draws NOTHING while the library is unloaded -
+        // so a launch showed the bare clear colour with only the menu bar and the sync toast on
+        // it, for as long as the index fetch took, and for ever whenever the fetch failed with no
+        // cached index to fall back on. The cached matches are on local disk and need no network
+        // at all, so they go up immediately; the sync's own RescanDiff then adds the remote
+        // entries when it arrives (MapBrowser::Tick).
+        const auto scanStart = high_resolution_clock::now();
+        m_replay_library.ScanFolder();
+        RunLog::Line("library: scanned the cache directory in %.0f ms, %d match(es) -> %s",
+                     duration<double, std::milli>(high_resolution_clock::now() - scanStart).count(),
+                     m_replay_library.GetMatchCount(),
+                     m_replay_library.IsLoaded() ? "loaded" : "NOT LOADED");
+        RunLog::Line("library: cache directory '%s'", cacheDir.c_str());
+
         // Start background sync
         m_syncEngine = std::make_unique<SyncEngine>();
         m_syncEngine->Start(*m_cloudProvider, m_matchIndex, m_httpClient, bucket);
+        RunLog::Line("library: background match-index sync started");
     }
     else if (!GuiGlobalConstants::saved_match_data_folder_path.empty())
     {
@@ -450,9 +479,25 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         if (std::filesystem::exists(matchFolder) && std::filesystem::is_directory(matchFolder))
         {
             m_replay_library.SetMatchDataFolder(GuiGlobalConstants::saved_match_data_folder_path);
+            const auto scanStart = high_resolution_clock::now();
             m_replay_library.ScanFolder();
+            RunLog::Line("library: scanned '%s' in %.0f ms, %d match(es) -> %s",
+                         GuiGlobalConstants::saved_match_data_folder_path.c_str(),
+                         duration<double, std::milli>(high_resolution_clock::now() - scanStart)
+                             .count(),
+                         m_replay_library.GetMatchCount(),
+                         m_replay_library.IsLoaded() ? "loaded" : "NOT LOADED");
             m_folderWatcher.Start(GuiGlobalConstants::saved_match_data_folder_path, []{});
         }
+        else
+        {
+            RunLog::Line("library: NOT SCANNED - '%s' is not an existing directory",
+                         GuiGlobalConstants::saved_match_data_folder_path.c_str());
+        }
+    }
+    else
+    {
+        RunLog::Line("library: NOT SCANNED - no match folder is configured");
     }
 
     // If the previous run's updater batch failed to extract, it left a log
@@ -462,6 +507,8 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     // Start background update check
     m_updateChecker.Check(GWO_VERSION);
+
+    RunLog::Line("Initialize: done");
 }
 
 #pragma region Frame Update
@@ -498,6 +545,8 @@ void MapBrowser::Tick()
     if (m_syncEngine && m_syncEngine->HasNewData())
     {
         int added = m_replay_library.RescanDiff();
+        RunLog::Line("library: the sync reported new data; rescan added %d, total %d match(es)",
+                     added, m_replay_library.GetMatchCount());
         if (added > 0)
         {
             g_invalidateFilters = true;
@@ -580,7 +629,13 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
         // inside this call and no frame is drawn until it returns. The cursor
         // has to be set here rather than from the render loop.
         ScopedWaitCursor busy;
+        RunLog::Line("dat: reading the index (this blocks the frame loop)");
+        const auto datStart = high_resolution_clock::now();
         bool succeeded = m_dat_managers[0]->Init(gw_dat_path);
+        RunLog::Line("dat: index read %s in %.0f ms, %d file(s)",
+                     succeeded ? "ok" : "FAILED",
+                     duration<double, std::milli>(high_resolution_clock::now() - datStart).count(),
+                     succeeded ? m_dat_managers[0]->get_num_files() : 0);
         if (!succeeded)
         {
             gw_dat_path_set = false;

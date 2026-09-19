@@ -714,6 +714,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    ReleasePlayerVisuals();
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
     if (m_weaponModelLoadThread.joinable())
@@ -1544,19 +1545,16 @@ void ReplayWindow::StepPlaceProps()
             for (size_t j = 0; j < geom.models.size(); j++)
             {
                 AMAT_file amat;
-                if (!modelFilePtr->AMAT_filenames_chunk.texture_filenames.empty()) {
-                    int subIdx = geom.models[j].unknown;
-                    if (!geom.tex_and_vertex_shader_struct.uts0.empty())
-                        subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
-                    const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
-                    int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF) % (int)modelFilePtr->AMAT_filenames_chunk.texture_filenames.size();
-                    auto amatFn = modelFilePtr->AMAT_filenames_chunk.texture_filenames[amatIdx];
-                    auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                // The submodel's own material row, and the AMAT that row names, from the one call
+                // that cannot let the two disagree. See FFNA_ModelFile::ModernMaterialForSubmodel.
+                int matRow = FFNA_ModelFile::kModernMaterialRowOrdinal;
+                int amatHash = 0;
+                if (modelFilePtr->ModernMaterialForSubmodel((int)j, matRow, amatHash)) {
                     auto aIt = m_hashIndex->find(amatHash);
                     if (aIt != m_hashIndex->end())
                         amat = m_datManager->parse_amat_file(aIt->second.at(0));
                 }
-                Mesh mesh = modelFilePtr->GetMesh((int)j, amat);
+                Mesh mesh = modelFilePtr->GetMesh((int)j, amat, matRow);
                 if (mesh.indices.size() % 3 == 0)
                     propMeshes.push_back(mesh);
             }
@@ -5819,6 +5817,7 @@ void ReplayWindow::Update(double elapsedMs)
 void ReplayWindow::Render()
 {
     ++m_frameCount;
+    RenderTerrainShadows();
 
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
@@ -5827,6 +5826,9 @@ void ReplayWindow::Render()
         RenderMinimap();
 
     Clear();
+
+    // Update actor poses/transforms before either scene or shadow rendering.
+    DrawAgentModels();
 
     auto* pickingRTV = m_assetSelectionEnabled
         ? m_deviceResources->GetPickingRenderTargetView() : nullptr;
@@ -5861,12 +5863,16 @@ void ReplayWindow::Render()
             m_deviceResources->GetPickingStagingTexture(), cursor.x, cursor.y);
     }
 
+    DrawAgentShadows();
     DrawHeatmapOverlay();
 
     DrawFogOfWar();
 
-    DrawAgentModels();
     DrawSkinnedAgentModels();
+    // ...and, immediately after it, the recorded players who have a character of
+    // their own. Two passes rather than one because a composed character needs its
+    // own sub-pass order and its own program; the pass above skips exactly these.
+    DrawPlayerVisuals();
     DrawWeaponModels();
 
     DrawAgentCylinders();
@@ -6035,6 +6041,23 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::SliderFloat("Model Scale", &m_agentModelScale, 0.1f, 5.0f, "%.2f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Scale factor for agent 3D models");
+
+            ImGui::Checkbox("Character shadows (preview)", &m_showAgentShadows);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Animated silhouette masks with circular fallback. Bridge receivers are not available yet.");
+            ImGui::Checkbox("Terrain and prop shadows (preview)", &m_showTerrainShadows);
+            if (m_showAgentShadows) {
+                ImGui::SliderFloat("Shadow strength", &m_shadowStrength, 0.f, 1.f, "%.2f");
+                ImGui::Checkbox("Animated silhouettes", &m_showSilhouetteShadows);
+                ImGui::Checkbox("Original shadow distance limit", &m_originalShadowDistanceLimit);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Fade out at 1,500 units from the camera. Leave off for wide Observer camera views.");
+                ImGui::TextDisabled("Shadow candidates: %zu | Drawn: %u | Elevated: %u",
+                    m_shadowCasters.size(), m_agentShadows.DrawnCount(), m_agentShadows.ReceiverSkipCount());
+                ImGui::TextDisabled("Silhouette masks: %u / 32", m_silhouetteShadowCount);
+                const auto& shadowError = m_shadowLoadError.empty() ? m_agentShadows.Error() : m_shadowLoadError;
+                if (!shadowError.empty()) ImGui::TextWrapped("%s", shadowError.c_str());
+            }
 
             ImGui::Separator();
             if (m_agentModelsLoaded) {
@@ -9125,7 +9148,13 @@ void ReplayWindow::Clear()
 // IDeviceNotify
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::OnDeviceLost()   {}
+void ReplayWindow::OnDeviceLost()
+{
+    m_agentShadows = ProjectedAgentShadows{};
+    m_shadowInitAttempted = false;
+    m_shadowLoadError.clear();
+    m_shadowCasters.clear();
+}
 void ReplayWindow::OnDeviceRestored() {}
 
 // ---------------------------------------------------------------------------

@@ -177,9 +177,21 @@ void UpdateModelViewer(float deltaTime)
     {
         g_modelViewerState.camera->FitToBounds(
             g_modelViewerState.boundsMin,
-            g_modelViewerState.boundsMax);
+            g_modelViewerState.boundsMax,
+            g_modelViewerState.cameraFitMinDistance);
         g_modelViewerState.needsCameraFit = false;
     }
+}
+
+void FitModelViewerCameraToBounds(const XMFLOAT3& boundsMin, const XMFLOAT3& boundsMax,
+                                  float minFitDistance)
+{
+    g_modelViewerState.boundsMin = boundsMin;
+    g_modelViewerState.boundsMax = boundsMax;
+    g_modelViewerState.cameraFitMinDistance = minFitDistance;
+
+    // Defer camera fit to the next frame, when the viewport is properly set.
+    g_modelViewerState.needsCameraFit = true;
 }
 
 void HandleModelViewerInput(float deltaX, float deltaY, bool leftButton, bool rightButton, float scrollDelta)
