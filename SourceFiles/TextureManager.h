@@ -303,6 +303,7 @@ public:
 		const int textureID = it->second.textureID;
 		cached_textures.erase(it);
 		m_textures.erase(textureID);
+		m_texture_types.erase(textureID);
 		return true;
 	}
 
@@ -312,6 +313,7 @@ public:
 		if (it != m_textures.end())
 		{
 			m_textures.erase(it);
+			m_texture_types.erase(textureID);
 			return true;
 		}
 		return false;
@@ -339,6 +341,32 @@ public:
 
 		if (it != cached_textures.end()) { return it->second.textureID; }
 		return -1;
+	}
+
+	// ---- THE DECODED FORMAT OF A TEXTURE, KEYED BY THE ID THIS MANAGER MINTED ------------------
+	//
+	// PerObjectCB::texture_types carries this to the model pixel shaders, and they switch REAL
+	// blend branches on it - OldModelPixelShader's prev_texture_type picks between two source-over
+	// forms, so a wrong answer here does not look like a wrong format, it looks like the piece
+	// below coming through the piece above.
+	//
+	// It lives HERE, beside the ids it is keyed on, because a texture id means NOTHING outside the
+	// manager that issued it. Every window builds its own TextureManager (MapRenderer::Initialize)
+	// and every one of them starts numbering at 0, so the same small integers are handed out again,
+	// to different textures, in every window the process opens. A process-wide table keyed on a
+	// bare id therefore answers the second window with the first window's formats. Keyed here it
+	// dies with the manager that minted the ids, and the question cannot be asked across windows.
+	void SetTextureType(int textureID, uint32_t texture_type)
+	{
+		if (textureID >= 0) { m_texture_types[textureID] = texture_type; }
+	}
+
+	// BC1 (1) when this manager never registered one. That is the same default every caller already
+	// used for a missed lookup, and the format the great majority of DAT textures decode as.
+	uint32_t GetTextureType(int textureID) const
+	{
+		const auto it = m_texture_types.find(textureID);
+		return it != m_texture_types.end() ? it->second : 1u;
 	}
 
 	std::vector<ID3D11ShaderResourceView*> GetTextures(const std::vector<int>& textureIDs) const
@@ -381,6 +409,7 @@ public:
 	void Clear() { 
 		m_textures.clear(); 
 		cached_textures.clear();
+		m_texture_types.clear();
 	}
 
 private:
@@ -388,6 +417,9 @@ private:
 	ID3D11DeviceContext* m_deviceContext;
 	int m_nextTextureID = 0;
 	std::unordered_map<int, TextureData> cached_textures;
+
+	// Keyed by the texture id THIS manager minted - see SetTextureType().
+	std::unordered_map<int, uint32_t> m_texture_types;
 
 	std::unordered_map<int, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> m_textures;
 

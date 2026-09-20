@@ -67,7 +67,6 @@ inline bool is_parsing_data = false;
 inline bool items_to_parse = false;
 inline bool items_parsed = false;
 
-inline std::unordered_map<int, TextureType> model_texture_types;
 
 std::unique_ptr<Terrain> terrain;
 std::vector<Mesh> prop_meshes;
@@ -621,7 +620,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 
 							// Note: We still track the texture type but don't add to model_dat_textures
 							// Inline textures are inventory icons, not model textures
-							model_texture_types.insert({ texture_id, dat_texture.texture_type });
+							map_renderer->GetTextureManager()->SetTextureType(texture_id, dat_texture.texture_type);
 
 							if (texture_id >= 0)
 							{
@@ -666,7 +665,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 								const auto hr = map_renderer->GetTextureManager()->
 									CreateTextureFromDDSInMemory(ddsData.data(), ddsDataSize, &texture_id, &dat_texture.width,
 										&dat_texture.height, dat_texture.rgba_data, tex_entry->Hash);
-								model_texture_types.insert({ texture_id, DDSt });
+								map_renderer->GetTextureManager()->SetTextureType(texture_id, DDSt);
 								dat_texture.texture_type = DDSt;
 							}
 							else
@@ -680,7 +679,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 										decoded_filename);
 								}
 
-								model_texture_types.insert({ texture_id, dat_texture.texture_type });
+								map_renderer->GetTextureManager()->SetTextureType(texture_id, dat_texture.texture_type);
 							}
 
 							model_dat_textures.push_back(dat_texture);
@@ -772,7 +771,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 								model_dat_textures[j] = dat_texture;
 								if (texture_id >= 0)
 								{
-									model_texture_types.insert({ texture_id, dat_texture.texture_type });
+									map_renderer->GetTextureManager()->SetTextureType(texture_id, dat_texture.texture_type);
 								}
 
 								sprintf_s(debug_msg, "draw_dat_browser: texture[%zu] loaded, texture_id=%d, size=%dx%d\n",
@@ -845,7 +844,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 						map_renderer->GetTextureManager()->AddTexture((void*)checkerboard_texture_0.getData().data(), texture_width,
 							texture_height, DXGI_FORMAT_R8G8B8A8_UNORM, 3214234 + (int)color_choice0 * 20 + (int)color_choice0);
 
-					model_texture_types.insert({ checkered_tex_id_0, BC1 });
+					map_renderer->GetTextureManager()->SetTextureType(checkered_tex_id_0, BC1);
 
 
 					texture_ids.push_back(checkered_tex_id_0);
@@ -967,7 +966,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 						per_object_cbs[i].texture_indices[index0][index1] =
 							static_cast<uint32_t>(prop_mesh.tex_indices[j]);
 						per_object_cbs[i].blend_flags[index0][index1] = static_cast<uint32_t>(prop_mesh.blend_flags[j]);
-						per_object_cbs[i].texture_types[index0][index1] = static_cast<uint32_t>(model_texture_types.at(per_mesh_tex_ids[i][j]));
+						per_object_cbs[i].texture_types[index0][index1] = map_renderer->GetTextureManager()->GetTextureType(per_mesh_tex_ids[i][j]);
 
 						if (using_other_model_format)
 						{
@@ -1705,7 +1704,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 										dat_texture.width, dat_texture.height, dat_texture.rgba_data.data(),
 										&texture_id, decoded_filename);
 
-									model_texture_types.insert({ texture_id, dat_texture.texture_type });
+									map_renderer->GetTextureManager()->SetTextureType(texture_id, dat_texture.texture_type);
 
 									texture_ids.push_back(texture_id);
 								}
@@ -1797,7 +1796,7 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 								per_object_cbs[j].blend_flags[index0][index1] =
 									static_cast<uint32_t>(prop_mesh.blend_flags[k]);
 								per_object_cbs[j].texture_types[index0][index1] =
-									static_cast<uint32_t>(model_texture_types[per_mesh_tex_ids[j][k]]) | (prop_mesh.texture_types[k] << 8);
+									map_renderer->GetTextureManager()->GetTextureType(per_mesh_tex_ids[j][k]) | (prop_mesh.texture_types[k] << 8);
 							}
 						}
 
