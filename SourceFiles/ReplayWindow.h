@@ -821,6 +821,45 @@ public:
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> m_fogDSS;
     Microsoft::WRL::ComPtr<ID3D11RasterizerState>   m_fogRS;
 
+    // --- Scene bloom (the game's own post-process; see ReplayWindow_Bloom.cpp) ---
+    struct BloomCBData {
+        float srcTexelX, srcTexelY;
+        float blurStepX, blurStepY;
+        float tapW0, tapW1, tapW2, tapW3;
+        float amount;
+        float saturation;
+        float bloomPad0, bloomPad1;
+    };
+
+    bool m_bloomShadersTried = false;
+    int  m_bloomWidth    = 0;
+    int  m_bloomHeight   = 0;
+    int  m_bloomQuarterW = 0;
+    int  m_bloomQuarterH = 0;
+    // Resolved from the map's own environment record, blended across regions exactly like the fog.
+    float m_mapBloomAmount     = 0.0f;
+    float m_mapSceneSaturation = 1.0f;
+
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>       m_bloomVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>        m_bloomBrightPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>        m_bloomBlurPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>        m_bloomCompositePS;
+    Microsoft::WRL::ComPtr<ID3D11Buffer>             m_bloomCB;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_bloomSampler;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>         m_bloomBS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState>  m_bloomDSS;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState>    m_bloomRS;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_bloomSceneTex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_bloomSceneSRV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_bloomTex[2];
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_bloomRTV[2];
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_bloomSRV[2];
+
+    void InitBloomShaders();
+    bool EnsureBloomTargets(int width, int height);
+    void DrawSceneBloom();
+    void ReleaseBloomResources();
+
     void InitFogRenderer();
     void DrawFogOfWar();
     void DrawFogOfWarToolbar();
@@ -1188,9 +1227,85 @@ private:
     std::atomic<bool> m_playerVisualsCpuDone{false};
     std::atomic<bool> m_playerVisualsCpuOk{false};
 
+    // THE DRAW PASS'S OWN PIXEL PROGRAMS, COMPILED BY THIS WINDOW'S DEVICE AND USED BY NO OTHER.
+    //
+    // Every replay window builds its OWN ID3D11Device (see InitGraphics), and opening a second
+    // match appends a second window rather than replacing the first. A program is not a value: it
+    // is an object owned by the device that created it, and binding one into a different device's
+    // context is undefined - the API does not say what happens and a display driver does not report
+    // it, so the visible result can be a fault inside the driver in an unrelated call one frame
+    // later. These therefore live on the window, next to the device that made them, instead of once
+    // per process.
+    //
+    // m_playerVisualShaderDevice is both the "already attempted" flag and the identity check: the
+    // pass compiles when it does not match the device it is about to draw with, which also covers a
+    // device that was lost and replaced under this same window. OnDeviceLost clears all three as
+    // well, so neither mechanism depends on the other.
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_playerVisualShaderOld;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> m_playerVisualShaderNew;
+    ID3D11Device* m_playerVisualShaderDevice = nullptr;
+
     void StepPlayerVisuals();      // one call per frame from ProgressiveAgentModelPump
-    void DrawPlayerVisuals();      // after DrawSkinnedAgentModels, before the weapons
+    // Compiles the pair above against `device` if they were not already compiled against exactly
+    // that device. Called by the draw pass; cheap after the first frame.
+    void EnsurePlayerVisualShaders(ID3D11Device* device);
+    // After DrawSkinnedAgentModels, before the weapons. `secondaryView` is true when the frame
+    // is being drawn into the split camera's own target rather than the main one - it only
+    // changes what the run log says, never what is drawn.
+    // The map's environment - which fog and which lighting entry is live at a point, and the
+    // blend between them. Defined in ReplayWindow.cpp; see the note there.
+    void ApplyMapEnvironment(float world_x, float world_z);
+    // The camera eye the query point was derived from, for the log only.
+    float m_envEye[3] = {0.0f, 0.0f, 0.0f};
+    bool m_envFromCamera = false;
+    // Which of the three rules produced the query point this frame, for the log only.
+    const char* m_envQuerySource = "eye";
+    // THE ORBIT CENTRE OF THE FOLLOW CAMERA - the agent the frame is about. Written by
+    // UpdateFollowCamera every frame it runs, cleared by ExitFollowMode. The environment blend
+    // uses it directly rather than reconstructing it from a ray, which is exact where the ray is
+    // a guess. Only meaningful while m_cameraMode == CameraMode::FollowAgent.
+    DirectX::XMFLOAT3 m_followCenter{0.0f, 0.0f, 0.0f};
+    bool m_followCenterValid = false;
+    void EnvIndicesAt(float world_x, float world_z, uint16_t out_indices[8]) const;
+
+    // ---- WHAT COLOUR THE GROUND IS, MEASURED RATHER THAN ARGUED ------------------------------
+    //
+    // The environment lines above say which light the terrain is getting. They say nothing about
+    // the other half of `pixel = albedo x light`, and a whole round was spent backing the albedo
+    // out of a screenshot by division - which only works if the light used in the division is the
+    // light the frame was actually drawn with, and it was not. So the albedo is recorded directly,
+    // at the source, from the same bytes that are uploaded into the terrain texture array.
+    //
+    // One entry per ARRAY SLICE, in upload order, so the slice index in the log is the same number
+    // the pixel shader's `layerIndex` carries. `mean_rgb` is in the order the GPU reads the buffer:
+    // it is uploaded as DXGI_FORMAT_B8G8R8A8_UNORM, so byte 0 is BLUE and byte 2 is RED, and this
+    // stores them already swapped into R, G, B. (The decoder's own `RGBA` union names byte 0 `.r`,
+    // which is a misnomer: the DXT1 colour word's low five bits are the blue field. Reading that
+    // name as red is what made the map's warm rust ground look blue-grey in an earlier survey.)
+    struct TerrainSliceAlbedo
+    {
+        uint32_t file_id = 0;      // the .dat id the slice was decoded from
+        int width = 0, height = 0;
+        float mean_rgb[3] = {0.0f, 0.0f, 0.0f};
+        float mean_alpha = 0.0f;   // the layer weight the shader's progressive blend uses
+    };
+    std::vector<TerrainSliceAlbedo> m_terrainSliceAlbedo;
+    // Writes the ground line for the tile under (world_x, world_z): the tile's four corner
+    // texture indices, the slices the three layers resolve to, their weights, the blended albedo
+    // and the pixel that albedo and `light` produce. Called from ApplyMapEnvironment, under the
+    // same rate limit as the rest of the environment block.
+    void LogTerrainAlbedoAt(float world_x, float world_z, const float ambient[3],
+                            const float sun[3]) const;
+
+    void DrawPlayerVisuals(bool secondaryView = false);
     void ReleasePlayerVisuals();   // match teardown
+
+    // Whether this submesh of a composed character is a SURFACE. A submesh that composites by
+    // adding light is a two-sided card with no back: it cannot occlude and it cannot cast, so the
+    // silhouette shadow capture leaves it out. The answer comes from the same per-submesh
+    // constant buffer the draw pass routes on, so the two cannot disagree. For any agent that is
+    // not a composed character the buffer carries none of this and the answer is always true.
+    static bool PlayerVisualSubmeshIsSurface(const PerObjectCB& cb);
 
     // Whether this agent has one. The stand-in skinned pass skips exactly these.
     bool HasPlayerVisual(int agentId) const;

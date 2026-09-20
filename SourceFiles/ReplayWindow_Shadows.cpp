@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ReplayWindow.h"
+#include "RunLog.h"
 
 void ReplayWindow::DrawAgentShadows()
 {
@@ -23,6 +24,9 @@ void ReplayWindow::DrawAgentShadows()
         m_agentShadows.Initialize(m_deviceResources->GetD3DDevice(), texture.rgba_data.data(), texture.width, texture.height);
     }
     if (m_showSilhouetteShadows && m_agentShadows.Ready()) {
+        // How much of what the capture was offered it actually took. Once per run, numbers only:
+        // "every submesh accepted" and "some rejected" are different pictures on the ground.
+        size_t accepted=0,rejected=0;
         auto direction=m_mapRenderer->GetDirectionalLight().direction;
         const float horizontal=std::hypot(direction.x,direction.z);
         // Clamp elevation to the range recovered from AvShadow. Map azimuth is
@@ -40,10 +44,23 @@ void ReplayWindow::DrawAgentShadows()
             if (found==m_agentAnimStates.end() || !found->second.hasSkinning) continue;
             std::vector<ProjectedAgentShadows::Part> parts;
             auto& state=found->second;
-            for (size_t i=0;i<state.animMeshes.size() && i<state.perMeshCBs.size();++i)
-                if (state.animMeshes[i]) parts.push_back({state.animMeshes[i].get(),state.perMeshCBs[i].world});
+            for (size_t i=0;i<state.animMeshes.size() && i<state.perMeshCBs.size();++i) {
+                if (!state.animMeshes[i]) continue;
+                // A submesh that composites by adding light is a two-sided card, not a surface:
+                // it occludes nothing, so it casts nothing. Same test the draw pass routes on.
+                if (!PlayerVisualSubmeshIsSurface(state.perMeshCBs[i])) { ++rejected; continue; }
+                parts.push_back({state.animMeshes[i].get(),state.perMeshCBs[i].world});
+            }
+            accepted+=parts.size();
             if (m_agentShadows.Capture(m_deviceResources->GetD3DDeviceContext(),m_silhouetteShadowCount,caster,shift,parts))
                 ++m_silhouetteShadowCount;
+        }
+        static bool reported=false;
+        if (!reported && m_silhouetteShadowCount>0) {
+            reported=true;
+            RunLog::Line("shadows: silhouette capture - %u caster(s), %zu submesh(es) accepted, "
+                         "%zu left out as they add light rather than block it",
+                         m_silhouetteShadowCount,accepted,rejected);
         }
     }
     m_agentShadows.Draw(m_deviceResources->GetD3DDeviceContext(), *terrain,

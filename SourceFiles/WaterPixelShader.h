@@ -150,21 +150,29 @@ float GW_FogFactor(float3 world_pos)
     float4 view_pos = mul(float4(world_pos, 1.0), View);
     float view_depth = abs(view_pos.z);
 
+    // The client's own haze curve - the same one the terrain and model shaders use. This helper
+    // had the distance and height halves already; what it was missing is the `fNear` term, which
+    // keeps the near field clear, and the fact that the client saturates ONCE at the end rather
+    // than per term. See the map lighting model note under docs/appearance_data.
     float dist_factor = 1.0;
     float dist_denom = fog_end - fog_start;
     if (abs(dist_denom) >= 1e-3)
     {
-        dist_factor = saturate((fog_end - view_depth) / dist_denom);
+        dist_factor = (fog_end - view_depth) / dist_denom;
     }
 
     float height_factor = 1.0;
-    float height_denom = fog_end_y - fog_start_y;
-    if (abs(height_denom) >= 1e-3)
+    float near_factor = 0.0;
+    float height_denom = fog_start_y - fog_end_y;
+    // Strict `>`, the client's own gate (see the world shaders for why a negative denominator is
+    // not a harmless sign flip - it makes near_factor >= 1 and cancels the haze outright).
+    if (height_denom > 0.0)
     {
-        height_factor = saturate((fog_end_y - world_pos.y) / height_denom);
+        height_factor = (world_pos.y - fog_end_y) / height_denom;
+        near_factor = 1.0 - view_depth / (2.0 * height_denom);
     }
 
-    return min(dist_factor, height_factor);
+    return saturate(max(min(dist_factor, height_factor), near_factor));
 }
 
 // Main Pixel Shader function (GW texbem water PS reimplementation)

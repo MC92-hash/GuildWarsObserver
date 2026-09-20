@@ -9,12 +9,105 @@
 #include "Extract_BASS_DLL_resource.h"
 #include "imgui.h"
 #include "CursorSystem.h"
+#include "RunLog.h"
 #include <filesystem>
 #include <DbgHelp.h>
 
+// =================================================================================================
+// WHERE A CRASH LEAVES ITS EVIDENCE
+//
+// Two things used to make a crash here expensive to read, and both are fixed below.
+//
+// 1. THE DUMP LANDED IN THE WORKING DIRECTORY, under a fixed name. The working directory of this
+//    application is not reliably its own: it is whatever the thing that launched it happened to be
+//    in, which has already been observed to be a different repository's build output. And a fixed
+//    name means the next crash overwrites the one somebody was about to report. So the dump now
+//    goes next to the run log, in the profile directory this process can always write, under a name
+//    stamped with the date and time; the old working-directory name is only a fallback.
+//
+// 2. NOTHING SAID WHERE IT FAULTED unless a symbol file that matched exactly was still on disk.
+//    The three facts that identify a fault - the exception code, the address, and WHICH MODULE OWNS
+//    that address with its load base, so the offset within it can be computed - are all knowable
+//    inside the handler and none of them need symbols. They now go in the run log, together with
+//    the breadcrumb the draw pass leaves, which names the step that was running.
+// =================================================================================================
+namespace
+{
+std::wstring CrashDumpPath()
+{
+    const std::filesystem::path& log = RunLog::Path();
+    if (log.empty())
+        return L"CrashDump.dmp";
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    wchar_t stamp[32] = {};
+    std::wcsftime(stamp, 32, L"%Y-%m-%d_%H%M%S", &tm);
+
+    std::filesystem::path dump = log.parent_path() / (std::wstring(L"CrashDump_") + stamp + L".dmp");
+    return dump.wstring();
+}
+
+// Everything the run log can say about a fault without a symbol file: the code, the address, and
+// the module that address belongs to with the offset inside it. An offset into a named module is
+// what a debugger needs to place the fault, and it survives the binary being rebuilt.
+void LogFaultSite(EXCEPTION_POINTERS* pointers, const std::wstring& dumpPath, const char* kind)
+{
+    RunLog::Line("crash: *** %s ***", kind);
+
+    if (pointers != nullptr && pointers->ExceptionRecord != nullptr)
+    {
+        const EXCEPTION_RECORD* record = pointers->ExceptionRecord;
+        const void* address = record->ExceptionAddress;
+
+        RunLog::Line("crash: code 0x%08X at address 0x%p",
+                     static_cast<unsigned>(record->ExceptionCode), address);
+
+        HMODULE owner = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCWSTR>(address), &owner) && owner != nullptr)
+        {
+            wchar_t name[MAX_PATH] = {};
+            GetModuleFileNameW(owner, name, MAX_PATH);
+            const auto base = reinterpret_cast<const unsigned char*>(owner);
+            const auto offset = static_cast<const unsigned char*>(address) - base;
+            RunLog::Line("crash: in '%s' loaded at 0x%p, offset 0x%llX",
+                         std::filesystem::path(name).filename().string().c_str(),
+                         static_cast<const void*>(base),
+                         static_cast<unsigned long long>(offset));
+        }
+        else
+        {
+            RunLog::Line("crash: the address belongs to no loaded module");
+        }
+
+        // An access violation records what it was reaching for, which is usually the whole answer.
+        if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+            record->NumberParameters >= 2)
+        {
+            RunLog::Line("crash: %s address 0x%p",
+                         record->ExceptionInformation[0] == 0 ? "reading" : "writing",
+                         reinterpret_cast<const void*>(record->ExceptionInformation[1]));
+        }
+    }
+
+    const std::string crumb = RunLog::Read();
+    if (!crumb.empty())
+        RunLog::Line("crash: the last step that reported itself was %s", crumb.c_str());
+    else
+        RunLog::Line("crash: no step had reported itself yet");
+
+    RunLog::Line("crash: dump written to '%s'", std::filesystem::path(dumpPath).string().c_str());
+}
+} // namespace
+
 LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
     // Create mini dump file
-    HANDLE hDumpFile = CreateFile(L"CrashDump.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    const std::wstring dumpPath = CrashDumpPath();
+    HANDLE hDumpFile = CreateFile(dumpPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
     MINIDUMP_EXCEPTION_INFORMATION dumpInfo;
     dumpInfo.ExceptionPointers = pExceptionPointers;
@@ -26,6 +119,10 @@ LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
         &dumpInfo, NULL, NULL);
 
     CloseHandle(hDumpFile);
+
+    // Into the run log FIRST: the message box below waits for somebody to click it, and the stack
+    // walk that fills it needs a symbol file it may not have. This does not.
+    LogFaultSite(pExceptionPointers, dumpPath, "unhandled exception");
 
     // Show error info to user
     HANDLE process = GetCurrentProcess();
@@ -58,8 +155,9 @@ LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
 
     std::stringstream ss;
     ss << "Sorry! Guild Wars Observer just crashed unexpectedly.\n";
-    ss << "A dump file has been created: \"CrashDump.dmp\".\n";
-    ss << "Please contact the developers or create an issue on Github with the dump file attached if possible.\n\n";
+    ss << "A dump file has been created:\n" << std::filesystem::path(dumpPath).string() << "\n";
+    ss << "The run log beside it says where the fault was.\n";
+    ss << "Please contact the developers or create an issue on Github with both files attached if possible.\n\n";
     ss << "-------------------------------------------------------------------------------\n";
     ss << "Unhandled exception occurred.\nException Code: " << std::hex << pExceptionPointers->ExceptionRecord->ExceptionCode << std::endl;
     ss << "Call Stack:\n";
@@ -108,7 +206,8 @@ LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionPointers) {
 // actually identifies the failure in a release build without symbols.
 void ReportFatalCppException(const char* what)
 {
-    HANDLE hDumpFile = CreateFile(L"CrashDump.dmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+    const std::wstring dumpPath = CrashDumpPath();
+    HANDLE hDumpFile = CreateFile(dumpPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, NULL);
     if (hDumpFile != INVALID_HANDLE_VALUE)
     {
@@ -118,10 +217,17 @@ void ReportFatalCppException(const char* what)
         CloseHandle(hDumpFile);
     }
 
+    RunLog::Line("crash: *** a C++ exception escaped the frame loop ***");
+    RunLog::Line("crash: %s", what != nullptr ? what : "(no message)");
+    LogFaultSite(nullptr, dumpPath, "unhandled C++ exception");
+
     std::string msg =
         "Sorry! Guild Wars Observer just crashed unexpectedly.\n"
-        "A dump file has been created: \"CrashDump.dmp\".\n"
-        "Please contact the developers or create an issue on Github with the dump file attached if possible.\n\n"
+        "A dump file has been created:\n";
+    msg += std::filesystem::path(dumpPath).string();
+    msg +=
+        "\nThe run log beside it says where the fault was.\n"
+        "Please contact the developers or create an issue on Github with both files attached if possible.\n\n"
         "-------------------------------------------------------------------------------\n"
         "Unhandled C++ exception (0xE06D7363).\n\n";
     msg += what ? what : "(no message)";

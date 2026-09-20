@@ -53,6 +53,14 @@ public:
 
 		if (!data || width <= 0 || height <= 0) { return -1; }
 
+		// Every pitch below is width * BytesPerPixel(format), and BytesPerPixel() answers 0 for a
+		// format it does not know (block-compressed, half-float, 16-bit, anything but the three it
+		// lists). A pitch of 0 is not a benign wrong number: it reaches the display driver as the
+		// stride of a row, and dividing a size by it is exactly what a driver does with it. This
+		// entry point only ever knew how to upload a tightly packed 1- or 4-byte texel, so say so
+		// here rather than hand the driver an impossible stride.
+		if (BytesPerPixel(format) == 0) { return -1; }
+
 		D3D11_TEXTURE2D_DESC texDesc = {};
 		texDesc.Width = width;
 		texDesc.Height = height;
@@ -102,30 +110,14 @@ public:
 		int textureID = m_nextTextureID++;
 		m_textures[textureID] = shaderResourceView;
 
-		if (file_hash >= 0)
-		{
-			TextureData textureData;
-			textureData.textureID = textureID;
-			textureData.width = width;
-			textureData.height = height;
-
-			UINT bytesPerPixel = BytesPerPixel(format);
-			textureData.rgba_data.reserve(width * height); // Reserve space for efficiency
-
-			const unsigned char* byteData = static_cast<const unsigned char*>(data);
-
-			for (int i = 0; i < width * height * bytesPerPixel; i += bytesPerPixel)
-			{
-				RGBA color;
-				color.r = byteData[i];
-				color.g = byteData[i + 1];
-				color.b = byteData[i + 2];
-				color.a = byteData[i + 3];
-				textureData.rgba_data.push_back(color);
-			}
-
-			cached_textures[file_hash] = textureData;
-		}
+		// The level-0 CPU copy goes through CacheLevel0(), which is the same function
+		// GuildWarsMapBrowser's copy of this header calls here. The inline loop this replaced read
+		// byteData[i]..byteData[i+3] for every texel whatever the format's real texel size, so any
+		// format that is not four bytes per texel over-read the caller's buffer, and it ignored the
+		// row pitch so a padded decode was cached skewed. CacheLevel0() stores nothing unless the
+		// format really is four bytes per texel and the pitch covers the row.
+		CacheLevel0(file_hash, textureID, width, height, format, data,
+		            width * BytesPerPixel(format));
 
 		return textureID;
 	}
@@ -134,6 +126,10 @@ public:
 	                    bool autoGenerateMipMaps = true)
 	{
 		if (!dataArray.size() || width <= 0 || height <= 0) { return -1; }
+
+		// Same reason as AddTexture(): the per-slice pitch below is width * BytesPerPixel(format),
+		// and a format this header does not know gives 0, which is not a stride any driver can use.
+		if (BytesPerPixel(format) == 0) { return -1; }
 
 		D3D11_TEXTURE2D_DESC texDesc = {};
 		texDesc.Width = width;
@@ -216,6 +212,14 @@ public:
 			return cached_textures[file_hash].textureID;
 
 		if (mips.empty() || !mips[0].data || width <= 0 || height <= 0) { return -1; }
+
+		// A level whose pitch is 0 would reach the driver as the stride of a row. Refuse the whole
+		// chain rather than upload one impossible level: a decoder that could not size a level did
+		// not produce that level's bytes either.
+		for (const MipLevelSource& level : mips)
+		{
+			if (level.row_pitch == 0) { return -1; }
+		}
 
 		const bool has_authored_chain = mips.size() > 1;
 

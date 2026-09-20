@@ -2203,6 +2203,18 @@ void MapBrowser::ProcessPendingReplayRequest()
 
     if (rw)
         m_replay_windows.emplace_back(rw);
+
+    // HOW MANY REPLAY WINDOWS ARE OPEN AT ONCE IS A FACT WORTH HAVING IN THE LOG.
+    //
+    // Nothing here closes the previous one: this is a vector and opening a second match appends to
+    // it. Each window builds its own graphics device, so with two open there are two devices in the
+    // process, and any state the application keeps once per PROCESS rather than once per window -
+    // a compiled program, a cached identifier, a pipeline state a function-local static remembers -
+    // is then shared between two devices that must not share anything. A log that says how many
+    // windows are open is what makes that explanation available after the fact instead of guessed.
+    RunLog::Line("replay: a window opened - %zu replay window(s) now open, each with its own"
+                 " graphics device",
+                 m_replay_windows.size());
 }
 
 void MapBrowser::ProcessCloudDownloadResult()
@@ -2270,6 +2282,11 @@ void MapBrowser::ProcessCloudDownloadResult()
 
     if (rw)
         m_replay_windows.emplace_back(rw);
+
+    // See the note at the other site that opens one of these.
+    RunLog::Line("replay: a window opened - %zu replay window(s) now open, each with its own"
+                 " graphics device",
+                 m_replay_windows.size());
 }
 
 void MapBrowser::TickReplayWindows()

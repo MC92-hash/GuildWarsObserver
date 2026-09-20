@@ -42,4 +42,22 @@ void Line(const char* format, ...);
 
 // Text that may already contain newlines (a path list, an audit). Every line gets the prefix.
 void Block(const std::string& text);
+
+// =================================================================================================
+// THE BREADCRUMB - the one thing a crash handler can still read.
+//
+// A hardware exception (an integer divide by zero, an access violation, a display driver that
+// refuses a call) gives the faulting code no chance to write anything: there is no unwinding and no
+// return. What there IS, by the time the unhandled-exception filter runs, is memory - so the risky
+// per-frame steps leave a mark in a fixed place instead of logging, and the filter reads that mark
+// back and puts it in the log.
+//
+// Set() is plain stores into fixed-size storage with no lock, no allocation and no I/O, so it is
+// cheap enough for a per-frame, per-agent, per-submesh step. `where` must be a string literal or
+// something else that outlives the process: only the pointer is kept.
+//
+// Read() returns the last mark, formatted, and is meant for the crash handler alone.
+// =================================================================================================
+void Set(const char* where, int a = -1, int b = -1, int c = -1);
+std::string Read();
 } // namespace RunLog

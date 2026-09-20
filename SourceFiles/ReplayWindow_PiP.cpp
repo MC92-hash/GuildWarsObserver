@@ -443,6 +443,16 @@ void ReplayWindow::RenderPiP()
 
     DrawAgentShadows();
     DrawSkinnedAgentModels();
+    // ...and, immediately after it, the recorded players who have a character of their own -
+    // the same two passes in the same order as the main view. DrawSkinnedAgentModels skips
+    // exactly these agents, so without this call the sixteen recorded players are drawn here by
+    // nothing at all while their weapons still draw. Everything the character pass needs is
+    // already set for this target: the camera is the split camera (Update above uploaded it and
+    // the pass reads GetCamera() for its own far-to-near sort), the viewport and both targets are
+    // the PiP's, the terrain, water and sky are already in that target so the pass's own
+    // per-frame rewrite cannot disturb them, and it saves and restores every pipeline state it
+    // touches off the context - which is why the weapon and cylinder passes below still work.
+    DrawPlayerVisuals(/*secondaryView=*/true);
     DrawWeaponModels();
     DrawAgentCylinders();
 

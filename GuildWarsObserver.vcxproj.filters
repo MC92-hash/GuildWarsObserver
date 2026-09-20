@@ -804,6 +804,9 @@
     <ClCompile Include="SourceFiles\ProjectedAgentShadows.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="SourceFiles\ReplayWindow_Bloom.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp">
       <Filter>GUI</Filter>
     </ClCompile>

@@ -187,13 +187,13 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 	case ATEXDXT4:
 	case ATEXDXT5:
 	case ATEXDXTN:
-		//case ATEXDXTA: Cannot parse this
+	case ATEXDXTA: // single channel, no colour block; decoded by ProcessDXTA
 	case ATEXDXTL:
 	case ATTXDXT1:
 	case ATTXDXT3:
 	case ATTXDXT5:
 	case ATTXDXTN:
-		//case ATTXDXTA: Cannot parse this
+	case ATTXDXTA: // single channel, no colour block; decoded by ProcessDXTA
 	case ATTXDXTL:
 	{
 		selected_dat_texture.dat_texture = dat_manager->parse_ffna_texture_file(index);

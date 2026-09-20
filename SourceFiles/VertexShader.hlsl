@@ -17,6 +17,9 @@ cbuffer PerFrameCB : register(b0)
     float fog_start_y; // The height at which fog starts.
     float fog_end_y; // The height at which fog ends.
     uint should_render_flags; // Shadows, Water reflection, fog (shadows at bit 0, water reflection at bit 1, fog at bit 2)
+    // The user's environment light gain for the map. The host sets it for the world pass only, so
+    // a skinned draw - an agent, a weapon, a composed character - never receives anything but 1.0.
+    float map_light_gain;
 };
 
 cbuffer PerObjectCB : register(b1)
@@ -108,8 +111,16 @@ PixelInputType main(VertexInputType input)
         float3 lightDir = normalize(-directionalLight.direction);
         float NdotL = max(dot(normal, lightDir), 0.0);
 
-        float4 ambientComponent = directionalLight.ambient;
-        float4 diffuseComponent = directionalLight.diffuse * NdotL;
+        // The map light gain is the user's control over how bright the environment lights the
+        // world, and it goes on the light's INPUTS - the ambient and the sun - so what reaches the
+        // clamp downstream is a brighter LIGHT rather than an amplified result. This program's
+        // pixel half saturates at every texture stage, so a channel that reaches full stays at
+        // full while the others climb towards it, exactly as on the terrain. The specular
+        // highlight is not an environment level, so it is left alone. The gain is 1.0 everywhere
+        // except inside the world pass, so a skinned draw - an agent, a weapon, a composed
+        // character - never receives anything but 1.0.
+        float4 ambientComponent = directionalLight.ambient * map_light_gain;
+        float4 diffuseComponent = directionalLight.diffuse * map_light_gain * NdotL;
 
         // Calculate view direction and ensure normalization
         float3 viewDirection = normalize(cam_position - worldPosition.xyz);
@@ -122,7 +133,7 @@ PixelInputType main(VertexInputType input)
         float specularIntensity = pow(NdotH, shininess);
         float4 specularComponent = directionalLight.specular * specularIntensity;
 
-        // Combine lighting components
+        // Combine lighting components. The gain is already in the ambient and the sun above.
         output.lightingColor = ambientComponent + diffuseComponent + specularComponent;
 
     }

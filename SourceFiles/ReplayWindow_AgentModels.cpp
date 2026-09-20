@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
+#include "RunLog.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
 #include "MatchBookmarks.h"
@@ -1919,8 +1920,20 @@ void ReplayWindow::DrawAgentModels()
                     ctrl->Update(frameDt * m_replayCtx.playbackSpeed);
 
                 if (context) {
-                    for (auto& am : animState.animMeshes)
-                        if (am) am->UpdateBoneMatrices(context, *ctrl);
+                    // A BREADCRUMB, NOT A LOG LINE. This step uploads one constant buffer per
+                    // submesh per animated agent per frame, and it is the busiest call this window
+                    // makes into the graphics driver - so it is also where a driver-side fault
+                    // lands, and a fault here unwinds nothing and writes nothing. Set() is four
+                    // stores and no I/O; the crash handler is what turns it into a line, naming the
+                    // agent and the submesh that were in flight. See RunLog.h.
+                    for (size_t bi = 0; bi < animState.animMeshes.size(); bi++) {
+                        auto& am = animState.animMeshes[bi];
+                        if (!am) continue;
+                        RunLog::Set("uploading an agent's bone palette", agentId,
+                                    static_cast<int>(bi),
+                                    static_cast<int>(animState.animMeshes.size()));
+                        am->UpdateBoneMatrices(context, *ctrl);
+                    }
                 }
             }
 
@@ -2035,10 +2048,13 @@ void ReplayWindow::DrawSkinnedAgentModels()
                 }
             }
 
+            RunLog::Set("drawing a skinned agent submesh", slotKey, static_cast<int>(si),
+                        static_cast<int>(animState.animMeshes.size()));
             animMesh->Draw(context, m_mapRenderer->GetLODQuality());
         }
     }
 
+    RunLog::Set("finished the skinned agent pass");
     m_mapRenderer->BindRegularVertexShader();
 }
 
