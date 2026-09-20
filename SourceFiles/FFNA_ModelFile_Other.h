@@ -1349,6 +1349,30 @@ private:
             const bool counts_cover_mesh =
                 (sum_vertex_counts == num_vertices) && (vertex_idx == num_vertices);
 
+            // CAN THE PER-VERTEX BYTES BE GROUP INDICES AT ALL?
+            //
+            // Each position is followed by four bytes of which only the first was ever assumed to
+            // be a bone index. That assumption needs something for the byte to INDEX: the
+            // CHUNK-level bb8 palette (0x002), which is what the gate 0x2865B curtain carries.
+            // Without that palette the only table this submesh has is the tail block read just
+            // above, and a byte >= its own boneGroupCount indexes nothing - it is the other three
+            // bytes' data being read as a bone.
+            //
+            // Measured over a 16-player replay: all 137 BB8 submeshes the character composer
+            // loaded are SINGLE-GROUP with no chunk palette, and their first bytes spread over
+            // 15..250. The palette lookup fell off the end, every vertex resolved to skeleton bone
+            // 0 (the root), and the head accessories - the three Spectacles families and the
+            // profession Masks; tail anchor bones 76, 53, 90, 71, 80, 49, 65 - stayed where the
+            // bind pose left them while the head moved away from under them.
+            uint32_t max_vertex_group = 0;
+            for (uint32_t i = 0; i < num_vertices; i++)
+            {
+                if (model.vertices[i].group > max_vertex_group)
+                    max_vertex_group = model.vertices[i].group;
+            }
+            const bool per_vertex_indexes_a_table =
+                chunk_palette_for_skinning || max_vertex_group < boneGroupCount;
+
             bool matches_per_vertex = true;
             if (counts_cover_mesh && unique_groups.size() > 1)
             {
@@ -1363,7 +1387,7 @@ private:
             }
 
             const bool use_sequential_groups = counts_cover_mesh &&
-                (unique_groups.size() <= 1 || matches_per_vertex);
+                (!per_vertex_indexes_a_table || unique_groups.size() <= 1 || matches_per_vertex);
 
             if (use_sequential_groups)
             {
@@ -1376,12 +1400,23 @@ private:
             }
             else
             {
+                if (!per_vertex_indexes_a_table)
+                {
+                    // The bytes index nothing and the tail's vertex runs do not cover the mesh
+                    // either, so neither reading is available. Group 0 is the only one that
+                    // certainly exists; that is where the whole submesh goes rather than off the
+                    // end of the palette.
+                    for (uint32_t i = 0; i < num_vertices; i++)
+                        model.vertices[i].group = 0;
+                }
+
                 sprintf_s(debug_msg,
                           "ParseSubmeshAtOffset: Keeping per-vertex bone indices (sequential skip: "
-                          "sumCounts=%u verts=%u unique=%u match=%d)\n",
+                          "sumCounts=%u verts=%u unique=%u max=%u match=%d indexable=%d)\n",
                           sum_vertex_counts, num_vertices,
                           static_cast<unsigned>(unique_groups.size()),
-                          matches_per_vertex ? 1 : 0);
+                          max_vertex_group, matches_per_vertex ? 1 : 0,
+                          per_vertex_indexes_a_table ? 1 : 0);
                 LogBB8Debug(debug_msg);
             }
 
