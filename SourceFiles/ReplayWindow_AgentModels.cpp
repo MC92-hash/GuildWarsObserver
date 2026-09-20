@@ -1113,8 +1113,40 @@ void ReplayWindow::LoadAgentModelsIO()
                 entry.sourceFileHash = wi.foundClips[ci].sourceFileHash;
                 wi.tmpl.allClips.push_back(std::move(entry));
             }
-            wi.tmpl.clip = wi.tmpl.allClips[0].clip;
-            wi.tmpl.skeleton = wi.tmpl.allClips[0].skeleton;
+            // WHICH of the candidates, for a player stand-in. The discovery above falls back to
+            // a search by SKELETON hash pair, and a skeleton is shared between professions while
+            // an animation bank is not - so index 0 hands every profession on one rig the same
+            // motions. Measured across all twenty pools: twelve of them collided this way, male
+            // Mesmers playing the male Monk's bank among them. The right file was always already
+            // in the list - 69 candidates for that rig, 126 for the shared female one - so this
+            // chooses rather than loads.
+            //
+            // Anything that is not a player stand-in, and any character with no entry, keeps
+            // index 0 exactly as before.
+            size_t chosen = 0;
+            int pool_prof = 0, pool_sex = 0;
+            if (PlayerModelPoolIdentity(wi.fileHash, pool_prof, pool_sex)) {
+                const uint32_t wanted = ReplayWindow::PreferredAnimationFileId(
+                    pool_prof, pool_sex, wi.tmpl.modelHash0, wi.tmpl.modelHash1);
+                if (wanted != 0) {
+                    bool found = false;
+                    for (size_t ci = 0; ci < wi.tmpl.allClips.size(); ci++) {
+                        if (wi.tmpl.allClips[ci].sourceFileHash != wanted) continue;
+                        chosen = ci;
+                        found = true;
+                        break;
+                    }
+                    // Named but absent is worth a line: it means the file this character should
+                    // play was not among the candidates, and the fallback is the old behaviour.
+                    RunLog::Line("anim bank: model 0x%08X wants 0x%08X -> %s",
+                                 wi.fileHash, wanted,
+                                 found ? "found among the candidates"
+                                       : "NOT FOUND, keeping the search's first match");
+                }
+            }
+
+            wi.tmpl.clip = wi.tmpl.allClips[chosen].clip;
+            wi.tmpl.skeleton = wi.tmpl.allClips[chosen].skeleton;
 
             // Weapon attachment points. Bone ordering is consistent across every clip belonging
             // to one rig (verified: all 14 male-human clips agree on 86 bones and the same

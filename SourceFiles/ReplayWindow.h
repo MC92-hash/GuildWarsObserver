@@ -1300,6 +1300,18 @@ private:
     void DrawPlayerVisuals(bool secondaryView = false);
     void ReleasePlayerVisuals();   // match teardown
 
+    // WHICH ANIMATION FILE A STAND-IN SHOULD PLAY, and not simply the first one that carries its
+    // skeleton. Professions SHARE skeletons - male Monk and Mesmer are one rig, male Paragon and
+    // Ritualist another, four female professions a fourth - but they do not share animations, and
+    // the recorded animation code is resolved against whichever file this picks. Taking the first
+    // match therefore gives one profession another's motions, which is what a male Mesmer moving
+    // like a male Monk was.
+    //
+    // 0 means "no better answer than the search's", never "play nothing": a model with no entry
+    // keeps the first match exactly as before, so this is additive. Called from the model load
+    // worker, so it must stay a pure table lookup with no state.
+    static uint32_t PreferredAnimationFileId(int profession, int sex, uint32_t hash0, uint32_t hash1);
+
     // Whether this submesh of a composed character is a SURFACE. A submesh that composites by
     // adding light is a two-sided card with no back: it cannot occlude and it cannot cast, so the
     // silhouette shadow capture leaves it out. The answer comes from the same per-submesh

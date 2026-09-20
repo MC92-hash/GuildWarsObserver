@@ -357,6 +357,23 @@ inline std::string DescribePlayerModelPool(uint32_t fileHash)
     return {};
 }
 
+// Which pool a stand-in came from, as numbers. The audit above establishes that every entry belongs
+// to exactly ONE pool, so this is unambiguous. False for any model that is not a player stand-in.
+inline bool PlayerModelPoolIdentity(uint32_t fileHash, int& profOut, int& sexOut)
+{
+    for (int prof = 1; prof <= 10; prof++) {
+        for (int sex = 0; sex < 2; sex++) {
+            for (uint32_t candidate : GetPlayerModelVariants(prof, sex != 0)) {
+                if (candidate != fileHash) continue;
+                profOut = prof;
+                sexOut = sex;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 inline uint32_t LookupPlayerFileHash(int primaryProf, bool isFemale, int variantIndex = 0)
 {
     auto variants = GetPlayerModelVariants(primaryProf, isFemale);
