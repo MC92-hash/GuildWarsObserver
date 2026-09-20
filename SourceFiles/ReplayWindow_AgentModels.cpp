@@ -1,4 +1,13 @@
 #include "pch.h"
+
+// The stand-in pool audit: loads EVERY entry in every pool so the run log prints each one's
+// skeleton signature in a single pass, instead of waiting for a match to happen to draw it. Costs
+// ~60 model loads, so it is off in a shipping build - set to 1, run any replay once, read the
+// 'pool audit' lines, set it back.
+#ifndef GWO_AUDIT_MODEL_POOLS
+#define GWO_AUDIT_MODEL_POOLS 0
+#endif
+
 #include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
@@ -539,6 +548,28 @@ void ReplayWindow::LoadAgentModelsAsync()
         }
     }
 
+#if GWO_AUDIT_MODEL_POOLS
+    // ---- THE POOL AUDIT -------------------------------------------------------------------
+    //
+    // A stand-in is not just a look: it is the RIG a composed character is posed by, so every
+    // entry has to sit on the skeleton its profession's armour binds to. Five entries were found
+    // NOT to - each a named NPC of one profession built on another's skeleton - and they were
+    // found one at a time, by someone noticing a deformed player in a match.
+    //
+    // This loads every entry in every pool so the run log prints each one's skeleton signature in
+    // one pass, which is what turns "wait for it to show up" into a table that can be read. It is
+    // compiled out by default because it costs ~60 model loads that a match does not need; build
+    // with GWO_AUDIT_MODEL_POOLS=1, open any replay, and read the 'pool audit' lines.
+    for (int prof = 1; prof <= 10; prof++) {
+        for (int sex = 0; sex < 2; sex++) {
+            for (uint32_t hash : GetPlayerModelVariants(prof, sex != 0))
+                uniqueHashes.insert(hash);
+        }
+    }
+    RunLog::Line("pool audit: ON - every stand-in in every pool is loaded this run so its"
+                 " skeleton can be printed; this is NOT a normal load");
+#endif
+
     if (uniqueHashes.empty()) { m_agentModelsLoaded = true; return; }
 
     m_agentModelCreateOrder.assign(uniqueHashes.begin(), uniqueHashes.end());
@@ -1034,6 +1065,13 @@ void ReplayWindow::LoadAgentModelsIO()
             }
             m_animDiscoveryCache.SetModel(wi.fileHash, std::move(cacheEntry));
         }
+        // The pair this model actually sits on, against the pool it was listed in. Printed for
+        // every model in an audit run; in a normal run it is one line per model the match uses,
+        // which is cheap and is what makes a mismatch attributable after the fact.
+        RunLog::Line("pool audit: model 0x%08X -> skeleton 0x%08X/0x%08X%s",
+                     wi.fileHash, wi.tmpl.modelHash0, wi.tmpl.modelHash1,
+                     DescribePlayerModelPool(wi.fileHash).c_str());
+
         // Also cache models resolved via embedded/refs (not from cache hit, not needing MFT scan)
         if (!wi.needsMftScan && !wi.foundClips.empty()) {
             const auto* existing = m_animDiscoveryCache.GetModel(wi.fileHash);
@@ -1291,6 +1329,19 @@ void ReplayWindow::StepCreateAgentModelResources()
                 animState.controller->Play();
 
                 animState.hasSkinning = !animState.animMeshes.empty();
+
+                // A composed character has already TAKEN OVER this slot's skinned state: its own
+                // submeshes, its own constant buffers, and a controller switched to the skinning
+                // path its geometry was built for. This assignment replaces the whole struct, so
+                // running it over a composed character would put the stand-in's meshes back and
+                // silently drop that switch - the character would either revert or animate through
+                // the wrong path. The hand-over waits for m_agentModelsLoaded, so on the first load
+                // this cannot fire; it is a reload (the agent-models toggle) that reaches here with
+                // characters already live, and the hand-over does not run a second time to repair
+                // them. This is the invariant the character pass needs and nothing else enforced.
+                if (HasPlayerVisual(slotKey))
+                    continue;
+
                 m_agentAnimStates[slotKey] = std::move(animState);
             }
         }

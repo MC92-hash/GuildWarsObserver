@@ -224,13 +224,43 @@ inline bool IsOffensiveBindingRitual(uint32_t modelId)
 // Player model variant tables — multiple models per profession+gender
 // ---------------------------------------------------------------------------
 
+// AN ENTRY HERE IS A SKELETON, NOT JUST A LOOK.
+//
+// The model picked here is what a recorded player is drawn as until their real character is
+// composed - and then it stays on as the RIG that character is posed by. So an entry has to sit on
+// the same skeleton the profession's armour binds to. A named NPC that happens to be, say, a
+// Necromancer by story is not necessarily built on the Necromancer skeleton, and when it is not,
+// the composed character rests correctly and deforms the moment it animates.
+//
+// Five entries were measured doing exactly that and are removed. Four of the five sat on the
+// generic male Warrior skeleton, which is the shape of the mistake: a named NPC of some other
+// profession that was simply built on the common rig.
+//
+//   Eve             (female Necromancer)   sat on the female Assassin/Ele/Paragon/Rit skeleton
+//   Ghavin          (male Necromancer)     sat on the male Warrior skeleton
+//   General Morgahn (male Paragon)         sat on the male Warrior skeleton
+//   Alsacien        (male Dervish)         sat on the male Warrior skeleton
+//   Argo            (male Elementalist)    sat on the male Warrior skeleton
+//
+// EVERY ENTRY BELOW HAS NOW BEEN MEASURED, not just the ones a match happened to draw: the audit
+// under GWO_AUDIT_MODEL_POOLS loads all of them in one run and prints each one's skeleton. After
+// the five removals every pool resolves to exactly ONE skeleton, and each of those matches the
+// pair the profession's armour binds to. Skeletons are shared between professions - male Monk and
+// Mesmer are one rig, male Paragon and Ritualist another, female Ranger and Warrior a third - so
+// "two pools agree" is normal and only disagreement INSIDE a pool is the defect.
+//
+// Re-run the audit after changing this table. A mismatched character is refused rather than drawn
+// wrong, so a mistake here costs that player their character, not the frame.
+//
+// Losing an entry costs variety, never correctness: for a composed player this model is only the
+// rig, and for an uncomposed one it is one of several equally arbitrary look-alikes.
 inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool isFemale)
 {
     // Female variants
     static constexpr uint32_t kWarF[]  = { 0x1FBC4, 0x3BD9E, 0x26C53, 0x22B54 };       // Devona, Timera, Zaishen Fighter, Adepte
     static constexpr uint32_t kRanF[]  = { 0x1FC35, 0x1C801, 0x2D2E2 };                 // Reyna, Lulu Xan, Aurora
     static constexpr uint32_t kMonF[]  = { 0x1C7EE, 0x1FC32, 0x2D22C };                    // Lina, Alesia, Sister Tai
-    static constexpr uint32_t kNecF[]  = { 0x1FB82, 0x2D225 };                          // Eve, Su
+    static constexpr uint32_t kNecF[]  = { 0x2D225 };                                   // Su. (Eve 0x1FB82 REMOVED: see the skeleton note below)
     static constexpr uint32_t kEleF[]  = { 0x1FBBF, 0x26C50, 0x1C835, 0x560D8, 0x2D126, 0x29997 }; // Cynn, Zaishen Mage, Luzy Fiera, Suzu, Danika, Blahks
     static constexpr uint32_t kMesF[]  = { 0x4C460, 0x3BD99 };                          // Gwen, (unnamed)
     static constexpr uint32_t kAssF[]  = { 0x3BC80, 0x2D15C, 0x2D37F };                 // Zenmai, Nika, Fuu Rin
@@ -242,13 +272,13 @@ inline std::span<const uint32_t> GetPlayerModelVariants(int primaryProf, bool is
     static constexpr uint32_t kWarM[]  = { 0x1FC11, 0x2D2A4, 0x1C828, 0x2D341, 0x1FBCD, 0x22B45 }; // Stefan, Lukas, Duke Barradin, Seaguard Eli, Prince Rurik, Captain Miken
     static constexpr uint32_t kRanM[]  = { 0x1FBBA, 0x26C56 };                          // Aidan, Zaishen Archer
     static constexpr uint32_t kMonM[]  = { 0x26C4D };                                   // Zaishen Healer
-    static constexpr uint32_t kNecM[]  = { 0x3BBC6, 0x2D3D1 };                          // Olias, Ghavin
-    static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236, 0x2D155 };                 // Orion, Headmaster Vhang, Argo
+    static constexpr uint32_t kNecM[]  = { 0x3BBC6 };                                   // Olias. (Ghavin 0x2D3D1 REMOVED: see the skeleton note below)
+    static constexpr uint32_t kEleM[]  = { 0x1FC2F, 0x2D236 };                          // Orion, Headmaster Vhang. (Argo 0x2D155 REMOVED: see the skeleton note below)
     static constexpr uint32_t kMesM[]  = { 0x2D21E };                                   // Lo Sha
     static constexpr uint32_t kAssM[]  = { 0x2D217 };                                   // Panaku
     static constexpr uint32_t kRitM[]  = { 0x2D2F3, 0x2D2A9 };                          // Professor Gai, Aeson
-    static constexpr uint32_t kParM[]  = { 0x3BD8E, 0x3BCF7 };                          // Sogolon, General Morgahn
-    static constexpr uint32_t kDerM[]  = { 0x4C454, 0x560E2 };                          // Kahmu, Alsacien
+    static constexpr uint32_t kParM[]  = { 0x3BD8E };                                   // Sogolon. (General Morgahn 0x3BCF7 REMOVED: see the skeleton note below)
+    static constexpr uint32_t kDerM[]  = { 0x4C454 };                                   // Kahmu. (Alsacien 0x560E2 REMOVED: see the skeleton note below)
 
     // GW internal profession IDs: 1=W 2=R 3=Mo 4=N 5=Me 6=E 7=A 8=Rt 9=P 10=D
     if (isFemale) {
@@ -304,6 +334,27 @@ inline const char* AvatarFormName(uint32_t avatarModelId)
     case 11: return "Avatar of Melandru";
     default: return "";
     }
+}
+
+// " [pool: Necromancer female]" for a model that is a stand-in, "" for anything else. Used by the
+// pool audit so each skeleton line says which pool claimed the model - a model whose skeleton does
+// not match the rest of its pool is the defect being looked for, and naming the pool is what makes
+// the line readable without a second lookup.
+inline std::string DescribePlayerModelPool(uint32_t fileHash)
+{
+    static constexpr const char* kProfNames[] = {
+        "", "Warrior", "Ranger", "Monk", "Necromancer", "Mesmer",
+        "Elementalist", "Assassin", "Ritualist", "Paragon", "Dervish"};
+    for (int prof = 1; prof <= 10; prof++) {
+        for (int sex = 0; sex < 2; sex++) {
+            for (uint32_t candidate : GetPlayerModelVariants(prof, sex != 0)) {
+                if (candidate != fileHash) continue;
+                return std::string(" [pool: ") + kProfNames[prof] +
+                    (sex != 0 ? " female]" : " male]");
+            }
+        }
+    }
+    return {};
 }
 
 inline uint32_t LookupPlayerFileHash(int primaryProf, bool isFemale, int variantIndex = 0)
