@@ -8,6 +8,7 @@
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "TeamColors.h"
 #include "Net/HttpClient.h"
 #include <algorithm>
 #include <set>
@@ -4303,6 +4304,52 @@ static void DrawFilterPanel(const std::vector<MatchMeta>& matches, float panelH 
         DrawFilterPanelCollapsed(matches, panelH);
 }
 
+// ─── Team colour ribbon ──────────────────────────────────────────────────────
+//
+// Every match here is one side against the other, but nothing in the library said which guild
+// held Blue and which held Red - you had to open the replay to find out. A thin bar in the
+// side's own colour, beside the guild name, says it without spending a word or a line: the
+// same mark on the gallery card, the compact card list and both detail headers. The match
+// table is left alone - its TEAM 1 / TEAM 2 column headings already say it, once, for every
+// row at the same time.
+//
+// Party "1" is Blue and party "2" is Red. That mapping lives in TeamColors.h, so a slot is
+// what gets passed around here and the two colours are never written against a literal 1 or 2.
+static constexpr float kTeamRibbonW = 3.0f;
+
+// Deliberately not theme colours. A side's colour is the game's own and has to read the same
+// in every theme; these are the saturated pair the minimap and the morale graph already use.
+static ImU32 TeamRibbonColor(int slot01)
+{
+    return Team::IndexIsRed(slot01) ? IM_COL32(0xFF, 0x6B, 0x6B, 0xFF)
+                                    : IM_COL32(0x4A, 0xA8, 0xFF, 0xFF);
+}
+
+// A rounded bar with a faint halo, so it marks the name it stands beside rather than reading
+// as a table rule or a panel border.
+static void DrawTeamRibbon(ImDrawList* dl, ImVec2 topLeft, float h, int slot01)
+{
+    const ImU32 col  = TeamRibbonColor(slot01);
+    const ImU32 halo = (col & ~(0xFFu << IM_COL32_A_SHIFT)) | (44u << IM_COL32_A_SHIFT);
+    const ImVec2 br(topLeft.x + kTeamRibbonW, topLeft.y + h);
+    dl->AddRectFilled(ImVec2(topLeft.x - 1.5f, topLeft.y - 1.5f),
+                      ImVec2(br.x + 1.5f, br.y + 1.5f), halo, (kTeamRibbonW + 3.0f) * 0.5f);
+    dl->AddRectFilled(topLeft, br, col, kTeamRibbonW * 0.5f);
+}
+
+// The same ribbon as a laid-out item, for the rows built out of ImGui widgets rather than
+// draw calls. It stands a little taller than the text but claims only the line's own height,
+// so putting one in front of a name never grows the row.
+static void TeamRibbonItem(float h, int slot01, bool withTooltip)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float lineH = ImGui::GetTextLineHeight();
+    DrawTeamRibbon(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y - (h - lineH) * 0.5f), h, slot01);
+    ImGui::Dummy(ImVec2(kTeamRibbonW, lineH));
+    if (withTooltip && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s team", Team::Name(Team::FromIndex01(slot01)));
+}
+
 // ─── Match list: card mode for mobile ────────────────────────────────────────
 
 static void DrawMatchCards(const std::vector<FilteredMatch>& filtered,
@@ -4334,6 +4381,8 @@ static void DrawMatchCards(const std::vector<FilteredMatch>& filtered,
         }
 
         // Team line
+        TeamRibbonItem(ImGui::GetTextLineHeight() + 2.0f, 0, false);
+        ImGui::SameLine(0, 6);
         ImGui::TextUnformatted(fm.guild1.display.c_str());
         if (m.winner_party_id == 1 && cupTex)
         {
@@ -4343,6 +4392,8 @@ static void DrawMatchCards(const std::vector<FilteredMatch>& filtered,
         ImGui::SameLine(0, 8);
         ImGui::TextColored(kColorTextDim, "vs");
         ImGui::SameLine(0, 8);
+        TeamRibbonItem(ImGui::GetTextLineHeight() + 2.0f, 1, false);
+        ImGui::SameLine(0, 6);
         ImGui::TextUnformatted(fm.guild2.display.c_str());
         if (m.winner_party_id == 2 && cupTex)
         {
@@ -4407,10 +4458,19 @@ static float DrawTeamSide(ImDrawList* dl, const FilteredMatch& fm, bool isTeam2,
         char tagBuf[32] = "";
         if (!guild.tag.empty()) snprintf(tagBuf, sizeof(tagBuf), "[%s]", guild.tag.c_str());
 
+        // The ribbon rides the outer edge of the team's own half, so the two colours frame
+        // the matchup instead of crowding the VS rule down the middle. It spans the name and
+        // the tag together - a mark for the team, not for one line of it.
+        const int   slot01  = isTeam2 ? 1 : 0;
+        const float ribbonH = nameSz + tagSz + 2.f;
+        const float inset   = kTeamRibbonW + 7.f;
+        DrawTeamRibbon(dl, ImVec2(isTeam2 ? (areaX + areaW - kTeamRibbonW) : areaX, curY + 1.f),
+                       ribbonH, slot01);
+
         if (isTeam2)
         {
-            float x = areaX + areaW;
-            dl->PushClipRect(ImVec2(areaX, curY), ImVec2(areaX + areaW, curY + nameSz + tagSz + 4.f), true);
+            float x = areaX + areaW - inset;
+            dl->PushClipRect(ImVec2(areaX, curY), ImVec2(x, curY + nameSz + tagSz + 4.f), true);
             ImVec2 nSz = teamNameFont->CalcTextSizeA(nameSz, FLT_MAX, 0.f, guild.name.c_str());
             dl->AddText(teamNameFont, nameSz, ImVec2(std::max(areaX, x - nSz.x), curY), nameCol, guild.name.c_str());
             if (tagBuf[0])
@@ -4422,10 +4482,11 @@ static float DrawTeamSide(ImDrawList* dl, const FilteredMatch& fm, bool isTeam2,
         }
         else
         {
-            dl->PushClipRect(ImVec2(areaX, curY), ImVec2(areaX + areaW, curY + nameSz + tagSz + 4.f), true);
-            dl->AddText(teamNameFont, nameSz, ImVec2(areaX, curY), nameCol, guild.name.c_str());
+            const float textX = areaX + inset;
+            dl->PushClipRect(ImVec2(textX, curY), ImVec2(areaX + areaW, curY + nameSz + tagSz + 4.f), true);
+            dl->AddText(teamNameFont, nameSz, ImVec2(textX, curY), nameCol, guild.name.c_str());
             if (tagBuf[0])
-                dl->AddText(mono, tagSz, ImVec2(areaX, curY + nameSz + 1.f), tagCol, tagBuf);
+                dl->AddText(mono, tagSz, ImVec2(textX, curY + nameSz + 1.f), tagCol, tagBuf);
             dl->PopClipRect();
         }
     }
@@ -4687,7 +4748,9 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
             IM_COL32(245, 158, 11, 5), IM_COL32(245, 158, 11, 5));
     }
 
-    // Team name + [tag] + WON chip
+    // Team name + [tag] + WON chip, led by the side's colour
+    TeamRibbonItem(ImGui::GetTextLineHeight() + 3.0f, (partyId == "2") ? 1 : 0, true);
+    ImGui::SameLine(0, 8);
     if (boldFnt) ImGui::PushFont(boldFnt);
     ImGui::TextColored(isWinner ? ImVec4(0.984f, 0.749f, 0.141f, 1.f) // #fbbf24
                                 : ImVec4(0.831f, 0.831f, 0.847f, 1.f), // #d4d4d8
@@ -6659,6 +6722,11 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     const float skillIconSize = sz.skillIcon;
     const float smallIconSize = sz.cupIcon + 2.0f;
 
+    // The two teams sit side by side here with nothing to say which side of the map each one
+    // held - the list's TEAM 1 / TEAM 2 column headings are gone by the time you are reading
+    // this panel. Party "1" is Blue and party "2" is Red; see TeamColors.h.
+    const int teamSlot = (partyId == "2") ? 1 : 0;
+
     static std::unordered_map<std::string, float> s_copyFeedbackTimes;
 
     ImGui::BeginGroup();
@@ -6800,7 +6868,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             // letting a long guild name be cut at the Name column's edge.
             const ImVec2 clipMin = ImGui::GetCursorScreenPos();
             const float clipW = iconSize + (iconSize + 2.0f) + nameColW
-                              + skillsNeeded + copyBtnW;
+                              + skillsNeeded + copyBtnW + kTeamRibbonW + 10.0f;
             ImGui::PushClipRect(clipMin,
                                 ImVec2(clipMin.x + clipW, clipMin.y + statIconSz + 8.0f), false);
 
@@ -6814,6 +6882,14 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             };
             const float lineH = ImGui::GetTextLineHeight();
             constexpr float kNameScale = 1.15f;
+
+            // The side's colour opens the header, ahead of even the trophy: which half of
+            // the map a team held is the one thing you cannot read off the names.
+            {
+                CentreOnIcons(lineH);
+                TeamRibbonItem(statIconSz * 0.72f, teamSlot, true);
+                ImGui::SameLine(0, 10);
+            }
 
             // The trophy leads the winner rather than trailing the name: at a glance the eye
             // finds the marker before it has read either guild. The art is 64x109, so the
