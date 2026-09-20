@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "HeatmapData.h"
 #include <cstring>
 
@@ -58,9 +59,9 @@ bool HeatmapAccumulator::RebuildLayerIfDirty(
         {
             auto teamIt = agentTeams.find(agentId);
             if (teamIt == agentTeams.end()) continue;
-            if (teamIt->second == 1)
+            if (Team::IsBlue(teamIt->second))
                 SplatSamples(blueGrid, buf, tMinMs, tMaxMs);
-            else if (teamIt->second == 2)
+            else if (Team::IsRed(teamIt->second))
                 SplatSamples(redGrid, buf, tMinMs, tMaxMs);
         }
         float maxB = *std::max_element(blueGrid.begin(), blueGrid.end());

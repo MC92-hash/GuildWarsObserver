@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -1129,7 +1130,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ImVec2 panelTL(panelX, panelY);
     ImVec2 panelBR(panelX + panelW, panelY + panelH);
 
-    ImU32 panelBg = (teamId == 1)
+    ImU32 panelBg = Team::IsRed(teamId)
         ? IM_COL32(0x28, 0x0A, 0x0A, 0xA0)   // dark red, more transparent
         : IM_COL32(0x0A, 0x12, 0x28, 0xA0);   // dark blue, more transparent
     dl->AddRectFilled(panelTL, panelBR, panelBg, PANEL_R);
@@ -1147,7 +1148,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     constexpr float CAST_GAP   = 5.f;
     constexpr float CAST_BAR_H = 18.f;
 
-    const Gradient5* deadGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
+    const Gradient5* deadGrad = Team::IsRed(teamId) ? &kDeadRed : &kDeadBlue;
     const Gradient5* fillGrad = nullptr;
     if (isDead)
         fillGrad = deadGrad;
@@ -1158,7 +1159,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     else if (snap->has_bleeding)
         fillGrad = &kBleeding;
     else
-        fillGrad = (teamId == 1) ? &kAliveRed : &kAliveBlue;
+        fillGrad = Team::IsRed(teamId) ? &kAliveRed : &kAliveBlue;
 
     ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
     ImVec2 innerBR(barBR.x - 1, barBR.y - 1);

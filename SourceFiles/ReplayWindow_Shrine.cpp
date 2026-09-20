@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -116,7 +117,7 @@ void ReplayWindow::PrecomputeShrineTimeline()
             const float dx = px - shX, dy = py - shY;
             if (dx * dx + dy * dy <= R2)
             {
-                if (ard.teamId == 1) ++b; else ++r;
+                if (Team::IsBlue(ard.teamId)) ++b; else ++r;
             }
         }
         return { b, r };
@@ -206,9 +207,9 @@ void ReplayWindow::PrecomputeShrineTimeline()
         }
         else if (owner == 0)
         {
-            if (progressTeam == 1 && progress > 0.001f)
+            if (Team::IsBlue(progressTeam) && progress > 0.001f)
                 state = ShrineState::CapturingBlue;
-            else if (progressTeam == 2 && progress > 0.001f)
+            else if (Team::IsRed(progressTeam) && progress > 0.001f)
                 state = ShrineState::CapturingRed;
             else
                 state = ShrineState::Neutral;
@@ -217,14 +218,14 @@ void ReplayWindow::PrecomputeShrineTimeline()
         {
             if (decapping && progress > 0.001f)
             {
-                const int attacker = (owner == 1) ? 2 : 1;
-                state = (attacker == 1) ? ShrineState::DecappingBlue
-                                        : ShrineState::DecappingRed;
+                const int attacker = Team::Other(owner);
+                state = Team::IsBlue(attacker) ? ShrineState::DecappingBlue
+                                               : ShrineState::DecappingRed;
             }
             else
             {
-                state = (owner == 1) ? ShrineState::OwnedByBlue
-                                     : ShrineState::OwnedByRed;
+                state = Team::IsBlue(owner) ? ShrineState::OwnedByBlue
+                                            : ShrineState::OwnedByRed;
             }
         }
 
@@ -470,7 +471,7 @@ void ReplayWindow::DrawWurmsShrineCaptureRadius()
 
     case ShrineState::CapturingBlue:
     case ShrineState::CapturingRed: {
-        const int   capTeam = (s.state == ShrineState::CapturingBlue) ? 1 : 2;
+        const int   capTeam = (s.state == ShrineState::CapturingBlue) ? Team::Blue : Team::Red;
         const ImU32 rgb  = GetAgentTeamColor(capTeam);
         const ImU32 fill = (rgb & 0x00FFFFFF) | ((ImU32)(kFillAlpha * 255.f) << 24);
         const ImU32 edge = (rgb & 0x00FFFFFF) | (0xD0u << 24);
@@ -482,7 +483,7 @@ void ReplayWindow::DrawWurmsShrineCaptureRadius()
 
     case ShrineState::DecappingBlue:
     case ShrineState::DecappingRed: {
-        const int   actTeam = (s.state == ShrineState::DecappingBlue) ? 1 : 2;
+        const int   actTeam = (s.state == ShrineState::DecappingBlue) ? Team::Blue : Team::Red;
         const ImU32 ownerRgb  = GetAgentTeamColor(s.ownerTeam);
         const ImU32 actRgb    = GetAgentTeamColor(actTeam);
         const ImU32 fill = (ownerRgb & 0x00FFFFFF) | ((ImU32)(kFillAlpha * 255.f) << 24);
@@ -603,7 +604,7 @@ void ReplayWindow::DrawShrineBeam(uint8_t ownerTeam, float sx, float sy, float s
     };
 
     BeamLayerDef layers[3];
-    if (ownerTeam == 1) // Red
+    if (Team::IsRed(ownerTeam))
     {
         layers[0] = { 1.00f, IM_COL32(0xB0, 0x20, 0x20, 166), IM_COL32(0xE0, 0x30, 0x30, 166) };
         layers[1] = { 0.75f, IM_COL32(0xF0, 0x60, 0x40, 230), IM_COL32(0xFF, 0x80, 0x60, 230) };
@@ -625,10 +626,10 @@ void ReplayWindow::DrawShrineBeam(uint8_t ownerTeam, float sx, float sy, float s
     // ---- Floor halo (ellipse at shrine base) ----
     {
         float haloR = kHaloRadius * mt.scaleX;
-        ImU32 haloCenterCol = (ownerTeam == 1)
+        ImU32 haloCenterCol = Team::IsBlue(ownerTeam)
             ? IM_COL32(0x3A, 0x80, 0xE0, 140)
             : IM_COL32(0xE0, 0x30, 0x20, 140);
-        ImU32 haloEdgeCol = (ownerTeam == 1)
+        ImU32 haloEdgeCol = Team::IsBlue(ownerTeam)
             ? IM_COL32(0x3A, 0x80, 0xE0, 0)
             : IM_COL32(0xE0, 0x30, 0x20, 0);
 

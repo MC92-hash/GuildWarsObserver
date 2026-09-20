@@ -975,12 +975,12 @@ void ReplayWindow::DrawRibbonToolbar()
         } });
 
         groups.push_back({ "Panels", {
-            C(Ico::Party1, "Team 1 Party", m_showTeam1Party, kCylRed,
-              "Show the red team's party panel: each player's health, "
+            C(Ico::Party1, "Team 1 Party", m_showTeam1Party, kCylBlue,
+              "Show the blue team's party panel: each player's health, "
               "conditions/enchantments and status at the current replay "
               "time, like an in-game party window."),
-            C(Ico::Party2, "Team 2 Party", m_showTeam2Party, kCylBlue,
-              "Show the blue team's party panel: each player's health, "
+            C(Ico::Party2, "Team 2 Party", m_showTeam2Party, kCylRed,
+              "Show the red team's party panel: each player's health, "
               "conditions/enchantments and status at the current replay "
               "time, like an in-game party window."),
             T(Ico::Clock, "Event Timeline", m_showEventTimeline,

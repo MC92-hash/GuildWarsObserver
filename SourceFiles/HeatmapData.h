@@ -88,7 +88,7 @@ struct HeatmapLayerDef
 {
     bool                enabled     = true;
     HeatmapSubjectType  subjectType = HeatmapSubjectType::TEAM;
-    int                 subjectId   = 1;        // teamId (1/2) or runtime agentId
+    int                 subjectId   = 1;        // teamId (1=blue, 2=red) or runtime agentId
     std::string         subjectName;            // display label + config match key
     HeatmapPalette      palette     = HeatmapPalette::THERMAL;
     float               opacity     = 0.50f;

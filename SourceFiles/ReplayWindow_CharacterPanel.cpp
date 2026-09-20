@@ -1588,11 +1588,11 @@ void ReplayWindow::DrawCharacterPanels()
                 }
             };
 
-            teamList(m_team1PlayerIds, m_folderTag1.empty() ? "Red" : m_folderTag1.c_str(),
-                     IM_COL32(255, 107, 107, 255));
-            ImGui::Spacing();
-            teamList(m_team2PlayerIds, m_folderTag2.empty() ? "Blue" : m_folderTag2.c_str(),
+            teamList(m_team1PlayerIds, m_folderTag1.empty() ? "Blue" : m_folderTag1.c_str(),
                      IM_COL32(74, 200, 255, 255));
+            ImGui::Spacing();
+            teamList(m_team2PlayerIds, m_folderTag2.empty() ? "Red" : m_folderTag2.c_str(),
+                     IM_COL32(255, 107, 107, 255));
 
             ImGui::PopStyleColor(3);
         }

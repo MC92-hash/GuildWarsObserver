@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "RunLog.h"
@@ -2198,8 +2199,8 @@ void ReplayWindow::DrawAgentCylinders()
         {
             color = { 0.4f, 0.4f, 0.4f, 0.30f };
         }
-        else if (ard.teamId == 1)  color = { 0.816f, 0.282f, 0.282f, 1.f };
-        else if (ard.teamId == 2)  color = { 0.290f, 0.565f, 0.847f, 1.f };
+        else if (Team::IsRed(ard.teamId))  color = { 0.816f, 0.282f, 0.282f, 1.f };
+        else if (Team::IsBlue(ard.teamId)) color = { 0.290f, 0.565f, 0.847f, 1.f };
         else                       color = { 0.7f, 0.7f, 0.7f, 1.f };
 
         if (dead)

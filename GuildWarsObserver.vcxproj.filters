@@ -327,6 +327,9 @@
     <ClInclude Include="SourceFiles\ReplayWindow.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\TeamColors.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\CatapultLeverState.h">
       <Filter>GUI</Filter>
     </ClInclude>

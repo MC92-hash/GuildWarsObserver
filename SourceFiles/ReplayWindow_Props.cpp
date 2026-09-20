@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -3062,8 +3063,8 @@ void ReplayWindow::SetupFrozenGateLockProps()
         if (a.snapshots.empty()) continue;
         if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
         const auto& s0 = a.snapshots.front();
-        if (a.teamId == 1 && !haveRed)  { redLord  = { s0.x, s0.y, s0.z }; haveRed  = true; }
-        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+        if (Team::IsRed(a.teamId) && !haveRed)   { redLord  = { s0.x, s0.y, s0.z }; haveRed  = true; }
+        if (Team::IsBlue(a.teamId) && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
     }
 
     for (const auto& pos : positions)
@@ -3223,7 +3224,7 @@ void ReplayWindow::ResolveFrozenGates()
     if (!m_mapRenderer || m_replayCtx.agents.empty())
         return;
 
-    // Guild lord reference positions (teamId 1 = red, 2 = blue).
+    // Guild lord reference positions (teamId 1 = blue, 2 = red).
     bool haveBlue = false, haveRed = false;
     DirectX::XMFLOAT3 blueLord{}, redLord{};
     for (auto& [aid, a] : m_replayCtx.agents)
@@ -3231,8 +3232,8 @@ void ReplayWindow::ResolveFrozenGates()
         if (a.snapshots.empty()) continue;
         if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
         const auto& s0 = a.snapshots.front();
-        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
-        else if (a.teamId == 1 && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
+        if (Team::IsBlue(a.teamId) && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+        else if (Team::IsRed(a.teamId) && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
     }
     if (!haveBlue || !haveRed)
         return;   // wait until both lords are present
@@ -3318,7 +3319,7 @@ void ReplayWindow::ResolveDruidBridges()
     if (!m_mapRenderer || m_replayCtx.agents.empty())
         return;
 
-    // Guild lord reference positions (teamId 1 = red, 2 = blue).
+    // Guild lord reference positions (teamId 1 = blue, 2 = red).
     bool haveBlue = false, haveRed = false;
     DirectX::XMFLOAT3 blueLord{}, redLord{};
     for (auto& [aid, a] : m_replayCtx.agents)
@@ -3326,8 +3327,8 @@ void ReplayWindow::ResolveDruidBridges()
         if (a.snapshots.empty()) continue;
         if (a.categoryName.find("Guild Lord") == std::string::npos) continue;
         const auto& s0 = a.snapshots.front();
-        if (a.teamId == 2 && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
-        else if (a.teamId == 1 && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
+        if (Team::IsBlue(a.teamId) && !haveBlue) { blueLord = { s0.x, s0.y, s0.z }; haveBlue = true; }
+        else if (Team::IsRed(a.teamId) && !haveRed) { redLord = { s0.x, s0.y, s0.z }; haveRed = true; }
     }
     if (!haveBlue || !haveRed)
         return;   // wait until both lords are present

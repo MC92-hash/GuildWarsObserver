@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -547,7 +548,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
 
         // Right side: team dot + close
         float rx = headerTL.x + contentW - kPadX;
-        ImU32 dotCol = (ard.teamId == 1) ? kRedTeam : kBlueTeam;
+        ImU32 dotCol = Team::IsRed(ard.teamId) ? kRedTeam : kBlueTeam;
 
         ImGui::SetCursorScreenPos(ImVec2(rx - 16.f, headerTL.y + (headerH - 16.f) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f));
@@ -1841,7 +1842,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
                     if (tt.isSelf) dispName += " (self)";
                     ImU32 nameCol;
                     if (tt.isSelf) nameCol = kGold;
-                    else if (tt.teamId == 1) nameCol = kRedTeam;
+                    else if (Team::IsRed(tt.teamId)) nameCol = kRedTeam;
                     else nameCol = kBlueTeam;
 
                     // Percentage text (right-aligned, 32px reserved)

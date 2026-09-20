@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -399,12 +400,12 @@ void ReplayWindow::DrawFogOfWarToolbar()
         auto FogPill = [](const char* label, bool active, int team) -> bool {
             ImVec4 bg, tx, hov, bdr;
             if (active) {
-                if (team == 1) {
+                if (Team::IsRed(team)) {
                     bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
                     tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
                     hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
                     bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
-                } else if (team == 2) {
+                } else if (Team::IsBlue(team)) {
                     bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
                     tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
                     hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
@@ -441,11 +442,11 @@ void ReplayWindow::DrawFogOfWarToolbar()
         if (FogPill("Off", m_fogPerspective == 0 && m_fogPlayerAgent < 0, 0))
         { m_fogPerspective = 0; m_fogPlayerAgent = -1; }
         ImGui::SameLine();
-        if (FogPill("Red", m_fogPerspective == 1 && m_fogPlayerAgent < 0, 1))
-        { m_fogPerspective = (m_fogPerspective == 1 && m_fogPlayerAgent < 0) ? 0 : 1; m_fogPlayerAgent = -1; }
+        if (FogPill("Red", m_fogPerspective == Team::Red && m_fogPlayerAgent < 0, Team::Red))
+        { m_fogPerspective = (m_fogPerspective == Team::Red && m_fogPlayerAgent < 0) ? 0 : Team::Red; m_fogPlayerAgent = -1; }
         ImGui::SameLine();
-        if (FogPill("Blue", m_fogPerspective == 2 && m_fogPlayerAgent < 0, 2))
-        { m_fogPerspective = (m_fogPerspective == 2 && m_fogPlayerAgent < 0) ? 0 : 2; m_fogPlayerAgent = -1; }
+        if (FogPill("Blue", m_fogPerspective == Team::Blue && m_fogPlayerAgent < 0, Team::Blue))
+        { m_fogPerspective = (m_fogPerspective == Team::Blue && m_fogPlayerAgent < 0) ? 0 : Team::Blue; m_fogPlayerAgent = -1; }
 
         if (m_fogPlayerAgent >= 0)
         {

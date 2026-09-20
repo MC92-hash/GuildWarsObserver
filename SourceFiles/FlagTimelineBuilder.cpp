@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "FlagTimelineBuilder.h"
 #include "RitualistAshes.h"
 #include <algorithm>
@@ -86,12 +87,12 @@ StandOwner StandTimeline::ownerAtTime(float t) const
 static constexpr uint32_t kBlueExtraId = 59808;
 static constexpr uint32_t kRedExtraId  = 57400;
 
-static constexpr int kTeamCodeRed  = 20;
-static constexpr int kTeamCodeBlue = 21;
+static constexpr int kTeamCodeBlue = 20;
+static constexpr int kTeamCodeRed  = 21;
 
 static FlagTeam TeamFromExtraId(uint32_t extraId)
 {
-    return (extraId == kRedExtraId) ? FlagTeam::Blue : FlagTeam::Red;
+    return (extraId == kRedExtraId) ? FlagTeam::Red : FlagTeam::Blue;
 }
 
 static int TeamIndex(FlagTeam t) { return static_cast<int>(t); }
@@ -108,15 +109,13 @@ static int ResolveTeamFromPlayer(int playerAgentId, const std::unordered_map<int
     if (!agents) return -1;
     auto it = agents->find(playerAgentId);
     if (it == agents->end()) return -1;
-    if (it->second.teamId == 1) return 0;
-    if (it->second.teamId == 2) return 1;
-    return -1;
+    return Team::Index01(it->second.teamId);
 }
 
 static int ResolveTeamFromCode(int teamCode)
 {
-    if (teamCode == kTeamCodeRed)  return 0;
-    if (teamCode == kTeamCodeBlue) return 1;
+    if (teamCode == kTeamCodeBlue) return 0;
+    if (teamCode == kTeamCodeRed)  return 1;
     return -1;
 }
 
@@ -1153,7 +1152,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             auto& e = fe.announces[raw.index];
             if (e.action == 1) // STICK
             {
-                int ti = (e.team == 1) ? 0 : (e.team == 2) ? 1 : -1;
+                int ti = Team::Index01(e.team);
                 if (ti < 0) break;
 
                 FlagTimelineEvent stickEv;
@@ -1181,7 +1180,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
 
                 StandControlEvent sc;
                 sc.time          = e.time;
-                sc.owner         = (ti == 0) ? StandOwner::Red : StandOwner::Blue;
+                sc.owner         = Team::IndexIsRed(ti) ? StandOwner::Red : StandOwner::Blue;
                 sc.standAgentId  = result.stand.standAgentId;
                 sc.moraleExpiry  = e.time + 120.f;
                 result.stand.events.push_back(sc);
@@ -1190,7 +1189,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             }
             else if (e.action == 0) // RETURN
             {
-                int returnTeam = (e.team == 1) ? 0 : (e.team == 2) ? 1 : -1;
+                int returnTeam = Team::Index01(e.team);
                 if (returnTeam < 0) break;
                 int flagTeam = 1 - returnTeam;
 
@@ -1259,7 +1258,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                 float gy = lastGroundPos[flagTeam][1];
 
                 if (input.agents && (gx != 0.f || gy != 0.f)) {
-                    uint8_t returnTeamId = (returnTeam == 0) ? 1 : 2;
+                    uint8_t returnTeamId = Team::FromIndex01(returnTeam);
                     float tLo = e.time - 1.0f;
                     float tHi = e.time + 1.0f;
 
@@ -1357,7 +1356,7 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
 
             StandControlEvent sc;
             sc.time         = e.time;
-            sc.owner        = (ti == 0) ? StandOwner::Red : StandOwner::Blue;
+            sc.owner        = Team::IndexIsRed(ti) ? StandOwner::Red : StandOwner::Blue;
             sc.standAgentId = obeliskStandId;
             sc.moraleExpiry = 0.f;
             result.obelisk.events.push_back(sc);

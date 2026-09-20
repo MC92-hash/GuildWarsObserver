@@ -314,6 +314,7 @@
     <ClInclude Include="SourceFiles\draw_debug_match_metadata.h" />
     <ClInclude Include="SourceFiles\draw_replay_browser.h" />
     <ClInclude Include="SourceFiles\ReplayWindow.h" />
+    <ClInclude Include="SourceFiles\TeamColors.h" />
     <ClInclude Include="SourceFiles\CatapultLeverState.h" />
     <ClInclude Include="SourceFiles\HeatmapData.h" />
     <ClInclude Include="SourceFiles\HeatmapRenderer.h" />

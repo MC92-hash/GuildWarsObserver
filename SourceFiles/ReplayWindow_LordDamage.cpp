@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -145,10 +146,10 @@ void ReplayWindow::DrawLordDamagePanel()
     // ---- PART 1: Lord header (icon, name, HP bar, stats) per column ----
     auto DrawLordHeader = [&](int idx, float startX) {
         auto& ld = m_lordDmg[idx];
-        bool isRed = (idx == 0);
+        bool isRed = Team::IndexIsRed(idx);
         const char* teamLabel = isRed ? "Red" : "Blue";
         const char* iconFile = isRed ? "redguildlord.png" : "blueguildlord.png";
-        const std::string& guildHeader = isRed ? m_team1GuildHeader : m_team2GuildHeader;
+        const std::string& guildHeader = isRed ? m_team2GuildHeader : m_team1GuildHeader;
 
         ImGui::SetCursorPosX(startX);
         float cursorY = ImGui::GetCursorPosY();
@@ -186,7 +187,7 @@ void ReplayWindow::DrawLordDamagePanel()
         const AgentSnapshot* snap = nullptr;
         float hpPct = 1.f;
         bool isDead = false;
-        uint8_t teamId = isRed ? 1 : 2;
+        uint8_t teamId = isRed ? Team::Red : Team::Blue;
         auto lordIt = m_replayCtx.agents.find(ld.lordAgentId);
         if (lordIt != m_replayCtx.agents.end())
         {
@@ -210,7 +211,7 @@ void ReplayWindow::DrawLordDamagePanel()
 
             const LordGrad5* fillGrad = nullptr;
             if (isDead)
-                fillGrad = (teamId == 1) ? &gDeadRed : &gDeadBlue;
+                fillGrad = Team::IsRed(teamId) ? &gDeadRed : &gDeadBlue;
             else if (snap && snap->has_degen_hex)
                 fillGrad = &gDegenHex;
             else if (snap && snap->has_poison)
@@ -218,7 +219,7 @@ void ReplayWindow::DrawLordDamagePanel()
             else if (snap && snap->has_bleeding)
                 fillGrad = &gBleeding;
             else
-                fillGrad = (teamId == 1) ? &gAliveRed : &gAliveBlue;
+                fillGrad = Team::IsRed(teamId) ? &gAliveRed : &gAliveBlue;
 
             if (isDead)
             {
@@ -226,7 +227,7 @@ void ReplayWindow::DrawLordDamagePanel()
             }
             else
             {
-                const LordGrad5* deadGrad = (teamId == 1) ? &gDeadRed : &gDeadBlue;
+                const LordGrad5* deadGrad = Team::IsRed(teamId) ? &gDeadRed : &gDeadBlue;
                 DrawLordGradRect(dl, innerTL, innerBR, *deadGrad);
                 bool hasDeepWound = snap && snap->has_deep_wound && !isDead;
                 float fillPct = hasDeepWound ? std::min(hpPct, 0.80f) : hpPct;
@@ -381,9 +382,9 @@ void ReplayWindow::DrawLordDamagePanel()
             float barX = nameX + nameW + 4 + 32;
             float barW = std::max(0.f, colW - (iconSz + 4 + nameW + 4 + 32));
             ImU32 barBg = IM_COL32(255, 255, 255, 15);
-            ImU32 barFg = (atk.teamId == 2)
-                ? IM_COL32(74, 144, 216, 178)
-                : IM_COL32(208, 72, 72, 178);
+            ImU32 barFg = Team::IsRed(atk.teamId)
+                ? IM_COL32(208, 72, 72, 178)
+                : IM_COL32(74, 144, 216, 178);
             dl->AddRectFilled(ImVec2(barX, rowP.y + 3),
                 ImVec2(barX + barW, rowP.y + rowH - 3), barBg, 2.f);
             dl->AddRectFilled(ImVec2(barX, rowP.y + 3),

@@ -7525,11 +7525,11 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
                 const ImVec4 colBlue(0.40f, 0.65f, 1.00f, 1.00f);
                 const ImVec4 colRed(1.00f, 0.40f, 0.40f, 1.00f);
 
-                std::string labelRed  = g1.tag.empty() ? "Team 1" : "[" + g1.tag + "]";
-                std::string labelBlue = g2.tag.empty() ? "Team 2" : "[" + g2.tag + "]";
+                std::string labelBlue = g1.tag.empty() ? "Team 1" : "[" + g1.tag + "]";
+                std::string labelRed  = g2.tag.empty() ? "Team 2" : "[" + g2.tag + "]";
 
-                float labelW1 = ImGui::CalcTextSize(labelRed.c_str()).x;
-                float labelW2 = ImGui::CalcTextSize(labelBlue.c_str()).x;
+                float labelW1 = ImGui::CalcTextSize(labelBlue.c_str()).x;
+                float labelW2 = ImGui::CalcTextSize(labelRed.c_str()).x;
                 float labelColW = (std::max)(labelW1, labelW2) + 6.0f;
 
                 char valBuf1[32], valBuf2[32];
@@ -7578,8 +7578,8 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
                     ImGui::SetCursorScreenPos(ImVec2(rowStart.x, y0 + rowH));
                 };
 
-                DrawDmgRow(labelRed, ld.total_lord_damage_blue, valBuf1, colRed);
-                DrawDmgRow(labelBlue, ld.total_lord_damage_red, valBuf2, colBlue);
+                DrawDmgRow(labelBlue, ld.total_lord_damage_blue, valBuf1, colBlue);
+                DrawDmgRow(labelRed, ld.total_lord_damage_red, valBuf2, colRed);
             }
         }
     }

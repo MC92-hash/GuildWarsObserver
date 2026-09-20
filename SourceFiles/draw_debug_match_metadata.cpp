@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "draw_debug_match_metadata.h"
 #include "ReplayLibrary.h"
 #include "GuiGlobalConstants.h"
@@ -352,10 +353,10 @@ static void DrawSingleMatch(const MatchMeta& m, int index)
                 }
                 else
                 {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                        "Total Lord Damage  Red:  %ld", ld.total_lord_damage_blue);
                     ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f),
-                        "Total Lord Damage  Blue: %ld", ld.total_lord_damage_red);
+                        "Total Lord Damage  Blue: %ld", ld.total_lord_damage_blue);
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                        "Total Lord Damage  Red:  %ld", ld.total_lord_damage_red);
                     ImGui::Separator();
 
                     ImGui::Text("Events: %d", (int)ld.events.size());
@@ -379,10 +380,10 @@ static void DrawSingleMatch(const MatchMeta& m, int index)
                             ImGui::TableNextColumn(); ImGui::Text("%d", evt.caster_id);
                             ImGui::TableNextColumn(); ImGui::Text("%ld", evt.damage);
                             ImGui::TableNextColumn();
-                            if (evt.attacking_team == 1)
-                                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Red (1)");
-                            else if (evt.attacking_team == 2)
-                                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Blue (2)");
+                            if (Team::IsBlue(evt.attacking_team))
+                                ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "Blue (1)");
+                            else if (Team::IsRed(evt.attacking_team))
+                                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Red (2)");
                             else
                                 ImGui::Text("%d", evt.attacking_team);
                             ImGui::TableNextColumn(); ImGui::Text("%ld", evt.damage_after);

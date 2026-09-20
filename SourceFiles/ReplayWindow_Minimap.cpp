@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "GuiGlobalConstants.h"
@@ -511,8 +512,8 @@ void ReplayWindow::DrawMinimapPanel()
                 // --- Flag stands, obelisk stands & shrines: icon markers ---
                 {
                     auto TeamHoverCol = [&](int team) -> ImU32 {
-                        if (team == 1)      return IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
-                        else if (team == 2) return IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
+                        if (Team::IsRed(team))       return IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+                        else if (Team::IsBlue(team)) return IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
                         return IM_COL32(255, 255, 255, 240);
                     };
                     auto DrawIconMarker = [&](ImTextureID tex, float half, ImU32 tint,
@@ -559,24 +560,24 @@ void ReplayWindow::DrawMinimapPanel()
                         const char* file = (owner == StandOwner::Red)  ? "RedFlag.png"
                                          : (owner == StandOwner::Blue) ? "BlueFlag.png"
                                                                        : "GreyFlag.png";
-                        int hteam = (owner == StandOwner::Red) ? 1
-                                  : (owner == StandOwner::Blue) ? 2 : 0;
+                        int hteam = (owner == StandOwner::Red) ? Team::Red
+                                  : (owner == StandOwner::Blue) ? Team::Blue : Team::None;
                         DrawIconMarker(LoadNPCIcon(dev, file), 11.f,
                                        IM_COL32(255, 255, 255, 255), hteam);
                         continue;
                     }
                     if (isHealthShrine)
                     {
-                        int owner = 0; // 0=neutral,1=red,2=blue
+                        int owner = 0; // 0=neutral,1=blue,2=red
                         if (!m_wurmsShrineSamples.empty())
                         {
                             int lastIdx = (int)m_wurmsShrineSamples.size() - 1;
                             int idx = std::clamp((int)(now / m_wurmsShrineSampleDt), 0, lastIdx);
                             owner = m_wurmsShrineSamples[idx].ownerTeam;
                         }
-                        const char* file = (owner == 1) ? "RedAnkh.png"
-                                         : (owner == 2) ? "BlueAnkh.png"
-                                                        : "GreyAnkh.png";
+                        const char* file = Team::IsRed(owner)  ? "RedAnkh.png"
+                                         : Team::IsBlue(owner) ? "BlueAnkh.png"
+                                                               : "GreyAnkh.png";
                         DrawIconMarker(LoadNPCIcon(dev, file), 11.f,
                                        IM_COL32(255, 255, 255, 255), owner);
                         continue;
@@ -586,9 +587,9 @@ void ReplayWindow::DrawMinimapPanel()
                         int team = 0;
                         auto rit = m_resShrineTeam.find(agentId);
                         if (rit != m_resShrineTeam.end()) team = rit->second;
-                        ImU32 col = (team == 1) ? kRedTeam
-                                  : (team == 2) ? kBlueTeam
-                                                : kGold;
+                        ImU32 col = Team::IsRed(team)  ? kRedTeam
+                                  : Team::IsBlue(team) ? kBlueTeam
+                                                       : kGold;
                         dl->AddCircleFilled(ImVec2(scrX, scrY), 4.5f,
                                             IM_COL32(0, 0, 0, 180));
                         dl->AddCircleFilled(ImVec2(scrX, scrY), 3.5f, col);
@@ -623,9 +624,9 @@ void ReplayWindow::DrawMinimapPanel()
                     dotColor = kGold;
                 else if (isFlameSentinel)
                     dotColor = kGrey;
-                else if (ard.teamId == 1)      dotColor = kRedTeam;
-                else if (ard.teamId == 2) dotColor = kBlueTeam;
-                else                      dotColor = kNeutral;
+                else if (Team::IsRed(ard.teamId))  dotColor = kRedTeam;
+                else if (Team::IsBlue(ard.teamId)) dotColor = kBlueTeam;
+                else                               dotColor = kNeutral;
 
                 bool isLord = (ard.categoryName.find("Guild Lord") != std::string::npos);
                 if (isLord)
@@ -654,8 +655,8 @@ void ReplayWindow::DrawMinimapPanel()
                             dl->AddCircleFilled(ImVec2(scrX, scrY), icoR + 1.5f,
                                                 IM_COL32(0, 0, 0, 205));
                             // Desaturated grey tint to signal death
-                            ImU32 greyRing = (ard.teamId == 1) ? IM_COL32(140, 90, 90, 200)
-                                                               : IM_COL32(90, 110, 140, 200);
+                            ImU32 greyRing = Team::IsRed(ard.teamId) ? IM_COL32(140, 90, 90, 200)
+                                                                     : IM_COL32(90, 110, 140, 200);
                             dl->AddImage(profTex, p0, p1, ImVec2(0, 0), ImVec2(1, 1),
                                          IM_COL32(130, 130, 130, 180));
                             dl->AddCircle(ImVec2(scrX, scrY), icoR + 1.5f, greyRing, 0, 1.6f);
@@ -664,7 +665,7 @@ void ReplayWindow::DrawMinimapPanel()
                     else
                     {
                         // Small cross (grave marker), team-colored
-                        ImU32 crossCol = (ard.teamId == 1)
+                        ImU32 crossCol = Team::IsRed(ard.teamId)
                             ? IM_COL32(0xFF, 0x99, 0x9A, 200)
                             : IM_COL32(0x99, 0xCB, 0xFD, 200);
                         float cr = 4.f;
@@ -692,9 +693,9 @@ void ReplayWindow::DrawMinimapPanel()
                             hoverLabelText   = GetAgentLabel(ard);
                             hoverLabelPos    = ImVec2(scrX, scrY);
                             hoverLabelDotR   = 5.f;
-                            if (ard.teamId == 1)      hoverLabelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
-                            else if (ard.teamId == 2) hoverLabelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
-                            else                      hoverLabelCol = IM_COL32(255, 255, 255, 240);
+                            if (Team::IsRed(ard.teamId))       hoverLabelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+                            else if (Team::IsBlue(ard.teamId)) hoverLabelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
+                            else                               hoverLabelCol = IM_COL32(255, 255, 255, 240);
                         }
                     }
                     continue;  // skip further drawing for dead players
@@ -749,9 +750,9 @@ void ReplayWindow::DrawMinimapPanel()
                         hoverLabelPos    = ImVec2(scrX, scrY);
                         hoverLabelDotR   = drewProfIcon ? std::max(dotRadius + 3.5f, 8.f)
                                                         : dotRadius;
-                        if (ard.teamId == 1)      hoverLabelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
-                        else if (ard.teamId == 2) hoverLabelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
-                        else                      hoverLabelCol = IM_COL32(255, 255, 255, 240);
+                        if (Team::IsRed(ard.teamId))       hoverLabelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+                        else if (Team::IsBlue(ard.teamId)) hoverLabelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
+                        else                               hoverLabelCol = IM_COL32(255, 255, 255, 240);
                     }
                 }
 
@@ -764,9 +765,9 @@ void ReplayWindow::DrawMinimapPanel()
                     float ly = scrY + dotRadius + 2.f;
 
                     ImU32 labelCol;
-                    if (ard.teamId == 1)      labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
-                    else if (ard.teamId == 2) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                    else                      labelCol = IM_COL32(255, 255, 255, 230);
+                    if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                    else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                    else                               labelCol = IM_COL32(255, 255, 255, 230);
 
                     dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
                                 IM_COL32(0, 0, 0, 200), label.c_str());
@@ -788,7 +789,7 @@ void ReplayWindow::DrawMinimapPanel()
                     FlagLocation loc = ft.locationAtTime(now);
                     if (loc == FlagLocation::Stand) continue; // shown on the stand
 
-                    ImTextureID ftex = (ti == 0) ? texFlagRed : texFlagBlue;
+                    ImTextureID ftex = Team::IndexIsRed(ti) ? texFlagRed : texFlagBlue;
                     bool carried  = (loc == FlagLocation::Carried);
                     int  carrier  = carried ? ft.carrierAtTime(now) : -1;
 
@@ -818,7 +819,7 @@ void ReplayWindow::DrawMinimapPanel()
                                      ImVec2(fsx + fh + ox, fsy + fh + oy));
                     else
                     {
-                        ImU32 fc = (ti == 0) ? kRedTeam : kBlueTeam;
+                        ImU32 fc = Team::IndexIsRed(ti) ? kRedTeam : kBlueTeam;
                         dl->AddCircleFilled(ImVec2(fsx + ox, fsy + oy), 4.f,
                                             IM_COL32(0, 0, 0, 180));
                         dl->AddCircleFilled(ImVec2(fsx + ox, fsy + oy), 3.f, fc);

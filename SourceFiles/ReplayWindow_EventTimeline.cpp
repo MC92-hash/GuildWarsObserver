@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -70,8 +71,8 @@ void ReplayWindow::BuildTimelineData()
         }
     };
 
-    sampleTeamHealth(m_team1PlayerIds, m_timeline.redHealth);
-    sampleTeamHealth(m_team2PlayerIds, m_timeline.blueHealth);
+    sampleTeamHealth(m_team1PlayerIds, m_timeline.blueHealth);
+    sampleTeamHealth(m_team2PlayerIds, m_timeline.redHealth);
 
     auto teamForAgent = [&](int agentId) -> int {
         for (int id : m_team1PlayerIds) if (id == agentId) return 1;
@@ -126,29 +127,29 @@ void ReplayWindow::BuildTimelineData()
 
         if (ev.message == "CAPTURED_TOWER") {
             te.type = TimelineEventType::FlagCapture;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured tower");
+            te.label = Team::Name(te.teamId) + std::string(" captured tower");
         }
         else if (ev.message == "MORALE_BOOST") {
             te.type = TimelineEventType::MoraleBoost;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" morale boost");
+            te.label = Team::Name(te.teamId) + std::string(" morale boost");
         }
         else if (ev.message == "GUILD_LORD_UNDER_ATTACK" || ev.message == "BASE_UNDER_ATTACK") {
             te.type = TimelineEventType::LordAttacked;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" lord under attack");
+            te.label = Team::Name(te.teamId) + std::string(" lord under attack");
         }
         else if (ev.message == "VICTORY" || ev.message == "FLAWLESS_VICTORY") {
             te.type = TimelineEventType::Victory;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" victory!");
+            te.label = Team::Name(te.teamId) + std::string(" victory!");
         }
         else if (ev.message == "CAPTURED_SHRINE") {
             te.type = TimelineEventType::ShrineCaptured;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured shrine");
+            te.label = Team::Name(te.teamId) + std::string(" captured shrine");
         }
         else if (ev.message == "NEUTRALIZED_SHRINE") {
             // party_value identifies the losing team — invert for display
-            if (te.teamId > 0) te.teamId = (te.teamId == 1) ? 2 : 1;
+            if (te.teamId > 0) te.teamId = Team::Other(te.teamId);
             te.type = TimelineEventType::ShrineNeutralized;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" neutralized shrine");
+            te.label = Team::Name(te.teamId) + std::string(" neutralized shrine");
         }
         else continue;
 
@@ -162,7 +163,7 @@ void ReplayWindow::BuildTimelineData()
             TimelineEvent te;
             te.time = ev.time;
             te.type = TimelineEventType::FlagReturn;
-            te.teamId = (ev.flagTeam == FlagTeam::Red) ? 1 : 2;
+            te.teamId = (ev.flagTeam == FlagTeam::Red) ? Team::Red : Team::Blue;
             te.label = "Flag returned";
             m_timeline.events.push_back(std::move(te));
         }
@@ -173,8 +174,8 @@ void ReplayWindow::BuildTimelineData()
             TimelineEvent te;
             te.time = sc.time;
             te.type = TimelineEventType::ObeliskCapture;
-            te.teamId = (sc.owner == StandOwner::Red) ? 1 : 2;
-            te.label = (te.teamId == 1 ? "Red" : "Blue") + std::string(" captured obelisk");
+            te.teamId = (sc.owner == StandOwner::Red) ? Team::Red : Team::Blue;
+            te.label = Team::Name(te.teamId) + std::string(" captured obelisk");
             m_timeline.events.push_back(std::move(te));
         }
     }
@@ -529,7 +530,7 @@ void ReplayWindow::DrawEventTimeline()
         {
             int sec = std::clamp(static_cast<int>(e.time), 0,
                 static_cast<int>(m_timeline.redHealth.size()) - 1);
-            const auto& curve = (e.teamId == 2) ? m_timeline.blueHealth : m_timeline.redHealth;
+            const auto& curve = Team::IsRed(e.teamId) ? m_timeline.redHealth : m_timeline.blueHealth;
             float healthPct = (sec < static_cast<int>(curve.size())) ? curve[sec] : 50.f;
             ey = chartY1 - (healthPct / 100.f) * chartH;
             float minY = chartY0 + iconSz * 0.5f + 1.f;
@@ -593,9 +594,9 @@ void ReplayWindow::DrawEventTimeline()
             iconMax = ImVec2(mp.x + half * 1.3f, mp.y + half * 1.3f);
         }
 
-        ImU32 teamBorderCol = (e.teamId == 2)
-            ? IM_COL32( 74,144,216, 255)   // #4a90d8
-            : IM_COL32(208, 72, 72, 255);   // #d04848
+        ImU32 teamBorderCol = Team::IsRed(e.teamId)
+            ? IM_COL32(208, 72, 72, 255)   // #d04848
+            : IM_COL32( 74,144,216, 255);   // #4a90d8
 
         switch (e.type) {
         case TimelineEventType::Death: {
@@ -622,7 +623,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::FlagCapture: {
-            const char* flagFile = (e.teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
+            const char* flagFile = Team::IsRed(e.teamId) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
             ImTextureID tex = LoadFlagIcon(dev, flagFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -634,7 +635,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::FlagReturn: {
-            const char* flagFile = (e.teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
+            const char* flagFile = Team::IsRed(e.teamId) ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png";
             ImTextureID tex = LoadFlagIcon(dev, flagFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -657,7 +658,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::MoraleBoost: {
-            const char* moraleFile = (e.teamId == 2) ? "bluemorale.png" : "redmorale.png";
+            const char* moraleFile = Team::IsRed(e.teamId) ? "redmorale.png" : "bluemorale.png";
             ImTextureID tex = LoadFlagIcon(dev, moraleFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -669,7 +670,7 @@ void ReplayWindow::DrawEventTimeline()
             break;
         }
         case TimelineEventType::LordAttacked: {
-            const char* lordFile = (e.teamId == 2) ? "blueguildlord.png" : "redguildlord.png";
+            const char* lordFile = Team::IsRed(e.teamId) ? "redguildlord.png" : "blueguildlord.png";
             ImTextureID tex = LoadFlagIcon(dev, lordFile);
             if (tex)
                 dl->AddImage(tex, iconMin, iconMax);
@@ -682,9 +683,9 @@ void ReplayWindow::DrawEventTimeline()
         }
         case TimelineEventType::ShrineCaptured: {
             ImTextureID tex = LoadFlagIcon(dev, "Health_Shrine_Bonus.jpg");
-            ImU32 borderCol = (e.teamId == 2)
-                ? IM_COL32(74, 144, 216, 255)
-                : IM_COL32(208, 72, 72, 255);
+            ImU32 borderCol = Team::IsRed(e.teamId)
+                ? IM_COL32(208, 72, 72, 255)
+                : IM_COL32(74, 144, 216, 255);
             dl->AddRectFilled(iconMin, iconMax, IM_COL32(10, 10, 10, 200), 2.f);
             dl->AddRect(iconMin, iconMax, borderCol, 2.f, 0, 2.f);
             if (tex)
@@ -728,9 +729,9 @@ void ReplayWindow::DrawEventTimeline()
         }
         case TimelineEventType::ObeliskCapture: {
             ImTextureID tex = LoadFlagIcon(dev, "Obelisk_Lightning.jpg");
-            ImU32 borderCol = (e.teamId == 2)
-                ? IM_COL32(80, 160, 255, 255)
-                : IM_COL32(255, 80, 70, 255);
+            ImU32 borderCol = Team::IsRed(e.teamId)
+                ? IM_COL32(255, 80, 70, 255)
+                : IM_COL32(80, 160, 255, 255);
             constexpr float bw = 2.f;
             dl->AddRectFilled(iconMin, iconMax, borderCol, 2.f);
             ImVec2 imgMin(iconMin.x + bw, iconMin.y + bw);

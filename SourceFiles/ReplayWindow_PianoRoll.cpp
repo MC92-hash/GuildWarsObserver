@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -65,13 +66,13 @@ void ReplayWindow::DrawPianoRollPanel()
     constexpr float kLegendH    = 28.f;
     constexpr float kIconSz     = 18.f;
 
-    const int nRed  = (int)m_team1PlayerIds.size();
-    const int nBlue = (int)m_team2PlayerIds.size();
-    const int nRedRows  = m_pianoRollTeam1Open ? nRed  : 0;
-    const int nBlueRows = m_pianoRollTeam2Open ? nBlue : 0;
+    const int nBlue = (int)m_team1PlayerIds.size();
+    const int nRed  = (int)m_team2PlayerIds.size();
+    const int nBlueRows = m_pianoRollTeam1Open ? nBlue : 0;
+    const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
     const float bodyH = kTimeAxisH
-                      + kTeamLabelH + nRedRows  * kRowH
                       + kTeamLabelH + nBlueRows * kRowH
+                      + kTeamLabelH + nRedRows  * kRowH
                       + kLegendH;
     const float totalH = kHeaderH + bodyH;
 
@@ -421,21 +422,21 @@ void ReplayWindow::DrawPianoRollPanel()
         }
     };
 
-    // ── Red team ──────────────────────────────────────────────────────
-    drawTeamBlock(m_team1PlayerIds, 1,
-                  m_team1GuildHeader.empty() ? "Red Team" : m_team1GuildHeader.c_str(),
+    // ── Blue team (team 1) ────────────────────────────────────────────
+    drawTeamBlock(m_team1PlayerIds, Team::Blue,
+                  m_team1GuildHeader.empty() ? "Blue Team" : m_team1GuildHeader.c_str(),
                   m_pianoRollTeam1Open,
-                  IM_COL32(0xD0,0x48,0x48,0xFF),
-                  IM_COL32(0xD0,0x48,0x48,0x14),
-                  IM_COL32(0xD0,0x48,0x48,0x26));
-
-    // ── Blue team ───────────────────────────────────────────────────────
-    drawTeamBlock(m_team2PlayerIds, 2,
-                  m_team2GuildHeader.empty() ? "Blue Team" : m_team2GuildHeader.c_str(),
-                  m_pianoRollTeam2Open,
                   IM_COL32(0x4A,0x90,0xD8,0xFF),
                   IM_COL32(0x4A,0x90,0xD8,0x14),
                   IM_COL32(0x4A,0x90,0xD8,0x26));
+
+    // ── Red team (team 2) ─────────────────────────────────────────────
+    drawTeamBlock(m_team2PlayerIds, Team::Red,
+                  m_team2GuildHeader.empty() ? "Red Team" : m_team2GuildHeader.c_str(),
+                  m_pianoRollTeam2Open,
+                  IM_COL32(0xD0,0x48,0x48,0xFF),
+                  IM_COL32(0xD0,0x48,0x48,0x14),
+                  IM_COL32(0xD0,0x48,0x48,0x26));
 
     float nowLineBot = curY;
 

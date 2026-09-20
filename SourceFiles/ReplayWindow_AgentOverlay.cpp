@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -80,7 +81,8 @@ void LoadFocusHealthMarkers(ID3D11Device* device,
         DirectX::ScratchImage marker;
         if (FAILED(marker.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, 32, 32, 1, 1))) continue;
         const auto* dst = marker.GetImage(0, 0, 0);
-        const ImU32* colors = team == 0 ? red : blue;
+        // textures[] is indexed by team id - 1, so slot 0 is team 1 = Blue.
+        const ImU32* colors = Team::IndexIsRed(team) ? red : blue;
         for (int y = 0; y < 32; ++y)
         {
             const float t = std::clamp((y - 10.f) / 17.f, 0.f, 1.f);
@@ -134,7 +136,7 @@ void DrawOverheadHealthBar(ImDrawList* dl, ImTextureID atlas, ImVec2 topLeft,
     if (health > 0.f)
     {
         const float end = 7.f + 242.f * health;
-        const ImU32* colors = team == 1 ? red : blue;
+        const ImU32* colors = Team::IsRed(team) ? red : blue;
         for (int i = 0; i < 4; ++i)
         {
             dl->AddRectFilledMultiColor(
@@ -835,9 +837,9 @@ void ReplayWindow::DrawAgentOverlay()
                                   ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
                                   IM_COL32(0, 0, 0, 25), 3.f);
                 ImU32 labelCol;
-                if (ard.teamId == 1)      labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
-                else if (ard.teamId == 2) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                else                      labelCol = IM_COL32(255, 255, 255, 230);
+                if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                else                               labelCol = IM_COL32(255, 255, 255, 230);
                 dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
                 dl->AddText(ImVec2(lx, ly), labelCol, label.c_str());
 
@@ -1188,8 +1190,8 @@ bool ReplayWindow::LaserCasterVisible(int agentId, const AgentReplayData& ard) c
 {
     if (m_laserHiddenAgents.count(agentId)) return false;
 
-    if (ard.teamId == 1 && !m_laserShowRed)  return false;
-    if (ard.teamId == 2 && !m_laserShowBlue) return false;
+    if (Team::IsRed(ard.teamId)  && !m_laserShowRed)  return false;
+    if (Team::IsBlue(ard.teamId) && !m_laserShowBlue) return false;
 
     int prof = (ard.primaryProf > 0 && ard.primaryProf < kLaserProfCount)
                  ? ard.primaryProf : 0;
@@ -1254,7 +1256,7 @@ void ReplayWindow::DrawSkillLaserPanel()
         auto TeamPill = [](const char* label, bool active, int team) -> bool {
             ImVec4 bg, tx, hov, bdr;
             if (active) {
-                if (team == 1) {
+                if (Team::IsRed(team)) {
                     bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
                     tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
                     hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
@@ -1361,10 +1363,10 @@ void ReplayWindow::DrawSkillLaserPanel()
 
         // --- Teams ---
         ImGui::TextDisabled("Teams");
-        if (TeamPill("Red##Laser", m_laserShowRed, 1))
+        if (TeamPill("Red##Laser", m_laserShowRed, Team::Red))
             m_laserShowRed = !m_laserShowRed;
         ImGui::SameLine();
-        if (TeamPill("Blue##Laser", m_laserShowBlue, 2))
+        if (TeamPill("Blue##Laser", m_laserShowBlue, Team::Blue))
             m_laserShowBlue = !m_laserShowBlue;
 
         ImGui::Separator();
@@ -1435,9 +1437,9 @@ void ReplayWindow::DrawSkillLaserPanel()
         {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            DrawTeamLasers("Red Team",  m_team1PlayerIds, m_laserShowRed);
+            DrawTeamLasers("Blue Team", m_team1PlayerIds, m_laserShowBlue);
             ImGui::TableSetColumnIndex(1);
-            DrawTeamLasers("Blue Team", m_team2PlayerIds, m_laserShowBlue);
+            DrawTeamLasers("Red Team",  m_team2PlayerIds, m_laserShowRed);
             ImGui::EndTable();
         }
     }

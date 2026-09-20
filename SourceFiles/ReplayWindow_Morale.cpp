@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -236,7 +237,7 @@ void ReplayWindow::DrawMoralePanel()
         bool   dead = false;
     };
 
-    std::vector<PlayerMorale> redTeam, blueTeam;
+    std::vector<PlayerMorale> blueTeam, redTeam;
 
     auto buildTeam = [&](const std::vector<int>& ids) {
         std::vector<PlayerMorale> result;
@@ -258,8 +259,8 @@ void ReplayWindow::DrawMoralePanel()
         return result;
     };
 
-    redTeam  = buildTeam(m_team1PlayerIds);
-    blueTeam = buildTeam(m_team2PlayerIds);
+    blueTeam = buildTeam(m_team1PlayerIds);
+    redTeam  = buildTeam(m_team2PlayerIds);
 
     auto getGuildLabel = [&](const std::string& partyId, const std::string& folderTag) -> std::string {
         auto* fg = FindGuildByTagStatic(m_matchMeta, folderTag);
@@ -280,8 +281,8 @@ void ReplayWindow::DrawMoralePanel()
         return "?";
     };
 
-    std::string redLabel  = getGuildLabel("1", m_folderTag1);
-    std::string blueLabel = getGuildLabel("2", m_folderTag2);
+    std::string blueLabel = getGuildLabel("1", m_folderTag1);
+    std::string redLabel  = getGuildLabel("2", m_folderTag2);
 
     constexpr float kPanelW = 520.f;
     constexpr float kRowH = 22.f;
@@ -364,8 +365,8 @@ void ReplayWindow::DrawMoralePanel()
     // Column headers: guild name [tag] in team color, standard font
     {
         ImVec2 p(startX, startY);
-        dl->AddText(ImVec2(p.x + 2.f, p.y), kRedTeam, redLabel.c_str());
-        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), kBlueTeam, blueLabel.c_str());
+        dl->AddText(ImVec2(p.x + 2.f, p.y), kBlueTeam, blueLabel.c_str());
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), kRedTeam, redLabel.c_str());
         ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
     }
 
@@ -445,10 +446,10 @@ void ReplayWindow::DrawMoralePanel()
 
     for (size_t i = 0; i < maxRows; ++i) {
         float rowY = rowStartY + i * kRowH;
-        if (i < redTeam.size())
-            drawPlayerRow(redTeam[i], startX, rowY);
         if (i < blueTeam.size())
-            drawPlayerRow(blueTeam[i], startX + colW + 1.f, rowY);
+            drawPlayerRow(blueTeam[i], startX, rowY);
+        if (i < redTeam.size())
+            drawPlayerRow(redTeam[i], startX + colW + 1.f, rowY);
     }
 
     float divX = startX + colW;
@@ -482,11 +483,11 @@ void ReplayWindow::DrawMoralePanel()
         ImVec2 p = ImGui::GetCursorScreenPos();
         char buf[32];
 
-        snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
-        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(redAvg), buf);
-
         snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
-        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(blueAvg), buf);
+        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(blueAvg), buf);
+
+        snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
+        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(redAvg), buf);
 
         ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
     }
@@ -501,20 +502,20 @@ void ReplayWindow::DrawMoralePanel()
         dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + barW, p.y + barH),
                           IM_COL32(255, 255, 255, 15), 3.f);
 
-        float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
-        if (redLen > 1.f) {
-            dl->AddRectFilled(
-                ImVec2(p.x + halfW - redLen, p.y),
-                ImVec2(p.x + halfW, p.y + barH),
-                IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
-        }
-
         float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
         if (blueLen > 1.f) {
             dl->AddRectFilled(
-                ImVec2(p.x + halfW, p.y),
-                ImVec2(p.x + halfW + blueLen, p.y + barH),
+                ImVec2(p.x + halfW - blueLen, p.y),
+                ImVec2(p.x + halfW, p.y + barH),
                 IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
+        }
+
+        float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
+        if (redLen > 1.f) {
+            dl->AddRectFilled(
+                ImVec2(p.x + halfW, p.y),
+                ImVec2(p.x + halfW + redLen, p.y + barH),
+                IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
         }
 
         dl->AddLine(ImVec2(p.x + halfW, p.y), ImVec2(p.x + halfW, p.y + barH),
@@ -551,8 +552,9 @@ void ReplayWindow::DrawMoraleBoostTimers()
     for (auto& sc : standEvents)
     {
         if (sc.time > curTime) break;
-        if (sc.owner == StandOwner::Red)        { lastCapTime[0] = sc.time; lastCapTeam = 0; }
-        else if (sc.owner == StandOwner::Blue)     { lastCapTime[1] = sc.time; lastCapTeam = 1; }
+        // Slot 0 is team 1 = Blue, slot 1 is team 2 = Red.
+        if (sc.owner == StandOwner::Blue)         { lastCapTime[0] = sc.time; lastCapTeam = 0; }
+        else if (sc.owner == StandOwner::Red)     { lastCapTime[1] = sc.time; lastCapTeam = 1; }
         else if (sc.owner == StandOwner::Neutral) { lastCapTeam = -1; }
     }
 
@@ -574,7 +576,7 @@ void ReplayWindow::DrawMoraleBoostTimers()
     auto DrawOneMorale = [&](int teamIdx01, int dragIdx, float* fracX, float* fracY,
                              float defaultX, float defaultY)
     {
-        int team = teamIdx01 + 1;
+        int team = Team::FromIndex01(teamIdx01);
         float px = m_uiLayout.useCustom ? *fracX : defaultX;
         float py = m_uiLayout.useCustom ? *fracY : defaultY;
 
@@ -583,7 +585,7 @@ void ReplayWindow::DrawMoraleBoostTimers()
         if (!hasCap && m_draggingUIElement != dragIdx)
             return;
 
-        const char* teamLabel = (team == 1) ? "Red Morale Boost" : "Blue Morale Boost";
+        const char* teamLabel = Team::IsRed(team) ? "Red Morale Boost" : "Blue Morale Boost";
         char buf[32] = "02:00";
 
         if (hasCap)
@@ -604,8 +606,8 @@ void ReplayWindow::DrawMoraleBoostTimers()
         float anchorY = vp->Pos.y + vp->Size.y * py;
         float x = anchorX - blockW * 0.5f;
 
-        ImU32 teamCol = (team == 1) ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
-                                    : IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
+        ImU32 teamCol = Team::IsRed(team) ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
+                                         : IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
         ImU32 goldCol = IM_COL32(0xF5, 0xE4, 0xB4, 0xFF);
 
         float labelX = x + (blockW - labelSize.x) * 0.5f;
@@ -619,6 +621,8 @@ void ReplayWindow::DrawMoraleBoostTimers()
         HandleOverlayDrag(dragIdx, fracX, fracY, boxTL, boxBR);
     };
 
-    DrawOneMorale(0, 1, &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  0.35f, 0.22f);
-    DrawOneMorale(1, 2, &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 0.65f, 0.22f);
+    // Slot 0 is team 1 = Blue, slot 1 is team 2 = Red; the drag id travels with the position
+    // it moves (1 = moRed, 2 = moBlue).
+    DrawOneMorale(0, 2, &m_uiLayout.moBlueX, &m_uiLayout.moBlueY, 0.35f, 0.22f);
+    DrawOneMorale(1, 1, &m_uiLayout.moRedX,  &m_uiLayout.moRedY,  0.65f, 0.22f);
 }

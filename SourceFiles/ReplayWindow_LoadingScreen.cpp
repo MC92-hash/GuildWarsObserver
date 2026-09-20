@@ -894,10 +894,10 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
         ImU32 cardBg = IM_COL32(8, 10, 14, static_cast<int>(180 * alpha));
         dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg, cardR);
 
-        if (redGradTex)
+        if (blueGradTex)
         {
             dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
-            dl->AddImage(redGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+            dl->AddImage(blueGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
                          ImVec2(0,0), ImVec2(1,1), gradCol);
             dl->PopClipRect();
         }
@@ -911,10 +911,10 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
         float textX = capePosX + capeW + innerGap;
         float textY = cardY + (cardH - textBlockH) * 0.5f;
 
-        ImU32 nameCol = IM_COL32(255, 120, 140, static_cast<int>(255 * alpha));
-        ImU32 tagCol  = IM_COL32(255, 120, 140, static_cast<int>(180 * alpha));
+        ImU32 nameCol = IM_COL32(120, 180, 255, static_cast<int>(255 * alpha));
+        ImU32 tagCol  = IM_COL32(120, 180, 255, static_cast<int>(180 * alpha));
         ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
-        ImU32 lblCol  = IM_COL32(210, 180, 180, static_cast<int>(200 * alpha));
+        ImU32 lblCol  = IM_COL32(180, 190, 210, static_cast<int>(200 * alpha));
 
         LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textX, textY), nameCol, name1.c_str());
         if (!tag1.empty())
@@ -987,10 +987,10 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
         ImU32 cardBg2 = IM_COL32(8, 10, 14, static_cast<int>(180 * alpha));
         dl->AddRectFilled(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH), cardBg2, cardR);
 
-        if (blueGradTex)
+        if (redGradTex)
         {
             dl->PushClipRect(ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH));
-            dl->AddImage(blueGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
+            dl->AddImage(redGradTex, ImVec2(cx, cardY), ImVec2(cx + cardW, cardY + cardH),
                          ImVec2(0,0), ImVec2(1,1), gradCol);
             dl->PopClipRect();
         }
@@ -1004,10 +1004,10 @@ void ReplayWindow::DrawMatchInfoOverlay(ImDrawList* dl, ImVec2 display, float al
         float textRightEdge = capePosX - innerGap;
         float textY = cardY + (cardH - textBlockH) * 0.5f;
 
-        ImU32 nameCol = IM_COL32(120, 180, 255, static_cast<int>(255 * alpha));
-        ImU32 tagCol  = IM_COL32(120, 180, 255, static_cast<int>(180 * alpha));
+        ImU32 nameCol = IM_COL32(255, 120, 140, static_cast<int>(255 * alpha));
+        ImU32 tagCol  = IM_COL32(255, 120, 140, static_cast<int>(180 * alpha));
         ImU32 numCol  = IM_COL32(240, 200, 80, static_cast<int>(255 * alpha));
-        ImU32 lblCol  = IM_COL32(180, 190, 210, static_cast<int>(200 * alpha));
+        ImU32 lblCol  = IM_COL32(210, 180, 180, static_cast<int>(200 * alpha));
 
         float ntW2 = nameTagSz2.x;
         LsDrawTextCrispShadow(dl, font, nameFontSize, ImVec2(textRightEdge - ntW2, textY), nameCol, name2.c_str());

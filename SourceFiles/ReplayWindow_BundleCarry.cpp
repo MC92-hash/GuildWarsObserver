@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -372,7 +373,7 @@ void ReplayWindow::BuildBundleCarryTimeline()
                     lce.x = psnap.x;
                     lce.y = psnap.y;
                     lce.z = psnap.z;
-                    lce.teamIdx = (pit->second.teamId == 1) ? 0 : 1;
+                    lce.teamIdx = Team::Index01(pit->second.teamId);
                     break;
                 }
                 if (lce.teamIdx >= 0) break;
@@ -401,7 +402,7 @@ void ReplayWindow::BuildBundleCarryTimeline()
                     vbe.x = psnap.x;
                     vbe.y = psnap.y;
                     vbe.z = psnap.z;
-                    vbe.teamIdx = (pit->second.teamId == 1) ? 0 : 1;
+                    vbe.teamIdx = Team::Index01(pit->second.teamId);
                     break;
                 }
                 if (vbe.teamIdx >= 0) break;
@@ -540,8 +541,8 @@ ImTextureID ReplayWindow::CarriedBundleIcon(ID3D11Device* device, int agentId) c
     for (int ti = 0; ti < 2; ti++)
     {
         if (m_flagTimeline.teams[ti].carrierAtTime(m_debugTimeline) != agentId) continue;
-        return LoadFlagIcon(device, (ti == 0) ? "Red_flag_waving.svg.png"
-                                              : "Blue_flag_waving.svg.png");
+        return LoadFlagIcon(device, Team::IndexIsRed(ti) ? "Red_flag_waving.svg.png"
+                                                         : "Blue_flag_waving.svg.png");
     }
 
     switch (GetPlayerBundleType(agentId, m_debugTimeline))

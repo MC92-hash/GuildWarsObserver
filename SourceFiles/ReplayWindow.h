@@ -696,8 +696,8 @@ private:
     struct UILayoutConfig
     {
         float jumboX = 0.50f,  jumboY = 0.30f;
-        float moBlueX = 0.65f, moBlueY = 0.22f;
-        float moRedX  = 0.35f, moRedY  = 0.22f;
+        float moBlueX = 0.35f, moBlueY = 0.22f;
+        float moRedX  = 0.65f, moRedY  = 0.22f;
         float timerX  = 0.50f, timerY  = 0.12f;
         bool  useCustom = false;
 
@@ -795,7 +795,7 @@ private:
 
 public:
     // --- Fog of War ---
-    int   m_fogPerspective  = 0;     // 0=Off, 1=Red, 2=Blue
+    int   m_fogPerspective  = 0;     // 0=Off, 1=Blue, 2=Red
     bool  m_fogGhostMode    = false;
     int   m_fogLastActive   = 1;
     int   m_fogPlayerAgent  = -1;    // -1=team mode, else single-player agent id
@@ -971,7 +971,7 @@ public:
     };
     struct ShrineSample {
         ShrineState state       = ShrineState::Neutral;
-        uint8_t ownerTeam       = 0; // 0=neutral, 1=red, 2=blue
+        uint8_t ownerTeam       = 0; // 0=neutral, 1=blue, 2=red
         uint8_t progressTeam    = 0; // team whose color to render in the fill
         int     bluePips        = 0;
         int     redPips         = 0;
@@ -1637,7 +1637,7 @@ private:
     bool  m_minimapShowProfession = false;
     bool  m_minimapCursorActive  = false;   // true while a software cursor is drawn over the minimap
 
-    // Resurrection Shrine -> team (1=red, 2=blue) attribution, computed once at
+    // Resurrection Shrine -> team (1=blue, 2=red) attribution, computed once at
     // map load by nearest guild lord. Shrines are static so this never changes.
     std::unordered_map<int, int> m_resShrineTeam;
     bool  m_resShrineTeamComputed = false;

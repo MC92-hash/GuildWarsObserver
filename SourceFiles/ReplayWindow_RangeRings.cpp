@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -99,14 +100,14 @@ void ReplayWindow::DrawRangeRings()
         {
             if (hasSelection)
             {
-                bool teamEnabled = (ard.teamId == 1 && m_ringShowRed)
-                                || (ard.teamId == 2 && m_ringShowBlue);
+                bool teamEnabled = (Team::IsRed(ard.teamId)  && m_ringShowRed)
+                                || (Team::IsBlue(ard.teamId) && m_ringShowBlue);
                 if (!teamEnabled) continue;
             }
             else
             {
-                if (ard.teamId == 1 && !m_ringShowRed) continue;
-                if (ard.teamId == 2 && !m_ringShowBlue)  continue;
+                if (Team::IsRed(ard.teamId)  && !m_ringShowRed)  continue;
+                if (Team::IsBlue(ard.teamId) && !m_ringShowBlue) continue;
             }
         }
 
@@ -366,12 +367,12 @@ void ReplayWindow::DrawRangeRingToolbar()
         auto TeamPill = [](const char* label, bool active, int team) -> bool {
             ImVec4 bg, tx, hov, bdr;
             if (active) {
-                if (team == 1) {
+                if (Team::IsRed(team)) {
                     bg  = ImVec4(0.25f, 0.06f, 0.06f, 1.f);
                     tx  = ImVec4(1.f, 0.42f, 0.42f, 1.f);
                     hov = ImVec4(0.30f, 0.10f, 0.10f, 1.f);
                     bdr = ImVec4(1.f, 0.42f, 0.42f, 0.85f);
-                } else if (team == 2) {
+                } else if (Team::IsBlue(team)) {
                     bg  = ImVec4(0.05f, 0.12f, 0.25f, 1.f);
                     tx  = ImVec4(0.29f, 0.78f, 1.f, 1.f);
                     hov = ImVec4(0.08f, 0.16f, 0.30f, 1.f);
@@ -459,10 +460,10 @@ void ReplayWindow::DrawRangeRingToolbar()
         ImGui::Separator();
 
         // Team filter (independent toggles)
-        if (TeamPill("Red", m_ringShowRed, 1))
+        if (TeamPill("Red", m_ringShowRed, Team::Red))
             m_ringShowRed = !m_ringShowRed;
         ImGui::SameLine();
-        if (TeamPill("Blue", m_ringShowBlue, 2))
+        if (TeamPill("Blue", m_ringShowBlue, Team::Blue))
             m_ringShowBlue = !m_ringShowBlue;
 
         if (m_ringAgentFilter >= 0)
@@ -471,8 +472,8 @@ void ReplayWindow::DrawRangeRingToolbar()
             auto it = m_replayCtx.agents.find(m_ringAgentFilter);
             ImVec4 agentCol(1.f, 0.91f, 0.69f, 1.f);
             if (it != m_replayCtx.agents.end()) {
-                if (it->second.teamId == 1) agentCol = ImVec4(1.f, 0.42f, 0.42f, 1.f);
-                else if (it->second.teamId == 2) agentCol = ImVec4(0.29f, 0.78f, 1.f, 1.f);
+                if (Team::IsRed(it->second.teamId)) agentCol = ImVec4(1.f, 0.42f, 0.42f, 1.f);
+                else if (Team::IsBlue(it->second.teamId)) agentCol = ImVec4(0.29f, 0.78f, 1.f, 1.f);
             }
             ImGui::PushStyleColor(ImGuiCol_Text, agentCol);
             std::string lbl = (it != m_replayCtx.agents.end())
@@ -545,9 +546,9 @@ void ReplayWindow::DrawRangeRingToolbar()
         {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            DrawTeamRings("Red Team", m_team1PlayerIds, m_ringShowRed);
+            DrawTeamRings("Blue Team", m_team1PlayerIds, m_ringShowBlue);
             ImGui::TableSetColumnIndex(1);
-            DrawTeamRings("Blue Team", m_team2PlayerIds, m_ringShowBlue);
+            DrawTeamRings("Red Team", m_team2PlayerIds, m_ringShowRed);
             ImGui::EndTable();
         }
     }

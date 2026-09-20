@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "RunLog.h"
@@ -297,6 +298,7 @@ void ReplayWindow::SaveUILayout()
     j["timerX"]       = m_uiLayout.timerX;
     j["timerY"]       = m_uiLayout.timerY;
     j["teamColorSwapped"] = true;
+    j["teamColorRev"] = 2;
     j["lodEnabled"]   = m_uiLayout.lodEnabled;
     j["lodDotDist"]   = m_uiLayout.lodDotDist;
     j["lodPillarDist"] = m_uiLayout.lodPillarDist;
@@ -480,6 +482,10 @@ void ReplayWindow::LoadUILayout()
 
             // Fog of War state
             iv("fogPerspective",  m_fogPerspective);
+            // Revision 2 fixed the team-id -> colour mapping (1=Blue, 2=Red).
+            // The stored perspective is a raw team id, so flip a pre-rev-2 value.
+            if (!j.contains("teamColorRev") && Team::IsSide(m_fogPerspective))
+                m_fogPerspective = Team::Other(m_fogPerspective);
             bv("fogGhostMode",   m_fogGhostMode);
             iv("fogLastActive",  m_fogLastActive);
 
@@ -6164,7 +6170,7 @@ void ReplayWindow::Tick()
             // NEUTRALIZED_SHRINE party_value identifies the team that lost
             // ownership, not the team that performed the neutralize — invert.
             if (ev.message == "NEUTRALIZED_SHRINE" && jTeam > 0)
-                jTeam = (jTeam == 1) ? 2 : 1;
+                jTeam = Team::Other(jTeam);
             r.jumboTeam = jTeam;
             r.eventType = ev.message;
             r.category = CombatLogCategory::Jumbo;
@@ -7401,9 +7407,9 @@ static MapTransform LoadMapTransform(int mapId, bool* found)
 ImU32 GetAgentTeamColor(uint8_t teamId)
 {
     switch (teamId) {
-    case 1:  return IM_COL32(0xFF, 0x4A, 0x4A, 0xFF);
-    case 2:  return IM_COL32(0x2A, 0x8C, 0xFF, 0xFF);
-    default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
+    case Team::Red:  return IM_COL32(0xFF, 0x4A, 0x4A, 0xFF);
+    case Team::Blue: return IM_COL32(0x2A, 0x8C, 0xFF, 0xFF);
+    default:         return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
     }
 }
 
@@ -7854,7 +7860,7 @@ static int JumboPartyToTeam(int partyValue)
 
 const char* JumboMessageDisplayText(const std::string& msgType, int team)
 {
-    const char* side = (team == 1) ? "Red" : "Blue";
+    const char* side = Team::IsRed(team) ? "Red" : "Blue";
     static char buf[128];
     if      (msgType == "BASE_UNDER_ATTACK")       snprintf(buf, sizeof(buf), "%s Base Under Attack",       side);
     else if (msgType == "GUILD_LORD_UNDER_ATTACK")  snprintf(buf, sizeof(buf), "%s Guild Lord Under Attack",  side);
@@ -8305,14 +8311,14 @@ void ReplayWindow::DrawJumboMessages()
     const bool isNeutralizedShrine = (best->message == "NEUTRALIZED_SHRINE");
     // NEUTRALIZED_SHRINE party_value identifies the losing team — invert for display
     if (isNeutralizedShrine && team > 0)
-        team = (team == 1) ? 2 : 1;
+        team = Team::Other(team);
     const char* text = JumboMessageDisplayText(best->message, team);
 
     int a = static_cast<int>(alpha * 255);
     ImU32 teamCol;
     if (isNeutralizedShrine)    teamCol = IM_COL32(0xBB, 0xBB, 0xBB, a);
-    else if (team == 1)         teamCol = IM_COL32(0xFF, 0x99, 0x9A, a);
-    else if (team == 2)         teamCol = IM_COL32(0x99, 0xCB, 0xFD, a);
+    else if (Team::IsRed(team))  teamCol = IM_COL32(0xFF, 0x99, 0x9A, a);
+    else if (Team::IsBlue(team)) teamCol = IM_COL32(0x99, 0xCB, 0xFD, a);
     else                        teamCol = IM_COL32(0xFF, 0xFF, 0xFF, a);
 
     ImFont* font = m_latoBoldBig ? m_latoBoldBig : ImGui::GetFont();
@@ -8478,13 +8484,7 @@ const char* GetWeaponTypeName(uint16_t wt)
 
 const char* GetTeamName(uint8_t tid)
 {
-    switch (tid) {
-    case 0: return "None";
-    case 1: return "Red";
-    case 2: return "Blue";
-    case 3: return "Yellow";
-    default: return "?";
-    }
+    return Team::Name(tid);
 }
 
 const char* GetDaggerStatusName(uint8_t ds)
@@ -8698,7 +8698,7 @@ ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename)
 //   46  = two-handed weapon, staff, or single weapon
 //         (bow, hammer, daggers, scythe, staff, flag)
 //   Any other value: treat as 46 (single/two-handed), log warning if unexpected
-// teamId: 1=red, 2=blue (for flag textures)
+// teamId: 1=blue, 2=red (for flag textures)
 
 const char* GetShieldTexture(int primaryProf)
 {
@@ -8733,7 +8733,7 @@ WeaponTextureResult ResolveWeaponTextures(uint16_t weapType, uint8_t weapItemTyp
                 r.mainTex = "Vine Seed.png";
             } else {
                 r.isFlag = true;
-                r.mainTex = (teamId == 2) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
+                r.mainTex = Team::IsBlue(teamId) ? "Blue_flag_waving.svg.png" : "Red_flag_waving.svg.png";
             }
         }
         break;
@@ -9124,7 +9124,7 @@ ImTextureID LoadProfStylized(ID3D11Device* device, int profId,
 {
     if (profId < 1 || profId > 10) return nullptr;
 
-    const char* teamStr = (teamId == 2) ? "blue" : "red";
+    const char* teamStr = Team::IsBlue(teamId) ? "blue" : "red";
     const char* suffix  = "";
     if (state == AgentIconState::Dead)      suffix = "_dead";
     else if (state == AgentIconState::Knockdown) suffix = "_KD";
@@ -9625,7 +9625,7 @@ void DrawPartyHealthBar(
     // Choose gradient by priority
     const Gradient5* fillGrad = nullptr;
     if (isDead)
-        fillGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
+        fillGrad = Team::IsRed(teamId) ? &kDeadRed : &kDeadBlue;
     else if (snap->has_degen_hex)
         fillGrad = &kDegenHex;
     else if (snap->has_poison)
@@ -9633,7 +9633,7 @@ void DrawPartyHealthBar(
     else if (snap->has_bleeding)
         fillGrad = &kBleeding;
     else
-        fillGrad = (teamId == 1) ? &kAliveRed : &kAliveBlue;
+        fillGrad = Team::IsRed(teamId) ? &kAliveRed : &kAliveBlue;
 
     // Dead background fills full width
     if (isDead)
@@ -9643,7 +9643,7 @@ void DrawPartyHealthBar(
     else
     {
         // Background: dark fill for empty portion
-        const Gradient5* deadGrad = (teamId == 1) ? &kDeadRed : &kDeadBlue;
+        const Gradient5* deadGrad = Team::IsRed(teamId) ? &kDeadRed : &kDeadBlue;
         DrawGradientRect(dl, innerTL, innerBR, *deadGrad);
 
         // Health fill

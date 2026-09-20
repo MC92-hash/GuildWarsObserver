@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -110,8 +111,8 @@ void ReplayWindow::DrawCombatLog()
     auto teamColorU32 = [&](int agentId) -> ImU32 {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return uGray;
-        if (it->second.teamId == 1) return uRed;
-        if (it->second.teamId == 2) return uBlue;
+        if (Team::IsRed(it->second.teamId))  return uRed;
+        if (Team::IsBlue(it->second.teamId)) return uBlue;
         return uGray;
     };
 
@@ -525,16 +526,16 @@ void ReplayWindow::DrawCombatLog()
                 const bool isNeutShrine = (row.eventType == "NEUTRALIZED_SHRINE");
                 ImU32 jbBg = isNeutShrine
                     ? IM_COL32(180, 180, 180, 18)
-                    : (row.jumboTeam == 1)
+                    : Team::IsRed(row.jumboTeam)
                         ? IM_COL32(255, 107, 107, 20)
-                        : (row.jumboTeam == 2)
+                        : Team::IsBlue(row.jumboTeam)
                             ? IM_COL32(74, 200, 255, 20)
                             : IM_COL32(255, 215, 100, 20);
                 ImU32 jbBdr = isNeutShrine
                     ? IM_COL32(180, 180, 180, 140)
-                    : (row.jumboTeam == 1)
+                    : Team::IsRed(row.jumboTeam)
                         ? IM_COL32(255, 107, 107, 160)
-                        : (row.jumboTeam == 2)
+                        : Team::IsBlue(row.jumboTeam)
                             ? IM_COL32(74, 200, 255, 160)
                             : IM_COL32(255, 215, 100, 160);
                 dl->AddRectFilled(
@@ -638,8 +639,8 @@ void ReplayWindow::DrawCombatLog()
                 else if (row.eventType == "NEUTRALIZED_SHRINE")
                     jIcon = "Health_Shrine_Bonus.jpg";
                 else if (row.eventType == "CAPTURED_TOWER")
-                    jIcon = (row.jumboTeam == 1) ? "Red_flag_waving.svg.png"
-                                                 : "Blue_flag_waving.svg.png";
+                    jIcon = Team::IsRed(row.jumboTeam) ? "Red_flag_waving.svg.png"
+                                                       : "Blue_flag_waving.svg.png";
                 else if (row.eventType == "PARTY_DEFEATED")
                     jIcon = "death2.png";
                 else if (row.eventType == "MORALE_BOOST")
@@ -662,8 +663,8 @@ void ReplayWindow::DrawCombatLog()
 
                 const bool isNeutShrine = (row.eventType == "NEUTRALIZED_SHRINE");
                 ImU32 jCol = isNeutShrine ? IM_COL32(0xBB, 0xBB, 0xBB, 0xFF)
-                           : (row.jumboTeam == 1) ? uRed
-                           : (row.jumboTeam == 2) ? uBlue
+                           : Team::IsRed(row.jumboTeam)  ? uRed
+                           : Team::IsBlue(row.jumboTeam) ? uBlue
                            : uTsCol;
                 const char* jText = JumboMessageDisplayText(row.eventType, row.jumboTeam);
 

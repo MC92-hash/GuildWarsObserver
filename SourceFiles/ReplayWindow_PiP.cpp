@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -656,9 +657,9 @@ void ReplayWindow::DrawPiPPanel()
             };
 
             ImGui::TableNextColumn();
-            DrawTeamColumn(m_team1PlayerIds, kRedTeam, "Team 1");
+            DrawTeamColumn(m_team1PlayerIds, kBlueTeam, "Team 1");
             ImGui::TableNextColumn();
-            DrawTeamColumn(m_team2PlayerIds, kBlueTeam, "Team 2");
+            DrawTeamColumn(m_team2PlayerIds, kRedTeam, "Team 2");
 
             ImGui::EndTable();
         }
@@ -780,9 +781,9 @@ void ReplayWindow::DrawPiPPanel()
                                           ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
                                           IM_COL32(0, 0, 0, 25), 3.f);
                         ImU32 labelCol;
-                        if (ard.teamId == 1)      labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
-                        else if (ard.teamId == 2) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                        else                      labelCol = IM_COL32(255, 255, 255, 230);
+                        if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                        else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                        else                               labelCol = IM_COL32(255, 255, 255, 230);
                         dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
                                     IM_COL32(0, 0, 0, 200), label.c_str());
                         dl->AddText(font, fontSize, ImVec2(lx, ly), labelCol, label.c_str());
@@ -879,8 +880,8 @@ void ReplayWindow::DrawPiPPanel()
                         if (!InBounds(fScrX, fScrY)) return;
 
                         constexpr float kDotR = 4.f;
-                        ImU32 dotCol = (teamIdx == 0) ? IM_COL32(255, 100, 90, 200)
-                                                      : IM_COL32(100, 160, 255, 200);
+                        ImU32 dotCol = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
+                                                                 : IM_COL32(100, 160, 255, 200);
                         dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
                         dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
 
@@ -906,8 +907,8 @@ void ReplayWindow::DrawPiPPanel()
                     StandOwner pipStandOwner = m_flagTimeline.stand.ownerAtTime(now);
                     if (pipStandOwner != StandOwner::Neutral)
                     {
-                        int sti = (pipStandOwner == StandOwner::Red) ? 0 : 1;
-                        ImTextureID stTex = (sti == 0) ? texRed : texBlue;
+                        int sti = (pipStandOwner == StandOwner::Red) ? 1 : 0;
+                        ImTextureID stTex = Team::IndexIsRed(sti) ? texRed : texBlue;
                         float stx = m_flagTimeline.stand.standX;
                         float sty = m_flagTimeline.stand.standY;
                         float stz = m_flagTimeline.stand.standZ;
@@ -923,7 +924,7 @@ void ReplayWindow::DrawPiPPanel()
                             ImVec2 ctr((iTL.x + iBR.x) * 0.5f, (iTL.y + iBR.y) * 0.5f);
                             float glowR = flagIconSz * 0.75f;
                             float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
-                            ImU32 glowCol = (sti == 0)
+                            ImU32 glowCol = Team::IndexIsRed(sti)
                                 ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
                                 : IM_COL32(60, 130, 255, (int)(50 * pulse));
                             dl->AddCircleFilled(ctr, glowR, glowCol, 32);
@@ -936,7 +937,7 @@ void ReplayWindow::DrawPiPPanel()
                         auto& ft = m_flagTimeline.teams[ti];
                         if (ft.events.empty()) continue;
 
-                        ImTextureID tex = (ti == 0) ? texRed : texBlue;
+                        ImTextureID tex = Team::IndexIsRed(ti) ? texRed : texBlue;
                         FlagLocation loc = ft.locationAtTime(now);
                         if (loc == FlagLocation::Stand) continue;
 

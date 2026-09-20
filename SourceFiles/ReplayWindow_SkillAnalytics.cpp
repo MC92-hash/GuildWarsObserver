@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -367,21 +368,20 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
     constexpr ImU32 kMuted    = IM_COL32(0x70, 0x7D, 0x88, 0xFF);
 
     auto TeamColor = [](uint8_t teamId) -> ImU32 {
-        switch (teamId) {
-        case 1:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
-        case 2:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
-        default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
-        }
+        if (Team::IsRed(teamId))  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        if (Team::IsBlue(teamId)) return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
+        return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
     };
 
     // --- Filter bar: team checkboxes + profession icon toggles ---
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, kRedTeam);
-        ImGui::Checkbox("Red", &m_analyticsShowTeam[0]);
+        // Slot 0 is team 1 = Blue, slot 1 is team 2 = Red.
+        ImGui::PushStyleColor(ImGuiCol_Text, kBlueTeam);
+        ImGui::Checkbox("Blue", &m_analyticsShowTeam[0]);
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, kBlueTeam);
-        ImGui::Checkbox("Blue", &m_analyticsShowTeam[1]);
+        ImGui::PushStyleColor(ImGuiCol_Text, kRedTeam);
+        ImGui::Checkbox("Red", &m_analyticsShowTeam[1]);
         ImGui::PopStyleColor();
         ImGui::SameLine();
         ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
@@ -432,8 +432,8 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
 
     // --- Filter logic: build per-team player lists ---
     auto PassesFilter = [&](const PlayerAnalytics& pa) -> bool {
-        if (pa.teamId == 1 && !m_analyticsShowTeam[0]) return false;
-        if (pa.teamId == 2 && !m_analyticsShowTeam[1]) return false;
+        if (Team::IsBlue(pa.teamId) && !m_analyticsShowTeam[0]) return false;
+        if (Team::IsRed(pa.teamId)  && !m_analyticsShowTeam[1]) return false;
         if (pa.primaryProf >= 1 && pa.primaryProf <= 10 && !m_analyticsProfFilter[pa.primaryProf - 1])
             return false;
         return true;
@@ -615,11 +615,11 @@ void ReplayWindow::DrawSkillAnalyticsPanel()
             return "Team";
         };
 
-        std::string redLabel  = getGuildLabel("1", m_folderTag1);
-        std::string blueLabel = getGuildLabel("2", m_folderTag2);
+        std::string blueLabel = getGuildLabel("1", m_folderTag1);
+        std::string redLabel  = getGuildLabel("2", m_folderTag2);
 
-        dl->AddText(ImVec2(hPos.x + 2.f, hPos.y), kRedTeam, redLabel.c_str());
-        dl->AddText(ImVec2(hPos.x + colW + kColGap + 2.f, hPos.y), kBlueTeam, blueLabel.c_str());
+        dl->AddText(ImVec2(hPos.x + 2.f, hPos.y), kBlueTeam, blueLabel.c_str());
+        dl->AddText(ImVec2(hPos.x + colW + kColGap + 2.f, hPos.y), kRedTeam, redLabel.c_str());
         ImGui::Dummy(ImVec2(0.f, ImGui::GetTextLineHeight() + 4.f));
 
         // Left column (Team 1)
@@ -696,11 +696,9 @@ void ReplayWindow::DrawSkillAnalyticsPlayerPopups()
     constexpr ImU32 kMuted   = IM_COL32(0x70, 0x7D, 0x88, 0xFF);
 
     auto TeamColor = [](uint8_t teamId) -> ImU32 {
-        switch (teamId) {
-        case 1:  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
-        case 2:  return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
-        default: return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
-        }
+        if (Team::IsRed(teamId))  return IM_COL32(0xFF, 0x6B, 0x6B, 0xFF);
+        if (Team::IsBlue(teamId)) return IM_COL32(0x4A, 0xC8, 0xFF, 0xFF);
+        return IM_COL32(0xAA, 0xAA, 0xAA, 0xFF);
     };
 
     std::vector<int> toClose;

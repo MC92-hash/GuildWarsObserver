@@ -11,7 +11,7 @@
 // Flag Timeline — reconstructed from StoC flag_events.txt
 // ---------------------------------------------------------------------------
 
-enum class FlagTeam : uint8_t { Red = 0, Blue = 1 };
+enum class FlagTeam : uint8_t { Blue = 0, Red = 1 };
 
 enum class FlagTimelineEventType : uint8_t {
     Spawn,        // flag appears at base (match start, after stick, after return)
@@ -29,12 +29,12 @@ enum class FlagLocation : uint8_t {
     Stand         // placed on a flagstand (tower or obelisk — check standAgentId)
 };
 
-enum class StandOwner : uint8_t { Neutral, Red, Blue };
+enum class StandOwner : uint8_t { Neutral, Blue, Red };
 
 // One entry per flag state change
 struct FlagTimelineEvent {
     float                  time = 0.f;
-    FlagTeam               flagTeam = FlagTeam::Red;
+    FlagTeam               flagTeam = FlagTeam::Blue;
     FlagTimelineEventType  eventType = FlagTimelineEventType::Spawn;
     FlagLocation           newLocation = FlagLocation::Base;
 
@@ -48,7 +48,7 @@ struct FlagTimelineEvent {
 
 // Per-team state machine output
 struct FlagTeamTimeline {
-    FlagTeam team = FlagTeam::Red;
+    FlagTeam team = FlagTeam::Blue;
     float spawnX = 0, spawnY = 0, spawnZ = 0;
 
     std::vector<FlagTimelineEvent> events; // sorted by time
@@ -142,7 +142,7 @@ struct AshesDrop {
 
 // Top-level output
 struct FlagTimeline {
-    FlagTeamTimeline teams[2];  // [0]=red, [1]=blue
+    FlagTeamTimeline teams[2];  // [0]=blue, [1]=red
     StandTimeline    stand;     // tower flagstand
     StandTimeline    obelisk;   // obelisk flagstand (Isle of Meditation); stays empty on other maps
     std::vector<FlagTimelineEvent> allEvents; // merged, sorted chronologically

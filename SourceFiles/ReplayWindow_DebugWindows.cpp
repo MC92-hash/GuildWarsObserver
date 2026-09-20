@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -91,8 +92,8 @@ void ReplayWindow::DrawAgentDataWindow()
     auto DrawAgentEntry = [&](int agentId, const AgentReplayData& ard)
     {
         ImVec4 color(1, 1, 1, 1);
-        if (ard.teamId == 1) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
-        else if (ard.teamId == 2) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
+        if (Team::IsRed(ard.teamId)) color = ImVec4(1.0f, 0.4f, 0.4f, 1.0f);
+        else if (Team::IsBlue(ard.teamId)) color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);
         else if (ard.teamId == 3) color = ImVec4(1.0f, 1.0f, 0.4f, 1.0f);
 
         ImGui::PushStyleColor(ImGuiCol_Text, color);
@@ -119,21 +120,21 @@ void ReplayWindow::DrawAgentDataWindow()
     {
         bool anyRed = false;
         for (int id : m_playerIds)
-            if (m_replayCtx.agents[id].teamId == 1) { anyRed = true; break; }
+            if (Team::IsRed(m_replayCtx.agents[id].teamId)) { anyRed = true; break; }
         if (anyRed && ImGui::TreeNodeEx("Red Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
-                if (m_replayCtx.agents[id].teamId == 1) DrawAgentEntry(id, m_replayCtx.agents[id]);
+                if (Team::IsRed(m_replayCtx.agents[id].teamId)) DrawAgentEntry(id, m_replayCtx.agents[id]);
             ImGui::TreePop();
         }
 
         bool anyBlue = false;
         for (int id : m_playerIds)
-            if (m_replayCtx.agents[id].teamId == 2) { anyBlue = true; break; }
+            if (Team::IsBlue(m_replayCtx.agents[id].teamId)) { anyBlue = true; break; }
         if (anyBlue && ImGui::TreeNodeEx("Blue Team", ImGuiTreeNodeFlags_DefaultOpen))
         {
             for (int id : m_playerIds)
-                if (m_replayCtx.agents[id].teamId == 2) DrawAgentEntry(id, m_replayCtx.agents[id]);
+                if (Team::IsBlue(m_replayCtx.agents[id].teamId)) DrawAgentEntry(id, m_replayCtx.agents[id]);
             ImGui::TreePop();
         }
 

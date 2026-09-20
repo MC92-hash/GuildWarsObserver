@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "TeamColors.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
@@ -134,7 +135,7 @@ void ReplayWindow::BuildFlagMessages()
             if (it != m_replayCtx.agents.end()) {
                 msg.playerName = it->second.playerName.empty()
                     ? it->second.categoryName : it->second.playerName;
-                msg.playerTeam = (it->second.teamId == 2) ? 1 : 0;
+                msg.playerTeam = Team::Index01(it->second.teamId);
             }
         }
 
@@ -177,7 +178,7 @@ void ReplayWindow::BuildFlagMessages()
             msg.bundleType = bundle.type;
             msg.playerName = it->second.playerName.empty()
                 ? it->second.categoryName : it->second.playerName;
-            msg.playerTeam = (it->second.teamId == 2) ? 1 : 0;
+            msg.playerTeam = Team::Index01(it->second.teamId);
             if (msg.playerName.empty()) continue;
 
             m_flagMessages.push_back(std::move(msg));
@@ -229,8 +230,8 @@ void ReplayWindow::DrawFlags()
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) return;
 
         constexpr float kFlagDotRadius = 5.f;
-        ImU32 dotColor = (teamIdx == 0) ? IM_COL32(255, 100, 90, 200)
-                                        : IM_COL32(100, 160, 255, 200);
+        ImU32 dotColor = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
+                                                   : IM_COL32(100, 160, 255, 200);
         dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius,
                             ScaleColorAlpha(dotColor, alphaMul));
         dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius,
@@ -264,8 +265,8 @@ void ReplayWindow::DrawFlags()
     StandOwner standOwner = m_flagTimeline.stand.ownerAtTime(m_debugTimeline);
     if (standOwner != StandOwner::Neutral)
     {
-        int standTi = (standOwner == StandOwner::Red) ? 0 : 1;
-        ImTextureID standTex = (standTi == 0) ? texRed : texBlue;
+        int standTi = (standOwner == StandOwner::Red) ? 1 : 0;
+        ImTextureID standTex = Team::IndexIsRed(standTi) ? texRed : texBlue;
         float sx = m_flagTimeline.stand.standX;
         float sy = m_flagTimeline.stand.standY;
         float sz = m_flagTimeline.stand.standZ;
@@ -281,7 +282,7 @@ void ReplayWindow::DrawFlags()
             ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
             float glowRadius = iconSz * 0.75f;
             float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
-            ImU32 glowCol = (standTi == 0)
+            ImU32 glowCol = Team::IndexIsRed(standTi)
                 ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
                 : IM_COL32(60, 130, 255, (int)(50 * pulse));
             dl->AddCircleFilled(center, glowRadius, glowCol, 32);
@@ -295,8 +296,8 @@ void ReplayWindow::DrawFlags()
         StandOwner obeliskOwner = m_flagTimeline.obelisk.ownerAtTime(m_debugTimeline);
         if (obeliskOwner != StandOwner::Neutral)
         {
-            int obTi = (obeliskOwner == StandOwner::Red) ? 0 : 1;
-            ImTextureID obTex = (obTi == 0) ? texRed : texBlue;
+            int obTi = (obeliskOwner == StandOwner::Red) ? 1 : 0;
+            ImTextureID obTex = Team::IndexIsRed(obTi) ? texRed : texBlue;
             float ox = m_flagTimeline.obelisk.standX;
             float oy = m_flagTimeline.obelisk.standY;
             float oz = m_flagTimeline.obelisk.standZ;
@@ -312,7 +313,7 @@ void ReplayWindow::DrawFlags()
                 ImVec2 center((iconTL.x + iconBR.x) * 0.5f, (iconTL.y + iconBR.y) * 0.5f);
                 float glowRadius = iconSz * 0.75f;
                 float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 2.2f);
-                ImU32 glowCol = (obTi == 0)
+                ImU32 glowCol = Team::IndexIsRed(obTi)
                     ? IM_COL32(255, 80, 70,  (int)(45 * pulse))
                     : IM_COL32(80, 160, 255, (int)(45 * pulse));
                 dl->AddCircleFilled(center, glowRadius, glowCol, 32);
@@ -327,7 +328,7 @@ void ReplayWindow::DrawFlags()
         auto& ft = m_flagTimeline.teams[ti];
         if (ft.events.empty()) continue;
 
-        ImTextureID tex = (ti == 0) ? texRed : texBlue;
+        ImTextureID tex = Team::IndexIsRed(ti) ? texRed : texBlue;
         FlagLocation loc = ft.locationAtTime(m_debugTimeline);
 
         if (loc == FlagLocation::Stand) continue;
@@ -366,10 +367,10 @@ void ReplayWindow::DrawFlags()
 
         // Fog of war: an enemy flag you have no vision on would not be on your
         // compass, whether a runner is carrying it or it is lying in their base.
-        // teams[] is [0]=red,[1]=blue, so the owning team id is ti + 1; your own
-        // flag is never hidden from you.
+        // teams[] is [0]=blue,[1]=red, so the owning team id is Team::FromIndex01(ti);
+        // your own flag is never hidden from you.
         float flagAlpha = 1.f;
-        if (m_fogPerspective > 0 && (ti + 1) != m_fogPerspective
+        if (m_fogPerspective > 0 && Team::FromIndex01(ti) != m_fogPerspective
             && IsPositionInFog(worldX, worldY))
         {
             if (!m_fogGhostMode) continue;
@@ -510,7 +511,7 @@ void ReplayWindow::DrawFlagDebugWindow()
 
     for (int ti = 0; ti < 2; ti++)
     {
-        const char* teamLabel = (ti == 0) ? "Red" : "Blue";
+        const char* teamLabel = Team::IndexIsRed(ti) ? "Red" : "Blue";
         auto& ft = m_flagTimeline.teams[ti];
         if (ft.events.empty()) {
             ImGui::Text("%s Flag: [no data]", teamLabel);
@@ -652,7 +653,7 @@ void ReplayWindow::DrawFlagDebugWindow()
     // Per-Team Event Timelines
     for (int ti = 0; ti < 2; ti++)
     {
-        const char* label = (ti == 0) ? "Blue Team Timeline" : "Red Team Timeline";
+        const char* label = Team::IndexIsRed(ti) ? "Red Team Timeline" : "Blue Team Timeline";
         if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen))
             continue;
 
@@ -795,9 +796,9 @@ void ReplayWindow::DrawFlagEventMessages()
         ImU32 blueCol  = IM_COL32(0x99, 0xCB, 0xFD, 255);
         ImU32 redCol   = IM_COL32(0xFF, 0x99, 0x9A, 255);
 
-        ImU32 playerCol = (active->playerTeam == 0) ? redCol : blueCol;
-        ImU32 flagCol   = (active->flagTeam == 0)   ? redCol : blueCol;
-        const char* flagTeamName = (active->flagTeam == 0) ? "red" : "blue";
+        ImU32 playerCol = Team::IndexIsRed(active->playerTeam) ? redCol : blueCol;
+        ImU32 flagCol   = Team::IndexIsRed(active->flagTeam)   ? redCol : blueCol;
+        const char* flagTeamName = Team::IndexIsRed(active->flagTeam) ? "red" : "blue";
 
         std::vector<Segment> line1, line2;
 
@@ -833,8 +834,8 @@ void ReplayWindow::DrawFlagEventMessages()
                 line1.push_back({ active->playerName, playerCol });
                 line1.push_back({ " has returned ", whiteCol });
             } else {
-                const char* returnTeamName = (active->flagTeam == 0) ? "Blue" : "Red";
-                ImU32 returnTeamCol = (active->flagTeam == 0) ? blueCol : redCol;
+                const char* returnTeamName = Team::IndexIsRed(active->flagTeam) ? "Blue" : "Red";
+                ImU32 returnTeamCol = Team::IndexIsRed(active->flagTeam) ? blueCol : redCol;
                 line1.push_back({ returnTeamName, returnTeamCol });
                 line1.push_back({ " team has returned ", whiteCol });
             }
@@ -849,7 +850,7 @@ void ReplayWindow::DrawFlagEventMessages()
             if (isObelisk) {
                 line1.push_back({ " has taken control of the obelisk!", whiteCol });
             } else {
-                const char* teamName = (active->flagTeam == 0) ? "Red" : "Blue";
+                const char* teamName = Team::IndexIsRed(active->flagTeam) ? "Red" : "Blue";
                 line1.push_back({ " has taken control of the watchtower!", whiteCol });
                 line2.push_back({ teamName, flagCol });
                 line2.push_back({ " team will earn a morale boost every two minutes they hold the watchtower.", whiteCol });
