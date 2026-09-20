@@ -91,15 +91,54 @@ namespace Equipment
         }
 
         // Item in a slot at time t, for agents whose armour is only in the event stream.
-        const ItemDef* FindAtTime(int agentId, uint8_t slot, float t) const
+        //
+        // BEFORE THE FIRST OBSERVATION, THE FIRST OBSERVATION IS THE ANSWER.
+        //
+        // A recording begins when the observer joined, and the server's opening equipment snapshot
+        // lands some way into it - 00:21.459 in 2026-09-19_Corrupted_Isle_11.42, where 146 of the
+        // match's 150 (agent, slot) pairs arrive in ONE batch. Answering "nothing" before that drew
+        // every armour cell empty for the first twenty seconds of every replay: no icon, no name and
+        // no dye, all five slots, every player. That is not what the data says. It is what the data
+        // had not said YET.
+        //
+        // A replay is not a live feed and does not have to pretend it is: the whole stream is on
+        // disk before the first frame is drawn, so the earliest state ever observed is available as
+        // evidence for the state before it. For ARMOUR that evidence is conclusive - armour cannot
+        // change during a match, and the stream bears it out (14 to 16 events per armour slot in
+        // that match, one per player, every one of them in the opening batch).
+        //
+        // It is NOT conclusive for a slot first seen long after the snapshot - an offhand picked up
+        // at 06:41 was genuinely not held at 00:00 - so a back-filled answer says so through
+        // `backfilledFrom`, which receives the time the observation was actually made. A caller that
+        // does not ask gets the item and no claim about when it was seen; the character panel asks,
+        // and prints it.
+        const ItemDef* FindAtTime(int agentId, uint8_t slot, float t,
+                                  float* backfilledFrom = nullptr) const
         {
+            if (backfilledFrom) *backfilledFrom = -1.f;
+
+            // `seen`, not `best >= 0`: an EQUIP_CLEAR is a real observation that carries ref -1,
+            // and a slot the match emptied must stay empty. Testing the ref alone would have sent a
+            // cleared slot down the back-fill below and resurrected the item it had before.
             int best = -1;
+            bool seen = false;
             for (const auto& e : events)
             {
                 if (e.time > t) break;
-                if (e.agentId == agentId && e.slot == slot) best = e.ref;
+                if (e.agentId == agentId && e.slot == slot) { best = e.ref; seen = true; }
             }
-            return Find(best);
+            if (seen) return Find(best);
+
+            // Nothing had been said about this slot by t. Answer with the first thing ever said
+            // about it - which, for the opening snapshot, is a handful of entries in. The scan only
+            // runs while the timeline sits before a slot's first event, never on the warm path.
+            for (const auto& e : events)
+            {
+                if (e.agentId != agentId || e.slot != slot) continue;
+                if (backfilledFrom) *backfilledFrom = e.time;
+                return Find(e.ref);
+            }
+            return nullptr;
         }
     };
 

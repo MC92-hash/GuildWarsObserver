@@ -620,7 +620,7 @@ namespace
     // rarity-coloured tooltip an item deserves. Armour arrives as a skin and a dye and nothing
     // else, so it gets the set name from the model id and says what it is honestly.
     void DrawItemTooltip(ID3D11Device* dev, const Equipment::ItemDef& item,
-                         const char* slotLabel, ImVec4 muted)
+                         const char* slotLabel, ImVec4 muted, float backfilledFrom = -1.f)
     {
         const auto toVec = [](Equipment::Rgb c) {
             return ImVec4(c.r / 255.f, c.g / 255.f, c.b / 255.f, 1.f);
@@ -683,6 +683,18 @@ namespace
                                    ImVec2(kDyeIconW, kDyeIconH));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", dye->name);
         }
+        // WHERE THIS ANSWER CAME FROM, when it is not from this moment. The slot had not been
+        // reported yet at the point the timeline is sitting on, so what is drawn is the first state
+        // the match ever showed. Armour never changes, so for the five armour slots this is simply
+        // the right answer and the line is a courtesy; for a slot first reported minutes in it is a
+        // genuine assumption, and then the line is the whole point.
+        if (backfilledFrom >= 0.f)
+        {
+            ImGui::Separator();
+            const int whole = (int)backfilledFrom;
+            ImGui::TextColored(muted, "As first reported at %d:%02d", whole / 60, whole % 60);
+        }
+
         if (!anyDye)
         {
             ImGui::Separator();
@@ -1434,7 +1446,8 @@ void ReplayWindow::DrawCharacterPanels()
 
     // A single item cell: the bevelled square the client draws every equipment slot in.
     auto drawCell = [&](ImDrawList* dl, ImVec2 tl, const Equipment::ItemDef* item,
-                        const char* emptyLabel, const char* slotLabel) {
+                        const char* emptyLabel, const char* slotLabel,
+                        float backfilledFrom = -1.f) {
         const ImVec2 br(tl.x + kCellSize, tl.y + kCellSize);
         dl->AddRectFilled(tl, br, IM_COL32(18, 26, 24, 210), 2.f);
         dl->AddRect(tl, br, IM_COL32(118, 138, 128, 200), 2.f);
@@ -1450,7 +1463,7 @@ void ReplayWindow::DrawCharacterPanels()
         if (ImGui::IsItemHovered())
         {
             dl->AddRect(tl, br, IM_COL32(255, 215, 100, 200), 2.f, 0, 1.6f);
-            if (item) DrawItemTooltip(dev, *item, slotLabel, muted);
+            if (item) DrawItemTooltip(dev, *item, slotLabel, muted, backfilledFrom);
             else      ImGui::SetTooltip("%s\n%s", slotLabel, emptyLabel);
         }
     };
@@ -1791,11 +1804,13 @@ void ReplayWindow::DrawCharacterPanels()
                 // One armour piece, its name running to the right end of the bar.
                 if (i < (int)std::size(kArmourSlots))
                 {
-                    const Equipment::ItemDef* item =
-                        equipment.FindAtTime(ard->agent_id, kArmourSlots[i].slot, t);
+                    float backfilledFrom = -1.f;
+                    const Equipment::ItemDef* item = equipment.FindAtTime(
+                        ard->agent_id, kArmourSlots[i].slot, t, &backfilledFrom);
 
                     ImGui::PushID(2000 + i);
-                    drawCell(dl, ImVec2(armourX, cellY), item, "not worn", kArmourSlots[i].label);
+                    drawCell(dl, ImVec2(armourX, cellY), item, "not worn", kArmourSlots[i].label,
+                             backfilledFrom);
                     ImGui::PopID();
 
                     const ArmourNames::Piece* piece =
