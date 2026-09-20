@@ -377,6 +377,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Shaders.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_ShaderText.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Sinks.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.h" />
     <ClInclude Include="SourceFiles\PerTerrainCB.h" />
     <ClInclude Include="SourceFiles\PickingPixelShader.h" />
     <ClInclude Include="SourceFiles\PixelShader.h" />
@@ -521,6 +522,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.cpp">
       <!-- No precompiled header: this translation unit is deliberately free of every host
            dependency so that the same text can be compiled outside either application and
