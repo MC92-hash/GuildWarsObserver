@@ -1068,8 +1068,18 @@ void ReplayWindow::LoadAgentModelsIO()
         // The pair this model actually sits on, against the pool it was listed in. Printed for
         // every model in an audit run; in a normal run it is one line per model the match uses,
         // which is cheap and is what makes a mismatch attributable after the fact.
-        RunLog::Line("pool audit: model 0x%08X -> skeleton 0x%08X/0x%08X%s",
+        // ...and WHICH ANIMATION BANK it ended up with. A skeleton is shared between professions
+        // by design - male Monk and Mesmer are one rig - but a BANK is not: the recorded animation
+        // code is resolved against this clip's own segment table, so two professions holding the
+        // same bank play each other's motions. The fallback discovery searches by skeleton hash
+        // pair and takes allClips[0], which is exactly how that happens. Printing the source file
+        // and the number of candidates is what makes it visible: two pools on one skeleton whose
+        // models report the SAME source are sharing a bank.
+        RunLog::Line("pool audit: model 0x%08X -> skeleton 0x%08X/0x%08X, bank 0x%08X of %zu"
+                     " candidate(s)%s",
                      wi.fileHash, wi.tmpl.modelHash0, wi.tmpl.modelHash1,
+                     wi.foundClips.empty() ? 0u : wi.foundClips[0].sourceFileHash,
+                     wi.foundClips.size(),
                      DescribePlayerModelPool(wi.fileHash).c_str());
 
         // Also cache models resolved via embedded/refs (not from cache hit, not needing MFT scan)
