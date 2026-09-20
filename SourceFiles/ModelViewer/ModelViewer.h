@@ -78,6 +78,10 @@ struct ModelViewerState
     DirectX::XMFLOAT3 boundsMin = { 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 boundsMax = { 0.0f, 0.0f, 0.0f };
 
+    // Floor for the deferred camera fit (see OrbitalCamera::FitToBounds). 4000 suits the classic
+    // 10000 unit normalized model; a caller framing native DAT units lowers it.
+    float cameraFitMinDistance = 4000.0f;
+
     // Bone data (from animation panel state if available)
     std::vector<BoneDisplayInfo> bones;
     std::vector<int32_t> boneParents;
@@ -119,6 +123,7 @@ struct ModelViewerState
         animDatManager = nullptr;
         boundsMin = { 0.0f, 0.0f, 0.0f };
         boundsMax = { 0.0f, 0.0f, 0.0f };
+        cameraFitMinDistance = 4000.0f;
         bones.clear();
         boneParents.clear();
         animController.reset();
@@ -302,6 +307,20 @@ extern ModelViewerState g_modelViewerState;
  * @param mapRenderer The MapRenderer for managing mesh visibility
  */
 void ActivateModelViewer(MapRenderer* mapRenderer);
+
+/**
+ * @brief Queues an orbital-camera fit onto the given bounds.
+ *
+ * The fit itself is deferred to UpdateModelViewer() on the next frame, when the viewport (and
+ * therefore the aspect ratio) is known.
+ *
+ * @param boundsMin      World-space minimum corner
+ * @param boundsMax      World-space maximum corner
+ * @param minFitDistance Floor for the camera distance (see OrbitalCamera::FitToBounds)
+ */
+void FitModelViewerCameraToBounds(const DirectX::XMFLOAT3& boundsMin,
+                                  const DirectX::XMFLOAT3& boundsMax,
+                                  float minFitDistance = 4000.0f);
 
 /**
  * @brief Deactivates the model viewer and restores normal map viewing.

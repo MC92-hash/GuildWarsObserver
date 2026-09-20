@@ -4,6 +4,8 @@
 #include "Net/TarGzExtractor.h"
 #include "Net/MatchIndex.h"
 #include "Net/HttpClient.h"
+#include "RunLog.h"
+#include <chrono>
 #include <set>
 #include <fstream>
 
@@ -73,7 +75,13 @@ void SyncEngine::SyncThread()
     auto cacheDir = m_provider->GetCacheDir();
     auto indexCachePath = cacheDir / "index_cache.json";
     auto etagPath = cacheDir / "index_cache.etag";
+    const auto indexLoadStart = std::chrono::steady_clock::now();
     m_index->LoadFromCache(indexCachePath);
+    RunLog::Line("sync: cached match index %s in %.0f ms (%s)",
+                 m_index->IsLoaded() ? "read" : "NOT read",
+                 std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - indexLoadStart).count(),
+                 indexCachePath.string().c_str());
 
     // The stored validator is "<key> <etag>". The key is recorded with it
     // because the gzipped and plain objects are different objects with
@@ -137,6 +145,8 @@ void SyncEngine::SyncThread()
             m_lastError = m_index->GetLastError();
             m_statusText = "Failed to load match index";
             m_state.store(State::Error);
+            RunLog::Line("sync: FAILED and there is no cached index to fall back on: %s",
+                         m_lastError.c_str());
             return;
         }
     }
@@ -370,4 +380,5 @@ void SyncEngine::SyncThread()
     m_progress.store(1.f);
     m_hasNewData.store(true);
     m_state.store(State::Complete);
+    RunLog::Line("sync: complete");
 }

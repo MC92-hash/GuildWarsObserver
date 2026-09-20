@@ -1254,6 +1254,23 @@ struct EnvSubChunk8 {
     }
 };
 
+// ONE ENVIRONMENT REGION: which entry of each of the map's environment lists is live, and the
+// area of the map it is live in. See the note at the end of EnvironmentInfoChunk's constructor.
+struct EnvRegion
+{
+    // One index per environment sub-list, in the same field order as EnvSubChunk8:
+    //   [0] sub-chunk 0    [1] sky           [2] FOG     [3] LIGHTING
+    //   [4] sub-chunk 4    [5] sky texture   [6] water   [7] wind
+    uint16_t indices[8];
+    // A CIRCLE, in map coordinates, with the map's origin still to be added. Inside the inner
+    // radius the region applies at full weight; between inner and outer it fades; outside it does
+    // not apply at all. Meaningless for `env_default`, which applies everywhere.
+    int32_t x = 0;
+    int32_t y = 0;
+    uint32_t radius_inner = 0;
+    uint32_t radius_outer = 0;
+};
+
 struct EnvironmentInfoChunk {
     uint32_t chunk_id;
     uint32_t chunk_size;
@@ -1285,9 +1302,21 @@ struct EnvironmentInfoChunk {
     uint16_t unknown_3; // always 0x00 0x0B?
     std::vector<uint8_t> structs9; // 5 bytes per struct, size is num_structs9
     uint8_t end_byte_0xFF;
+    // Which entry of each list above is live, and where. Parsed at the end of the constructor.
+    // `env_default` is the map's default environment (the record type 8 carries); `env_regions`
+    // are the circles that override and blend with it. Both empty means the walk did not validate.
+    EnvRegion env_default{};
+    bool env_default_valid = false;
+    // The map's ONE sun angle, the 17th byte of the default record. An elevation measured from
+    // straight up: the client builds its light direction as (sin a, 0, cos a) with the third
+    // component being height, and `cos a` also scales the sun's contribution to the terrain.
+    // No region record carries an angle - a map has exactly one.
+    uint8_t env_sun_angle_byte = 0;
+    std::vector<EnvRegion> env_regions;
 
     EnvironmentInfoChunk() = default;
     EnvironmentInfoChunk(int offset, unsigned char* data) {
+        const int chunk_start = offset;
         std::memcpy(&chunk_id, &data[offset], sizeof(chunk_id));
         offset += sizeof(chunk_id);
 
@@ -1417,6 +1446,93 @@ struct EnvironmentInfoChunk {
 
         std::memcpy(&end_byte_0xFF, &data[offset], sizeof(end_byte_0xFF));
         offset += sizeof(end_byte_0xFF);
+
+        // ---- THE DEFAULT ENVIRONMENT AND THE REGION TABLE --------------------------------------
+        //
+        // Everything above reads the nine sub-LISTS. Nothing above says WHICH ENTRY OF EACH LIST IS
+        // LIVE, and a map carries many: of the sixteen guild halls, six have more than one fog or
+        // lighting entry, and Isle of the Dead has four fog and five lighting entries.
+        //
+        // `env_sub_chunk8` above is NOT a list and never was. Type 8 is followed by a SINGLE
+        // 17-byte record - eight uint16 indices, one into each of the lists 0..7, then one byte -
+        // and it is the map's DEFAULT environment. Reading its first uint16 as a list count is
+        // what has always produced "count 0", on every map, which is why nothing above ever
+        // selected anything and every reader fell back to entry 0 of every list.
+        //
+        // After that default record the chunk continues with more (u8 type, u16 count, records)
+        // lists, terminated by 0xFF. TYPE 9 IS THE REGION TABLE, 32 bytes per record: eight uint16
+        // indices in the same field order as the default record, then int32 x, int32 y, uint32
+        // inner radius, uint32 outer radius. The regions are CIRCLES, and where they overlap the
+        // client blends them rather than picking one - see gw_map_lighting_model.md, which has the
+        // client's own weighting and the addresses it was read from.
+        //
+        // The whole table is accepted or rejected as one: every index in every record must be in
+        // range for its own list, and if any is not the walk is assumed to have gone wrong and
+        // both the default record and the table are left empty, which restores the previous
+        // behaviour exactly. On the 158 maps measured the check passes on all of them and on all
+        // 1425 records.
+        env_default_valid = false;
+        env_regions.clear();
+        {
+            const size_t list_size[8] = {
+                env_sub_chunk0.size(), env_sub_chunk1.size(), env_sub_chunk2.size(),
+                env_sub_chunk3.size(), env_sub_chunk4.size(),
+                env_sub_chunk5.empty() ? env_sub_chunk5_other.size() : env_sub_chunk5.size(),
+                env_sub_chunk6.size(), env_sub_chunk7.size()};
+            const int chunk_end = chunk_start + 8 + static_cast<int>(chunk_size);
+            // WHERE THE DEFAULT RECORD STARTS, and it is worth spelling out because getting it
+            // wrong by ONE byte silently throws the whole table away.
+            //
+            // The type-8 tag is one byte. The 17-byte default record starts immediately after it.
+            // The code above then consumed two of that record's own bytes believing them to be a
+            // list count and the chunk's terminator - so `offset` now points at the record's THIRD
+            // byte, and the record began two bytes earlier. The type-9 tag follows the record.
+            const int default_at = offset - 2;
+            const int type9_at = default_at + 17;
+            if (type9_at + 3 <= chunk_end && data[type9_at] == 9)
+            {
+                EnvRegion def{};
+                bool ok = true;
+                for (int f = 0; f < 8; f++)
+                {
+                    std::memcpy(&def.indices[f], &data[default_at + 2 * f], sizeof(uint16_t));
+                    if (def.indices[f] >= list_size[f])
+                        ok = false;
+                }
+                uint16_t region_count = 0;
+                std::memcpy(&region_count, &data[type9_at + 1], sizeof(region_count));
+                const int recs_at = type9_at + 3;
+                if (ok && region_count <= 1024 &&
+                    recs_at + 32 * static_cast<int>(region_count) <= chunk_end)
+                {
+                    std::vector<EnvRegion> parsed(region_count);
+                    for (uint16_t r = 0; r < region_count && ok; r++)
+                    {
+                        const int p = recs_at + 32 * static_cast<int>(r);
+                        for (int f = 0; f < 8; f++)
+                        {
+                            std::memcpy(&parsed[r].indices[f], &data[p + 2 * f], sizeof(uint16_t));
+                            if (parsed[r].indices[f] >= list_size[f])
+                            {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        std::memcpy(&parsed[r].x, &data[p + 16], sizeof(int32_t));
+                        std::memcpy(&parsed[r].y, &data[p + 20], sizeof(int32_t));
+                        std::memcpy(&parsed[r].radius_inner, &data[p + 24], sizeof(uint32_t));
+                        std::memcpy(&parsed[r].radius_outer, &data[p + 28], sizeof(uint32_t));
+                    }
+                    if (ok)
+                    {
+                        env_default = def;
+                        env_default_valid = true;
+                        env_sun_angle_byte = data[default_at + 16];
+                        env_regions = std::move(parsed);
+                    }
+                }
+            }
+        }
     }
 };
 
@@ -1832,6 +1948,32 @@ constexpr uint32_t CHUNK_ID_SHORE_FILENAMES = 0x21000010;
 
 struct FFNA_MapFile
 {
+    // ---- THE MAP-PARAMETERS RECORD, and the one thing this reads out of it ------------------
+    //
+    // Whether a texture layer is drawn with a 2X MODULATE is NOT a property of the model. A model
+    // file cannot even express it: the client's own loader translates the file's per-layer uint16
+    // into its texture flags through a fixed bit permutation in which no source bit produces the
+    // 2X flag at all. The client MANUFACTURES it later, per layer, as
+    //
+    //     2X  <=>  (layerFlags & 0x22) == 0x22   AND   a global gate is on
+    //
+    // and that gate is PER MAP: it is `mapParams.byte[0x13] < 3`, set once when the map loads.
+    // Measured over the sixteen guild halls the byte is 0, 1 or 2 on the twelve Prophecies-era and
+    // Factions-era-but-old halls (gate ON) and 3 on Uncharted Isle, Isle of Wurms, Corrupted Isle
+    // and Isle of Solitude (gate OFF). It reads as a map-format version with a compatibility rule
+    // "content authored before version 3 assumed 2X".
+    //
+    // A renderer that multiplies by two unconditionally is therefore correct on twelve of the
+    // sixteen halls and TWICE TOO BRIGHT on the other four.
+    //
+    // The record is a signature `0x5943EEEF`, a version byte, then the payload; it sits at file
+    // offset 29 in every guild hall, but it is found by search rather than by that constant.
+    // See docs\appearance_data\gw_map_lighting_model.md for the addresses this was read from.
+    bool modulate_2x = true;      // the client's default before a map is loaded
+    bool modulate_2x_known = false;
+    uint8_t map_params_version = 0;
+    uint8_t modulate_2x_byte = 0;
+
     char ffna_signature[4];
     FFNAType ffna_type;
     Chunk1 chunk1;
@@ -1856,6 +1998,25 @@ struct FFNA_MapFile
     FFNA_MapFile(int offset, std::span<unsigned char>& data)
     {
         int current_offset = offset;
+
+        // The map-parameters record, before anything else - it is independent of the chunk walk.
+        {
+            const size_t limit = std::min<size_t>(data.size(), 4096u);
+            for (size_t p = 0; p + 5 + 0x14 <= limit; p++)
+            {
+                if (data[p] != 0xEF || data[p + 1] != 0xEE || data[p + 2] != 0x43 ||
+                    data[p + 3] != 0x59)
+                    continue;
+                const uint8_t version = data[p + 4];
+                if (version != 2)
+                    continue;
+                map_params_version = version;
+                modulate_2x_byte = data[p + 5 + 0x13];
+                modulate_2x = modulate_2x_byte < 3;
+                modulate_2x_known = true;
+                break;
+            }
+        }
 
         std::memcpy(ffna_signature, &data[offset], sizeof(ffna_signature));
         std::memcpy(&ffna_type, &data[offset], sizeof(ffna_type));

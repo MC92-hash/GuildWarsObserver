@@ -434,14 +434,25 @@ void ReplayWindow::RenderPiP()
     ctx->ClearDepthStencilView(m_pipDSV.Get(), D3D11_CLEAR_DEPTH, 0.f, 0);
 
     // Render terrain/props/water to PiP target
+    DrawAgentModels();
     m_mapRenderer->Render(m_pipRTV.Get(), nullptr, m_pipDSV.Get());
 
     // Rebind PiP render targets for agent model + cylinder passes
     ID3D11RenderTargetView* pipRTV = m_pipRTV.Get();
     ctx->OMSetRenderTargets(1, &pipRTV, m_pipDSV.Get());
 
-    DrawAgentModels();
+    DrawAgentShadows();
     DrawSkinnedAgentModels();
+    // ...and, immediately after it, the recorded players who have a character of their own -
+    // the same two passes in the same order as the main view. DrawSkinnedAgentModels skips
+    // exactly these agents, so without this call the sixteen recorded players are drawn here by
+    // nothing at all while their weapons still draw. Everything the character pass needs is
+    // already set for this target: the camera is the split camera (Update above uploaded it and
+    // the pass reads GetCamera() for its own far-to-near sort), the viewport and both targets are
+    // the PiP's, the terrain, water and sky are already in that target so the pass's own
+    // per-frame rewrite cannot disturb them, and it saves and restores every pipeline state it
+    // touches off the context - which is why the weapon and cylinder passes below still work.
+    DrawPlayerVisuals(/*secondaryView=*/true);
     DrawWeaponModels();
     DrawAgentCylinders();
 

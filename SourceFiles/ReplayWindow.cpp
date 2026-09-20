@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
+#include "RunLog.h"
+#include <chrono>
 #include "MatchRatings.h"
 #include "MatchNotes.h"
 #include "MatchBookmarks.h"
@@ -832,6 +834,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    ReleasePlayerVisuals();
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
     if (m_weaponModelLoadThread.joinable())
@@ -890,6 +893,16 @@ bool ReplayWindow::InitGraphics()
         m_inputManager.get());
     m_mapRenderer->Initialize(static_cast<float>(width), static_cast<float>(height),
         GuiGlobalConstants::ClampReplayCameraFovDegrees(GuiGlobalConstants::replay_camera_fov_degrees));
+
+    // WHICH DEVICE THIS WINDOW BUILT. Two of these lines with two different addresses, and only one
+    // line elsewhere in the log saying a program or a resource was created, is a complete account
+    // of how something built for one device came to be used with another - which is a class of
+    // mistake the graphics API does not define the behaviour of and a display driver will not
+    // report. The address is all that is needed: it identifies the device, and it is stable for as
+    // long as the device lives.
+    RunLog::Line("replay: this window's graphics device is 0x%p, its context 0x%p",
+                 static_cast<const void*>(m_deviceResources->GetD3DDevice()),
+                 static_cast<const void*>(m_deviceResources->GetD3DDeviceContext()));
 
     m_deviceResources->RegisterDeviceNotify(this);
     return true;
@@ -1195,6 +1208,665 @@ void ReplayWindow::StepValidate()
 // Loading phase: Init (parse map, terrain, env, sky, water, fog)
 // ---------------------------------------------------------------------------
 
+
+// =================================================================================================
+// THE MAP'S ENVIRONMENT AT A POINT
+//
+// A map does not have one environment. It has a list of fog settings, a list of lighting settings,
+// a list of skies and so on, plus a DEFAULT saying which entry of each list applies where nothing
+// else does, plus a table of REGIONS - circles - each naming its own entries and applying inside
+// its own radius. Of the sixteen guild halls, six carry more than one fog or lighting entry; Isle
+// of the Dead carries four fog and five lighting entries across eight regions.
+//
+// WHAT WAS WRONG. This code used to read those indices out of `env_sub_chunk8`, believing it a list
+// of presets. It is not a list: it is the single default record, and reading its first uint16 as a
+// count yields zero on every map tested - so the selection silently fell back to ENTRY 0 OF EVERY
+// LIST, on every map. On Druid's Isle that is the difference between the warm brown haze
+// (136, 87, 63) starting at 3200 units, which the replay drew, and the blue-grey (104, 119, 148)
+// starting at 1000, which the map asks for and the game shows. The lighting entry was wrong by the
+// same mechanism.
+//
+// WHAT THE CLIENT DOES, and this follows it:
+//
+//   * weight per region - 1 inside the inner radius, 0 outside the outer radius, and
+//     `(rOut^2 - d^2) / (rOut^2 - rIn^2)` in between, on the SQUARED distance;
+//   * FOG AND LIGHTING ARE BLENDED, not switched: every field is a weighted average over every
+//     region that contributes, and where the weights do not reach 1 the default environment
+//     supplies the remainder. Crossing a boundary is a crossfade, which is why this runs per frame
+//     rather than once at load;
+//   * the sky and sky-texture slots are winner-takes-all instead - the single highest-weight region
+//     wins - which is why `EnvIndicesAt` is separate and is used only at load, where those slots
+//     decide which textures to fetch.
+//
+// Regions are stored in the map's own coordinates: every region centre of all sixteen guild halls
+// falls inside its map's bounds as stored, which it would not if an origin still had to be added,
+// so they are used as they are.
+//
+// WHAT THIS DOES NOT DO. It does not move the light's DIRECTION - the client derives that from an
+// angle this parser does not read, and `SetDirectionalLight` re-renders the shadow cache whenever
+// the direction moves, which must not happen every frame. It does not touch the specular, and it
+// does not apply the sky's own haze scale. See the map lighting model note under
+// docs/appearance_data for what is proven, what is read and what is still unknown.
+// =================================================================================================
+
+// The weight one region has at a point, as the client computes it.
+static float ReplayEnvRegionWeight(const EnvRegion& r, float x, float z)
+{
+    const float dx = x - static_cast<float>(r.x);
+    const float dz = z - static_cast<float>(r.y);
+    const float d2 = dx * dx + dz * dz;
+    const float in2 = static_cast<float>(r.radius_inner) * static_cast<float>(r.radius_inner);
+    const float out2 = static_cast<float>(r.radius_outer) * static_cast<float>(r.radius_outer);
+    if (d2 > out2)
+        return 0.0f;
+    if (d2 <= in2 || out2 <= in2)
+        return 1.0f;
+    return (out2 - d2) / (out2 - in2);
+}
+
+// ---- THE CLASSIC LIGHT, RECOVERED FROM THE LAST COMMIT ----------------------------------------
+//
+// This is `git show HEAD:SourceFiles/ReplayWindow.cpp`'s light block, arithmetic for arithmetic,
+// and it is deliberately NOT a tidied version of it: the colour bytes are divided by 255*2 and
+// the HSL LIGHTNESS of the result is then overwritten with `max(intensity/255 * 0.9, floor)`,
+// floor 0.70 for the ambient and 0.50 for the sun. Both halves matter and neither is redundant -
+// the /2 changes where the lightness sits and therefore what HSL calls the SATURATION, so the
+// same hue comes back at a different vividness if the divisor is dropped.
+//
+// What it is: a visibility aid, written so that a dark map could still be browsed. It throws the
+// map's authored LEVEL away and keeps its HUE. It is not the client's law - the client has no
+// floors anywhere - and it is the picture the owner has approved, so Classic mode ships it.
+//
+// THE ONE DIFFERENCE from the commit is the INPUT, not the arithmetic: the commit fed it
+// `env_sub_chunk3[0]` on every map, because the region table was never read, and this is fed the
+// region-blended bytes resolved at the query point. On a one-region map that is the region's own
+// entry; on Corrupted Isle the tower side gets its warm entry and the blue base its blue one,
+// both floored to the same level as before.
+static void ReplayClassicMapLight(const float amb_bytes[3], float amb_intensity_byte,
+                                  const float sun_bytes[3], float sun_intensity_byte,
+                                  XMFLOAT4* out_ambient, XMFLOAT4* out_diffuse)
+{
+    const float light_div = 2.0f;
+    const float ambient_intensity = amb_intensity_byte / 255.0f;
+    const float diffuse_intensity = sun_intensity_byte / 255.0f;
+
+    XMFLOAT4 ambient(amb_bytes[0] / (255.0f * light_div), amb_bytes[1] / (255.0f * light_div),
+                     amb_bytes[2] / (255.0f * light_div), 1.0f);
+    XMFLOAT4 diffuse(sun_bytes[0] / (255.0f * light_div), sun_bytes[1] / (255.0f * light_div),
+                     sun_bytes[2] / (255.0f * light_div), 1.0f);
+
+    XMFLOAT3 ahls = RGBAtoHSL(ambient);
+    XMFLOAT3 dhls = RGBAtoHSL(diffuse);
+    ahls.z = std::max(ambient_intensity * 0.9f, 0.7f);
+    dhls.z = std::max(diffuse_intensity * 0.9f, 0.5f);
+    *out_ambient = HSLtoRGBA(ahls);
+    *out_diffuse = HSLtoRGBA(dhls);
+}
+
+// Winner-takes-all: the indices of the highest-weight region at this point, or the map default
+// where no region reaches. Used for the slots that decide which TEXTURES get loaded.
+void ReplayWindow::EnvIndicesAt(float world_x, float world_z, uint16_t out_indices[8]) const
+{
+    const auto& env = m_mapFile.environment_info_chunk;
+    for (int f = 0; f < 8; f++)
+        out_indices[f] = env.env_default_valid ? env.env_default.indices[f] : 0u;
+
+    float best = 0.0f;
+    const EnvRegion* winner = nullptr;
+    for (const EnvRegion& r : env.env_regions)
+    {
+        const float w = ReplayEnvRegionWeight(r, world_x, world_z);
+        if (w > best)
+        {
+            best = w;
+            winner = &r;
+        }
+    }
+    if (winner)
+        for (int f = 0; f < 8; f++)
+            out_indices[f] = winner->indices[f];
+}
+
+// ---- THE GROUND LINE -------------------------------------------------------------------------
+//
+// `pixel = albedo x light`. The environment block below reports the light. This reports the albedo,
+// and it reports it for the ONE tile the query point is standing on, because that is the tile every
+// measurement in the note is taken from and the only one a screenshot can be checked against.
+//
+// It reproduces, on the CPU, exactly what Terrain::GenerateTerrainMesh writes into the vertices and
+// what TerrainRevPixelShader::SampleAtlas then decodes out of them:
+//
+//   * the quad's four corner texture indices come straight from the terrain chunk;
+//   * a uniform quad takes one layer, a mixed one takes the variant table's layers in sorted index
+//     order, padded with the neutral slot;
+//   * `atlas_idx = tex_idx + 1`, `slot = row * 8 + col`, `layerIndex = slot - 1`, so the ARRAY
+//     SLICE a tile lands on is its own texture index - unless the upload list lost an entry, which
+//     the load-time line above reports;
+//   * the shader's progressive blend is `result = lerp(result, t, t.a)` over the three layers.
+//
+// The per-slice colour is the whole-texture mean rather than the exact texel, which is what a tile
+// of ground averages to on screen and is the right thing to compare a screenshot patch against.
+// The quadrant the tile picks is not reproduced: all four quadrants of a terrain texture are the
+// same material, so the mean is the mean.
+void ReplayWindow::LogTerrainAlbedoAt(float world_x, float world_z, const float ambient[3],
+                                      const float sun[3]) const
+{
+    if (!m_terrain || m_terrainSliceAlbedo.empty())
+        return;
+    const auto& tix = m_terrain->m_texture_index_grid;
+    const auto& b = m_terrain->m_bounds;
+    const int gx = static_cast<int>(m_terrain->m_grid_dim_x);
+    const int gz = static_cast<int>(m_terrain->m_grid_dim_z);
+    if (tix.empty() || b.map_max_x <= b.map_min_x || b.map_max_z <= b.map_min_z)
+        return;
+
+    int cx = static_cast<int>((world_x - b.map_min_x) / (b.map_max_x - b.map_min_x) * gx);
+    int cz = static_cast<int>((world_z - b.map_min_z) / (b.map_max_z - b.map_min_z) * gz);
+    cx = std::clamp(cx, 0, gx - 2);
+    cz = std::clamp(cz, 0, gz - 2);
+    if (cz + 1 >= static_cast<int>(tix.size()) || cx + 1 >= static_cast<int>(tix[cz].size()))
+        return;
+
+    const int t_bl = static_cast<int>(tix[cz][cx]);
+    const int t_br = static_cast<int>(tix[cz][cx + 1]);
+    const int t_tl = static_cast<int>(tix[cz + 1][cx]);
+    const int t_tr = static_cast<int>(tix[cz + 1][cx + 1]);
+
+    // Which slices the three layers land on, in the shader's own order.
+    int layer_slice[3] = {-1, -1, -1};
+    if (t_tl == t_tr && t_tl == t_bl && t_tl == t_br)
+    {
+        layer_slice[0] = t_tl;
+    }
+    else
+    {
+        // std::map iterates by key, which is the order Terrain.cpp builds its layers in.
+        std::map<int, int> tex_to_corners;
+        tex_to_corners[t_tl] |= 1;
+        tex_to_corners[t_tr] |= 2;
+        tex_to_corners[t_bl] |= 4;
+        tex_to_corners[t_br] |= 8;
+        int at = 0;
+        for (const auto& [tex, mask] : tex_to_corners)
+        {
+            (void)mask;
+            if (at < 3)
+                layer_slice[at++] = tex;
+        }
+        // The 2-texture case adds ONE MORE variant of the second texture - but only when the
+        // variant table has a secondary for that corner mask; the other masks take the neutral
+        // slot instead. The masks that carry one, read off VARIANT_LOOKUP in Terrain.cpp:
+        static const bool kHasSecondary[16] = {true,  false, false, false, false, false, true, true,
+                                               false, true,  false, true,  false, true,  true, true};
+        if (tex_to_corners.size() == 2 && at < 3)
+        {
+            const auto second = std::next(tex_to_corners.begin());
+            if (kHasSecondary[second->second & 15])
+                layer_slice[at++] = second->first;
+        }
+    }
+
+    float albedo[3] = {0.0f, 0.0f, 0.0f};
+    char layers[320];
+    layers[0] = '\0';
+    size_t written = 0;
+    const auto append = [&](const char* fmt, auto... args) {
+        if (written + 1 >= sizeof(layers))
+            return;
+        const int n = std::snprintf(layers + written, sizeof(layers) - written, fmt, args...);
+        if (n > 0)
+            written = std::min(written + static_cast<size_t>(n), sizeof(layers) - 1);
+    };
+    for (int l = 0; l < 3; l++)
+    {
+        const int s = layer_slice[l];
+        if (s < 0)
+            continue;
+        if (s >= static_cast<int>(m_terrainSliceAlbedo.size()))
+        {
+            // The one failure the whole instrument exists to catch: a tile naming a slice the
+            // array does not have, which is what a dropped or skipped texture looks like.
+            append("%s[%d: slice %d IS PAST THE END OF THE ARRAY]", l ? " " : "", l, s);
+            continue;
+        }
+        const TerrainSliceAlbedo& a = m_terrainSliceAlbedo[s];
+        const float w = (l == 0) ? 1.0f : a.mean_alpha;
+        for (int c = 0; c < 3; c++)
+            albedo[c] += (a.mean_rgb[c] - albedo[c]) * w;
+        append("%s[%d: slice %d file 0x%X rgb %.3f/%.3f/%.3f weight %.3f]", l ? " " : "", l, s,
+               a.file_id, a.mean_rgb[0], a.mean_rgb[1], a.mean_rgb[2], w);
+    }
+
+    RunLog::Line("map:   ground tile (%d, %d) corner texture indices TL %d TR %d BL %d BR %d",
+                 cx, cz, t_tl, t_tr, t_bl, t_br);
+    RunLog::Line("map:     layers %s", layers);
+
+    // The pixel those two produce, under the terrain's own law: one lerp between the ambient and
+    // the ambient-plus-sun endpoint, at the quartic bake of this tile's own slope. No haze - the
+    // height term is clear on any ground above the band, which is where every measurement is taken.
+    const float nx = 0.0f, ny = 1.0f, nz = 0.0f;   // the basin floor is flat to within a degree
+    const float inv_len = 1.0f / std::sqrt(1.0f + 0.98f * 0.98f);
+    const float ndl = std::clamp(nx * (-1.0f * inv_len) + ny * (0.98f * inv_len) + nz * 0.0f,
+                                 0.0f, 1.0f);
+    const float om = 1.0f - ndl;
+    const float bake = 1.0f - om * om * om * om;
+    // WHICHEVER LAW IS IN FORCE, and it says which. In Classic mode the terrain program runs the
+    // committed formula - `albedo * 1.4 * lightingColor` with `lightingColor = ambient + sun*N.L`
+    // out of the vertex program - so the client's quartic bake plays no part and printing it would
+    // describe a picture that is not on the screen. The view-dependent specular highlight
+    // (specular * pow(N.H, 80), a light the map never sets) is left out of this line: it is zero
+    // on flat ground away from the mirror angle and it has no per-tile meaning.
+    //
+    // THE GAIN IS IN BOTH BRANCHES, because it is now live in both modes, and in each it is
+    // written where the shader writes it - on the light's inputs. In Classic the vertex program
+    // scales the FLOORED ambient and sun before summing them, which is arithmetically the same as
+    // the single `* gain` below; in Client (experimental) it is the two endpoints of the lerp,
+    // each clamped per channel afterwards, so no log can be read against the old post-clamp form.
+    // Classic's own law has no clamp of its own and never had one, and that is left alone here:
+    // the value this line predicts is what the frame draws.
+    const bool classic = GuiGlobalConstants::IsClassicMapLight();
+    const float gain = GuiGlobalConstants::EffectiveMapLightGain();
+    float px[3];
+    for (int c = 0; c < 3; c++)
+    {
+        if (classic)
+        {
+            px[c] = albedo[c] * 1.4f * (ambient[c] + sun[c] * ndl) * gain;
+        }
+        else
+        {
+            const float amb = std::min(1.0f, ambient[c] * gain);
+            const float lit = std::min(1.0f, (ambient[c] + sun[c]) * gain);
+            px[c] = albedo[c] * (amb + (lit - amb) * bake);
+        }
+    }
+    if (classic)
+        RunLog::Line("map:     blended albedo (%.3f, %.3f, %.3f) red/blue %.2f; flat-ground N.L "
+                     "%.3f; Classic law `albedo * 1.4 * (ambient + sun * N.L) * gain` at %.2fx "
+                     "-> pixel (%.1f, %.1f, %.1f) of 255 before the scene bloom",
+                     albedo[0], albedo[1], albedo[2],
+                     albedo[2] > 0.0f ? albedo[0] / albedo[2] : 0.0f, ndl, gain, px[0] * 255.0f,
+                     px[1] * 255.0f, px[2] * 255.0f);
+    else
+        RunLog::Line("map:     blended albedo (%.3f, %.3f, %.3f) red/blue %.2f; flat-ground bake "
+                     "%.3f; light gain %.2fx pre-clamp -> pixel (%.1f, %.1f, %.1f) of 255 before "
+                     "the scene bloom",
+                     albedo[0], albedo[1], albedo[2],
+                     albedo[2] > 0.0f ? albedo[0] / albedo[2] : 0.0f, bake, gain, px[0] * 255.0f,
+                     px[1] * 255.0f, px[2] * 255.0f);
+}
+
+void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
+{
+    if (!m_mapRenderer)
+        return;
+    const auto& env = m_mapFile.environment_info_chunk;
+    if (env.env_sub_chunk2.empty() && env.env_sub_chunk3.empty())
+        return;
+
+    float acc_w = 0.0f;
+    float fog_r = 0.0f, fog_g = 0.0f, fog_b = 0.0f;
+    float fog_d0 = 0.0f, fog_d1 = 0.0f, fog_z0 = 0.0f, fog_z1 = 0.0f;
+    float amb_r = 0.0f, amb_g = 0.0f, amb_b = 0.0f, amb_i = 0.0f;
+    float sun_r = 0.0f, sun_g = 0.0f, sun_b = 0.0f, sun_i = 0.0f;
+    // Sub-list 1 carries the two post-process scalars. Slot 1 is one of the BLENDED slots in the
+    // client's accumulator - only slots 0, 5 and 6 are winner-takes-all - so it is averaged over
+    // the contributing regions exactly like the fog and the light.
+    float sky_bloom_byte = 0.0f, sky_sat_byte = 0.0f;
+
+    const auto accumulate = [&](uint16_t fog_index, uint16_t light_index, uint16_t sky_index,
+                                float w) {
+        if (sky_index < env.env_sub_chunk1.size())
+        {
+            const auto& s = env.env_sub_chunk1[sky_index];
+            sky_bloom_byte += static_cast<float>(s.sky_brightness_maybe) * w;
+            sky_sat_byte += static_cast<float>(s.sky_saturaion_maybe) * w;
+        }
+        else
+        {
+            // No record: neutral saturation, no glow, so an absent list cannot darken or grey the
+            // frame.
+            sky_sat_byte += 255.0f * w;
+        }
+        if (fog_index < env.env_sub_chunk2.size())
+        {
+            const auto& f = env.env_sub_chunk2[fog_index];
+            fog_r += f.fog_red * w;
+            fog_g += f.fog_green * w;
+            fog_b += f.fog_blue * w;
+            fog_d0 += static_cast<float>(f.fog_distance_start) * w;
+            fog_d1 += static_cast<float>(f.fog_distance_end) * w;
+            fog_z0 += static_cast<float>(f.fog_z_start_maybe) * w;
+            fog_z1 += static_cast<float>(f.fog_z_end_maybe) * w;
+        }
+        if (light_index < env.env_sub_chunk3.size())
+        {
+            const auto& l = env.env_sub_chunk3[light_index];
+            amb_r += l.ambient_red * w;
+            amb_g += l.ambient_green * w;
+            amb_b += l.ambient_blue * w;
+            amb_i += l.ambient_intensity * w;
+            sun_r += l.sun_red * w;
+            sun_g += l.sun_green * w;
+            sun_b += l.sun_blue * w;
+            sun_i += l.sun_intensity * w;
+        }
+        acc_w += w;
+    };
+
+    int contributing = 0;
+    for (const EnvRegion& r : env.env_regions)
+    {
+        const float w = ReplayEnvRegionWeight(r, world_x, world_z);
+        if (w > 0.0f)
+        {
+            accumulate(r.indices[2], r.indices[3], r.indices[1], w);
+            contributing++;
+        }
+    }
+    if (acc_w < 1.0f)
+    {
+        const uint16_t dfog = env.env_default_valid ? env.env_default.indices[2] : 0u;
+        const uint16_t dlight = env.env_default_valid ? env.env_default.indices[3] : 0u;
+        const uint16_t dsky = env.env_default_valid ? env.env_default.indices[1] : 0u;
+        accumulate(dfog, dlight, dsky, 1.0f - acc_w);
+    }
+    if (acc_w <= 0.0f)
+        return;
+
+    const float inv = 1.0f / acc_w;
+
+    // ONCE PER MAP, all numbers. Which environment entry is live is now a decision rather than a
+    // constant, and a map that looks wrong is either the wrong entry or the right entry rendered
+    // wrongly - two different problems that look identical on screen. This says which.
+    {
+        // RE-EMITTED WHENEVER THE ANSWER CHANGES, not once per map. The whole point of the region
+        // table is that the answer moves with the viewpoint, so a single line written at load time
+        // reports the load-time query and says nothing at all about what the camera resolves to
+        // while the replay runs - which is exactly the question. Rate limited to twice a second
+        // and gated on the values actually moving, so a stationary camera writes one line.
+        static const void* reported_for = nullptr;
+        // AND THE MODE, because switching it moves no byte in the table. Without this the
+        // block stays silent until the camera moves, and the next reader has a log whose mode
+        // line describes the mode before the switch.
+        static int reported_mode = -1;
+        static float last[8] = {0};
+        static std::chrono::steady_clock::time_point last_at{};
+        const float now_vals[8] = {(amb_r * inv), (amb_g * inv), (amb_b * inv), (sun_i * inv),
+                                   (fog_r * inv), (fog_g * inv), (fog_b * inv), (fog_d0 * inv)};
+        bool moved = (reported_for != static_cast<const void*>(&env)) ||
+                     (reported_mode != GuiGlobalConstants::map_light_mode);
+        for (int i = 0; i < 8 && !moved; i++)
+            moved = std::fabs(now_vals[i] - last[i]) > 0.5f;
+        const auto now = std::chrono::steady_clock::now();
+        if (moved && (reported_for != static_cast<const void*>(&env) ||
+                      now - last_at > std::chrono::milliseconds(500)))
+        {
+            last_at = now;
+            for (int i = 0; i < 8; i++)
+                last[i] = now_vals[i];
+            reported_for = static_cast<const void*>(&env);
+            reported_mode = GuiGlobalConstants::map_light_mode;
+            RunLog::Line("map: environment lists - %zu fog, %zu lighting, %zu sky; %zu region(s), "
+                         "default entry fog %u lighting %u",
+                         env.env_sub_chunk2.size(), env.env_sub_chunk3.size(),
+                         env.env_sub_chunk1.size(), env.env_regions.size(),
+                         env.env_default_valid ? env.env_default.indices[2] : 0u,
+                         env.env_default_valid ? env.env_default.indices[3] : 0u);
+            if (m_envFromCamera)
+                // WHICH RULE GAVE THE QUERY POINT, named on the line. A point thousands of units
+                // from the action and a point on the agent look identical as two numbers; the
+                // round that cost the most was one where the line said "looking at" and the point
+                // was neither where the camera was nor what it was framing.
+                RunLog::Line("map:   camera eye (%.0f, %.0f, %.0f) looking at (%.0f, %.0f) from %s "
+                             "- %d region(s) contribute, total weight %.3f",
+                             m_envEye[0], m_envEye[1], m_envEye[2], world_x, world_z,
+                             m_envQuerySource, contributing, acc_w > 1.0f ? 1.0f : acc_w);
+            else
+                RunLog::Line("map:   at (%.0f, %.0f) before the camera exists - %d region(s) "
+                             "contribute, total weight %.3f",
+                             world_x, world_z, contributing, acc_w > 1.0f ? 1.0f : acc_w);
+            for (size_t r = 0; r < env.env_regions.size(); r++)
+            {
+                const EnvRegion& reg = env.env_regions[r];
+                const float w = ReplayEnvRegionWeight(reg, world_x, world_z);
+                const float dx = world_x - static_cast<float>(reg.x);
+                const float dz = world_z - static_cast<float>(reg.y);
+                RunLog::Line("map:     region %zu at (%d, %d) radii %u/%u - distance %.0f, "
+                             "weight %.3f, fog %u lighting %u",
+                             r, reg.x, reg.y, reg.radius_inner, reg.radius_outer,
+                             std::sqrt(dx * dx + dz * dz), w, reg.indices[2], reg.indices[3]);
+            }
+            RunLog::Line("map:   blended haze rgb (%.3f,%.3f,%.3f) from %.0f to %.0f, height band "
+                         "%.0f to %.0f",
+                         (fog_r * inv) / 255.0f, (fog_g * inv) / 255.0f, (fog_b * inv) / 255.0f,
+                         fog_d0 * inv, fog_d1 * inv, fog_z0 * inv, fog_z1 * inv);
+            // WHERE THE GROUND SITS IN THAT BAND, because the band on its own says nothing. A
+            // round was spent on the height term believing the ground under the Tower Flag Stand
+            // was at y = 0 and therefore 91% hazed; it is at y = 779, above the top of the band,
+            // and the term contributes nothing there. One number settles that, so it is logged.
+            if (m_terrain)
+            {
+                const float ground = m_terrain->get_height_at(world_x, world_z);
+                const float zs = fog_z0 * inv, ze = fog_z1 * inv;
+                const float denom = zs - ze;
+                const float fh = (denom > 0.0f) ? ((ground - ze) / denom) : 1.0f;
+                RunLog::Line("map:     ground at the query point y %.0f -> height factor %.3f "
+                             "(%.0f%% haze from the height term; 1.000 is clear)",
+                             ground, fh, 100.0f * (1.0f - std::clamp(fh, 0.0f, 1.0f)));
+            }
+            const float lai = (amb_i * inv) / 255.0f;
+            const float lsi = (sun_i * inv) / 255.0f;
+            RunLog::Line("map:   prop 2x modulate %s - map parameters version %u, gate byte %u "
+                         "(%s)",
+                         m_mapFile.modulate_2x ? "ON" : "OFF", m_mapFile.map_params_version,
+                         m_mapFile.modulate_2x_byte,
+                         m_mapFile.modulate_2x_known ? "read from the map" : "record not found");
+            RunLog::Line("map:   sun angle byte %u -> %.3f rad, cos %.3f (parsed and carried, "
+                         "deliberately NOT applied to the terrain sun - see the shader note)",
+                         env.env_sun_angle_byte,
+                         env.env_sun_angle_byte * (6.28318530718f / 256.0f),
+                         std::cos(env.env_sun_angle_byte * (6.28318530718f / 256.0f)));
+            RunLog::Line("map:   scene bloom %s, amount %.3f (sub-list 1 byte %.0f); "
+                         "saturation %.3f (byte %.0f, 1.000 is neutral)",
+                         GuiGlobalConstants::map_bloom_enabled ? "on" : "off",
+                         ((sky_bloom_byte * inv) / 256.0f) * 0.98f + 0.008f, sky_bloom_byte * inv,
+                         std::clamp((sky_sat_byte * inv) / 255.0f, 0.0f, 1.0f),
+                         sky_sat_byte * inv);
+            // WHICH LIGHT LAW IS IN FORCE, named on its own line. The two modes differ by a
+            // factor of ten on a dark hall, so a log that does not say which one drew the frame
+            // cannot be read at all.
+            if (GuiGlobalConstants::IsClassicMapLight())
+                RunLog::Line("map:   light mode CLASSIC - the last commit's light and terrain law "
+                             "(ambient lightness floored at 0.70, sun at 0.50; terrain pixel is "
+                             "texture * 1.4 * lightingColor), fed the region-blended colours. "
+                             "Environment light gain %.2fx IN FORCE (Classic's own value, default "
+                             "%.2fx, scaled onto the floored ambient and sun; 1.00x is the "
+                             "previous build's brightness). The Client mode's own %.2fx is kept "
+                             "and untouched",
+                             GuiGlobalConstants::EffectiveMapLightGain(),
+                             GuiGlobalConstants::kDefaultMapLightGainClassic,
+                             GuiGlobalConstants::map_light_gain_client);
+            else
+                RunLog::Line("map:   light mode CLIENT (EXPERIMENTAL) - the client's own light law "
+                             "with no floors, terrain drawn as one lerp between two clamped "
+                             "endpoints at a quartic bake. Environment light gain %.2fx IN FORCE "
+                             "(Client's own value, default %.2fx, pre-clamp - scaled onto the "
+                             "light's inputs, then clamped per channel) on the terrain and the "
+                             "map's own models; 1.00x is the game's own level and characters are "
+                             "never scaled. The Classic mode's own %.2fx is kept and untouched",
+                             GuiGlobalConstants::EffectiveMapLightGain(),
+                             GuiGlobalConstants::kDefaultMapLightGainClient,
+                             GuiGlobalConstants::map_light_gain_classic);
+            RunLog::Line("map:   blended light - ambient (%.3f,%.3f,%.3f) sun (%.3f,%.3f,%.3f)",
+                         (amb_r * inv) / 255.0f * lai, (amb_g * inv) / 255.0f * lai,
+                         (amb_b * inv) / 255.0f * lai, (sun_r * inv) / 255.0f * lsi,
+                         (sun_g * inv) / 255.0f * lsi, (sun_b * inv) / 255.0f * lsi);
+            // THE FLOORED PAIR CLASSIC ACTUALLY APPLIES. The line above is the map's own level -
+            // what the client would light with - and in Classic mode that is NOT what is drawn:
+            // the floors replace the level and keep the hue, so both have to be on the page or
+            // the next reader compares a screenshot against a light that was never used.
+            if (GuiGlobalConstants::IsClassicMapLight())
+            {
+                const float amb_bytes[3] = {amb_r * inv, amb_g * inv, amb_b * inv};
+                const float sun_bytes[3] = {sun_r * inv, sun_g * inv, sun_b * inv};
+                XMFLOAT4 cls_amb, cls_dif;
+                ReplayClassicMapLight(amb_bytes, amb_i * inv, sun_bytes, sun_i * inv, &cls_amb,
+                                      &cls_dif);
+                RunLog::Line("map:   Classic light APPLIED - ambient (%.3f,%.3f,%.3f) lightness "
+                             "%.3f (floor 0.70, intensity byte %.0f), diffuse (%.3f,%.3f,%.3f) "
+                             "lightness %.3f (floor 0.50, intensity byte %.0f)",
+                             cls_amb.x, cls_amb.y, cls_amb.z,
+                             std::max(((amb_i * inv) / 255.0f) * 0.9f, 0.7f), amb_i * inv,
+                             cls_dif.x, cls_dif.y, cls_dif.z,
+                             std::max(((sun_i * inv) / 255.0f) * 0.9f, 0.5f), sun_i * inv);
+            }
+            // The other half of the product, beside the light rather than inferred from it. The
+            // intensity divisor here is 256, matching the light actually handed to the renderer
+            // below, not the 255 the two display lines above use.
+            {
+                const float ai_l = (amb_i * inv) / 256.0f;
+                const float si_l = (sun_i * inv) / 256.0f;
+                float amb3[3] = {(amb_r * inv) / 255.0f * ai_l,
+                                 (amb_g * inv) / 255.0f * ai_l,
+                                 (amb_b * inv) / 255.0f * ai_l};
+                float sun3[3] = {(sun_r * inv) / 255.0f * si_l,
+                                 (sun_g * inv) / 255.0f * si_l,
+                                 (sun_b * inv) / 255.0f * si_l};
+                // THE LIGHT THE GROUND LINE IS GIVEN IS THE LIGHT THAT IS DRAWN. Handing it the
+                // client-law pair while Classic is in force was the whole class of error this
+                // instrument exists to stop: a pixel prediction against a light the frame never
+                // saw. Same values the renderer is handed a few lines below.
+                if (GuiGlobalConstants::IsClassicMapLight())
+                {
+                    const float amb_bytes[3] = {amb_r * inv, amb_g * inv, amb_b * inv};
+                    const float sun_bytes[3] = {sun_r * inv, sun_g * inv, sun_b * inv};
+                    XMFLOAT4 cls_amb, cls_dif;
+                    ReplayClassicMapLight(amb_bytes, amb_i * inv, sun_bytes, sun_i * inv,
+                                          &cls_amb, &cls_dif);
+                    amb3[0] = cls_amb.x; amb3[1] = cls_amb.y; amb3[2] = cls_amb.z;
+                    sun3[0] = cls_dif.x; sun3[1] = cls_dif.y; sun3[2] = cls_dif.z;
+                }
+                LogTerrainAlbedoAt(world_x, world_z, amb3, sun3);
+            }
+        }
+    }
+
+    // ---- the post-process, and the owner's gain ----------------------------------------------
+    //
+    // THE GAME'S BLOOM IS NOT OPTIONAL AND IT IS NOT SMALL. It runs on every frame of every guild
+    // hall - no preference, no map flag, no graphics option removes it, only a device-capability
+    // test - so an image drawn without it is a different image, not the same image minus a
+    // flourish. Its amount is per map and blended across regions like everything else here:
+    // environment sub-list 1 byte 0 over 256, then v * 0.98 + 0.008. Corrupted Isle resolves to
+    // 0.395 and Druid's Isle to 0.513, which is exactly what the shipped map files give.
+    //
+    // The saturation stage of the same chain is byte 1 of the same record over 255. It reads 255 -
+    // perfectly neutral - on thirteen of the sixteen halls; only Isle of Jade (142), Uncharted
+    // Isle (172) and Isle of Wurms (155) ask for anything. The tint stage's byte is zero on all
+    // sixteen, so tint is never active and is not implemented.
+    {
+        const float v = (sky_bloom_byte * inv) / 256.0f;
+        m_mapBloomAmount = v * 0.98f + 0.008f;
+        m_mapSceneSaturation = std::clamp((sky_sat_byte * inv) / 255.0f, 0.0f, 1.0f);
+    }
+
+    // The user's environment light gain for the map. It reaches the terrain and the world's own
+    // models and nothing else: the renderer switches it on for the world pass and off again
+    // immediately afterwards, so the composed characters keep the light their rules were measured
+    // against. It scales the light's INPUTS and the light is then clamped per channel; 1.00x is
+    // what the game does, and the default is calibrated against the reference capture at the flag
+    // stand - see the shader note and GuiGlobalConstants.
+    // EffectiveMapLightGain answers for the MODE: each mode has its own persisted value and the
+    // other one is left parked, so a mode switch changes the light and never the setting. It is
+    // live in Classic too, where it scales the floored ambient and sun the same single
+    // multiplication scales everything else - 1.00x there is the previous build, byte for byte.
+    m_mapRenderer->SetMapLightGain(GuiGlobalConstants::EffectiveMapLightGain());
+
+    // ---- the light --------------------------------------------------------------------------
+    //
+    // `colour = bytes / 255 * intensity`, and nothing else - no curve, no floor, no lightness
+    // rewrite. That is the client's own law, read out of its light setters. What it replaced was
+    // `bytes / (255 * 2)` followed by a rewrite of the result's HSL LIGHTNESS to
+    // `max(intensity / 255 * 0.9, floor)`, floor 0.70 for the ambient and 0.50 for the sun - a
+    // visibility aid for browsing dark maps, which threw the level away and put the ambient at
+    // 0.63 to 0.92 per channel where the map asks for far less. On Druid's Isle it meant an ambient
+    // of (0.663, 0.663, 0.737) instead of (0.368, 0.479, 0.623): 1.2x to 1.8x too bright, and
+    // near-neutral where the map is distinctly cool.
+    //
+    // The first of the record's two colour-plus-intensity pairs is the AMBIENT and the second is
+    // the SUN; the client splits them across two differently named setters, so that is settled
+    // rather than assumed.
+    //
+    // The intensity byte is treated as `byte / 255`. The client holds it as a normalised float and
+    // its own built-in default environment uses 0.2 and 0.896094, which is the range a byte over
+    // 255 produces; the conversion line itself was not found, so this one step is a reading rather
+    // than a proof, and it is recorded as such in the note.
+    if (!env.env_sub_chunk3.empty())
+    {
+        // The INTENSITY byte is divided by 256, not 255 - the environment importer hoists a
+        // 1/256 reciprocal and multiplies both intensities by it. The COLOUR bytes are still
+        // divided by 255, in the light setter itself. The map's byte-to-float law really is
+        // mixed like that; it is 0.4% but it is the exact answer.
+        const float ai = (amb_i * inv) / 256.0f;
+        const float si = (sun_i * inv) / 256.0f;
+        DirectionalLight dl = m_mapRenderer->GetDirectionalLight();
+        if (GuiGlobalConstants::IsClassicMapLight())
+        {
+            // CLASSIC: the previous override, byte for byte, fed the region-blended colours
+            // instead of entry 0. See ReplayClassicMapLight above for what it is and why the
+            // arithmetic is reproduced rather than rewritten.
+            const float amb_bytes[3] = {amb_r * inv, amb_g * inv, amb_b * inv};
+            const float sun_bytes[3] = {sun_r * inv, sun_g * inv, sun_b * inv};
+            ReplayClassicMapLight(amb_bytes, amb_i * inv, sun_bytes, sun_i * inv, &dl.ambient,
+                                  &dl.diffuse);
+        }
+        else
+        {
+            dl.ambient = XMFLOAT4((amb_r * inv) / 255.0f * ai, (amb_g * inv) / 255.0f * ai,
+                                  (amb_b * inv) / 255.0f * ai, 1.0f);
+            dl.diffuse = XMFLOAT4((sun_r * inv) / 255.0f * si, (sun_g * inv) / 255.0f * si,
+                                  (sun_b * inv) / 255.0f * si, 1.0f);
+        }
+        // The terrain needs cos(a) as a scalar of its own: its sun endpoint is
+        // `min(1, ambient + sun * cos(a) * intensity)` with no N.L on it at all. The light's spare
+        // float is otherwise unused by every shader, so it carries it rather than growing the
+        // per-frame buffer and every copy of its layout.
+        const float sun_angle =
+            static_cast<float>(m_mapFile.environment_info_chunk.env_sun_angle_byte) *
+            (6.28318530718f / 256.0f);
+        dl.pad = std::cos(sun_angle);
+        m_mapRenderer->SetDirectionalLight(dl);
+    }
+
+    // ---- the haze ---------------------------------------------------------------------------
+    if (!env.env_sub_chunk2.empty())
+    {
+        const float start = fog_d0 * inv;
+        const float end = fog_d1 * inv;
+
+        // THE CLIENT'S OWN OFF-SWITCH, and it is an off-switch rather than a repair. The Dx9
+        // handler behind GrDeviceSetHaze tests the blended distances before it builds anything:
+        // `end == 0` or `start > end` and it clears the device's haze-enabled flag, after which
+        // the shader generator picks the haze mode that emits `oFog = 1` - no distance term, no
+        // height term, no haze at all. What this used to do instead was push the end out to
+        // `start + 1`, which is the opposite answer: a one-unit ramp hazes everything past the
+        // near plane to solid fog colour. Neither case occurs on the sixteen guild halls - every
+        // fog entry of all sixteen has 0 < start < end - so this changes no picture today; it
+        // replaces a guess with the client's rule.
+        const bool haze_off = !(end > 0.0f) || start > end;
+        m_mapRenderer->SetFogStart(haze_off ? 0.0f : start);
+        m_mapRenderer->SetFogEnd(haze_off ? 1.0e9f : end);
+        // A degenerate height band is how the height half is switched off (the shaders gate it on
+        // a strictly positive `fog_z_start - fog_z_end`, which is the client's own test), so an
+        // off haze is expressed as "distance term saturated clear, height term absent".
+        m_mapRenderer->SetFogStartY(haze_off ? 0.0f : (fog_z0 * inv));
+        m_mapRenderer->SetFogEndY(haze_off ? 0.0f : (fog_z1 * inv));
+        m_mapRenderer->SetClearColor(XMFLOAT4((fog_r * inv) / 255.0f, (fog_g * inv) / 255.0f,
+                                              (fog_b * inv) / 255.0f, 1.0f));
+    }
+}
+
 void ReplayWindow::StepLoadInit()
 {
     m_phaseStartTime = LoadClock::now();
@@ -1224,14 +1896,24 @@ void ReplayWindow::StepLoadInit()
     const auto& envChunk = m_mapFile.environment_info_chunk;
     const EnvSubChunk8* env8 = envChunk.env_sub_chunk8.empty() ? nullptr : &envChunk.env_sub_chunk8[0];
 
+    // Whether this map's props take the 2X modulate. Per map, read out of the map-parameters
+    // record - see FFNA_MapFile::modulate_2x. Only the public model program reads it.
+    map_renderer->SetPropModulate2x(m_mapFile.modulate_2x);
+
+    uint16_t envIdx[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    {
+        const auto& mb = m_mapFile.map_info_chunk.map_bounds;
+        EnvIndicesAt((mb.map_min_x + mb.map_max_x) * 0.5f,
+                     (mb.map_min_z + mb.map_max_z) * 0.5f, envIdx);
+    }
+
     PerSkyCB sky_cb = map_renderer->GetPerSkyCB();
 
     // Brightness/saturation
     {
         float brightness = 1.0f, saturation = 1.0f, bias_add = 0.0f;
         if (!envChunk.env_sub_chunk1.empty()) {
-            size_t idx = (env8 && env8->sky_settings_index < envChunk.env_sub_chunk1.size())
-                ? env8->sky_settings_index : 0u;
+            size_t idx = (envIdx[1] < envChunk.env_sub_chunk1.size()) ? envIdx[1] : 0u;
             const auto& sub1 = envChunk.env_sub_chunk1[idx];
             brightness = std::clamp(sub1.sky_brightness_maybe / 128.0f, 0.0f, 2.0f);
             saturation = std::clamp(sub1.sky_saturaion_maybe / 128.0f, 0.0f, 2.0f);
@@ -1243,31 +1925,12 @@ void ReplayWindow::StepLoadInit()
         sky_cb.color_params = XMFLOAT4(brightness, saturation, bias_add, 0.0f);
     }
 
-    // Lighting
-    if (!envChunk.env_sub_chunk3.empty()) {
-        size_t idx = (env8 && env8->lighting_settings_index < envChunk.env_sub_chunk3.size())
-            ? env8->lighting_settings_index : 0u;
-        const auto& sub3 = envChunk.env_sub_chunk3[idx];
-        float light_div = 2.0f;
-        float ambient_intensity = sub3.ambient_intensity / 255.0f;
-        float diffuse_intensity = sub3.sun_intensity / 255.0f;
-
-        DirectionalLight dl = map_renderer->GetDirectionalLight();
-        dl.ambient.x = sub3.ambient_red / (255.0f * light_div);
-        dl.ambient.y = sub3.ambient_green / (255.0f * light_div);
-        dl.ambient.z = sub3.ambient_blue / (255.0f * light_div);
-        dl.diffuse.x = sub3.sun_red / (255.0f * light_div);
-        dl.diffuse.y = sub3.sun_green / (255.0f * light_div);
-        dl.diffuse.z = sub3.sun_blue / (255.0f * light_div);
-
-        auto ahls = RGBAtoHSL(dl.ambient);
-        auto dhls = RGBAtoHSL(dl.diffuse);
-        ahls.z = std::max(ambient_intensity * 0.9f, 0.7f);
-        dhls.z = std::max(diffuse_intensity * 0.9f, 0.5f);
-        dl.ambient = HSLtoRGBA(ahls);
-        dl.diffuse = HSLtoRGBA(dhls);
-        map_renderer->SetDirectionalLight(dl);
-    }
+    // WHICH ENTRY OF EACH ENVIRONMENT LIST IS LIVE. Not `env_sub_chunk8` - that is the map's single
+    // default record, not a list, and reading it as one is why this always used entry 0 of
+    // everything. The slots below drive which TEXTURES are fetched, so they are resolved once,
+    // here, winner-takes-all at the middle of the map, which is what the client does for them.
+    // The fog and the lighting are not resolved here at all: they are BLENDED per frame by
+    // ApplyMapEnvironment, called at the end of this function and again every frame.
 
     // Sky texture settings
     uint16_t sky_bg_idx = 0xFFFF;
@@ -1275,9 +1938,9 @@ void ReplayWindow::StepLoadInit()
     uint16_t sky_sun_idx = 0xFFFF;
     uint16_t water_color_idx = 0xFFFF, water_distort_idx = 0xFFFF;
 
-    const uint16_t selSkyTexIdx   = env8 ? env8->sky_texture_settings_index : 0u;
-    const uint16_t selWaterIdx    = env8 ? env8->water_settings_index : 0u;
-    const uint16_t selWindIdx     = env8 ? env8->wind_settings_index : 0u;
+    const uint16_t selSkyTexIdx   = envIdx[5];
+    const uint16_t selWaterIdx    = envIdx[6];
+    const uint16_t selWindIdx     = envIdx[7];
 
     if (!envChunk.env_sub_chunk5.empty()) {
         size_t si = (selSkyTexIdx < envChunk.env_sub_chunk5.size()) ? selSkyTexIdx : 0u;
@@ -1421,6 +2084,11 @@ void ReplayWindow::StepLoadInit()
     // --- Terrain textures ---
     auto& terrainTexNames = m_mapFile.terrain_texture_filenames.array;
     std::vector<DatTexture> terrainDatTextures;
+    // The .dat id behind each SLICE, in upload order. The slice index is what the pixel shader's
+    // `layerIndex` carries, so this is the only place the two can be tied together - and an entry
+    // that is skipped or fails to decode shifts every slice after it, which is invisible from the
+    // shader side. Kept so the ground line in the log can name the file it is drawing.
+    std::vector<uint32_t> terrainSliceFileIds;
     for (size_t i = 0; i < terrainTexNames.size(); i++)
     {
         auto decoded = decode_filename(terrainTexNames[i].filename.id0, terrainTexNames[i].filename.id1);
@@ -1430,8 +2098,10 @@ void ReplayWindow::StepLoadInit()
         auto mit = m_hashIndex->find(decoded);
         if (mit != m_hashIndex->end()) {
             DatTexture dt = m_datManager->parse_ffna_texture_file(mit->second.at(0));
-            if (dt.width > 0 && dt.height > 0)
+            if (dt.width > 0 && dt.height > 0) {
                 terrainDatTextures.push_back(dt);
+                terrainSliceFileIds.push_back(static_cast<uint32_t>(decoded));
+            }
         }
     }
 
@@ -1450,6 +2120,42 @@ void ReplayWindow::StepLoadInit()
     const auto terrainTexId = map_renderer->GetTextureManager()->AddTextureArray(
         rawPtrs, terrainDatTextures[0].width, terrainDatTextures[0].height,
         DXGI_FORMAT_B8G8R8A8_UNORM, static_cast<int>(datFileHash), true);
+
+    // THE ALBEDO, MEASURED AT THE SOURCE. Same bytes, same order, same moment as the upload above,
+    // so nothing can drift between what the GPU samples and what the log reports. The array is
+    // uploaded as B8G8R8A8, so byte 0 is BLUE and byte 2 is RED; they are swapped into R, G, B here
+    // once, rather than at every read. See the note on TerrainSliceAlbedo in the header for why
+    // this exists at all - the decoder's field names invite exactly the mistake it guards against.
+    m_terrainSliceAlbedo.clear();
+    m_terrainSliceAlbedo.reserve(terrainDatTextures.size());
+    for (size_t s = 0; s < terrainDatTextures.size(); s++)
+    {
+        const DatTexture& dt = terrainDatTextures[s];
+        double c0 = 0.0, c1 = 0.0, c2 = 0.0, ca = 0.0;
+        for (const RGBA& px : dt.rgba_data)
+        {
+            c0 += px.c[0];
+            c1 += px.c[1];
+            c2 += px.c[2];
+            ca += px.c[3];
+        }
+        const double n = dt.rgba_data.empty() ? 1.0 : static_cast<double>(dt.rgba_data.size());
+        TerrainSliceAlbedo a;
+        a.file_id = s < terrainSliceFileIds.size() ? terrainSliceFileIds[s] : 0u;
+        a.width = dt.width;
+        a.height = dt.height;
+        a.mean_rgb[0] = static_cast<float>(c2 / n / 255.0);   // byte 2 is RED
+        a.mean_rgb[1] = static_cast<float>(c1 / n / 255.0);
+        a.mean_rgb[2] = static_cast<float>(c0 / n / 255.0);   // byte 0 is BLUE
+        a.mean_alpha = static_cast<float>(ca / n / 255.0);
+        m_terrainSliceAlbedo.push_back(a);
+    }
+    RunLog::Line("map: terrain texture array - %zu names in the map, %zu slices uploaded%s",
+                 terrainTexNames.size(), m_terrainSliceAlbedo.size(),
+                 terrainTexNames.size() == m_terrainSliceAlbedo.size()
+                     ? " (one to one, so slice index == the map's own index)"
+                     : " - THE LISTS DIFFER, so every tile index past the first gap names the "
+                       "wrong slice");
 
     // --- Terrain mesh ---
     auto terrain = std::make_unique<Terrain>(
@@ -1496,22 +2202,13 @@ void ReplayWindow::StepLoadInit()
         }
     }
 
-    // Fog and clear color
-    if (!envChunk.env_sub_chunk2.empty()) {
-        size_t fi = (env8 && env8->fog_settings_index < envChunk.env_sub_chunk2.size())
-            ? env8->fog_settings_index : 0u;
-        const auto& sub2 = envChunk.env_sub_chunk2[fi];
-        XMFLOAT4 clearColor{
-            sub2.fog_red / 255.0f, sub2.fog_green / 255.0f, sub2.fog_blue / 255.0f, 1.0f
-        };
-        float fogStart = static_cast<float>(sub2.fog_distance_start);
-        float fogEndRaw = static_cast<float>(sub2.fog_distance_end);
-        float fogEnd = (fogEndRaw > fogStart + 1.0f) ? fogEndRaw : (fogStart + 1.0f);
-        map_renderer->SetFogStart(fogStart);
-        map_renderer->SetFogEnd(fogEnd);
-        map_renderer->SetFogStartY(static_cast<float>(sub2.fog_z_start_maybe));
-        map_renderer->SetFogEndY(static_cast<float>(sub2.fog_z_end_maybe));
-        map_renderer->SetClearColor(clearColor);
+    // The haze and the light, for the first frame. ApplyMapEnvironment does both together because
+    // both are blended from the same regions; from here on it runs once per frame against the
+    // camera, so crossing a region boundary crossfades rather than snaps.
+    {
+        const auto& mb = m_mapFile.map_info_chunk.map_bounds;
+        ApplyMapEnvironment((mb.map_min_x + mb.map_max_x) * 0.5f,
+                            (mb.map_min_z + mb.map_max_z) * 0.5f);
     }
     map_renderer->SetSkyHeight(0);
 
@@ -1662,19 +2359,16 @@ void ReplayWindow::StepPlaceProps()
             for (size_t j = 0; j < geom.models.size(); j++)
             {
                 AMAT_file amat;
-                if (!modelFilePtr->AMAT_filenames_chunk.texture_filenames.empty()) {
-                    int subIdx = geom.models[j].unknown;
-                    if (!geom.tex_and_vertex_shader_struct.uts0.empty())
-                        subIdx %= (int)geom.tex_and_vertex_shader_struct.uts0.size();
-                    const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
-                    int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF) % (int)modelFilePtr->AMAT_filenames_chunk.texture_filenames.size();
-                    auto amatFn = modelFilePtr->AMAT_filenames_chunk.texture_filenames[amatIdx];
-                    auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
+                // The submodel's own material row, and the AMAT that row names, from the one call
+                // that cannot let the two disagree. See FFNA_ModelFile::ModernMaterialForSubmodel.
+                int matRow = FFNA_ModelFile::kModernMaterialRowOrdinal;
+                int amatHash = 0;
+                if (modelFilePtr->ModernMaterialForSubmodel((int)j, matRow, amatHash)) {
                     auto aIt = m_hashIndex->find(amatHash);
                     if (aIt != m_hashIndex->end())
                         amat = m_datManager->parse_amat_file(aIt->second.at(0));
                 }
-                Mesh mesh = modelFilePtr->GetMesh((int)j, amat);
+                Mesh mesh = modelFilePtr->GetMesh((int)j, amat, matRow);
                 if (mesh.indices.size() % 3 == 0)
                     propMeshes.push_back(mesh);
             }
@@ -5911,6 +6605,138 @@ void ReplayWindow::Update(double elapsedMs)
     if (!m_topViewActive && !m_topViewTransitioning)
         UpdateFollowCamera(dt);
     m_mapRenderer->m_replayPlaybackSpeed = m_replayCtx.playbackSpeed;
+    // The map's fog and light are a blend of the environment regions the viewpoint is inside, so
+    // they move with the camera. Cheap: a handful of squared distances over at most eight circles,
+    // then four scalar setters. Before Update(dt), which is what uploads the per-frame buffer.
+    //
+    // THE QUERY POINT IS WHERE THE CAMERA IS LOOKING, NOT WHERE THE CAMERA IS, and that is a
+    // deliberate departure from the client. The client weighs the regions against its own camera
+    // position - but the client's camera is always a short way behind the player, so its eye and
+    // the player's feet are within a thousand units of each other and the distinction never
+    // matters. A replay camera is not: the overview sits thousands of units up and back, often
+    // entirely OUTSIDE every region circle on the map, and using the eye then resolves to "no
+    // region contributes" and falls back to the map default no matter where the action is. On
+    // Corrupted Isle that is the difference between the warm lighting entry the flag stand is
+    // authored with and the cold blue default.
+    //
+    // WHEN THE CAMERA HAS A SUBJECT, ASK THE SUBJECT AND DO NOT CAST A RAY AT ALL. The follow
+    // camera is an orbit: UpdateFollowCamera puts the eye at `centre + spherical(distance, yaw,
+    // pitch)` and points it exactly back at `centre`, and that centre IS the agent being watched.
+    // It needs no geometry and it cannot be wrong. Every automatic camera decision goes through
+    // follow mode, so this is the path nearly every frame of a replay takes.
+    //
+    // ONLY WHEN THERE IS NO SUBJECT - the free camera, the top view - does the ground under the
+    // middle of the screen have to be found, and then it is found by MARCHING THE RAY FROM THE
+    // CAMERA OUTWARDS AND STOPPING AT THE FIRST GROUND IT MEETS.
+    //
+    // What that replaces was a two-step guess: intersect a horizontal plane at the terrain's MID
+    // height, sample the terrain there, then re-shoot once to that height. Both steps are wrong
+    // together. The mid height is `(map_min_y + map_max_y) / 2`, which is dominated by the map's
+    // tallest scenery, not by its floor - on Corrupted Isle the range is -505..3164 so the mid
+    // plane sits at 1329, ABOVE every piece of playable ground (§9.1 measured the play area at
+    // 253..1304). The first step therefore lands short, on a plane nothing stands on; the second
+    // step then re-shoots to a much lower height and, having only one iteration, overshoots by the
+    // same ratio - typically three to five times too far. The owner's 23:48 log caught it exactly:
+    //
+    //     camera eye (514, 1638, -2330) looking at (-4137, -3234) - 0 region(s) contribute
+    //     region 0 at (4329, -4302) radii 2435/5620 - distance 8533, weight 0.000
+    //
+    // The EYE in that frame is 4295 units from that region's centre, inside its outer radius, and
+    // would have weighed 0.512. The ray point is 8533 out and weighs nothing, so the map fell back
+    // to its cold default entry - which is why the ground came out dark and near-neutral instead
+    // of warm. The heuristic was not merely imprecise there, it was worse than the camera position
+    // it had replaced.
+    //
+    // Measured over 95,550 synthetic frames - every eighth terrain cell of the play area, times
+    // the follow camera's own five distances, five pitches and eight yaws, with the camera placed
+    // by the same arithmetic UpdateFollowCamera uses - against the subject's own position:
+    //
+    //     rule                    mean err   median   p90    >1000u   wrong lighting entry
+    //     two-step guess (old)         645      376   1470    20.0%     2.6%
+    //     march to first ground        275        0    979     9.8%     0.5%
+    //     the orbit centre               0        0      0     0.0%     0.0%   (exact)
+    //
+    // The march's residual is all at shallow tilt - 633 mean at 11 degrees against 28 at 63 - and
+    // it is not an error in the rule: at a shallow tilt the ground under the screen centre really
+    // is far away, and a ridge between the camera and the subject really is what the camera sees.
+    // Stopping at the FIRST crossing is the point; the old rule could sail over a near hill and
+    // land in a valley kilometres beyond it.
+    {
+        const auto* camera = m_mapRenderer->GetCamera();
+        const XMFLOAT3 eye = camera->GetPosition3f();
+        const XMFLOAT3 look = camera->GetLook3f();
+        m_envEye[0] = eye.x;
+        m_envEye[1] = eye.y;
+        m_envEye[2] = eye.z;
+        m_envFromCamera = true;
+
+        float qx = eye.x;
+        float qz = eye.z;
+        m_envQuerySource = "eye";
+
+        // The same condition UpdateFollowCamera itself runs under, so the centre is never a frame
+        // stale: during a top-view transition that function is skipped while the mode can already
+        // read as FollowAgent (ExitTopView restores the mode before the camera finishes moving),
+        // and the centre left over from before the top view could be anywhere on the map.
+        if (m_followCenterValid && m_cameraMode == CameraMode::FollowAgent && !m_topViewActive &&
+            !m_topViewTransitioning)
+        {
+            qx = m_followCenter.x;
+            qz = m_followCenter.z;
+            m_envQuerySource = "the followed agent";
+        }
+        else if (m_terrain && look.y < -0.02f)
+        {
+            const auto& b = m_terrain->m_bounds;
+            // Step by one terrain cell: the heightfield carries no detail finer than that, so a
+            // smaller step buys nothing and a larger one can step over a ridge.
+            const float step = std::max(1.0f, (b.map_max_x - b.map_min_x) /
+                                                  std::max(1u, m_terrain->m_grid_dim_x));
+            const float span_x = b.map_max_x - b.map_min_x;
+            const float span_z = b.map_max_z - b.map_min_z;
+            const float max_t = 1.5f * std::sqrt(span_x * span_x + span_z * span_z);
+            float prev_t = 0.0f;
+            bool hit = false;
+            if (eye.y > m_terrain->get_height_at(eye.x, eye.z))
+            {
+                for (float t = step; t <= max_t; t += step)
+                {
+                    const float x = eye.x + look.x * t;
+                    const float z = eye.z + look.z * t;
+                    const float y = eye.y + look.y * t;
+                    if (y <= m_terrain->get_height_at(x, z))
+                    {
+                        // Bisect the one cell the crossing is inside, so the answer is a point
+                        // rather than a step.
+                        float lo = prev_t, hi = t;
+                        for (int i = 0; i < 20; i++)
+                        {
+                            const float mid = 0.5f * (lo + hi);
+                            const float mx = eye.x + look.x * mid;
+                            const float mz = eye.z + look.z * mid;
+                            const float my = eye.y + look.y * mid;
+                            if (my > m_terrain->get_height_at(mx, mz))
+                                lo = mid;
+                            else
+                                hi = mid;
+                        }
+                        const float ft = 0.5f * (lo + hi);
+                        qx = std::clamp(eye.x + look.x * ft, b.map_min_x, b.map_max_x);
+                        qz = std::clamp(eye.z + look.z * ft, b.map_min_z, b.map_max_z);
+                        m_envQuerySource = "the ground under the view";
+                        hit = true;
+                        break;
+                    }
+                    prev_t = t;
+                }
+            }
+            // Never met the ground: the camera is pointed off the map, or it is underground. The
+            // eye is then the client's own rule and the only defensible answer.
+            if (!hit)
+                m_envQuerySource = "eye (the view meets no ground)";
+        }
+        ApplyMapEnvironment(qx, qz);
+    }
     m_mapRenderer->Update(dt);
 
     UpdateDoorAnimations();
@@ -5942,6 +6768,7 @@ void ReplayWindow::Update(double elapsedMs)
 void ReplayWindow::Render()
 {
     ++m_frameCount;
+    RenderTerrainShadows();
 
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
@@ -5950,6 +6777,9 @@ void ReplayWindow::Render()
         RenderMinimap();
 
     Clear();
+
+    // Update actor poses/transforms before either scene or shadow rendering.
+    DrawAgentModels();
 
     auto* pickingRTV = m_assetSelectionEnabled
         ? m_deviceResources->GetPickingRenderTargetView() : nullptr;
@@ -5984,15 +6814,24 @@ void ReplayWindow::Render()
             m_deviceResources->GetPickingStagingTexture(), cursor.x, cursor.y);
     }
 
+    DrawAgentShadows();
     DrawHeatmapOverlay();
 
     DrawFogOfWar();
 
-    DrawAgentModels();
     DrawSkinnedAgentModels();
+    // ...and, immediately after it, the recorded players who have a character of
+    // their own. Two passes rather than one because a composed character needs its
+    // own sub-pass order and its own program; the pass above skips exactly these.
+    DrawPlayerVisuals();
     DrawWeaponModels();
 
     DrawAgentCylinders();
+
+    // THE GAME'S OWN POST-PROCESS, and it goes here on purpose: after the world and after the
+    // characters, because the game applies it to the finished frame, and before the interface,
+    // because the interface is drawn by us and was never in it.
+    DrawSceneBloom();
 
     DrawImGuiOverlay();
 
@@ -6158,6 +6997,23 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::SliderFloat("Model Scale", &m_agentModelScale, 0.1f, 5.0f, "%.2f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Scale factor for agent 3D models");
+
+            ImGui::Checkbox("Character shadows (preview)", &m_showAgentShadows);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Animated silhouette masks with circular fallback. Bridge receivers are not available yet.");
+            ImGui::Checkbox("Terrain and prop shadows (preview)", &m_showTerrainShadows);
+            if (m_showAgentShadows) {
+                ImGui::SliderFloat("Shadow strength", &m_shadowStrength, 0.f, 1.f, "%.2f");
+                ImGui::Checkbox("Animated silhouettes", &m_showSilhouetteShadows);
+                ImGui::Checkbox("Original shadow distance limit", &m_originalShadowDistanceLimit);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Fade out at 1,500 units from the camera. Leave off for wide Observer camera views.");
+                ImGui::TextDisabled("Shadow candidates: %zu | Drawn: %u | Elevated: %u",
+                    m_shadowCasters.size(), m_agentShadows.DrawnCount(), m_agentShadows.ReceiverSkipCount());
+                ImGui::TextDisabled("Silhouette masks: %u / 32", m_silhouetteShadowCount);
+                const auto& shadowError = m_shadowLoadError.empty() ? m_agentShadows.Error() : m_shadowLoadError;
+                if (!shadowError.empty()) ImGui::TextWrapped("%s", shadowError.c_str());
+            }
 
             ImGui::Separator();
             if (m_agentModelsLoaded) {
@@ -8203,6 +9059,7 @@ ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device,
                                  std::unordered_map<int, std::string>& index,
                                  std::unordered_map<int, ComPtr<ID3D11ShaderResourceView>>& cache)
 {
+    if (rw && rw->IsUnresolvedHistoricalSkill(skillId)) return nullptr;
     auto cit = cache.find(skillId);
     if (cit != cache.end()) return (ImTextureID)cit->second.Get();
 
@@ -9182,6 +10039,15 @@ std::string GetAgentDisplayName(const ReplayContext& ctx, int agentId)
     }
 }
 
+std::string ReplayWindow::GetSkillDisplayName(int skillId) const
+{
+    if (m_skillView.IsUnresolvedHistoricalId(skillId))
+        return std::format("Unknown historical skill (ID {})", skillId);
+    if (const auto* si = m_skillView.Get(skillId); skillId > 0 && si && !si->name.empty())
+        return si->name;
+    return ::GetSkillDisplayName(skillId);
+}
+
 std::string GetSkillDisplayName(int skillId)
 {
     if (skillId <= 0)
@@ -9238,7 +10104,70 @@ void ReplayWindow::Clear()
 // IDeviceNotify
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::OnDeviceLost()   {}
+// LOSING THE DEVICE MEANS EVERY GPU OBJECT THIS WINDOW BUILT BELONGS TO A DEVICE THAT IS GONE.
+//
+// DeviceResources::HandleDeviceLost() does not repair the old device: it releases it and creates a
+// NEW one, with a new immediate context. Everything this window built - vertex, index and constant
+// buffers, textures, views - was created by the old device and stays bound to it.
+//
+// The dangerous half of that is not the resources that simply stop working. It is the ONE PLACE
+// that reaches for the context freshly each frame: the agent draw passes call
+// m_deviceResources->GetD3DDeviceContext(), which after the loss is the NEW context, and hand it
+// resources made by the OLD device. A per-agent bone palette is uploaded that way every frame for
+// every animated agent, so it is the first such call a running replay makes. A driver handed a
+// resource that is not its device's is outside anything the API defines, and what it does with it
+// is its own business - including faulting inside the upload.
+//
+// So the per-agent animated state goes, and with it the render-status map, which is the gate the
+// skinned, composed and weapon passes all read before they draw anything. The agents stop being
+// drawn; the replay keeps running. That is a visible loss, and it is the point: the alternative is
+// a call no rule of the API covers.
+//
+// WHAT THIS DOES NOT DO, and should be read as owed rather than done: it does not rebuild anything.
+// MapRenderer, MeshManager and TextureManager each captured the device and context as plain
+// pointers at construction, so the scene they hold still addresses the old device and quietly stops
+// updating. Rebuilding a window's whole scene after a device loss is a larger piece of work than
+// this, and the loader threads would have to be joinable-safe before a reload could be re-triggered
+// (m_agentModelLoadThread is never joined after its first run, so starting a second load would
+// assign to a joinable std::thread). The run log now names a device loss in every configuration,
+// which is what makes the next occurrence attributable instead of invisible.
+void ReplayWindow::OnDeviceLost()
+{
+    m_agentShadows = ProjectedAgentShadows{};
+    m_shadowInitAttempted = false;
+    m_shadowLoadError.clear();
+    m_shadowCasters.clear();
+
+    const size_t dropped = m_agentAnimStates.size();
+    m_agentAnimStates.clear();
+    m_agentModelRenderStatus.clear();
+
+    // The composed characters are held here as well; the per-agent state above was holding their
+    // submeshes. Nothing is released against the renderer on purpose - the device that owns those
+    // objects is gone, and dropping the last reference to each of them is the whole of what is
+    // still meaningful.
+    m_playerVisuals.reset();
+    m_playerVisualsPhase = static_cast<int>(PlayerVisualsPhase::Done);
+    m_playerVisualsNote = "the graphics device was lost: stand-in models";
+
+    // The character pass's own pixel programs were created by the device that has just been
+    // replaced. They are dropped here rather than left to the identity check in
+    // EnsurePlayerVisualShaders, because that check compares ADDRESSES: a replacement device
+    // allocated at the address the old one occupied would look like the same device and the pass
+    // would bind a dead program. Clearing the remembered address is what makes that impossible.
+    m_playerVisualShaderOld.Reset();
+    m_playerVisualShaderNew.Reset();
+    m_playerVisualShaderDevice = nullptr;
+
+    // The bloom pass is the one thing here that CAN simply be rebuilt: it owns three small programs
+    // and three textures, it depends on nothing that was loaded, and it re-creates itself on the
+    // first frame after this. So it is dropped and re-armed rather than disabled.
+    ReleaseBloomResources();
+
+    RunLog::Line("device: the replay window dropped %zu animated agent(s) and its composed"
+                 " characters - they were built by the device that was just replaced",
+                 dropped);
+}
 void ReplayWindow::OnDeviceRestored() {}
 
 // ---------------------------------------------------------------------------

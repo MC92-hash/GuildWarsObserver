@@ -1,8 +1,24 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <memory>
+
+// Older bar metadata contains unresolved IDs in a range first named by our
+// August client dump. Those numbers cannot be interpreted with today's table.
+// Keep them intact for recovery from the cast stream; never guess their identity.
+inline int ResolveHistoricalEventSkillId(int skillId, int dateKey)
+{
+    // Mighty Throw (PvP) is present as 3442 in original July/August cast
+    // streams. It predates the August dump and is not a corrupted bar ID.
+    return skillId == 3442 && dateKey < 20260826 ? 1547 : skillId;
+}
+
+inline bool IsUnresolvedHistoricalSkillId(int skillId, int dateKey)
+{
+    return ResolveHistoricalEventSkillId(skillId, dateKey) > 3431 && dateKey < 20260826;
+}
 
 // Energy = the caster gains Energy, EnergyLoss = a foe loses it. They are separate kinds
 // because the two arrive on opposite sides of the energy stream: a gain moves the caster's own
@@ -122,8 +138,13 @@ class SkillDatabaseView
 {
 public:
     SkillDatabaseView() = default;
-    explicit SkillDatabaseView(std::shared_ptr<const std::unordered_map<int, SkillInfo>> data)
-        : m_data(std::move(data)) {}
+    explicit SkillDatabaseView(std::shared_ptr<const std::unordered_map<int, SkillInfo>> data,
+                               int dateKey = 99991231)
+        : m_data(std::move(data)), m_dateKey(dateKey) {}
+
+    bool IsUnresolvedHistoricalId(int skillId) const {
+        return IsUnresolvedHistoricalSkillId(skillId, m_dateKey);
+    }
 
     const SkillInfo* Get(int skillId) const;
     bool IsLoaded() const { return m_data && !m_data->empty(); }
@@ -132,7 +153,8 @@ public:
     void ForEachSkill(Fn&& fn) const {
         if (!m_data) return;
         for (const auto& [id, info] : *m_data)
-            fn(info);
+            if (!IsUnresolvedHistoricalId(id)
+                && ResolveHistoricalEventSkillId(id, m_dateKey) == id) fn(info);
     }
 
     std::vector<int> SortSkillsForDisplay(const std::vector<int>& skillIds,
@@ -141,6 +163,7 @@ public:
 
 private:
     std::shared_ptr<const std::unordered_map<int, SkillInfo>> m_data;
+    int m_dateKey = 99991231;
 };
 
 class SkillDatabase

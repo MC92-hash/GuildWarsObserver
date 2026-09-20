@@ -5,6 +5,7 @@
 
 #include "pch.h"
 #include "DeviceResources.h"
+#include "RunLog.h"
 
 using namespace DirectX;
 using namespace DX;
@@ -401,6 +402,17 @@ void DeviceResources::CreateWindowSizeDependentResources()
                         (hr == DXGI_ERROR_DEVICE_REMOVED) ? m_d3dDevice->GetDeviceRemovedReason() : hr));
             OutputDebugStringA(buff);
 #endif
+            // IN EVERY CONFIGURATION, NOT JUST UNDER A DEBUGGER. Losing the device replaces it, and
+            // every buffer, texture and view the application built against the old one is a
+            // reference to something that no longer belongs to the live device. That is one of the
+            // very few states in which an ordinary, correct-looking call can fault inside the
+            // display driver, so a log that does not mention it cannot explain such a fault.
+            RunLog::Line("device: *** LOST while resizing the buffers *** result 0x%08X, reason"
+                         " 0x%08X - the device is being replaced",
+                         static_cast<unsigned>(hr),
+                         static_cast<unsigned>((hr == DXGI_ERROR_DEVICE_REMOVED)
+                                                   ? m_d3dDevice->GetDeviceRemovedReason()
+                                                   : hr));
             // If the device was removed for any reason, a new device and swap chain will need to be created.
             HandleDeviceLost();
 
@@ -555,6 +567,9 @@ bool DeviceResources::WindowSizeChanged(int width, int height)
 // Recreate all device resources and set them back to the current state.
 void DeviceResources::HandleDeviceLost()
 {
+    RunLog::Line("device: rebuilding after the loss - everything built against the old device is"
+                 " now stale");
+
     if (m_deviceNotify)
     {
         m_deviceNotify->OnDeviceLost();
@@ -597,6 +612,8 @@ void DeviceResources::HandleDeviceLost()
     {
         m_deviceNotify->OnDeviceRestored();
     }
+
+    RunLog::Line("device: rebuilt");
 }
 
 // Present the contents of the swap chain to the screen.
@@ -637,6 +654,12 @@ void DeviceResources::Present()
                     (hr == DXGI_ERROR_DEVICE_REMOVED) ? m_d3dDevice->GetDeviceRemovedReason() : hr));
         OutputDebugStringA(buff);
 #endif
+        RunLog::Line("device: *** LOST while presenting *** result 0x%08X, reason 0x%08X - the"
+                     " device is being replaced",
+                     static_cast<unsigned>(hr),
+                     static_cast<unsigned>((hr == DXGI_ERROR_DEVICE_REMOVED)
+                                               ? m_d3dDevice->GetDeviceRemovedReason()
+                                               : hr));
         HandleDeviceLost();
     }
     else

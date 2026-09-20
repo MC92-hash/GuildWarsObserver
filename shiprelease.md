@@ -143,6 +143,13 @@ obfuscated. Rotating them achieves nothing on its own, since the new value ships
 binary too. The controls that do matter are that the token stays **read-only and scoped to the
 one bucket**, and that egress has a quota. Both live in the Cloudflare dashboard, not here.
 
+A third category, new with the character work: **the GW1 character-rendering rules.** They live
+entirely in `gwobserver-private` and are compiled into this exe, so nothing about them is in this
+repository - but a binary keeps the string literals of code it can never run, so the private
+sources' developer instrumentation had to be compiled out rather than merely left unreachable.
+That is what `GWO_PLAYERVISUALS_DIAGNOSTICS` does, and Phase 2 step 3a is the check that says it
+worked. Treat a failure there the way you would treat a write credential in a build.
+
 The **write** credentials are a different matter and must never reach a build.
 `GWO_R2_ACCESS_KEY` and `GWO_R2_SECRET_KEY` are empty defaults in `build_config.h`, are not
 defined in the private header at all, and are referenced by no shipped code; `upload_to_r2.py`
@@ -200,6 +207,37 @@ that predates the fixes. **Do not rebuild it.**
    `IsDeveloperMode()` is a runtime check, so that code is compiled into every build by design
    and those strings are always present; the menu is simply unreachable without `GWO_DEV` set.
    Only the `#if`-gated strings distinguish the two builds.
+3a. **The character-rules string gate.** A Release build runs it automatically: the
+   `GwoReleaseStringGate` target at the bottom of `GuildWarsObserver.vcxproj` fires after
+   `Link` whenever `Configuration` is `Release`, and a failing gate fails the build. Run it by
+   hand the same way the build does:
+   ```bash
+   python ../gwobserver-private/scripts/check_release_strings.py x64/Release/GuildWarsObserver.exe
+   ```
+   Expect `PASS`; exit code 1 means **do not ship this binary**.
+
+   What it is for. This exe compiles character-rendering sources out of `gwobserver-private`,
+   and those sources carry a large amount of developer instrumentation - notes, a JSON report,
+   A/B switches and two ImGui panels - that exists for the private laboratory application and
+   must not reach a public binary. It is compiled out here by the preprocessor
+   (`GWO_PLAYERVISUALS_DIAGNOSTICS`), but "compiled out" is a claim about the source, and a
+   binary is the only thing that can answer it: a string literal survives in an exe whether or
+   not any code path can reach it, which is exactly how this leak was found. The gate reads the
+   built exe, pulls every printable run out of it (narrow and wide) and matches them against a
+   word list.
+
+   **The word list is private and stays private.** It lives beside the script in
+   `gwobserver-private` and is not reproduced, quoted or summarised here, because the list is
+   itself a description of the material it protects - this document is public. If the gate
+   fails it prints the offending strings and their file offsets, which is enough to find them;
+   the fix belongs in the private source (a `#if`, or the prose macro the script's failure
+   message names), never in the word list.
+
+   The gate has a self-test: `--selfcheck <path to GuildWarsMapBrowser.exe>` additionally
+   asserts that every pattern still matches something in the private laboratory binary, so a
+   pattern that has quietly stopped meaning anything is reported instead of passing forever.
+   Worth running whenever the private character sources change shape.
+
 4. Package:
    ```bash
    py -3.11 scripts/package_release.py --version 2.0.0 \
@@ -360,6 +398,7 @@ the fallback, and it is worth saying so in the release announcement.
 
 ## Verification summary
 
+- Release build green, which means the character-rules string gate passed (Phase 2 step 3a)
 - `package_release.py` assertions pass
 - Phase 3 scratch update: relaunches on the new version, settings survive, no nested folder
 - Phase 4 repeat on the genuine `/releases/latest` path

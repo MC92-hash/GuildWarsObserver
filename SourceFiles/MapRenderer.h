@@ -375,6 +375,21 @@ public:
 
     const DirectionalLight GetDirectionalLight() { return m_directionalLight; }
 
+    // THE ENVIRONMENT LIGHT GAIN FOR THE MAP. A plain multiplier on the light the terrain and the
+    // world's own models receive, 1.0 by default, owned by the user. It is deliberately NOT part
+    // of the DirectionalLight: that light is shared with every other pass in the frame, and the
+    // composed characters' rules are settled against it. `Render` below switches the gain on for
+    // the world pass and off again immediately afterwards, so nothing drawn after the world - the
+    // characters, their weapons, the agent models, the emissive sub-pass - can see it.
+    void SetMapLightGain(float gain)
+    {
+        if (!(gain > 0.0f)) gain = 1.0f;
+        if (m_map_light_gain == gain) return;
+        m_map_light_gain = gain;
+        m_per_frame_cb_changed = true;
+    }
+    float GetMapLightGain() const { return m_map_light_gain; }
+
     PerSkyCB GetPerSkyCB() const { return m_per_sky_cb_data; }
     void SetPerSkyCB(const PerSkyCB& sky_cb) { m_per_sky_cb_data = sky_cb; }
 
@@ -794,6 +809,18 @@ public:
         m_rasterizer_state_manager->SetRasterizerState(state);
     }
 
+    // Pass-throughs for a caller that draws a mesh itself (MeshInstance::Draw) rather than through
+    // the render batch, and therefore has to set and restore the pipeline state around its own
+    // draw. The batch's own state handling is untouched.
+    void SetDepthStencilState(DepthStencilStateType state)
+    {
+        m_stencil_state_manager->SetDepthStencilState(state);
+    }
+    void SetBlendState(BlendState state)
+    {
+        m_blend_state_manager->SetBlendState(state);
+    }
+
     void SetMeshShouldRender(int mesh_id, bool should_render)
     {
         m_should_rerender_shadows = true;
@@ -836,6 +863,12 @@ public:
 
     void SetShouldRenderShadows(bool should_render_shadows) { m_should_render_shadows = should_render_shadows; }
     void SetShouldRenderWaterReflection(bool should_render_reflection) { m_should_render_water_reflection = should_render_reflection; }
+    // Whether a map's prop texture layers take the 2X modulate. Per map, not per model - see the
+    // note on FFNA_MapFile::modulate_2x. Only the PUBLIC model pixel shaders read it; the composed
+    // character pass binds its own program and is deliberately not affected.
+    void SetPropModulate2x(bool on) { m_prop_modulate_2x = on; m_per_frame_cb_changed = true; }
+    bool GetPropModulate2x() const { return m_prop_modulate_2x; }
+
     void SetShouldRenderFog(bool should_render_fog) { m_should_render_fog = should_render_fog; }
     void SetShouldRerenderShadows(bool should_rerender_shadows) { m_should_rerender_shadows = should_rerender_shadows; }
     void SetShouldRenderShadowsForModels(bool should_render_shadows) { m_should_render_shadows_for_models = should_render_shadows; }
@@ -994,6 +1027,15 @@ public:
 
     PerCameraCB GetPerCameraCB() { return m_per_camera_cb_data; }
     void SetPerCameraCB(const PerCameraCB& per_camera_cb_data) { m_per_camera_cb_data = per_camera_cb_data; }
+    void UploadRenderCamera(const PerCameraCB& data) {
+        m_per_camera_cb_data=data;
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(m_deviceContext->Map(m_per_camera_cb.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped))) {
+            memcpy(mapped.pData,&data,sizeof(data)); m_deviceContext->Unmap(m_per_camera_cb.Get(),0);
+        }
+        m_deviceContext->VSSetConstantBuffers(2,1,m_per_camera_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(2,1,m_per_camera_cb.GetAddressOf());
+    }
 
     void Update(const double dt_seconds)
     {
@@ -1072,6 +1114,13 @@ public:
         frameCB.should_render_flags = frameCB.should_render_flags | (GetShouldRenderWaterReflectionEffective() << 1);
         frameCB.should_render_flags = frameCB.should_render_flags | (m_should_render_fog << 2);
         frameCB.should_render_flags = frameCB.should_render_flags | (m_should_render_shadows_for_models << 3);
+        frameCB.should_render_flags = frameCB.should_render_flags | (static_cast<uint32_t>(m_prop_modulate_2x) << 4);
+        // Bit 5: the map light mode, straight off the one persisted setting rather than a copy
+        // held here, so it can never go stale against the panel. Set = Classic.
+        frameCB.should_render_flags = frameCB.should_render_flags |
+            (static_cast<uint32_t>(GuiGlobalConstants::IsClassicMapLight() ? 1u : 0u) << 5);
+        frameCB.map_light_gain = m_map_light_gain_in_use;
+        m_last_time_elapsed = time_elapsed;
 
 
         // Update the per frame constant buffer
@@ -1235,7 +1284,27 @@ public:
         }
     }
 
+    // The world pass, bracketed by the map light gain. Everything the user sees as "the map" is
+    // drawn inside RenderWorld; the bracket guarantees the gain cannot leak into a later pass.
     void Render(ID3D11RenderTargetView* render_target_view, ID3D11RenderTargetView* picking_render_target, ID3D11DepthStencilView* depth_stencil_view)
+    {
+        const float gain = m_map_light_gain;
+        if (gain != 1.0f)
+        {
+            m_map_light_gain_in_use = gain;
+            RefreshPerFrameCB(m_last_time_elapsed);
+        }
+
+        RenderWorld(render_target_view, picking_render_target, depth_stencil_view);
+
+        if (gain != 1.0f)
+        {
+            m_map_light_gain_in_use = 1.0f;
+            RefreshPerFrameCB(m_last_time_elapsed);
+        }
+    }
+
+    void RenderWorld(ID3D11RenderTargetView* render_target_view, ID3D11RenderTargetView* picking_render_target, ID3D11DepthStencilView* depth_stencil_view)
     {
         BindRegularVertexShader();
         m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
@@ -1541,6 +1610,11 @@ public:
         frameCB.should_render_flags |= (GetShouldRenderWaterReflectionEffective() << 1);
         frameCB.should_render_flags |= (m_should_render_fog << 2);
         frameCB.should_render_flags |= (m_should_render_shadows_for_models << 3);
+        frameCB.should_render_flags |= (static_cast<uint32_t>(m_prop_modulate_2x) << 4);
+        // Bit 5: the map light mode. Set = Classic. See PerFrameCB.h for the whole word.
+        frameCB.should_render_flags |=
+            (static_cast<uint32_t>(GuiGlobalConstants::IsClassicMapLight() ? 1u : 0u) << 5);
+        frameCB.map_light_gain = m_map_light_gain_in_use;
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         ZeroMemory(&mapped, sizeof(mapped));
@@ -1843,6 +1917,13 @@ private:
     bool m_should_render_shadows = true;
     bool m_should_render_water_reflection = true;
     bool m_should_render_fog = true;
+    // True is what this renderer has always done; a map with the gate off turns it back off.
+    bool m_prop_modulate_2x = true;
+    // The user's setting, and the value actually in the per-frame buffer right now. They differ
+    // only for the duration of the world pass.
+    float m_map_light_gain = 1.0f;
+    float m_map_light_gain_in_use = 1.0f;
+    float m_last_time_elapsed = 0.0f;
     bool m_should_render_shadows_for_models = true;
 
     bool m_should_render_shore_waves = true;

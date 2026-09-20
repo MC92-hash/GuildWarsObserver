@@ -92,6 +92,9 @@ void ReplayWindow::ExitFollowMode()
     m_cameraMode = CameraMode::Free;
     m_followedAgentId = -1;
     m_followTransActive = false;
+    // There is no subject any more, so the environment blend goes back to finding the ground
+    // under the view rather than being told where to look.
+    m_followCenterValid = false;
     m_mapRenderer->m_disableMovementInput = false;
 }
 
@@ -347,6 +350,15 @@ void ReplayWindow::UpdateFollowCamera(float dt)
     Camera* cam = m_mapRenderer->GetCamera();
     cam->SetPosition(center.x + offX, center.y + offY, center.z + offZ);
     cam->SetOrientation(-m_followPitch, m_followYaw + XM_PI);
+
+    // THE SUBJECT, PUBLISHED. The camera above is placed at `center + spherical(...)` and aimed
+    // exactly back at `center`, so `center` is the one point in the world this frame is about.
+    // The environment blend needs precisely that point and nothing else: it used to reconstruct
+    // it by firing a ray at the terrain and guessing, which on a map whose mid height sits above
+    // its own floor overshoots by thousands of units. Handing the centre over directly makes the
+    // reconstruction unnecessary in the mode a replay spends nearly all its time in.
+    m_followCenter = center;
+    m_followCenterValid = true;
 }
 
 // ---------------------------------------------------------------------------

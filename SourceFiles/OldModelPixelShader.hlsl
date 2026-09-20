@@ -199,7 +199,18 @@ PSOutput main(PixelInputType input)
                 }
                 else
                 {
-                    finalColor = saturate(finalColor * currentSampledTextureColor * mult_val);
+                    // THE 2X IS THE MAP'S DECISION, NOT THIS STAGE'S. The client cannot even
+                    // store a 2X flag in a model file - it manufactures one per layer at material
+                    // build time, and only when a per-map gate is on. The gate is bit 4 of
+                    // should_render_flags; when it is clear no layer on this map is 2X, so a stage
+                    // that would have doubled modulates once instead. Stages that were already 1x
+                    // are untouched. See FFNA_MapFile::modulate_2x.
+                    //
+                    // This is the PUBLIC model program, which draws the map's props. The composed
+                    // character pass binds its own extended program and never reaches this line,
+                    // so the gate cannot change a character's brightness.
+                    float map_mult = ((should_render_flags & 16) != 0) ? mult_val : min(mult_val, 1.0);
+                    finalColor = saturate(finalColor * currentSampledTextureColor * map_mult);
                 }
 
                 prev_texture_type = texture_type;
@@ -270,22 +281,57 @@ PSOutput main(PixelInputType input)
     {
         float distance = length(cam_position - input.world_position.xyz);
 
+        // THE CLIENT'S OWN HAZE CURVE, read out of Gw.exe instruction by instruction - see
+        // the map lighting model note under docs/appearance_data for the addresses.
+        //
+        //     fDist   = (fog_end - d) / (fog_end - fog_start)          linear, no curve
+        //     fHeight = (y - fog_end_y) / (fog_start_y - fog_end_y)
+        //     fNear   = 1 - d / (2 * (fog_start_y - fog_end_y))
+        //     f       = clamp( max( min(fDist, fHeight), fNear ), 0, 1 )
+        //     colour  = lerp(fogColour, colour, f)          f = 1 is clear, f = 0 is all haze
+        //
+        // TWO CHANGES FROM WHAT THIS USED TO DO, and they pull in opposite directions.
+        //
+        // GONE: `clamp(f, 0.20, 1)`. There is no such floor in the client. It capped the haze at
+        // 80% however far away a pixel was, so the far distance could never close up - which is
+        // exactly the "our image is too clear, the client's distance is washed out" report.
+        //
+        // NEW: `fNear`, which the client has and this did not. It is a distance-dependent FLOOR
+        // that starts at 1 (fully clear) at the camera and reaches 0 at twice the height band's
+        // depth, and its job is to stop the HEIGHT term from hazing geometry right in front of the
+        // camera. Without it, removing the 0.20 floor alone would put a permanent wash over the
+        // near field. The client only applies it when the height term is live; when the height
+        // band is degenerate it runs distance-only, which is what `fogNear = 0` reproduces here.
+        //
+        // Known, deliberate difference: the client uses the VIEW-SPACE DEPTH of the pixel and this
+        // uses the radial distance to the camera. They agree on the view axis and this one is
+        // slightly larger towards the edges of a wide screen.
         float fogFactorDistance = 1.0;
         float fogDistanceDenom = fog_end - fog_start;
         if (abs(fogDistanceDenom) >= 1e-3)
         {
-            fogFactorDistance = saturate((fog_end - distance) / fogDistanceDenom);
+            fogFactorDistance = (fog_end - distance) / fogDistanceDenom;
         }
 
         float fogFactorHeight = 1.0;
-        float fogHeightDenom = fog_end_y - fog_start_y;
-        if (abs(fogHeightDenom) >= 1e-3)
+        float fogNear = 0.0;
+        float fogHeightDenom = fog_start_y - fog_end_y;
+        // The client's own gate on the height term, and it is a STRICT `>`, not a magnitude test:
+        // GrDeviceSetHazeHeight's Dx9 handler compares its two arguments (-fog_z_start, -fog_z_end)
+        // and only arms the height half when the second is the greater, i.e. when
+        // fog_z_start > fog_z_end. `abs(denom) >= 1e-3` also admitted a NEGATIVE denominator, and
+        // that does not merely flip the band: it turns fNear into `1 + d / (2*|denom|)`, which is
+        // at least 1 at every distance, so the final max() forces f = 1 and the map loses its haze
+        // entirely. The client runs distance-only there instead, which is what falling through to
+        // fogFactorHeight = 1 / fogNear = 0 reproduces. No guild hall has an inverted band, so this
+        // changes nothing on the sixteen; it stops the failure being silent on anything else.
+        if (fogHeightDenom > 0.0)
         {
-            fogFactorHeight = saturate((fog_end_y - input.world_position.y) / fogHeightDenom);
+            fogFactorHeight = (input.world_position.y - fog_end_y) / fogHeightDenom;
+            fogNear = 1.0 - distance / (2.0 * fogHeightDenom);
         }
 
-        float fogFactor = min(fogFactorDistance, fogFactorHeight);
-        fogFactor = clamp(fogFactor, 0.20, 1);
+        float fogFactor = saturate(max(min(fogFactorDistance, fogFactorHeight), fogNear));
 
         float3 fogColor = fog_color_rgb; // Fog color defined in the constant buffer
         finalColor = lerp(float4(fogColor, finalColor.a), finalColor, fogFactor);

@@ -461,10 +461,12 @@ int SkillDatabase::ResolvePvpSkillId(int skillId) const
 // harmless because a PvP entry never carries a split of its own.
 const SkillInfo* SkillDatabaseView::Get(int skillId) const
 {
-    if (!m_data) return nullptr;
+    skillId = ResolveHistoricalEventSkillId(skillId, m_dateKey);
+    if (!m_data || IsUnresolvedHistoricalId(skillId)) return nullptr;
     auto it = m_data->find(skillId);
     if (it == m_data->end()) return nullptr;
-    if (it->second.pvp_split && it->second.split_id > 0)
+    if (it->second.pvp_split && it->second.split_id > 0
+        && !IsUnresolvedHistoricalId(it->second.split_id))
     {
         auto pvp = m_data->find(it->second.split_id);
         if (pvp != m_data->end()) return &pvp->second;
@@ -574,11 +576,12 @@ int SkillDatabase::ResolveBaseSkillId(int skillId) const
 
 int SkillDatabaseView::ResolvePvpSkillId(int skillId) const
 {
-    if (!m_data) return skillId;
+    skillId = ResolveHistoricalEventSkillId(skillId, m_dateKey);
+    if (!m_data || IsUnresolvedHistoricalId(skillId)) return skillId;
     auto it = m_data->find(skillId);
     if (it == m_data->end()) return skillId;
     const SkillInfo& si = it->second;
-    if (si.pvp_split && si.split_id > 0)
+    if (si.pvp_split && si.split_id > 0 && !IsUnresolvedHistoricalId(si.split_id))
         return si.split_id;
     return skillId;
 }
@@ -719,7 +722,7 @@ SkillDatabaseView SkillDatabase::GetView(int year, int month, int day)
 
     auto cacheIt = m_viewCache.find(dateKey);
     if (cacheIt != m_viewCache.end())
-        return SkillDatabaseView(cacheIt->second);
+        return SkillDatabaseView(cacheIt->second, dateKey);
 
     // Start with a copy of the latest data
     auto data = std::make_shared<std::unordered_map<int, SkillInfo>>(m_skills);
@@ -766,7 +769,7 @@ SkillDatabaseView SkillDatabase::GetView(int year, int month, int day)
 
     auto constData = std::shared_ptr<const std::unordered_map<int, SkillInfo>>(std::move(data));
     m_viewCache[dateKey] = constData;
-    return SkillDatabaseView(std::move(constData));
+    return SkillDatabaseView(std::move(constData), dateKey);
 }
 
 SkillDatabaseView SkillDatabase::GetBaseView() const
