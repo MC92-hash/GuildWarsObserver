@@ -602,123 +602,153 @@ void ReplayWindow::DrawWeaponModels()
         const auto& socket = tmplIt->second.weaponSocket;
         if (!socket.resolved) continue;
 
-        const auto& bonePos = animState.controller->GetBoneWorldPositions();
-        const auto& boneRot = animState.controller->GetBoneWorldRotations();
-        if (!socket.IsValidFor(bonePos.size()) || boneRot.size() != bonePos.size()) continue;
-
         auto agentIt = m_replayCtx.agents.find(agentId);
         if (agentIt == m_replayCtx.agents.end()) continue;
         const auto& ard = agentIt->second;
 
-        // The agent's own world matrix, exactly as DrawAgentModels built it — including the
-        // centring translation and the fitHeight/nativeHeight renormalisation, both of which the
-        // weapon has to ride or it will be the wrong size.
-        const PerObjectCB& agentCB = animState.perMeshCBs[0];
-        const XMMATRIX agentWorld = XMLoadFloat4x4(&agentCB.world);
-
-        // Draws one weapon model on one hand bone. Bone pose is model space, so the weapon rides
-        // the agent's world matrix unchanged. Row-vector convention: v * grip * hand * agentWorld.
-        auto drawAtBone = [&](int32_t bone, WeaponModelTemplate& weaponTmpl, const WeaponGrip& gripDef)
-        {
-            if (bone < 0 || static_cast<size_t>(bone) >= bonePos.size()) return;
-
-            const XMMATRIX grip =
-                XMMatrixScaling(gripDef.scale, gripDef.scale, gripDef.scale)
-              * XMMatrixRotationRollPitchYaw(XMConvertToRadians(gripDef.rotation.x),
-                                             XMConvertToRadians(gripDef.rotation.y),
-                                             XMConvertToRadians(gripDef.rotation.z))
-              * XMMatrixTranslation(gripDef.offset.x, gripDef.offset.y, gripDef.offset.z);
-
-            const XMMATRIX hand =
-                XMMatrixRotationQuaternion(XMLoadFloat4(&boneRot[bone]))
-              * XMMatrixTranslationFromVector(XMLoadFloat3(&bonePos[bone]));
-            const XMMATRIX weaponWorld = grip * hand * agentWorld;
-
-            if (!shadersBound)
-            {
-                m_mapRenderer->BindRegularVertexShader();
-                context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                shadersBound = true;
-            }
-            const int wantPixelShader =
-                (weaponTmpl.pixelShaderType == PixelShaderType::NewModel) ? 1 : 0;
-            if (wantPixelShader != boundPixelShader)
-            {
-                m_mapRenderer->BindModelPixelShader(wantPixelShader == 1);
-                boundPixelShader = wantPixelShader;
-            }
-
-            for (size_t k = 0; k < weaponTmpl.gpuMeshes.size(); k++)
-            {
-                if (!weaponTmpl.gpuMeshes[k]) continue;
-
-                PerObjectCB cb = weaponTmpl.templateCBs[k];
-                XMStoreFloat4x4(&cb.world, XMMatrixTranspose(weaponWorld));
-                // Alpha and highlight come from the agent so the weapon fades with a corpse and
-                // dims in fog. object_id is carried across for consistency, but note the skinned
-                // agent pass leaves it at 0 — only the rigid AddProp path sets a real pick id,
-                // so neither body nor weapon is pickable here.
-                cb.mesh_alpha       = agentCB.mesh_alpha;
-                cb.highlight_state  = agentCB.highlight_state;
-                cb.object_id        = agentCB.object_id;
-
-                meshManager->SetPerObjectCB(cb);
-                weaponTmpl.gpuMeshes[k]->Draw(context, m_mapRenderer->GetLODQuality());
-            }
-        };
-
-        // Resolve both hands before drawing either: the dagger mirror below needs to know
-        // whether the off hand is already spoken for.
-        const EquippedWeapon mainItem =
-            ResolveEquippedWeapon(ard, animState.lastSnapIdx, Equipment::Slot_Weapon);
-        const EquippedWeapon offItem =
-            ResolveEquippedWeapon(ard, animState.lastSnapIdx, Equipment::Slot_Offhand);
-
-        const int32_t mainBone = socket.MainHand(m_weaponHandIsPositiveX);
-        const int32_t offBone  = socket.OffHand(m_weaponHandIsPositiveX);
-
-        auto templateForModel = [&](uint32_t modelFileId) -> WeaponModelTemplate*
-        {
-            if (!modelFileId) return nullptr;
-            auto it = m_weaponModelTemplates.find(modelFileId);
-            return (it != m_weaponModelTemplates.end() && it->second.gpuReady) ? &it->second : nullptr;
-        };
-        auto templateFor = [&](const EquippedWeapon& w) -> WeaponModelTemplate*
-        {
-            return w.Valid() ? templateForModel(w.modelFileId) : nullptr;
-        };
-
-        // An urn replaces whatever was in the agent's hands. It also has to be asked
-        // about before the equipment slots: while ashes are held the recorded item is
-        // an unresolved bundle, which the placeholder patch above would otherwise turn
-        // into a flag or a repair kit and put a banner in the ritualist's hands.
-        if (const AshesSkill* ashes = AshesHeldAt(agentId, m_debugTimeline))
-        {
-            if (WeaponModelTemplate* urn = templateForModel(AshesModelFileId(ashes->kind)))
-            {
-                const WeaponGrip& gripDef = GripFor(kAshesItemType);
-                drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *urn, gripDef);
-                continue;
-            }
-        }
-
-        if (WeaponModelTemplate* mainTmpl = templateFor(mainItem))
-        {
-            const WeaponGrip& gripDef = GripFor(mainItem.itemType);
-
-            // Slot decides the hand, except where the weapon class overrides it — a bow sits in
-            // the hand that does not draw it.
-            drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *mainTmpl, gripDef);
-
-            // A dual-wielded pair is one item record worn as two weapons. Only mirror when the
-            // off hand is genuinely free, so an unexpected off-hand item is never drawn over.
-            if (gripDef.mirrorToOffHand && !gripDef.forceOffHand && !offItem.Valid())
-                drawAtBone(offBone, *mainTmpl, gripDef);
-        }
-
-        if (WeaponModelTemplate* offTmpl = templateFor(offItem))
-            drawAtBone(offBone, *offTmpl, GripFor(offItem.itemType));
+        DrawHeldWeapons(agentId, ard, animState.lastSnapIdx, socket, *animState.controller,
+                        animState.perMeshCBs[0], shadersBound, boundPixelShader);
     }
+}
+
+
+// One agent's hands, on one pose. The replay's own pass hands in the agent's live controller and
+// the world matrix DrawAgentModels wrote; the character panel's portrait hands in its own idle
+// controller and a matrix of its own, which is the whole reason this is not inline in the loop
+// above. `fallbackMain`/`fallbackOff` are what to hold when the recording has nothing in either
+// hand at `snapIdx` - the portrait passes the player's first weapon set so a character is never
+// shown empty-handed just because the timeline sits before their first swap.
+void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int snapIdx,
+                                   const GW::Animation::WeaponSocket& socket,
+                                   const GW::Animation::AnimationController& pose,
+                                   const PerObjectCB& agentCB, bool& shadersBound,
+                                   int& boundPixelShader,
+                                   const Equipment::ItemDef* fallbackMain,
+                                   const Equipment::ItemDef* fallbackOff)
+{
+    auto* context = m_deviceResources->GetD3DDeviceContext();
+    auto* meshManager = m_mapRenderer->GetMeshManager();
+    if (!context || !meshManager) return;
+
+    const auto& bonePos = pose.GetBoneWorldPositions();
+    const auto& boneRot = pose.GetBoneWorldRotations();
+    if (!socket.IsValidFor(bonePos.size()) || boneRot.size() != bonePos.size()) return;
+
+    // The agent's own world matrix, exactly as DrawAgentModels built it — including the
+    // centring translation and the fitHeight/nativeHeight renormalisation, both of which the
+    // weapon has to ride or it will be the wrong size.
+    const XMMATRIX agentWorld = XMLoadFloat4x4(&agentCB.world);
+
+    // Draws one weapon model on one hand bone. Bone pose is model space, so the weapon rides
+    // the agent's world matrix unchanged. Row-vector convention: v * grip * hand * agentWorld.
+    auto drawAtBone = [&](int32_t bone, WeaponModelTemplate& weaponTmpl, const WeaponGrip& gripDef)
+    {
+        if (bone < 0 || static_cast<size_t>(bone) >= bonePos.size()) return;
+
+        const XMMATRIX grip =
+            XMMatrixScaling(gripDef.scale, gripDef.scale, gripDef.scale)
+          * XMMatrixRotationRollPitchYaw(XMConvertToRadians(gripDef.rotation.x),
+                                         XMConvertToRadians(gripDef.rotation.y),
+                                         XMConvertToRadians(gripDef.rotation.z))
+          * XMMatrixTranslation(gripDef.offset.x, gripDef.offset.y, gripDef.offset.z);
+
+        const XMMATRIX hand =
+            XMMatrixRotationQuaternion(XMLoadFloat4(&boneRot[bone]))
+          * XMMatrixTranslationFromVector(XMLoadFloat3(&bonePos[bone]));
+        const XMMATRIX weaponWorld = grip * hand * agentWorld;
+
+        if (!shadersBound)
+        {
+            m_mapRenderer->BindRegularVertexShader();
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            shadersBound = true;
+        }
+        const int wantPixelShader =
+            (weaponTmpl.pixelShaderType == PixelShaderType::NewModel) ? 1 : 0;
+        if (wantPixelShader != boundPixelShader)
+        {
+            m_mapRenderer->BindModelPixelShader(wantPixelShader == 1);
+            boundPixelShader = wantPixelShader;
+        }
+
+        for (size_t k = 0; k < weaponTmpl.gpuMeshes.size(); k++)
+        {
+            if (!weaponTmpl.gpuMeshes[k]) continue;
+
+            PerObjectCB cb = weaponTmpl.templateCBs[k];
+            XMStoreFloat4x4(&cb.world, XMMatrixTranspose(weaponWorld));
+            // Alpha and highlight come from the agent so the weapon fades with a corpse and
+            // dims in fog. object_id is carried across for consistency, but note the skinned
+            // agent pass leaves it at 0 — only the rigid AddProp path sets a real pick id,
+            // so neither body nor weapon is pickable here.
+            cb.mesh_alpha       = agentCB.mesh_alpha;
+            cb.highlight_state  = agentCB.highlight_state;
+            cb.object_id        = agentCB.object_id;
+
+            meshManager->SetPerObjectCB(cb);
+            weaponTmpl.gpuMeshes[k]->Draw(context, m_mapRenderer->GetLODQuality());
+        }
+    };
+
+    // Resolve both hands before drawing either: the dagger mirror below needs to know
+    // whether the off hand is already spoken for.
+    EquippedWeapon mainItem = ResolveEquippedWeapon(ard, snapIdx, Equipment::Slot_Weapon);
+    EquippedWeapon offItem  = ResolveEquippedWeapon(ard, snapIdx, Equipment::Slot_Offhand);
+    if (!mainItem.Valid() && !offItem.Valid())
+    {
+        auto held = [](const Equipment::ItemDef* item) {
+            EquippedWeapon w;
+            if (item) { w.item = item; w.modelFileId = item->modelFileId; w.itemType = item->itemType; }
+            return w;
+        };
+        mainItem = held(fallbackMain);
+        offItem  = held(fallbackOff);
+    }
+
+    const int32_t mainBone = socket.MainHand(m_weaponHandIsPositiveX);
+    const int32_t offBone  = socket.OffHand(m_weaponHandIsPositiveX);
+
+    auto templateForModel = [&](uint32_t modelFileId) -> WeaponModelTemplate*
+    {
+        if (!modelFileId) return nullptr;
+        auto it = m_weaponModelTemplates.find(modelFileId);
+        return (it != m_weaponModelTemplates.end() && it->second.gpuReady) ? &it->second : nullptr;
+    };
+    auto templateFor = [&](const EquippedWeapon& w) -> WeaponModelTemplate*
+    {
+        return w.Valid() ? templateForModel(w.modelFileId) : nullptr;
+    };
+
+    // An urn replaces whatever was in the agent's hands. It also has to be asked
+    // about before the equipment slots: while ashes are held the recorded item is
+    // an unresolved bundle, which the placeholder patch above would otherwise turn
+    // into a flag or a repair kit and put a banner in the ritualist's hands.
+    if (const AshesSkill* ashes = AshesHeldAt(agentId, m_debugTimeline))
+    {
+        if (WeaponModelTemplate* urn = templateForModel(AshesModelFileId(ashes->kind)))
+        {
+            const WeaponGrip& gripDef = GripFor(kAshesItemType);
+            drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *urn, gripDef);
+            return;
+        }
+    }
+
+    if (WeaponModelTemplate* mainTmpl = templateFor(mainItem))
+    {
+        const WeaponGrip& gripDef = GripFor(mainItem.itemType);
+
+        // Slot decides the hand, except where the weapon class overrides it — a bow sits in
+        // the hand that does not draw it.
+        drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *mainTmpl, gripDef);
+
+        // A dual-wielded pair is one item record worn as two weapons. Only mirror when the
+        // off hand is genuinely free, so an unexpected off-hand item is never drawn over.
+        if (gripDef.mirrorToOffHand && !gripDef.forceOffHand && !offItem.Valid())
+            drawAtBone(offBone, *mainTmpl, gripDef);
+    }
+
+    if (WeaponModelTemplate* offTmpl = templateFor(offItem))
+        drawAtBone(offBone, *offTmpl, GripFor(offItem.itemType));
 }
 
 

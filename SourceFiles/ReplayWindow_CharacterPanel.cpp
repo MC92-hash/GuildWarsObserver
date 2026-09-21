@@ -1821,6 +1821,36 @@ void ReplayWindow::DrawCharacterPanels()
                 }
             }
 
+            // ── The character, in the gap between the hands and the armour ────────────────────
+            //
+            // Where the client's own equipment window stands him, and over the bars rather than
+            // under them. Dragging turns him; a double-click turns him back.
+            {
+                const ImVec2 ptl(offX + kCellSize + 4.f, rowTop);
+                // Five rows whatever the number of weapon sets: the portrait's size is fixed, so
+                // a player with many sets is not drawn bigger than one with few.
+                const ImVec2 pbr(armourX - 4.f,
+                                 rowTop + (float)std::size(kArmourSlots) * kRowPitch);
+                const uint16_t firstMain = m_hudWeaponSets.sets.empty() ? 0 : m_hudWeaponSets.sets[0].mainId;
+                const uint16_t firstOff  = m_hudWeaponSets.sets.empty() ? 0 : m_hudWeaponSets.sets[0].offId;
+                const ImTextureID portrait = RequestCharacterPortrait(
+                    panel.uid, ard->agent_id, (int)(pbr.x - ptl.x), (int)(pbr.y - ptl.y),
+                    firstMain, firstOff);
+                DrawCharacterPortraitImage(dl, portrait, ptl, pbr);
+
+                ImGui::SetCursorScreenPos(ptl);
+                ImGui::InvisibleButton("##portrait", ImVec2(pbr.x - ptl.x, pbr.y - ptl.y));
+                if (auto pit = m_characterPortraits.find(panel.uid); pit != m_characterPortraits.end())
+                {
+                    if (ImGui::IsItemActive())
+                        pit->second.yaw += ImGui::GetIO().MouseDelta.x * 0.012f;
+                    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        pit->second.yaw = 0.f;
+                }
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            }
+
             SheetRule(dl, barX, rowTop + rows * kRowPitch + 3.f, sheetW - 14.f);
 
             // The ranks, under the sheet they were read off.

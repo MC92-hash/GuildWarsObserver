@@ -30,6 +30,7 @@
 #include "Cache/AnimationDiscoveryCache.h"
 #include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
+#include <chrono>
 #include "BitmapFont.h"
 #include "AttributeDeducer.h"
 #include "HealthModel.h"
@@ -417,6 +418,44 @@ private:
     int  m_nextCharacterPanelUid = 1;
     void OpenCharacterPanel(int agentId = -1);
     void DrawCharacterPanels();
+
+    // The character itself, standing between the weapon sets and the armour: its own render
+    // target, its own idle pose. The panel asks for it while it lays itself out and Render() draws
+    // it before the interface, so what a panel shows is at most one frame old. See
+    // ReplayWindow_CharacterPortrait.cpp.
+    struct CharacterPortrait
+    {
+        int agentId = -1;
+        int width = 0, height = 0;          // texels; the panel's rectangle times the supersample
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>          color;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   rtv;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D>          depth;
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView>   dsv;
+
+        // The pose is the portrait's own: the replay's controller is doing whatever the player
+        // was doing at this point of the match, and the panel wants him standing still.
+        std::unique_ptr<GW::Animation::AnimationController> controller;
+        uint32_t controllerModelHash = 0;   // the rig the controller was set up for
+        std::chrono::steady_clock::time_point lastTick{};
+
+        // His first weapon set, held when the recording has nothing in his hands at this moment.
+        uint16_t fallbackMainId = 0, fallbackOffId = 0;
+
+        float yaw = 0.f;                    // the user's drag, radians about the vertical
+        bool  requested = false;            // a panel drew it this frame
+        bool  rendered  = false;            // the texture holds a character
+    };
+    std::unordered_map<int, CharacterPortrait> m_characterPortraits;   // panel uid ->
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_portraitBlend;          // coverage into alpha
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_portraitCompositeBlend; // premultiplied, for ImGui
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_portraitGlowBlend;      // adds light, not coverage
+    ImTextureID RequestCharacterPortrait(int panelUid, int agentId, int width, int height,
+                                         uint16_t fallbackMainId, uint16_t fallbackOffId);
+    void DrawCharacterPortraitImage(ImDrawList* dl, ImTextureID tex, ImVec2 tl, ImVec2 br);
+    static void SetPortraitCompositeBlend(const ImDrawList*, const ImDrawCmd* cmd);
+    void RenderCharacterPortraits();
+    void ReleaseCharacterPortraits();
 
     mutable std::unordered_map<int, std::vector<std::pair<float, int>>> m_moraleTimeline;
     mutable std::unordered_map<int, std::vector<float>> m_moraleDeaths; // by agent, signet backfires removed
@@ -1301,7 +1340,11 @@ private:
     void LogTerrainAlbedoAt(float world_x, float world_z, const float ambient[3],
                             const float sun[3]) const;
 
-    void DrawPlayerVisuals(bool secondaryView = false);
+    // `onlyAgentId` >= 0 draws that one character and nothing else, skipping the replay's
+    // visibility gate, with `worldOverride` (untransposed, like AgentAnimState::perMeshCBs) in
+    // place of the world matrix DrawAgentModels wrote - the character panel's portrait.
+    void DrawPlayerVisuals(bool secondaryView = false, int onlyAgentId = -1,
+                           const DirectX::XMFLOAT4X4* worldOverride = nullptr);
     void ReleasePlayerVisuals();   // match teardown
 
     // WHICH ANIMATION FILE A STAND-IN SHOULD PLAY, and not simply the first one that carries its
@@ -1398,6 +1441,12 @@ private:
     void StepCreateWeaponModelResources();
     void ProgressiveWeaponModelPump();
     void DrawWeaponModels();
+    void DrawHeldWeapons(int agentId, const AgentReplayData& ard, int snapIdx,
+                         const GW::Animation::WeaponSocket& socket,
+                         const GW::Animation::AnimationController& pose,
+                         const PerObjectCB& agentCB, bool& shadersBound, int& boundPixelShader,
+                         const Equipment::ItemDef* fallbackMain = nullptr,
+                         const Equipment::ItemDef* fallbackOff = nullptr);
 
     bool m_showWeaponModels = true;
 

@@ -637,6 +637,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Recharge.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Blocks.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CharacterPanel.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_CharacterPortrait.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ReplayWindow_HealthDebug.cpp" />
     <ClCompile Include="SourceFiles\TextureCache.cpp" />
     <ClCompile Include="SourceFiles\GuildBannerAssetProvider.cpp" />

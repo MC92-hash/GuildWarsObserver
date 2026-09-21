@@ -6716,6 +6716,10 @@ void ReplayWindow::Render()
     // because the interface is drawn by us and was never in it.
     DrawSceneBloom();
 
+    // The character panels' portraits, into targets of their own, after the world and before the
+    // interface that shows them.
+    RenderCharacterPortraits();
+
     DrawImGuiOverlay();
 
     m_deviceResources->Present();
@@ -10040,6 +10044,7 @@ void ReplayWindow::OnDeviceLost()
     // and three textures, it depends on nothing that was loaded, and it re-creates itself on the
     // first frame after this. So it is dropped and re-armed rather than disabled.
     ReleaseBloomResources();
+    ReleaseCharacterPortraits();
 
     RunLog::Line("device: the replay window dropped %zu animated agent(s) and its composed"
                  " characters - they were built by the device that was just replaced",
