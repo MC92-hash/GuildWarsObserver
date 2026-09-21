@@ -1144,6 +1144,10 @@ private:
         uint32_t modelHash0 = 0;
         uint32_t modelHash1 = 0;
         std::vector<AnimClipEntry> allClips;
+        // Resolution order over allClips: the chosen bank first, then the rest in discovery order.
+        std::vector<int> clipOrder;
+        // Set for a pinned player bank: external segments are never played in place.
+        bool localSegmentsOnly = false;
         std::shared_ptr<GW::Animation::AnimationClip> clip;
         std::shared_ptr<GW::Animation::Skeleton> skeleton;
         std::vector<AnimationPanelState::SubmeshBoneData> submeshBoneData;
