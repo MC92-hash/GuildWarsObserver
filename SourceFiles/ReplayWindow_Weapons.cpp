@@ -680,9 +680,10 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
             // Alpha and highlight come from the agent so the weapon fades with a corpse and
             // dims in fog. object_id is carried across for consistency, but note the skinned
             // agent pass leaves it at 0 — only the rigid AddProp path sets a real pick id,
-            // so neither body nor weapon is pickable here.
+            // so neither body nor weapon is pickable here. The team glow bits (8-11) are left
+            // behind: the client adds its glow to the NPC's own model, not to what it holds.
             cb.mesh_alpha       = agentCB.mesh_alpha;
-            cb.highlight_state  = agentCB.highlight_state;
+            cb.highlight_state  = agentCB.highlight_state & 0xFFu;
             cb.object_id        = agentCB.object_id;
 
             meshManager->SetPerObjectCB(cb);

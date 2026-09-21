@@ -1720,6 +1720,15 @@ void ReplayWindow::DrawAgentModels()
             deadAlpha = 1.0f - 0.3f * fadeIn;
         }
 
+        // The PvP team glow, a coloured rim on the sides of a team's NPCs (see the model pixel
+        // shaders). The client's gate is "an NPC with a non-zero team colour id" - players never
+        // get it, their team colour goes on the cape - and the id is the team id recorded here.
+        // It rides in bits 8-11 of highlight_state; the client clamps ids above 7 to 7.
+        const uint32_t teamGlowBits =
+            ((ard.type == AgentType::NPC || ard.type == AgentType::Spirit) && ard.teamId != Team::None)
+                ? static_cast<uint32_t>(std::min<int>(ard.teamId, 7)) << 8
+                : 0u;
+
         // Fog check
         bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
         if (inFog && !m_fogGhostMode) {
@@ -2180,7 +2189,7 @@ void ReplayWindow::DrawAgentModels()
             for (size_t si2 = 0; si2 < animState.perMeshCBs.size(); si2++) {
                 XMStoreFloat4x4(&animState.perMeshCBs[si2].world, worldMat);
                 animState.perMeshCBs[si2].mesh_alpha = baseAlpha;
-                animState.perMeshCBs[si2].highlight_state = hovered ? 5 : 0;
+                animState.perMeshCBs[si2].highlight_state = (hovered ? 5u : 0u) | teamGlowBits;
             }
 
             // Consumed by DrawWeaponModels, which runs after this pass.
@@ -2204,7 +2213,7 @@ void ReplayWindow::DrawAgentModels()
                     auto cb = cbOpt.value();
                     XMStoreFloat4x4(&cb.world, worldMat);
                     cb.mesh_alpha = rigidAlpha;
-                    cb.highlight_state = rigidHovered ? 5 : 0;
+                    cb.highlight_state = (rigidHovered ? 5u : 0u) | teamGlowBits;
                     meshMgr->UpdateMeshPerObjectData(mid, cb);
                     renderedCount++;
                 }

@@ -112,8 +112,90 @@ float3 compute_normalmap_lighting(const float3 normalmap_sample, const float3x3 
     return float3(1, 1, 1) + diffuse + specular;
 };
 
+// NPC TEAM GLOW - the coloured rim the client puts on a team's NPCs in PvP (guild lord, guards,
+// pets, spirits, minions). Gw.exe draws it as one extra layer appended to every material of the
+// NPC's model (model effect 10, "glow"), and that layer is all there is to it:
+//
+//     u      = 0.5 + 0.5 * n_view.x              the view-space normal, sideways component only
+//     colour = lit_colour + ramp(u) * team_rgb   added after lighting, unlit, alpha untouched
+//
+// The ramp is Gw.dat file 206253 (256x4 DXT1, four identical rows), baked below texel for texel.
+// It is zero wherever |n.x| < 0.5, so a surface facing the camera is left alone, peaks at about
+// 0.91 near |n.x| = 0.8 and falls back to 0.2-0.3 at the very silhouette - the band of colour
+// down the sides of the arms and legs. There is no time term: the glow does not pulse.
+//
+// The team id travels in bits 8-11 of highlight_state (0 = no glow), which keeps the low byte
+// for the hover and pick modes. The colours are the client's own table, ids 1..7; the client
+// clamps anything above 7 to 7.
+static const uint kTeamGlowRamp[256] =
+{
+    0x303430, 0x383A38, 0x404140, 0x484848, 0x484C48, 0x555655, 0x626162, 0x706C70,
+    0x707470, 0x7D807D, 0x8A8C8A, 0x989898, 0xA0A0A0, 0xAAACAA, 0xB5B8B5, 0xC0C4C0,
+    0xC0C8C0, 0xCAD1CA, 0xD5DAD5, 0xE0E4E0, 0xE0E4E0, 0xE5E9E5, 0xE8ECE8, 0xE8ECE8,
+    0xE8ECE8, 0xE2E8E2, 0xDDE4DD, 0xD8E0D8, 0xD8DCD8, 0xCDD2CD, 0xC2C9C2, 0xB8C0B8,
+    0xB8B8B8, 0xAAACAA, 0x9DA09D, 0x909490, 0x909090, 0x828282, 0x757575, 0x686868,
+    0x606460, 0x555955, 0x4A4E4A, 0x404440, 0x403C40, 0x353435, 0x2A2C2A, 0x2A2C2A,
+    0x201D20, 0x201D20, 0x181618, 0x181618, 0x121012, 0x0D0C0D, 0x0D0C0D, 0x080808,
+    0x080808, 0x050505, 0x050505, 0x020202, 0x020102, 0x020102, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
+    0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x020102, 0x020102, 0x050205,
+    0x050505, 0x050505, 0x050505, 0x080808, 0x080808, 0x0D0C0D, 0x121012, 0x121012,
+    0x181A18, 0x181A18, 0x202120, 0x282828, 0x282828, 0x323132, 0x3D3A3D, 0x484448,
+    0x484848, 0x525252, 0x5D5D5D, 0x686868, 0x687068, 0x787C78, 0x888888, 0x989498,
+    0x989C98, 0xA5A8A5, 0xB2B4B2, 0xC0C0C0, 0xC0C4C0, 0xCACDCA, 0xD5D6D5, 0xE0E0E0,
+    0xE0E5E0, 0xE8EAE8, 0xE8EAE8, 0xE8EAE8, 0xE8ECE8, 0xE8ECE8, 0xE2E8E2, 0xDDE4DD,
+    0xD5D6D5, 0xD5D6D5, 0xCACDCA, 0xC0C4C0, 0xC0BCC0, 0xB2B1B2, 0xA5A6A5, 0x989C98,
+    0x909490, 0x858882, 0x7A7C75, 0x707068, 0x686868, 0x606060, 0x585858, 0x505050
+};
+
+static const float3 kTeamGlowColors[8] =
+{
+    float3(0, 0, 0),
+    float3(0, 0, 1),        // 1 blue
+    float3(1, 0, 0),        // 2 red
+    float3(1, 1, 0),        // 3 yellow
+    float3(0, 1, 1),        // 4 cyan
+    float3(1, 0, 1),        // 5 magenta
+    float3(0, 1, 0),        // 6 green
+    float3(0.376, 0.376, 0.376) // 7 grey (96, 96, 96)
+};
+
+float3 TeamGlowRampTexel(uint i)
+{
+    uint p = kTeamGlowRamp[i];
+    return float3((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF) / 255.0;
+}
+
+// Linear filtering across the 256 texels, clamped at both ends.
+float3 TeamGlow(float3 world_normal, uint team_glow_id)
+{
+    float nx = normalize(mul(world_normal, (float3x3)View)).x;
+    float x = saturate(0.5 + 0.5 * nx) * 256.0 - 0.5;
+    uint i0 = (uint)clamp(floor(x), 0.0, 255.0);
+    uint i1 = min(i0 + 1, 255);
+    float f = saturate(x - (float)i0);
+    float3 ramp = lerp(TeamGlowRampTexel(i0), TeamGlowRampTexel(i1), f);
+    return ramp * kTeamGlowColors[min(team_glow_id, 7)];
+}
+
 PSOutput main(PixelInputType input)
 {
+    uint highlight_mode = highlight_state & 0xFF;
     float4 sampled_texture_color = float4(1, 1, 1, 1);
     float2 tex_coords_array[6] =
     {
@@ -178,15 +260,15 @@ PSOutput main(PixelInputType input)
     // already saturated, so the pixel is unchanged.
     float3 final_color = lighting_color * min(1.0, sampled_texture_color.rgb * map_light_gain);
     
-    if (highlight_state == 1)
+    if (highlight_mode == 1)
     {
         final_color.rgb = lerp(final_color.rgb, DARKGREEN, 0.7);
     }
-    else if (highlight_state == 2)
+    else if (highlight_mode == 2)
     {
         final_color.rgb = lerp(final_color.rgb, LIGHTGREEN, 0.4);
     }
-    else if (highlight_state == 5)
+    else if (highlight_mode == 5)
     {
         final_color.rgb = saturate(final_color.rgb * 1.15);
     }
@@ -222,6 +304,13 @@ PSOutput main(PixelInputType input)
 
         // Apply shadow to final color
         final_color.rgb *= lerp(0.65, 1.0, shadow);
+    }
+
+    uint team_glow_id = (highlight_state >> 8) & 0xF;
+    if (team_glow_id != 0)
+    {
+        // After lighting and the shadow (the glow is not lit), before the haze.
+        final_color.rgb = saturate(final_color.rgb + TeamGlow(input.normal, team_glow_id));
     }
 
     bool should_render_fog = should_render_flags & 4;
