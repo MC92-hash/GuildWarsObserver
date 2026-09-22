@@ -6707,6 +6707,10 @@ void ReplayWindow::Render()
     // their own. Two passes rather than one because a composed character needs its
     // own sub-pass order and its own program; the pass above skips exactly these.
     DrawPlayerVisuals();
+    // ...and the particles their headpieces carry, after the character so the head is already in
+    // the depth buffer to hide the ones behind it.
+    if (Camera* camera = m_mapRenderer->GetCamera())
+        DrawHeadpieceParticles(camera->GetView());
     DrawWeaponModels();
 
     DrawAgentCylinders();

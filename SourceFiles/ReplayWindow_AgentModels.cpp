@@ -1618,6 +1618,10 @@ void ReplayWindow::DrawAgentModels()
     auto* context = m_deviceResources->GetD3DDeviceContext();
     float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 
+    // A headpiece hangs where this pass puts it, and nowhere if this pass does not reach its
+    // character: last frame's attachments go first.
+    ClearHeadpieceAttachments();
+
     const MapTransform& mt = m_replayCtx.mapTransform;
     const InterpolationSettings& is = m_replayCtx.interpSettings;
     Terrain* terrain = m_mapRenderer->GetTerrain();
@@ -2192,6 +2196,21 @@ void ReplayWindow::DrawAgentModels()
                 animState.perMeshCBs[si2].highlight_state = (hovered ? 5u : 0u) | teamGlowBits;
             }
 
+            // A LINKED HEADPIECE rides the head, not the body: its submeshes have just been given
+            // the character's own matrix and the piece now takes them back, each on the bone of
+            // the piece's own skeleton that carries it. Its particles ride the same attachment,
+            // which this keeps for them.
+            if (HasPlayerVisual(slotKey) && PlayerVisualsNeedsAttach(agentId) &&
+                animState.controller && tmplIt != m_agentModelTemplates.end()) {
+                EnsureHeadLink(tmplIt->second);
+                XMFLOAT4X4 worldF{};
+                XMStoreFloat4x4(&worldF, worldMat);
+                PlaceLinkedHeadpiece(
+                    agentId, tmplIt->second.headLinkState == 1 ? tmplIt->second.headLinkBone : -1,
+                    tmplIt->second.headLinkOffsetGw, tmplIt->second.headLinkBindDx,
+                    animState.controller->GetBoneMatrices(), worldF, animState.perMeshCBs);
+            }
+
             // Consumed by DrawWeaponModels, which runs after this pass.
             animState.lastSnapIdx = snapIdx;
 
@@ -2225,6 +2244,13 @@ void ReplayWindow::DrawAgentModels()
         }
     }
 
+    // The headpiece particles, once per frame and at the replay's own pace: a paused timeline
+    // holds the flames where they are, exactly as it holds the character.
+    if (m_lastAnimUpdateFrame != m_frameCount)
+    {
+        StepHeadpieceParticles(m_replayCtx.isPlaying ? frameDt * m_replayCtx.playbackSpeed : 0.f);
+    }
+
     m_lastAnimUpdateFrame = m_frameCount;
 }
 
@@ -2233,6 +2259,71 @@ void ReplayWindow::DrawAgentModels()
 // Skinned render pass for animated agent models.
 // Called after DrawAgentModels() which updates bone matrices and world CBs.
 // ---------------------------------------------------------------------------
+
+// WHERE A HEADPIECE HANGS ON THIS RIG, resolved once and kept on the template.
+//
+// A crest or an Elementalist eye is a model of its own that the client links to the player's head
+// action point; the rig's own animation file carries the record that says which bone that is. The
+// chosen bank is asked first and the rig's other clips after it, and an answer is only taken from a
+// file whose skeleton is this rig's and whose bone count is the pose's - the bone INDEX and the
+// pose have to be in one order, or the piece would ride the wrong joint.
+//
+// Done here, lazily, rather than in the loader: it costs one cached file read per rig, and only for
+// a rig whose player is actually wearing one of the twenty-five pieces.
+void ReplayWindow::EnsureHeadLink(AgentModelInstance& tmpl)
+{
+    if (tmpl.headLinkState != 0)
+        return;
+    tmpl.headLinkState = 2;   // until some file answers
+
+    if (!m_datManager || !m_hashIndex || !tmpl.clip)
+        return;
+    const size_t poseBones = tmpl.clip->boneTracks.size();
+
+    std::vector<uint32_t> candidates;
+    for (const auto& entry : tmpl.allClips)
+        if (entry.clip == tmpl.clip && entry.sourceFileHash != 0)
+            candidates.push_back(entry.sourceFileHash);
+    for (const auto& entry : tmpl.allClips)
+        if (entry.sourceFileHash != 0)
+            candidates.push_back(entry.sourceFileHash);
+
+    std::string reasons;
+    for (const uint32_t fileId : candidates)
+    {
+        auto hashIt = m_hashIndex->find(static_cast<int>(fileId));
+        if (hashIt == m_hashIndex->end() || hashIt->second.empty())
+            continue;
+        const auto bytes = m_datManager->read_file_cached(
+            static_cast<uint32_t>(hashIt->second.at(0)));
+        if (!bytes || bytes->empty())
+            continue;
+
+        int bone = -1;
+        XMFLOAT3 offset{}, bind{};
+        std::string why;
+        if (ResolveHeadActionPoint(bytes->data(), bytes->size(), tmpl.modelHash0, tmpl.modelHash1,
+                                   poseBones, bone, offset, bind, why))
+        {
+            tmpl.headLinkBone = bone;
+            tmpl.headLinkOffsetGw = offset;
+            tmpl.headLinkBindDx = bind;
+            tmpl.headLinkState = 1;
+            RunLog::Line("visuals: rig 0x%08X/0x%08X links a headpiece to bone %d of %zu,"
+                         " from file %u",
+                         tmpl.modelHash0, tmpl.modelHash1, bone, poseBones, fileId);
+            return;
+        }
+        if (!why.empty())
+            reasons += std::to_string(fileId) + ": " + why + "; ";
+    }
+
+    RunLog::Line("visuals: *** rig 0x%08X/0x%08X has no readable head link *** - a linked piece"
+                 " keeps its bind position: %s",
+                 tmpl.modelHash0, tmpl.modelHash1,
+                 reasons.empty() ? "no candidate file carried a table" : reasons.c_str());
+}
+
 
 void ReplayWindow::DrawSkinnedAgentModels()
 {

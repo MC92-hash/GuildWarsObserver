@@ -373,6 +373,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Config.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Compose.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Shaders.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_ShaderText.h" />
@@ -521,6 +522,8 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.cpp">

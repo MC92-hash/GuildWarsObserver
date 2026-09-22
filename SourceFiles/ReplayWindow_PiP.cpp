@@ -454,6 +454,7 @@ void ReplayWindow::RenderPiP()
     // per-frame rewrite cannot disturb them, and it saves and restores every pipeline state it
     // touches off the context - which is why the weapon and cylinder passes below still work.
     DrawPlayerVisuals(/*secondaryView=*/true);
+    DrawHeadpieceParticles(cam->GetView());
     DrawWeaponModels();
     DrawAgentCylinders();
 

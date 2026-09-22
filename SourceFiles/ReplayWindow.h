@@ -1197,6 +1197,15 @@ private:
         // Where a weapon would attach on this rig. Resolved once from allClips[0] and cached in
         // animation_cache.ini; unresolved on non-humanoid rigs.
         GW::Animation::WeaponSocket weaponSocket;
+
+        // Where a HEADPIECE hangs on this rig - a crest or an Elementalist eye is linked to the
+        // head rather than skinned with the body. Resolved once, on the first frame a character
+        // wearing one is drawn, out of the rig's own animation file: 0 = not looked for yet,
+        // 1 = found, 2 = this rig has none and the piece keeps the bind position.
+        int headLinkState = 0;
+        int headLinkBone = -1;
+        DirectX::XMFLOAT3 headLinkOffsetGw{0.f, 0.f, 0.f};
+        DirectX::XMFLOAT3 headLinkBindDx{0.f, 0.f, 0.f};
     };
 
     // file hash -> parsed model template (shared geometry, one AddProp per unique model)
@@ -1343,8 +1352,43 @@ private:
     // `onlyAgentId` >= 0 draws that one character and nothing else, skipping the replay's
     // visibility gate, with `worldOverride` (untransposed, like AgentAnimState::perMeshCBs) in
     // place of the world matrix DrawAgentModels wrote - the character panel's portrait.
+    // `linkedWorldOverride` places a linked headpiece while `worldOverride` places the body: the
+    // two are different frames and the portrait has to hand in both.
     void DrawPlayerVisuals(bool secondaryView = false, int onlyAgentId = -1,
-                           const DirectX::XMFLOAT4X4* worldOverride = nullptr);
+                           const DirectX::XMFLOAT4X4* worldOverride = nullptr,
+                           const DirectX::XMFLOAT4X4* linkedWorldOverride = nullptr);
+
+    // A linked headpiece: which submeshes are one, where this rig's head link sits, and the world
+    // matrix such a submesh is drawn with. All three are defined in the private module.
+    const std::vector<uint8_t>* PlayerVisualsLinkedSubmeshes(int agentId) const;
+    bool PlayerVisualsNeedsAttach(int agentId) const;
+    static bool ResolveHeadActionPoint(const uint8_t* data, size_t size, uint32_t hash0,
+                                       uint32_t hash1, size_t poseBoneCount, int& boneOut,
+                                       DirectX::XMFLOAT3& offsetGwOut,
+                                       DirectX::XMFLOAT3& bindDxOut, std::string& whyOut);
+    // Writes the world matrix of every submesh of a linked headpiece, and keeps the attachment
+    // for its particles. False when this rig never gave up its head link, and then the piece is
+    // collapsed rather than drawn in the wrong place.
+    bool PlayerVisualsHeadAttach(int agentId, int bone, const DirectX::XMFLOAT3& offsetGw,
+                                 const DirectX::XMFLOAT3& bindDx,
+                                 const std::vector<DirectX::XMFLOAT4X4>& boneMatrices,
+                                 const DirectX::XMFLOAT4X4& characterWorld,
+                                 DirectX::XMFLOAT4X4& out) const;
+    bool PlaceLinkedHeadpiece(int agentId, int bone, const DirectX::XMFLOAT3& offsetGw,
+                              const DirectX::XMFLOAT3& bindDx,
+                              const std::vector<DirectX::XMFLOAT4X4>& boneMatrices,
+                              const DirectX::XMFLOAT4X4& characterWorld,
+                              std::vector<PerObjectCB>& cbs);
+    void EnsureHeadLink(AgentModelInstance& tmpl);
+
+    // The particles an Elementalist headpiece carries: one step per frame for every character, and
+    // one draw per view. Defined in the private module; with no such piece in the match not one of
+    // them does anything.
+    void PlayerVisualsSetAttach(int agentId, const DirectX::XMFLOAT4X4& attach, bool valid);
+    void ClearHeadpieceAttachments();
+    void StepHeadpieceParticles(float dt);
+    void DrawHeadpieceParticles(const DirectX::XMMATRIX& view, int onlyAgentId = -1,
+                                const DirectX::XMFLOAT4X4* attachOverride = nullptr);
     void ReleasePlayerVisuals();   // match teardown
 
     // WHICH ANIMATION FILE A STAND-IN SHOULD PLAY, and not simply the first one that carries its

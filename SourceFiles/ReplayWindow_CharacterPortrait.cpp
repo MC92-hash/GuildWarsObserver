@@ -369,7 +369,25 @@ void ReplayWindow::RenderCharacterPortraits()
 
         if (composed)
         {
-            DrawPlayerVisuals(/*secondaryView=*/true, agentId, &worldF);
+            // A linked headpiece hangs on the head, on the portrait's own idle pose.
+            XMFLOAT4X4 linkedWorld{};
+            bool haveLinked = false;
+            if (PlayerVisualsNeedsAttach(agentId))
+            {
+                EnsureHeadLink(const_cast<AgentModelInstance&>(tmpl));
+                haveLinked = PlayerVisualsHeadAttach(
+                    agentId, tmpl.headLinkState == 1 ? tmpl.headLinkBone : -1,
+                    tmpl.headLinkOffsetGw, tmpl.headLinkBindDx, p.controller->GetBoneMatrices(),
+                    worldF, linkedWorld);
+            }
+            if (!haveLinked && PlayerVisualsLinkedSubmeshes(agentId) != nullptr)
+                XMStoreFloat4x4(&linkedWorld, XMMatrixScaling(0.f, 0.f, 0.f));
+            DrawPlayerVisuals(/*secondaryView=*/true, agentId, &worldF,
+                              PlayerVisualsLinkedSubmeshes(agentId) != nullptr ? &linkedWorld
+                                                                               : nullptr);
+            // The same particles as the world view, through the portrait's own attachment.
+            if (haveLinked)
+                DrawHeadpieceParticles(view, agentId, &linkedWorld);
         }
         else
         {
