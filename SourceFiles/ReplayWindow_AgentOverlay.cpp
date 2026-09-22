@@ -836,10 +836,23 @@ void ReplayWindow::DrawAgentOverlay()
                 dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
                                   ImVec2(lx + textSize.x + pad, ly + textSize.y + pad),
                                   IM_COL32(0, 0, 0, 25), 3.f);
+                // A dead player or NPC keeps its team hue and dims to 60% of the living
+                // colour.
+                const bool deadLabel = dead && (ard.type == AgentType::NPC ||
+                                                ard.type == AgentType::Player);
+
                 ImU32 labelCol;
                 if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
                 else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
                 else                               labelCol = IM_COL32(255, 255, 255, 230);
+                if (deadLabel)
+                {
+                    const ImU32 r = (labelCol >> IM_COL32_R_SHIFT) & 0xFF;
+                    const ImU32 g = (labelCol >> IM_COL32_G_SHIFT) & 0xFF;
+                    const ImU32 b = (labelCol >> IM_COL32_B_SHIFT) & 0xFF;
+                    const ImU32 a = (labelCol >> IM_COL32_A_SHIFT) & 0xFF;
+                    labelCol = IM_COL32(r * 3 / 5, g * 3 / 5, b * 3 / 5, a);
+                }
                 dl->AddText(ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, 200), label.c_str());
                 dl->AddText(ImVec2(lx, ly), labelCol, label.c_str());
 
