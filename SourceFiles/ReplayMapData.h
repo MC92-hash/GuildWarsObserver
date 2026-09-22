@@ -526,7 +526,10 @@ inline constexpr MinionInfo kMinions[] = {
     { 2280, "Bone Horror",         0xBE07  },
     { 2281, "Bone Fiend",          0xC419  },
     { 2282, "Bone Minion",         0xBE07  }, // shares the Bone Horror model
+    { 4261, "Vampiric Horror",     0xBE07  }, // shares the Bone Horror model
     { 4260, "Flesh Golem",         0x29A1B },
+    { 5764, "Shambling Horror",    0x3BB32 },
+    { 5765, "Jagged Horror",       0x3BB33 },
     { 5711, "Vabbi Peasant",       0x32C38 },
     { 4765, "Istani Peasant",      0x3BDEE },
     { 3300, "Canthan Peasant",     0x2D1B2 },
