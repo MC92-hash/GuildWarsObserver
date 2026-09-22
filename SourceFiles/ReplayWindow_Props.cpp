@@ -3340,9 +3340,10 @@ void ReplayWindow::ResolveDruidBridges()
 
     auto& animProps = m_mapRenderer->GetAnimatedProps();
 
-    // Type 26 = object 39278 (red side), type 27 = object 51238 (blue side). If the two
-    // bridges ever turn out to be swapped relative to the events, exchange these two.
-    constexpr uint8_t kRedType = 26, kBlueType = 27;
+    // Which object id stands at which lord, measured against the replays: object 39278
+    // (type 26) is the bridge nearest the BLUE lord and 51238 (type 27) the one nearest the
+    // RED lord. Seeding one bridge used to grow the other, which is what this pairing fixes.
+    constexpr uint8_t kRedType = 27, kBlueType = 26;
 
     if (m_druidBridgeCandidates.size() < 2)
     {
@@ -4050,8 +4051,8 @@ static int GetDoorType(uint32_t datMapId, uint32_t objectId)
     if (datMapId == 0x1F27A) // Druid's Isle
     {
         // Two vine bridges that grow when a vine seed is planted (StoC door event).
-        // 39278 = bridge nearest red lord, 51238 = bridge nearest blue lord. Both are model
-        // 0x29FD, but each grows on its own event, so they get separate door types; the
+        // 39278 = bridge nearest the blue lord, 51238 = bridge nearest the red lord. Both are
+        // model 0x29FD, but each grows on its own event, so they get separate door types; the
         // prop -> type assignment happens by nearest guild lord in ResolveDruidBridges().
         switch (objectId) {
         case 39278: return 26;

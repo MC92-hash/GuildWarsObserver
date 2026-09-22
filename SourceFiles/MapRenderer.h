@@ -1798,6 +1798,12 @@ private:
             if (!ap.active)
                 continue;
 
+            // A grow prop that has not started growing is not there yet. The asset is a
+            // full-length bridge and growProgress only scales it, so at 0 there is nothing
+            // to draw: skip the prop instead of submitting a zero-length one.
+            if (ap.proceduralGrow && ap.growProgress <= 0.0f)
+                continue;
+
             auto psIt = m_pixel_shaders.find(ap.pixelShaderType);
             if (psIt != m_pixel_shaders.end() && psIt->second)
             {
