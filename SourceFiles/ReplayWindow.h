@@ -1385,6 +1385,17 @@ private:
     // one draw per view. Defined in the private module; with no such piece in the match not one of
     // them does anything.
     void PlayerVisualsSetAttach(int agentId, const DirectX::XMFLOAT4X4& attach, bool valid);
+    // The soft bodies of every composed character - ribbons, bands, simulated hair - one frame.
+    // `reseed` puts them back on the skinned pose instead of integrating, which is what a paused
+    // or freshly scrubbed timeline needs. Defined in the private module.
+    void StepPlayerVisualSoftBodies(float dt, bool reseed);
+    // The character panel draws the same vertices from a different pose: these two re-seat the
+    // soft bodies on the panel's idle and then give the world view its own back.
+    void PortraitPoseSoftBodies(int agentId,
+                                const std::vector<DirectX::XMFLOAT4X4>& portraitBones);
+    void PortraitRestoreSoftBodies(int agentId);
+    float m_lastSoftBodyTimeline = 0.f;
+
     void ClearHeadpieceAttachments();
     void StepHeadpieceParticles(float dt);
     void DrawHeadpieceParticles(const DirectX::XMMATRIX& view, int onlyAgentId = -1,

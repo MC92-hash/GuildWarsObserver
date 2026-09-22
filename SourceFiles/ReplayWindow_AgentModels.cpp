@@ -2244,11 +2244,21 @@ void ReplayWindow::DrawAgentModels()
         }
     }
 
-    // The headpiece particles, once per frame and at the replay's own pace: a paused timeline
-    // holds the flames where they are, exactly as it holds the character.
+    // The headpiece particles and the soft bodies, once per frame and at the replay's own pace:
+    // a paused timeline holds the flames where they are, exactly as it holds the character.
     if (m_lastAnimUpdateFrame != m_frameCount)
     {
-        StepHeadpieceParticles(m_replayCtx.isPlaying ? frameDt * m_replayCtx.playbackSpeed : 0.f);
+        const float pace = m_replayCtx.isPlaying ? frameDt * m_replayCtx.playbackSpeed : 0.f;
+        StepHeadpieceParticles(pace);
+
+        // A BODY MUST NOT BE INTEGRATED ACROSS A JUMP. The timeline is dragged, stepped and
+        // restarted, and a band asked to swing from one end of a match to the other in one frame
+        // leaves the character entirely. Anything bigger than a few frames of ordinary play is
+        // taken as a jump, and so is a paused timeline, where the band simply follows the pose.
+        const float moved = std::abs(m_debugTimeline - m_lastSoftBodyTimeline);
+        const float ordinary = std::max(0.35f, pace * 4.f);
+        StepPlayerVisualSoftBodies(pace, !m_replayCtx.isPlaying || moved > ordinary);
+        m_lastSoftBodyTimeline = m_debugTimeline;
     }
 
     m_lastAnimUpdateFrame = m_frameCount;

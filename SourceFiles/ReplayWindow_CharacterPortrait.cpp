@@ -367,6 +367,10 @@ void ReplayWindow::RenderCharacterPortraits()
         for (auto& mesh : animState.animMeshes)
             if (mesh) mesh->UpdateBoneMatrices(ctx, *p.controller);
 
+        // A soft body is CPU-written vertices, not a bone upload, so it needs re-seating on this
+        // pose by hand - and giving back afterwards.
+        if (composed) PortraitPoseSoftBodies(agentId, p.controller->GetBoneMatrices());
+
         if (composed)
         {
             // A linked headpiece hangs on the head, on the portrait's own idle pose.
@@ -445,6 +449,7 @@ void ReplayWindow::RenderCharacterPortraits()
         // ---- hand the submeshes back their live pose ---------------------------------------
         for (auto& mesh : animState.animMeshes)
             if (mesh) mesh->UpdateBoneMatrices(ctx, *animState.controller);
+        if (composed) PortraitRestoreSoftBodies(agentId);
 
         p.rendered = true;
     }
