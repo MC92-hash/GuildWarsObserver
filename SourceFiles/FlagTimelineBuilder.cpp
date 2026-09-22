@@ -500,6 +500,14 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
     // the first minutes of a match and a respawned flag afterwards. An agent is a
     // bundle when its id was not a declared flag at the moment the agent appeared.
     BundleType mapBundle = MapBundleType(input.mapId);
+
+    // The strongbox burst a dying guild lord spills is recognised below, and has to
+    // stay recognised in Phase 3d: the spans there are read off the same agents, so
+    // a loot drop that inherited a bundle's item id would otherwise come back as one
+    // last sighting of the bundle. Declared out here so both phases share it.
+    constexpr float kStrongboxNearDrop = 3.f;
+    std::vector<float> strongboxDrops;
+
     if (mapBundle != BundleType::Unknown && input.agents)
     {
         struct Candidate { int itemId; float firstSeen; float x, y, z; };
@@ -541,7 +549,6 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         constexpr int   kItemTypeCode       = 4;
         constexpr int   kStrongboxMinBurst  = 5;
         constexpr float kStrongboxEndWindow = 15.f;
-        constexpr float kStrongboxNearDrop  = 3.f;
 
         float recordingEnd = 0.f;
         for (auto& [aid, ard] : *input.agents)
@@ -555,7 +562,6 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                     itemAddTimes.push_back(ev.time);
         std::sort(itemAddTimes.begin(), itemAddTimes.end());
 
-        std::vector<float> strongboxDrops;
         for (size_t i = 0; i < itemAddTimes.size(); ) {
             size_t j = i;
             while (j < itemAddTimes.size() && itemAddTimes[j] == itemAddTimes[i]) j++;
@@ -639,9 +645,9 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
 
         // Earliest unclaimed reaction at or after `from`, or -1 if there is none.
         auto claimConsumerAfter = [&](float from, int animType) -> float {
-            float best = -1.f;
-            std::vector<char>* bestClaimed = nullptr;
-            size_t bestIdx = 0;
+            float    best       = -1.f;
+            uint32_t bestObject = 0;
+            bool     haveBest   = false;
 
             auto scan = [&](auto* list, std::vector<char>& claimed) {
                 if (!list) return;
@@ -652,16 +658,36 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                     if (ev.animation_type != animType) continue;
                     if (ev.animation_stage != 2) continue;
                     if (ev.time < from - 1.0f) continue;
-                    if (best >= 0.f && ev.time >= best) continue;
-                    best = ev.time;
-                    bestClaimed = &claimed;
-                    bestIdx = i;
+                    if (haveBest && ev.time >= best) continue;
+                    best       = ev.time;
+                    bestObject = ev.object_id;
+                    haveBest   = true;
                 }
             };
             scan(input.doorEvents, doorClaimed);
             scan(input.mapObject, objClaimed);
 
-            if (bestClaimed) (*bestClaimed)[bestIdx] = 1;
+            if (!haveBest) return -1.f;
+
+            // One reaction, but the recorder files it in both streams, so claiming a
+            // single row leaves its twin free for the next bundle to read as a second
+            // consumption that never happened. Claim every copy of the same reaction
+            // - same object, same instant - at once.
+            auto claimAll = [&](auto* list, std::vector<char>& claimed) {
+                if (!list) return;
+                for (size_t i = 0; i < list->size(); ++i) {
+                    const auto& ev = (*list)[i];
+                    if (claimed[i] || ev.isState) continue;
+                    if (ev.animation_type != animType) continue;
+                    if (ev.animation_stage != 2) continue;
+                    if (ev.object_id != bestObject) continue;
+                    if (std::abs(ev.time - best) > 1e-3f) continue;
+                    claimed[i] = 1;
+                }
+            };
+            claimAll(input.doorEvents, doorClaimed);
+            claimAll(input.mapObject, objClaimed);
+
             return best;
         };
 
@@ -740,7 +766,15 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             return { best, false };
         };
 
-        struct GroundSpan { float start, end, x, y, z; int agentId; };
+        struct GroundSpan {
+            float start, end, x, y, z;
+            int   agentId;        // the ground agent the span is named after
+            int   originAgentId;  // its pre-split id, shared by every incarnation of it
+            int   snapshotCount;
+            // Every agent id the span covers once stragglers have been folded in. The
+            // removal that ended it can be filed under any one of them.
+            std::vector<int> agentIds;
+        };
 
         // The last span of each bundle, resolved after the main loop. Whether a
         // bundle was spent on its map object depends on which reaction is still
@@ -767,10 +801,65 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                 // Nor is a ritualist urn that borrowed the id for an instant.
                 if (ashesItemAgents.count(aid)) continue;
                 spans.push_back({ s0.time, ard.snapshots.back().time,
-                                  s0.x, s0.y, s0.z, aid });
+                                  s0.x, s0.y, s0.z, aid,
+                                  ard.originalAgentId >= 0 ? ard.originalAgentId : aid,
+                                  static_cast<int>(ard.snapshots.size()),
+                                  { aid } });
             }
             std::sort(spans.begin(), spans.end(),
                 [](const GroundSpan& a, const GroundSpan& b) { return a.start < b.start; });
+
+            // A strongbox that inherited this item id is loot, not the bundle. Phase 3c
+            // keeps it out of the candidate list; keeping it out here too stops the
+            // bundle ending the match lying on the loot pile, and stops that sighting
+            // - which nobody ever picks up - from becoming the last span and robbing
+            // the real last pickup of its consumed check. Dropped only while something
+            // else remains, so a bundle can never lose every span it had.
+            if (!strongboxDrops.empty())
+            {
+                std::vector<GroundSpan> kept;
+                for (auto& sp : spans) {
+                    bool isLoot = false;
+                    for (float t : strongboxDrops)
+                        if (std::abs(sp.start - t) <= kStrongboxNearDrop) { isLoot = true; break; }
+                    if (!isLoot) kept.push_back(sp);
+                }
+                if (!kept.empty()) spans.swap(kept);
+            }
+
+            // The recorder can sample a world item once more a moment after the server
+            // removed it, and marks the break that leaves behind; SplitRecycledAgents
+            // then files the straggler as its own incarnation, which reads here as the
+            // bundle being dropped a second time on the same tile. Worse, the removal
+            // is remapped onto that straggler, so it no longer names the span it ended
+            // and arrives too early to close the straggler's own - and the bundle stays
+            // on the ground for the rest of the match, under whoever is carrying it.
+            //
+            // Fold such a tail back into the span it grew out of. Only a tail that
+            // resolves no removal of its own qualifies, so a genuine second drop, which
+            // always has one, is never swallowed.
+            constexpr float kStragglerRadius   = 4.f;
+            constexpr int   kStragglerMaxSnaps = 2;
+            constexpr float kStragglerWindow   = 30.f;
+
+            std::vector<GroundSpan> joined;
+            for (auto& sp : spans)
+            {
+                if (!joined.empty()
+                    && sp.snapshotCount <= kStragglerMaxSnaps
+                    && sp.originAgentId == joined.back().originAgentId
+                    && sp.start - joined.back().end <= kStragglerWindow
+                    && std::abs(sp.x - joined.back().x) <= kStragglerRadius
+                    && std::abs(sp.y - joined.back().y) <= kStragglerRadius
+                    && findRemoveTime(sp.agentId, sp.start) < 0.f)
+                {
+                    joined.back().end = std::max(joined.back().end, sp.end);
+                    joined.back().agentIds.push_back(sp.agentId);
+                    continue;
+                }
+                joined.push_back(sp);
+            }
+            spans.swap(joined);
 
             if (spans.empty()) {
                 // Nothing to go on. Fall back to a single Base event so the bundle
@@ -804,7 +893,14 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                 // Departure is the removal, not the last snapshot: the two differ
                 // by a moment when the bundle is taken, and the removal is missing
                 // altogether when the span merely fell out of recording range.
-                float departTime = findRemoveTime(sp.agentId, sp.start);
+                // Any incarnation the span covers may be the one the removal ended
+                // up filed under, so all of them are asked and the earliest wins.
+                float departTime = -1.f;
+                for (int id : sp.agentIds) {
+                    float t = findRemoveTime(id, sp.start);
+                    if (t < 0.f) continue;
+                    if (departTime < 0.f || t < departTime) departTime = t;
+                }
                 if (departTime < 0.f) {
                     if (haveLifecycle) continue;
                     // No lifecycle to consult; the old heuristic is all there is.
