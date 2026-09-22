@@ -335,8 +335,8 @@ void ReplayWindow::DrawPartyWindows()
             if (ard.playerLevel > 0 &&
                 (ard.type == AgentType::Spirit || IsMinionModelId(ard.modelId)))
             {
-                snprintf(levelledLabel, sizeof(levelledLabel), "%s L%d",
-                         ard.partyBarLabel.c_str(), ard.playerLevel);
+                snprintf(levelledLabel, sizeof(levelledLabel), "Lvl %d %s",
+                         ard.playerLevel, ard.partyBarLabel.c_str());
                 barLabel = levelledLabel;
             }
 
