@@ -101,7 +101,7 @@ struct SpiritInfo
 inline const SpiritInfo* LookupSpirit(uint32_t modelId)
 {
     static const struct { uint32_t modelId; SpiritInfo info; } table[] = {
-        { 4275, { 305,  "Spirit of Union" } },
+        { 4275, { 3005, "Spirit of Union" } },
         { 4279, { 3020, "Spirit of Wanderlust" } },
         { 4264, { 3006, "Spirit of Shadowsong" } },
         { 4265, { 3007, "Spirit of Pain" } },
@@ -136,6 +136,17 @@ inline const SpiritInfo* LookupSpirit(uint32_t modelId)
         { 2934, { 472,  "Spirit of Favorable Winds" } },
         { 2931, { 469,  "Spirit of Primal Echoes" } },
         { 4283, { 961,  "Spirit of Lacerate" } },
+        { 2925, { 462,  "Spirit of Winter" } },
+        { 2926, { 463,  "Spirit of Winnowing" } },
+        { 2928, { 465,  "Spirit of Greater Conflagration" } },
+        { 4288, { 466,  "Spirit of Conflagration" } },
+        { 2930, { 468,  "Spirit of Symbiosis" } },
+        { 2933, { 471,  "Spirit of Frozen Soil" } },
+        { 4285, { 870,  "Spirit of Pestilence" } },
+        { 4290, { 947,  "Spirit of Brambles" } },
+        { 5769, { 1473, "Spirit of Quicksand" } },
+        { 5768, { 1725, "Spirit of Roaring Winds" } },
+        { 4287, { 1212, "Spirit of Equinox" } },
     };
     for (auto& e : table)
         if (e.modelId == modelId) return &e.info;
@@ -168,6 +179,17 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
     case 2934: // Favorable Winds
     case 2931: // Primal Echoes
     case 4283: // Lacerate
+    case 2925: // Winter
+    case 2926: // Winnowing
+    case 2928: // Greater Conflagration
+    case 4288: // Conflagration
+    case 2930: // Symbiosis
+    case 2933: // Frozen Soil
+    case 4285: // Pestilence
+    case 4290: // Brambles
+    case 5769: // Quicksand
+    case 5768: // Roaring Winds
+    case 4287: // Equinox
         return 3500.f;
 
     // --- Ritualist Binding Rituals ---
@@ -183,9 +205,11 @@ inline float GetSpiritOverwriteDist(uint32_t modelId)
 inline bool IsNatureRitual(uint32_t modelId)
 {
     switch (modelId) {
-    case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
-    case 2938: case 2939: case 4289: case 5767: case 5766:
-    case 4286: case 2931: case 4283:
+    case 2925: case 2926: case 2927: case 2928: case 2929: case 2930:
+    case 2931: case 2932: case 2933: case 2934: case 2936: case 2937:
+    case 2938: case 2939: case 4283: case 4285: case 4286: case 4287:
+    case 4288: case 4289: case 4290: case 5766: case 5767: case 5768:
+    case 5769:
         return true;
     default:
         return false;
@@ -652,9 +676,11 @@ inline float GetSpiritRange(uint32_t modelId)
     case 4265: return 322.f;   // Pain
 
     // Nature Rituals (all 3500)
-    case 2927: case 2929: case 2932: case 2934: case 2936: case 2937:
-    case 2938: case 2939: case 4289: case 5767: case 5766:
-    case 4286: case 2931: case 4283:
+    case 2925: case 2926: case 2927: case 2928: case 2929: case 2930:
+    case 2931: case 2932: case 2933: case 2934: case 2936: case 2937:
+    case 2938: case 2939: case 4283: case 4285: case 4286: case 4287:
+    case 4288: case 4289: case 4290: case 5766: case 5767: case 5768:
+    case 5769:
         return 3500.f;
 
     default: return 0.f;
