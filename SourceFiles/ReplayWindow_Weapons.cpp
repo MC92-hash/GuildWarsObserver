@@ -51,6 +51,7 @@ static constexpr uint32_t kWeaponItemTypes[] = { 27, 2, 15, 32, 35, 36, 5, 26, 2
 constexpr uint32_t kUnresolvedItemPlaceholderModelId = 111902;
 constexpr uint32_t kFlagModelFileId                  = 94192;
 constexpr uint32_t kRepairKitModelFileId             = 31976;
+constexpr uint32_t kVineSeedModelFileId              = 94207;
 constexpr uint32_t kBundleItemType                   = 6;
 constexpr uint32_t kFlagItemType                     = 28;
 
@@ -224,6 +225,7 @@ ReplayWindow::EquippedWeapon ReplayWindow::ResolveEquippedWeapon(const AgentRepl
             {
                 case BundleType::Flag:      out.modelFileId = kFlagModelFileId;      break;
                 case BundleType::RepairKit: out.modelFileId = kRepairKitModelFileId; break;
+                case BundleType::VineSeed:  out.modelFileId = kVineSeedModelFileId;  break;
                 default: break;
             }
         }
@@ -246,6 +248,15 @@ void ReplayWindow::CollectHandHeldModelFileIds(std::vector<uint32_t>& out) const
     if (!m_flagTimeline.ashesHolds.empty())
         for (AshesKind kind : { AshesKind::Offensive, AshesKind::Defensive, AshesKind::Resurrect })
             unique.insert(AshesModelFileId(kind));
+
+    // The three skins the placeholder patch can substitute. They are named nowhere in the
+    // equipment records it rewrites — that is the whole point of the patch — so a match
+    // whose only record for a bundle is the unresolved one would otherwise resolve to a
+    // model that was never preloaded, and draw nothing at all where it used to draw the
+    // grey diamond.
+    unique.insert(kFlagModelFileId);
+    unique.insert(kRepairKitModelFileId);
+    unique.insert(kVineSeedModelFileId);
 
     const auto& equipment = m_replayCtx.stocData.equipment;
     if (!equipment.loaded) {
