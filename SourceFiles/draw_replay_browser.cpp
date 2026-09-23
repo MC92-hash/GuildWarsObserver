@@ -15,6 +15,65 @@
 #include <unordered_map>
 #include <thread>
 
+#include "ui/ui_kit.h"
+
+// ─── The shared UI kit ───────────────────────────────────────────────
+//
+// The chrome this file used to own privately - the palette, the theme push, the splitters, the
+// responsive breakpoints, the little drawing helpers - now lives in SourceFiles/ui/ui_kit.h, so
+// that a second screen can be built out of the same parts instead of copying their styles. The
+// bodies moved unchanged; the names are pulled back into this file's scope here, so every call
+// site below reads and draws exactly as it did before.
+using ui::kColorBg;
+using ui::kColorPanel;
+using ui::kColorPanelLight;
+using ui::kColorBorder;
+using ui::kColorAccent;
+using ui::kColorAccentDim;
+using ui::kColorText;
+using ui::kColorTextDim;
+using ui::kColorTextMuted;
+using ui::kColorSelected;
+using ui::kColorHover;
+using ui::kCardMapName;
+using ui::kCardDate;
+using ui::kCardDuration;
+using ui::kCardGuildName;
+using ui::kCardGuildTag;
+using ui::kCardVS;
+using ui::kCardTeamLabel;
+using ui::kCardProfSig;
+using ui::kCardBuildName;
+using ui::kCardViewDetails;
+using ui::kCardMatchupBg;
+using ui::kCardMatchupRule;
+using ui::LerpColor;
+using ui::BrowserThemeColors;
+using ui::s_themeColors;
+using ui::ApplyBrowserTheme;
+using ui::PushGlassTheme;
+using ui::PopGlassTheme;
+using ui::VSplitter;
+using ui::HSplitter;
+using ui::BrowserPulse;
+using ui::DrawPulseGlow;
+using ui::DrawPillBadge;
+using ui::ToLower;
+using ui::FuzzyMatch;
+using ui::TruncateToWidth;
+using ui::ComboFromVec;
+using ui::PushDropdownArrowStyle;
+using ui::PopDropdownArrowStyle;
+using ui::HighlightedSelectable;
+using ui::LayoutMode;
+using ui::ComputeLayout;
+using ui::ResponsiveSizes;
+using ui::GetSizes;
+using ui::GetProfessionIconFile;
+using ui::EnsureTextureBasePath;
+using ui::GetProfessionIcon;
+
+
 // ─── Build composition system ────────────────────────────────────────────────
 
 static const char* GetProfAbbrev(int id)
@@ -367,24 +426,6 @@ static const char* GetProfessionName(int id)
     }
 }
 
-static const char* GetProfessionIconFile(int id)
-{
-    switch (id)
-    {
-    case 1:  return "[1] - Warrior.png";
-    case 2:  return "[2] - Ranger.png";
-    case 3:  return "[3] - Monk.png";
-    case 4:  return "[4] - Necromancer.png";
-    case 5:  return "[5] - Mesmer.png";
-    case 6:  return "[6] - Elementalist.png";
-    case 7:  return "[7] - Assassin.png";
-    case 8:  return "[8] - Ritualist.png";
-    case 9:  return "[9] - Paragon.png";
-    case 10: return "[10] - Dervish.png";
-    default: return nullptr;
-    }
-}
-
 // Abbreviation -> profession id
 static int ProfAbbrevToId(const std::string& abbr)
 {
@@ -595,69 +636,7 @@ static GuildLabel GetPartyGuild(const MatchMeta& m, const std::string& partyId,
     return result;
 }
 
-// ─── Texture path resolvers ─────────────────────────────────────────────────
 
-static std::string g_textureBasePath;
-
-static void EnsureTextureBasePath()
-{
-    if (!g_textureBasePath.empty()) return;
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-    // Walk up from exe directory to find the Textures folder.
-    // Exe is typically at <project>/x64/Release/GuildWarsObserver.exe
-    // while Textures lives at <project>/Textures/
-    auto dir = std::filesystem::path(exePath).parent_path();
-    for (int i = 0; i < 5; i++)
-    {
-        if (std::filesystem::exists(dir / "Textures"))
-        {
-            g_textureBasePath = dir.string();
-            return;
-        }
-        if (!dir.has_parent_path() || dir == dir.parent_path()) break;
-        dir = dir.parent_path();
-    }
-    // Fallback to exe directory
-    g_textureBasePath = std::filesystem::path(exePath).parent_path().string();
-}
-
-static ImTextureID GetProfessionIcon(int profId)
-{
-    const char* file = GetProfessionIconFile(profId);
-    if (!file) return nullptr;
-    EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Professions_Icons\\" + file;
-    return GetTextureCache().GetTexture(path);
-}
-
-// A slow breathing value in [0,1], for drawing the eye to a control without moving it.
-// Driven off the shared clock so every pulsing control beats together rather than drifting
-// apart, which is what makes two of them read as one deliberate cue.
-static float BrowserPulse()
-{
-    constexpr float kPeriodSeconds = 1.9f;
-    return 0.5f + 0.5f * sinf((float)ImGui::GetTime() * (2.0f * IM_PI / kPeriodSeconds));
-}
-
-// A soft halo just outside mn..mx, brightest at the pulse peak. Three rings with a falling
-// alpha rather than one, so it reads as a glow instead of a second hard border.
-static void DrawPulseGlow(ImDrawList* dl, const ImVec2& mn, const ImVec2& mx,
-                          ImU32 rgb, float rounding, float strength = 1.0f)
-{
-    const float p = BrowserPulse();
-    for (int i = 0; i < 3; i++)
-    {
-        const float grow = 1.0f + i * 2.0f;
-        const float a = (0.40f - i * 0.11f) * p * strength;
-        if (a <= 0.0f) continue;
-        const ImU32 col = (rgb & ~IM_COL32_A_MASK)
-                        | ((ImU32)(a * 255.0f) << IM_COL32_A_SHIFT);
-        dl->AddRect(ImVec2(mn.x - grow, mn.y - grow), ImVec2(mx.x + grow, mx.y + grow),
-                    col, rounding + grow, 0, 1.5f);
-    }
-}
 
 // The refresh control, drawn with a Guild Wars UI badge instead of the word.
 //
@@ -685,7 +664,7 @@ inline float RefreshIconButtonHeight() { return kRefreshDrawH + kRefreshPad * 2.
 static bool DrawRefreshIconButton(const char* id, bool highlight)
 {
     EnsureTextureBasePath();
-    const std::string path = g_textureBasePath + "\\Textures\\DDS\\ATEXDXT5\\texture_337393.dds";
+    const std::string path = ui::TextureBasePath() + "\\Textures\\DDS\\ATEXDXT5\\texture_337393.dds";
     ImTextureID tex = GetTextureCache().GetTexture(path);
 
     // No atlas: the word still has to be clickable.
@@ -752,42 +731,42 @@ static ImTextureID GetMapIcon(int mapId)
     const char* file = GetMapIconFile(mapId);
     if (!file) return nullptr;
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Guild_Halls\\" + file;
+    std::string path = ui::TextureBasePath() + "\\Textures\\Guild_Halls\\" + file;
     return GetTextureCache().GetTexture(path);
 }
 
 static ImTextureID GetCupIcon()
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Game_UI\\cup.webp";
+    std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\cup.webp";
     return GetTextureCache().GetTexture(path);
 }
 
 static ImTextureID GetFluxIcon()
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Skill_Icons\\PvP_Flair.png";
+    std::string path = ui::TextureBasePath() + "\\Textures\\Skill_Icons\\PvP_Flair.png";
     return GetTextureCache().GetTexture(path);
 }
 
 static ImTextureID GetGuildHallIcon()
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Game_UI\\GuildHallIcon.png";
+    std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\GuildHallIcon.png";
     return GetTextureCache().GetTexture(path);
 }
 
 static ImTextureID GetDurationIcon()
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Game_UI\\Skill Description\\activation.png";
+    std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\Skill Description\\activation.png";
     return GetTextureCache().GetTexture(path);
 }
 
 static ImTextureID GetArenaIcon()
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Game_UI\\ArenaIcon.png";
+    std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\ArenaIcon.png";
     return GetTextureCache().GetTexture(path);
 }
 
@@ -805,7 +784,7 @@ static ImTextureID GetStatIcon(const char* baseName)
     auto it = s_resolved.find(baseName);
     if (it == s_resolved.end())
     {
-        const std::string dir = g_textureBasePath + "\\Textures\\Match library\\";
+        const std::string dir = ui::TextureBasePath() + "\\Textures\\Match library\\";
         std::string cut   = dir + baseName + "-removebg-preview.png";
         std::string plain = dir + baseName + ".png";
         std::error_code ec;
@@ -829,7 +808,7 @@ static GuildCapeCache& BrowserCapeCache()
     {
         tried = true;
         EnsureTextureBasePath();
-        auto root = std::filesystem::path(g_textureBasePath) / "Textures" / "CapeAssets";
+        auto root = std::filesystem::path(ui::TextureBasePath()) / "Textures" / "CapeAssets";
         std::error_code ec;
         if (std::filesystem::exists(root, ec))
             cache.Init(GetTextureCache().Device(), root);
@@ -873,7 +852,7 @@ static void EnsureSkillIconIndex()
     g_skillIconIndexBuilt = true;
 
     EnsureTextureBasePath();
-    std::string folder = g_textureBasePath + "\\Textures\\Skill_Icons";
+    std::string folder = ui::TextureBasePath() + "\\Textures\\Skill_Icons";
     if (!std::filesystem::exists(folder)) return;
 
     for (const auto& entry : std::filesystem::directory_iterator(folder))
@@ -905,7 +884,7 @@ static ImTextureID GetSkillIcon(int skillId, const SkillDatabaseView* view = nul
 static ImTextureID GetSkillDescIcon(const char* filename)
 {
     EnsureTextureBasePath();
-    std::string path = g_textureBasePath + "\\Textures\\Game_UI\\Skill Description\\" + filename;
+    std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\Skill Description\\" + filename;
     return GetTextureCache().GetTexture(path);
 }
 
@@ -1042,267 +1021,6 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
 
 // ─── Themeable color palette ────────────────────────────────────────────────
 
-static ImVec4 kColorBg, kColorPanel, kColorPanelLight, kColorBorder;
-static ImVec4 kColorAccent, kColorAccentDim;
-static ImVec4 kColorText, kColorTextDim;
-// Between the two: for the list's supporting columns, which should sit back from the guild
-// names without receding as far as a disabled label.
-static ImVec4 kColorTextMuted;
-static ImVec4 kColorSelected, kColorHover;
-
-// Color interpolation helper
-static ImU32 LerpColor(ImU32 a, ImU32 b, float t) {
-    float r = ((a >> 0) & 0xFF) * (1 - t) + ((b >> 0) & 0xFF) * t;
-    float g = ((a >> 8) & 0xFF) * (1 - t) + ((b >> 8) & 0xFF) * t;
-    float bl = ((a >> 16) & 0xFF) * (1 - t) + ((b >> 16) & 0xFF) * t;
-    float al = ((a >> 24) & 0xFF) * (1 - t) + ((b >> 24) & 0xFF) * t;
-    return IM_COL32((int)r, (int)g, (int)bl, (int)al);
-}
-
-// Card gallery visual hierarchy
-static ImU32 kCardMapName, kCardDate, kCardDuration;
-static ImU32 kCardGuildName, kCardGuildTag, kCardVS;
-static ImU32 kCardTeamLabel, kCardProfSig, kCardBuildName, kCardViewDetails;
-static ImU32 kCardMatchupBg, kCardMatchupRule;
-
-// Theme-specific inline colors for PushGlassTheme
-struct BrowserThemeColors {
-    ImVec4 popupBg, frameBg, frameBgHov, frameBgAct;
-    ImVec4 titleBgAct, scrollBg, scrollGrab, scrollGrabHov;
-    ImVec4 button, buttonHov;
-    ImVec4 tableHeaderBg, tableBorderStrong, tableBorderLight, tableRowBgAlt;
-    ImVec4 rowHoverBg, rowSelectedBg;
-    ImU32 splitterIdle, splitterActive, splitterHover;
-    ImVec4 detailPanelBg;
-    ImVec4 replayBtnBg, replayBtnHov, replayBtnAct;
-    ImVec4 compTextCol;
-    ImVec4 cardBg, cardBgSel, cardBorderSel, cardBorderIdle;
-    // Netflix card
-    ImU32 cardGradientBot, cardGradientMid;
-    ImU32 cardHoverBorder;
-    ImU32 cardFallbackBg;
-};
-static BrowserThemeColors s_themeColors;
-
-static int s_appliedTheme = -1;
-
-static void ApplyBrowserTheme(int theme)
-{
-    if (theme == s_appliedTheme) return;
-    s_appliedTheme = theme;
-
-    if (theme == 1) // Watchtower Dashboard - zinc bg, amber accent (#f59e0b)
-    {
-        kColorBg         = ImVec4(0.094f, 0.094f, 0.106f, 1.00f); // #18181b zinc-950
-        kColorPanel      = ImVec4(0.094f, 0.094f, 0.106f, 0.55f); // surface 1
-        kColorPanelLight = ImVec4(0.153f, 0.153f, 0.165f, 0.40f); // surface raised
-        kColorBorder     = ImVec4(0.247f, 0.247f, 0.275f, 0.45f); // border soft
-        kColorAccent     = ImVec4(0.961f, 0.620f, 0.043f, 1.00f); // #f59e0b amber
-        kColorAccentDim  = ImVec4(0.961f, 0.620f, 0.043f, 0.50f); // amber dimmed
-        kColorText       = ImVec4(0.894f, 0.894f, 0.906f, 1.00f); // #e4e4e7 zinc-200
-        kColorTextDim    = ImVec4(0.631f, 0.631f, 0.667f, 1.00f); // #a1a1aa zinc-400
-        kColorTextMuted  = ImVec4(0.789f, 0.789f, 0.810f, 1.00f); // #c9c9cf
-        kColorSelected   = ImVec4(0.961f, 0.620f, 0.043f, 0.15f); // amber tint
-        kColorHover      = ImVec4(0.961f, 0.620f, 0.043f, 0.10f); // amber tint
-
-        kCardMapName     = IM_COL32(161, 161, 170, 255); // zinc-400
-        kCardDate        = IM_COL32(161, 161, 170, 255); // zinc-400 (was zinc-500)
-        kCardDuration    = IM_COL32(113, 113, 122, 255); // zinc-500 full alpha (was zinc-600 @70%)
-        kCardGuildName   = IM_COL32(228, 228, 231, 255); // zinc-200
-        kCardGuildTag    = IM_COL32(245, 158,  11, 180); // amber-500 @70% (was zinc-400)
-        kCardVS          = IM_COL32(113, 113, 122, 255); // zinc-500 (was zinc-600)
-        kCardTeamLabel   = IM_COL32(113, 113, 122, 255); // zinc-500 (was zinc-600)
-        kCardProfSig     = IM_COL32(161, 161, 170, 255); // zinc-400
-        kCardBuildName   = IM_COL32(245, 158, 11, 255);  // #f59e0b amber
-        kCardViewDetails = IM_COL32(161, 161, 170, 255); // zinc-400 (was zinc-500)
-        kCardMatchupBg   = IM_COL32(18,  18,  20, 255);  // slightly darker than base
-        kCardMatchupRule = IM_COL32(245, 158, 11,  25);  // subtle amber rule
-
-        s_themeColors.popupBg       = ImVec4(0.094f, 0.094f, 0.106f, 0.95f);
-        s_themeColors.frameBg       = ImVec4(0.094f, 0.094f, 0.106f, 0.55f);
-        s_themeColors.frameBgHov    = ImVec4(0.153f, 0.153f, 0.165f, 0.60f);
-        s_themeColors.frameBgAct    = ImVec4(0.153f, 0.153f, 0.165f, 0.80f);
-        s_themeColors.titleBgAct    = ImVec4(0.094f, 0.094f, 0.106f, 0.95f);
-        s_themeColors.scrollBg      = ImVec4(0.07f, 0.07f, 0.08f, 0.50f);
-        s_themeColors.scrollGrab    = ImVec4(0.247f, 0.247f, 0.275f, 0.60f);
-        s_themeColors.scrollGrabHov = ImVec4(0.322f, 0.322f, 0.357f, 0.70f);
-        s_themeColors.button        = ImVec4(0.153f, 0.153f, 0.165f, 0.40f);
-        s_themeColors.buttonHov     = ImVec4(0.961f, 0.620f, 0.043f, 0.15f);
-        s_themeColors.tableHeaderBg = ImVec4(0.12f, 0.12f, 0.13f, 0.45f);
-        s_themeColors.tableBorderStrong = ImVec4(0.247f, 0.247f, 0.275f, 0.65f);
-        s_themeColors.tableBorderLight  = ImVec4(0.247f, 0.247f, 0.275f, 0.30f);
-        s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
-        s_themeColors.rowHoverBg    = ImVec4(0.340f, 0.340f, 0.360f, 0.90f);
-        s_themeColors.rowSelectedBg = ImVec4(0.961f, 0.620f, 0.043f, 0.20f);
-        s_themeColors.splitterIdle  = IM_COL32(63, 63, 70, 115);    // border soft
-        s_themeColors.splitterActive = IM_COL32(245, 158, 11, 255); // amber
-        s_themeColors.splitterHover = IM_COL32(251, 191, 36, 180);  // amber hover
-        s_themeColors.detailPanelBg = ImVec4(0.08f, 0.08f, 0.09f, 0.90f);
-        s_themeColors.replayBtnBg   = ImVec4(0.094f, 0.094f, 0.106f, 1.0f);
-        s_themeColors.replayBtnHov  = ImVec4(0.153f, 0.153f, 0.165f, 1.0f);
-        s_themeColors.replayBtnAct  = ImVec4(0.12f, 0.12f, 0.13f, 1.0f);
-        s_themeColors.compTextCol   = ImVec4(0.631f, 0.631f, 0.667f, 1.f); // zinc-400
-        s_themeColors.cardBg        = ImVec4(0.094f, 0.094f, 0.106f, 0.55f);
-        s_themeColors.cardBgSel     = ImVec4(0.961f, 0.620f, 0.043f, 0.08f);
-        s_themeColors.cardBorderSel = ImVec4(0.961f, 0.620f, 0.043f, 1.0f); // amber
-        s_themeColors.cardBorderIdle = ImVec4(0.247f, 0.247f, 0.275f, 0.45f);
-        s_themeColors.cardGradientBot  = IM_COL32(14, 14, 16, 240);
-        s_themeColors.cardGradientMid  = IM_COL32(14, 14, 16, 0);
-        s_themeColors.cardHoverBorder  = IM_COL32(245, 158, 11, 180);
-        s_themeColors.cardFallbackBg   = IM_COL32(22, 22, 26, 255);
-    }
-    else // Theme 0: GW Observer - warm near-black, desaturated gold
-    {
-        kColorBg         = ImVec4(0.075f, 0.075f, 0.075f, 1.00f); // #131313
-        kColorPanel      = ImVec4(0.102f, 0.102f, 0.102f, 1.00f); // #1A1A1A
-        kColorPanelLight = ImVec4(0.141f, 0.133f, 0.125f, 1.00f); // #242220
-        kColorBorder     = ImVec4(0.239f, 0.227f, 0.200f, 1.00f); // #3D3A33
-        kColorAccent     = ImVec4(0.878f, 0.710f, 0.388f, 1.00f); // #E0B563
-        kColorAccentDim  = ImVec4(0.878f, 0.710f, 0.388f, 0.70f);
-        kColorText       = ImVec4(0.941f, 0.937f, 0.914f, 1.00f); // #F0EFE9
-        kColorTextDim    = ImVec4(0.612f, 0.580f, 0.533f, 1.00f); // #9C9488
-        kColorTextMuted  = ImVec4(0.809f, 0.794f, 0.762f, 1.00f); // #CFCAC2
-        kColorSelected   = ImVec4(0.228f, 0.185f, 0.101f, 0.90f);
-        kColorHover      = ImVec4(0.202f, 0.163f, 0.089f, 0.70f);
-
-        kCardMapName     = IM_COL32(175, 172, 165, 255);
-        kCardDate        = IM_COL32(130, 127, 120, 255);
-        kCardDuration    = IM_COL32(110, 107, 100, 180);
-        kCardGuildName   = IM_COL32(240, 236, 225, 255);
-        kCardGuildTag    = IM_COL32(190, 185, 170, 255); // warm silver
-        kCardVS          = IM_COL32(120, 105,  75, 255);
-        kCardTeamLabel   = IM_COL32(100,  97,  90, 255);
-        kCardProfSig     = IM_COL32(160, 155, 145, 255);
-        kCardBuildName   = IM_COL32(210, 185, 120, 255);
-        kCardViewDetails = IM_COL32(140, 137, 130, 255);
-        kCardMatchupBg   = IM_COL32( 14,  13,  10, 255);
-        kCardMatchupRule = IM_COL32(196, 169, 106,  30);
-
-        s_themeColors.popupBg       = ImVec4(0.055f, 0.055f, 0.055f, 0.97f);
-        s_themeColors.frameBg       = ImVec4(0.078f, 0.078f, 0.078f, 0.85f); // #141414 well
-        s_themeColors.frameBgHov    = ImVec4(0.110f, 0.106f, 0.098f, 0.90f);
-        s_themeColors.frameBgAct    = ImVec4(0.145f, 0.133f, 0.108f, 0.95f);
-        s_themeColors.titleBgAct    = ImVec4(0.08f, 0.07f, 0.06f, 0.95f);
-        s_themeColors.scrollBg      = ImVec4(0.05f, 0.04f, 0.03f, 0.50f);
-        s_themeColors.scrollGrab    = ImVec4(0.28f, 0.24f, 0.16f, 0.60f);
-        s_themeColors.scrollGrabHov = ImVec4(0.38f, 0.32f, 0.22f, 0.70f);
-        s_themeColors.button        = ImVec4(0.14f, 0.12f, 0.08f, 0.80f);
-        s_themeColors.buttonHov     = ImVec4(0.25f, 0.22f, 0.14f, 0.80f);
-        s_themeColors.tableHeaderBg = ImVec4(0.16f, 0.14f, 0.09f, 0.45f);
-        s_themeColors.tableBorderStrong = ImVec4(0.20f, 0.17f, 0.10f, 1.00f);
-        s_themeColors.tableBorderLight  = ImVec4(0.25f, 0.22f, 0.15f, 0.40f);
-        s_themeColors.tableRowBgAlt = ImVec4(0.000f, 0.000f, 0.000f, 0.00f);
-        s_themeColors.rowHoverBg    = ImVec4(0.340f, 0.300f, 0.220f, 0.90f);
-        s_themeColors.rowSelectedBg = ImVec4(0.878f, 0.710f, 0.388f, 0.22f);
-        s_themeColors.splitterIdle  = IM_COL32(46, 40, 30, 255);
-        s_themeColors.splitterActive = IM_COL32(196, 169, 106, 255);
-        s_themeColors.splitterHover = IM_COL32(196, 169, 106, 140);
-        s_themeColors.detailPanelBg = ImVec4(0.07f, 0.065f, 0.05f, 0.90f);
-        s_themeColors.replayBtnBg   = ImVec4(0.09f, 0.08f, 0.06f, 1.0f);
-        s_themeColors.replayBtnHov  = ImVec4(0.16f, 0.14f, 0.10f, 1.0f);
-        s_themeColors.replayBtnAct  = ImVec4(0.12f, 0.10f, 0.07f, 1.0f);
-        s_themeColors.compTextCol   = ImVec4(0.65f, 0.58f, 0.42f, 1.f);
-        s_themeColors.cardBg        = ImVec4(0.09f, 0.08f, 0.06f, 1.0f);
-        s_themeColors.cardBgSel     = ImVec4(0.11f, 0.10f, 0.07f, 1.0f);
-        s_themeColors.cardBorderSel = ImVec4(0.769f, 0.663f, 0.416f, 1.0f);
-        s_themeColors.cardBorderIdle = ImVec4(0.18f, 0.15f, 0.10f, 1.0f);
-        s_themeColors.cardGradientBot  = IM_COL32(10, 9, 7, 240);
-        s_themeColors.cardGradientMid  = IM_COL32(10, 9, 7, 0);
-        s_themeColors.cardHoverBorder  = IM_COL32(196, 169, 106, 180);
-        s_themeColors.cardFallbackBg   = IM_COL32(25, 22, 18, 255);
-    }
-}
-
-// Vertical splitter (drag left/right to resize columns). Returns true while dragging.
-static bool VSplitter(const char* id, float height, float thickness = 6.0f)
-{
-    ImGui::SameLine(0, 0);
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton(id, ImVec2(thickness, height));
-    bool active = ImGui::IsItemActive();
-    bool hovered = ImGui::IsItemHovered();
-
-    ImU32 col = s_themeColors.splitterIdle;
-    if (active)       col = s_themeColors.splitterActive;
-    else if (hovered) col = s_themeColors.splitterHover;
-
-    float lineX = cursor.x + thickness * 0.5f;
-    ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(lineX, cursor.y + 4.0f),
-        ImVec2(lineX, cursor.y + height - 4.0f),
-        col, 2.0f);
-
-    if (hovered || active)
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-
-    ImGui::SameLine(0, 0);
-    return active;
-}
-
-// Horizontal splitter (drag up/down to resize rows). Returns true while dragging.
-static bool HSplitter(const char* id, float width, float thickness = 6.0f)
-{
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton(id, ImVec2(width, thickness));
-    bool active = ImGui::IsItemActive();
-    bool hovered = ImGui::IsItemHovered();
-
-    ImU32 col = s_themeColors.splitterIdle;
-    if (active)       col = s_themeColors.splitterActive;
-    else if (hovered) col = s_themeColors.splitterHover;
-
-    float lineY = cursor.y + thickness * 0.5f;
-    ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(cursor.x + 8.0f, lineY),
-        ImVec2(cursor.x + width - 8.0f, lineY),
-        col, 2.0f);
-
-    if (hovered || active)
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-
-    return active;
-}
-
-static int PushGlassTheme()
-{
-    int count = 0;
-    auto Push = [&](ImGuiCol idx, const ImVec4& col) { ImGui::PushStyleColor(idx, col); count++; };
-
-    Push(ImGuiCol_WindowBg,           kColorBg);
-    Push(ImGuiCol_ChildBg,            kColorPanel);
-    Push(ImGuiCol_PopupBg,            s_themeColors.popupBg);
-    Push(ImGuiCol_Border,             kColorBorder);
-    Push(ImGuiCol_FrameBg,            s_themeColors.frameBg);
-    Push(ImGuiCol_FrameBgHovered,     s_themeColors.frameBgHov);
-    Push(ImGuiCol_FrameBgActive,      s_themeColors.frameBgAct);
-    Push(ImGuiCol_TitleBg,            kColorBg);
-    Push(ImGuiCol_TitleBgActive,      s_themeColors.titleBgAct);
-    Push(ImGuiCol_ScrollbarBg,        s_themeColors.scrollBg);
-    Push(ImGuiCol_ScrollbarGrab,      s_themeColors.scrollGrab);
-    Push(ImGuiCol_ScrollbarGrabHovered, s_themeColors.scrollGrabHov);
-    Push(ImGuiCol_ScrollbarGrabActive,  kColorAccentDim);
-    Push(ImGuiCol_Header,             kColorSelected);
-    Push(ImGuiCol_HeaderHovered,      kColorHover);
-    Push(ImGuiCol_HeaderActive,       kColorSelected);
-    Push(ImGuiCol_Button,             s_themeColors.button);
-    Push(ImGuiCol_ButtonHovered,      s_themeColors.buttonHov);
-    Push(ImGuiCol_ButtonActive,       kColorAccentDim);
-    Push(ImGuiCol_Separator,          kColorBorder);
-    Push(ImGuiCol_Text,               kColorText);
-    Push(ImGuiCol_TextDisabled,       kColorTextDim);
-    Push(ImGuiCol_TableHeaderBg,      s_themeColors.tableHeaderBg);
-    Push(ImGuiCol_TableBorderStrong,  s_themeColors.tableBorderStrong);
-    Push(ImGuiCol_TableBorderLight,   s_themeColors.tableBorderLight);
-    Push(ImGuiCol_TableRowBg,         ImVec4(0.00f, 0.00f, 0.00f, 0.00f));
-    Push(ImGuiCol_TableRowBgAlt,      s_themeColors.tableRowBgAlt);
-
-    return count;
-}
-
-static void PopGlassTheme(int count)
-{
-    ImGui::PopStyleColor(count);
-}
 
 // ─── Flux description lookup ─────────────────────────────────────────────────
 
@@ -1407,36 +1125,6 @@ static void DrawFluxWithTooltip(const std::string& flux, float infoIconH)
 
 // ─── Responsive layout system ────────────────────────────────────────────────
 
-enum class LayoutMode { Full, Compact, Narrow, Mobile };
-
-static LayoutMode ComputeLayout(float windowWidth)
-{
-    if (windowWidth > 1600.0f) return LayoutMode::Full;
-    if (windowWidth > 1200.0f) return LayoutMode::Compact;
-    if (windowWidth > 800.0f)  return LayoutMode::Narrow;
-    return LayoutMode::Mobile;
-}
-
-struct ResponsiveSizes
-{
-    float profIcon;
-    float skillIcon;
-    float cupIcon;
-    float mapImg;
-    float spacing;      // base spacing unit (multiples of 8)
-};
-
-static ResponsiveSizes GetSizes(LayoutMode mode)
-{
-    switch (mode)
-    {
-    case LayoutMode::Full:    return { 22.0f, 36.0f, 14.0f, 140.0f, 8.0f };
-    case LayoutMode::Compact: return { 20.0f, 30.0f, 13.0f, 120.0f, 8.0f };
-    case LayoutMode::Narrow:  return { 18.0f, 26.0f, 12.0f, 100.0f, 8.0f };
-    case LayoutMode::Mobile:  return { 18.0f, 24.0f, 12.0f, 80.0f,  8.0f };
-    }
-    return { 22.0f, 36.0f, 14.0f, 140.0f, 8.0f };
-}
 
 // ─── Filter state ────────────────────────────────────────────────────────────
 
@@ -1582,22 +1270,6 @@ static void NotifyNewMatches(int count, const std::string& matchName)
     s_state.notifyDismissed = false;
 }
 
-static std::string ToLower(const std::string& s)
-{
-    std::string r = s;
-    for (auto& c : r) c = (char)tolower((unsigned char)c);
-    return r;
-}
-
-static bool FuzzyMatch(const std::string& query, const std::string& target)
-{
-    std::string qLow = ToLower(query);
-    std::string tLow = ToLower(target);
-    size_t qi = 0;
-    for (size_t ti = 0; ti < tLow.size() && qi < qLow.size(); ti++)
-        if (tLow[ti] == qLow[qi]) qi++;
-    return qi == qLow.size();
-}
 
 static bool ParseDateStr(const char* buf, int& day, int& month, int& year)
 {
@@ -1912,123 +1584,13 @@ static void BuildFilterLists(const std::vector<MatchMeta>& matches)
     s_state.lastMatchCount = (int)matches.size();
 }
 
-static bool ComboFromVec(const char* label, int& current, const std::vector<std::string>& items)
-{
-    if (items.empty()) return false;
-    if (current >= (int)items.size()) current = 0;
-    const char* preview = items[current].c_str();
-
-    bool changed = false;
-    if (ImGui::BeginCombo(label, preview))
-    {
-        for (int i = 0; i < (int)items.size(); i++)
-        {
-            bool selected = (i == current);
-            if (ImGui::Selectable(items[i].c_str(), selected))
-            {
-                current = i;
-                changed = true;
-            }
-            if (selected) ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-    return changed;
-}
 
 // ─── Auto-complete & chip helpers ────────────────────────────────────────────
 
-// Make the "browse all" arrow button read as part of its adjoining search
-// field (same frame colors) instead of the generic, mismatched button chrome
-// it would otherwise inherit.
-static void PushDropdownArrowStyle()
-{
-    ImGui::PushStyleColor(ImGuiCol_Button,        s_themeColors.frameBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, s_themeColors.frameBgHov);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  s_themeColors.frameBgAct);
-    ImGui::PushStyleColor(ImGuiCol_Text,          kColorTextDim);
-}
 
-static void PopDropdownArrowStyle()
-{
-    ImGui::PopStyleColor(4);
-}
-
-static bool HighlightedSelectable(const char* text, const char* query,
-                                  const char* uid, bool fuzzy)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    float lineH = ImGui::GetTextLineHeightWithSpacing();
-
-    std::string hiddenId = std::string("##hl_") + uid;
-    bool clicked = ImGui::Selectable(hiddenId.c_str(), false);
-
-    float x = pos.x + 4.0f;
-    float y = pos.y + (lineH - ImGui::GetTextLineHeight()) * 0.5f;
-    ImU32 colNorm = ImGui::GetColorU32(kColorText);
-    ImU32 colHL   = ImGui::GetColorU32(kColorAccent);
-
-    if (!query || query[0] == '\0')
-    {
-        dl->AddText(ImVec2(x, y), colNorm, text);
-        return clicked;
-    }
-
-    if (fuzzy)
-    {
-        std::string qLow = ToLower(query);
-        std::string tLow = ToLower(text);
-        size_t qi = 0;
-        for (size_t ti = 0; ti < tLow.size(); ti++)
-        {
-            bool m = (qi < qLow.size() && tLow[ti] == qLow[qi]);
-            if (m) qi++;
-            char c[2] = { text[ti], '\0' };
-            dl->AddText(ImVec2(x, y), m ? colHL : colNorm, c);
-            x += ImGui::CalcTextSize(c).x;
-        }
-    }
-    else
-    {
-        std::string tLow = ToLower(text);
-        std::string qLow = ToLower(query);
-        size_t mpos = tLow.find(qLow);
-        if (mpos == std::string::npos)
-        {
-            dl->AddText(ImVec2(x, y), colNorm, text);
-        }
-        else
-        {
-            size_t qLen = strlen(query);
-            if (mpos > 0)
-            {
-                dl->AddText(ImVec2(x, y), colNorm, text, text + mpos);
-                x += ImGui::CalcTextSize(text, text + mpos).x;
-            }
-            dl->AddText(ImVec2(x, y), colHL, text + mpos, text + mpos + qLen);
-            x += ImGui::CalcTextSize(text + mpos, text + mpos + qLen).x;
-            if (text[mpos + qLen] != '\0')
-                dl->AddText(ImVec2(x, y), colNorm, text + mpos + qLen);
-        }
-    }
-    return clicked;
-}
 
 enum class MsRowStyle { Plain, Flux };
 
-static std::string TruncateToWidth(const std::string& text, float maxW)
-{
-    if (maxW <= 0.0f) return std::string();
-    if (ImGui::CalcTextSize(text.c_str()).x <= maxW) return text;
-
-    const float ellW = ImGui::CalcTextSize("...").x;
-    size_t n = text.size();
-    while (n > 0 &&
-           ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + ellW > maxW)
-        n--;
-    return text.substr(0, n) + "...";
-}
 
 // Flux dropdown row: icon + name + a one-line preview of the effect, full text on hover.
 static bool DrawFluxRow(const std::string& name, const char* query,
@@ -3217,17 +2779,6 @@ static void DrawOccasionBadge(ImDrawList* dl, const std::string& occasion, ImVec
                 ImGui::GetColorU32(style.textColor), style.shortLabel);
 }
 
-static void DrawPillBadge(ImDrawList* dl, ImFont* font, float fontSize,
-                          const char* text, ImVec2 pos, ImU32 textCol,
-                          ImU32 bgCol = IM_COL32(255, 255, 255, 25), float rounding = 10.f)
-{
-    ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text);
-    float padX = 6.0f, padY = 2.0f;
-    ImVec2 mn(pos.x, pos.y);
-    ImVec2 mx(pos.x + textSz.x + padX * 2, pos.y + textSz.y + padY * 2);
-    dl->AddRectFilled(mn, mx, bgCol, rounding);
-    dl->AddText(font, fontSize, ImVec2(pos.x + padX, pos.y + padY), textCol, text);
-}
 
 static const char* MonthAbbrev(int month)
 {
@@ -5158,6 +4709,20 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
     }
 }
 
+// THE WARDROBE ENTRY. It is deliberately NOT the Scout chrome. Scout is a mode of this screen and
+// wears the amber "this is on" style; this button LEAVES the screen for the other sub-application,
+// and an outlined secondary button with a hanger says "somewhere else" instead of "switched on".
+// When the launcher hub arrives it takes this button's job and this can go.
+static void DrawWardrobeSwitchButton(const char* id)
+{
+    ImGui::PushID(id);
+    if (ui::IconTextButton("Wardrobe", ui::DrawHangerGlyph))
+        GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Wardrobe - create a character and dress it");
+    ImGui::PopID();
+}
+
 static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
 {
     ImFont* boldFnt = GuiGlobalConstants::boldFont;
@@ -5200,29 +4765,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
     ImGui::TextColored(kColorTextDim, "|");
     ImGui::SameLine(0, 8);
 
-    auto ViewBtn = [](const char* label, bool active) -> bool {
-        if (active)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.431f, 0.659f, 0.996f, 0.15f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.431f, 0.659f, 0.996f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.431f, 0.659f, 0.996f, 1.0f));
-        }
-        else
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.7f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.56f, 0.63f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
-        }
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
-        bool clicked = ImGui::Button(label);
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(3);
-        return clicked;
-    };
-
-    if (ViewBtn("Table", !s_state.cardGalleryMode && !s_state.tournamentMode))
+    if (ui::SegmentedButton("Table", !s_state.cardGalleryMode && !s_state.tournamentMode))
     {
         s_state.cardGalleryMode = false;
         s_state.tournamentMode = false;
@@ -5230,7 +4773,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         GuiGlobalConstants::SaveSettings();
     }
     ImGui::SameLine(0, 2);
-    if (ViewBtn("Cards", s_state.cardGalleryMode && !s_state.tournamentMode))
+    if (ui::SegmentedButton("Cards", s_state.cardGalleryMode && !s_state.tournamentMode))
     {
         s_state.cardGalleryMode = true;
         s_state.tournamentMode = false;
@@ -5454,6 +4997,16 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
                                         : "Refresh - re-fetch match list from cloud");
+
+    // The far right of the toolbar, which is where a door out of the screen belongs.
+    {
+        const float btnW = ui::IconTextButtonWidth("Wardrobe");
+        const float x = ImGui::GetWindowContentRegionMax().x - btnW;
+        ImGui::SameLine(0, 16);
+        if (x > ImGui::GetCursorPosX())
+            ImGui::SetCursorPosX(x);
+        DrawWardrobeSwitchButton("##gallery_wardrobe");
+    }
 }
 
 // ─── Tournament Prep stats panel ────────────────────────────────────────────
@@ -6201,6 +5754,17 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::PopStyleColor(3);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Scout - what they run, and what beats them");
+    }
+
+    // The far right of the header row, matching the card gallery's own placement.
+    {
+        const float btnW = ui::IconTextButtonWidth("Wardrobe");
+        const float x = ImGui::GetWindowContentRegionMax().x - btnW;
+        ImGui::SameLine(0, 8);
+        if (x > ImGui::GetCursorPosX())
+            ImGui::SetCursorPosX(x);
+        CentreOnRow(ImGui::GetFrameHeight());
+        DrawWardrobeSwitchButton("##table_wardrobe");
     }
     ImGui::Separator();
 

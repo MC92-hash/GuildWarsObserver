@@ -44,6 +44,17 @@ ImTextureID TextureCache::GetTexture(const std::wstring& filePath)
     return GetTexture(key);
 }
 
+void TextureCache::Invalidate(const std::string& filePath)
+{
+    m_cache.erase(filePath);
+}
+
+void TextureCache::Invalidate(const std::wstring& filePath)
+{
+    std::string key(filePath.begin(), filePath.end());
+    Invalidate(key);
+}
+
 ID3D11ShaderResourceView* TextureCache::LoadFromFile(const std::wstring& wpath)
 {
     if (!m_device) return nullptr;

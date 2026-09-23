@@ -324,6 +324,24 @@
     <ClInclude Include="SourceFiles\draw_replay_browser.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\ui\ui_kit.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScreens.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\ReplayWindow.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -790,6 +808,27 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\ui\ui_kit.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCreate.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeDress.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow.cpp">

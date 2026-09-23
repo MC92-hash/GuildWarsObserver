@@ -12,6 +12,9 @@
 #include "draw_debug_match_metadata.h"
 #include "draw_picking_info.h"
 #include "draw_replay_browser.h"
+// The Wardrobe is a private sub-application: the public tree carries its declaration and the
+// switch that reaches it, and nothing else about it.
+#include "WardrobeApp.h"
 #include "GuiGlobalConstants.h"
 #include "ReplayLibrary.h"
 #include "FolderWatcher.h"
@@ -622,6 +625,18 @@ static void draw_settings_window()
 	ImGui::Checkbox("Invert Mouse Y (vertical)",   &editingKeys.invertMouseY);
 
 	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Wardrobe");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	// FIXED KEYS, so a read-only list and not a row of pickers - see kWardrobeShortcuts. The
+	// duplicate-binding check below looks only at the rebindable keys, as it always has.
+	for (const auto& shortcutRow : kWardrobeShortcuts)
+	{
+		ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.90f, 1.f), "%s", shortcutRow.keys);
+		ImGui::SameLine(190.f);
+		ImGui::TextColored(ImVec4(0.63f, 0.63f, 0.67f, 1.f), "%s", shortcutRow.what);
+	}
+
+	ImGui::Spacing();
 	ImGui::Separator();
 	ImGui::Spacing();
 
@@ -852,6 +867,10 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	// Main menu bar — always visible
 	if (ImGui::BeginMainMenuBar()) {
 		if (ImGui::BeginMenu("File")) {
+			if (ImGui::MenuItem("Wardrobe")) {
+				GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
+			}
+			ImGui::Separator();
 			if (ImGui::MenuItem("Settings...")) {
 				s_settingsOpen = true;
 			}
@@ -972,8 +991,26 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	if (folder_watcher.HasPendingRefresh() && replay_library.IsLoaded())
 		replay_library.RescanDiff();
 
-	// Replay browser (available regardless of DAT state)
-	draw_replay_browser(replay_library);
+	// THE APP SWITCH. The Library and the Wardrobe are siblings: exactly one of them owns the
+	// window below the menu bar on any frame. The Wardrobe answers false when the user has asked
+	// for the target behind it, which today is the Library and later the launcher hub.
+	if (GuiGlobalConstants::app_screen == AppScreen::Wardrobe)
+	{
+		if (!draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, "Library"))
+			GuiGlobalConstants::app_screen = AppScreen::Library;
+	}
+	else
+	{
+		// Replay browser (available regardless of DAT state)
+		draw_replay_browser(replay_library);
+	}
+
+	// A screen that is not this one has asked for Settings (the Wardrobe's "Locate Guild Wars").
+	if (GuiGlobalConstants::request_open_settings)
+	{
+		GuiGlobalConstants::request_open_settings = false;
+		s_settingsOpen = true;
+	}
 
 	// Debug panels (available regardless of DAT state)
 	draw_debug_match_metadata_panel(replay_library);

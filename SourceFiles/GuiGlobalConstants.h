@@ -8,10 +8,31 @@
 #include <cstdlib>
 #include <system_error>
 
+// WHICH SUB-APPLICATION THE WINDOW IS SHOWING.
+//
+// The Wardrobe is a SIBLING of the Match Library, not a state inside it: one of the two owns the
+// window below the menu bar, and draw_ui picks between them. Modelling it this way from the start
+// is what lets the launcher hub join this enum later without a rewrite.
+//
+// Deliberately NOT persisted. The application always opens on the Library, so a session that ended
+// in the Wardrobe does not decide what the next one opens on.
+enum class AppScreen
+{
+	Library,
+	Wardrobe,
+};
+
 class GuiGlobalConstants
 {
 public:
 	inline static bool settings_loaded = false;
+
+	inline static AppScreen app_screen = AppScreen::Library;
+
+	// A request from any screen to bring the Settings window up. Settings is a static inside
+	// draw_ui.cpp and stays there; this is the one line a screen that is not draw_ui can pull.
+	// Cleared by draw_ui on the frame it acts on.
+	inline static bool request_open_settings = false;
 
 	// Window-visibility flags for the two private character panels. Inert in the Observer, which
 	// has no menu entry for either and never opens them; they exist so that the one shared copy of

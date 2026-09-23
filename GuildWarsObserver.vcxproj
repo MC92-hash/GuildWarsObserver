@@ -101,7 +101,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;$(GwoPrivateDir)\SourceFiles\Character\Wardrobe;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -126,7 +126,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;$(GwoPrivateDir)\SourceFiles\Character\Wardrobe;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -149,7 +149,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;$(GwoPrivateDir)\SourceFiles\Character\Wardrobe;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -180,7 +180,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)\SourceFiles;$(ProjectDir)\tinytiff;$(ProjectDir)\DearImGui;$(ProjectDir)\ImGuiFileDialog-Lib_Only;$(ProjectDir)\DirectXTex;$(ProjectDir)\peglib;$(ProjectDir);$(GwoPrivateDir);$(GwoPrivateDir)\SourceFiles;$(GwoPrivateDir)\SourceFiles\Character;$(GwoPrivateDir)\SourceFiles\Character\Wardrobe;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <WarningLevel>Level4</WarningLevel>
@@ -277,6 +277,13 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterStage.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\WardrobeRules.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScreens.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.h" />
     <ClInclude Include="SourceFiles\Audio\AnimationSoundManager.h" />
     <ClInclude Include="SourceFiles\draw_chunk_20000000.h" />
     <ClInclude Include="SourceFiles\draw_chunk_20000003.h" />
@@ -313,6 +320,7 @@
     <ClInclude Include="SourceFiles\RunLog.h" />
     <ClInclude Include="SourceFiles\draw_debug_match_metadata.h" />
     <ClInclude Include="SourceFiles\draw_replay_browser.h" />
+    <ClInclude Include="SourceFiles\ui\ui_kit.h" />
     <ClInclude Include="SourceFiles\ReplayWindow.h" />
     <ClInclude Include="SourceFiles\TeamColors.h" />
     <ClInclude Include="SourceFiles\CatapultLeverState.h" />
@@ -371,6 +379,7 @@
     <ClInclude Include="SourceFiles\PerFrameCB.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PerObjectCB.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Config.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Draw.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Compose.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.h" />
@@ -522,10 +531,19 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterStage.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\WardrobeRules.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCreate.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeDress.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Draw.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.cpp">
       <!-- No precompiled header: this translation unit is deliberately free of every host
            dependency so that the same text can be compiled outside either application and
@@ -581,6 +599,7 @@
     <ClCompile Include="SourceFiles\RunLog.cpp" />
     <ClCompile Include="SourceFiles\draw_debug_match_metadata.cpp" />
     <ClCompile Include="SourceFiles\draw_replay_browser.cpp" />
+    <ClCompile Include="SourceFiles\ui\ui_kit.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Notepad.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_RibbonToolbar.cpp" />

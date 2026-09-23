@@ -457,6 +457,15 @@ void ReplayWindow::DrawShortcutPreferences()
         ImGui::Checkbox("Invert Mouse Y (vertical)",   &editing.invertMouseY);
         PopPrefsFrameStyle();
 
+        ImGui::Dummy(ImVec2(0, 8.f));
+        DrawPrefsSectionHeader("WARDROBE");
+        // FIXED KEYS, so a read-only list and not a row of pickers - see kWardrobeShortcuts.
+        for (const auto& row : kWardrobeShortcuts)
+        {
+            ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.90f, 1.f), "%s", row.keys);
+            ImGui::SameLine(190.f);
+            ImGui::TextColored(ImVec4(0.63f, 0.63f, 0.67f, 1.f), "%s", row.what);
+        }
         ImGui::PopStyleColor(); // Child border
     }
     ImGui::EndChild();

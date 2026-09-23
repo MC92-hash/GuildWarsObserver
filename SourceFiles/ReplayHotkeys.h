@@ -49,6 +49,22 @@ struct ReplayHotkeys
     static bool IsValidBindableKey(int k);
 };
 
+
+// THE WARDROBE'S OWN KEYS. Fixed and not rebindable - they are single letters and they act inside
+// one sub-application only, while nothing is being typed into - so both places that list the
+// application's shortcuts show them READ-ONLY, and both read them from here.
+struct WardrobeShortcut { const char* keys; const char* what; };
+inline constexpr WardrobeShortcut kWardrobeShortcuts[] = {
+    {"Esc",             "Go up one level, or leave the Wardrobe"},
+    {"Enter",           "Open the character the keyboard is on"},
+    {"Arrow keys, Tab", "Move between tiles, swatches and rows"},
+    {"Ctrl + Z / Y",    "Undo, redo"},
+    {"Ctrl + S",        "Save look"},
+    {"F",               "Favourite this character"},
+    {"1 - 5",           "Head, Chest, Hands, Legs, Feet"},
+    {"R",               "Reset the view"},
+};
+
 // Shared ImGui widget: button that captures a key press for rebinding.
 // Returns true the frame a new key is captured.
 // When modernChrome is true, uses the GW Observer setup/licence panel styling (replay Preferences modals).

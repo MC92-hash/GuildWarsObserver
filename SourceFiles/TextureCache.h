@@ -14,6 +14,12 @@ public:
     ImTextureID GetTexture(const std::string& filePath);
     ImTextureID GetTexture(const std::wstring& filePath);
 
+    // Drop one entry so the next GetTexture reads the file again. A cache keyed by path assumes
+    // the file never changes; a thumbnail that is re-rendered and rewritten in place breaks that
+    // assumption, and only the writer knows when it has.
+    void Invalidate(const std::string& filePath);
+    void Invalidate(const std::wstring& filePath);
+
     bool IsInitialized() const { return m_device != nullptr; }
 
     // For callers that build their own textures and want the device this cache was given,
