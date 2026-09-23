@@ -738,6 +738,26 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         // callers decide how much weight to give it.
         struct Taker { int id = -1; bool confirmed = false; };
 
+        // Whoever is seen holding this exact bundle between two of its sightings.
+        //
+        // A carried bundle empties the weapon field and puts its own item id there, so a
+        // player's snapshots say plainly whether the thing in their hands is this bundle.
+        // That is a far better answer than the nearest body, and it is the only one that
+        // can tell a pickup nobody announced from a bundle that never moved at all.
+        auto whoIsHoldingIt = [&](int itemId, float from, float until) -> int {
+            if (!input.agents) return -1;
+            for (const auto& [aid, ard] : *input.agents) {
+                if (ard.type != AgentType::Player) continue;
+                for (const auto& s : ard.snapshots) {
+                    if (s.time < from - 1.0f) continue;
+                    if (s.time > until) break;
+                    if (s.weapon_type == 0 && static_cast<int>(s.weapon_item_id) == itemId)
+                        return aid;
+                }
+            }
+            return -1;
+        };
+
         auto resolveTaker = [&](int itemId, float t, float gx, float gy) -> Taker {
             int   packetTaker = -1;
             float packetDt    = 2.0f;
@@ -913,7 +933,34 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
                     continue;
                 }
 
+                // A removal does not prove anybody took it. The server also sends one when
+                // it stops reporting an item, and about twelve seconds later sends it
+                // straight back, on the same tile, untouched — every Druid's Isle recording
+                // here has at least one. Read at face value that hands the seed to whoever
+                // stood nearest, which is usually the player who just put it down, and
+                // leaves a "Vine Seed" label floating over them for those twelve seconds.
+                //
+                // Three readings, each answering where the one before it cannot:
+                //   1. the server named a taker — nothing beats that
+                //   2. a player's own snapshots hold this exact item — names them too
+                //   3. the next sighting is on the same tile — then it never left the
+                //      ground; somewhere else, and someone carried it there unseen.
+                const GroundSpan& next = spans[i + 1];
                 Taker taker = resolveTaker(bundle.itemId, departTime, sp.x, sp.y);
+                if (!taker.confirmed)
+                {
+                    const int holder = whoIsHoldingIt(bundle.itemId, departTime, next.start);
+                    if (holder >= 0) {
+                        // Their own hands, which beats the nearest-body guess outright.
+                        taker.id = holder;
+                    } else {
+                        constexpr float kSameTile = 8.f;
+                        if (std::abs(next.x - sp.x) <= kSameTile &&
+                            std::abs(next.y - sp.y) <= kSameTile)
+                            continue;   // it was lying here the whole time
+                    }
+                }
+
                 BundleTimelineEvent left;
                 left.time = departTime;
                 left.x = sp.x; left.y = sp.y; left.z = sp.z;
