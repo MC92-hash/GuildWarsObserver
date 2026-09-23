@@ -75,7 +75,12 @@ namespace Equipment
         std::vector<SlotEvent> events; // time-ordered
         // Join key for the weapon ids already present in the agent snapshot stream, which are
         // 16-bit where the equipment record's item id is 32-bit.
-        std::unordered_map<uint16_t, uint32_t> byAgentItemId;
+        //
+        // Every record the recording carried for an id, in arrival order, because the server
+        // recycles these ids freely: in 2026-09-22_Druid's_Isle_05.38 id 48 is a vine seed at
+        // 00:11, a ritualist's urn at 01:52 and a respawned flag at 03:06, each with its own
+        // ITEM_DEF. Keeping only the newest drew the seed as a banner for the whole replay.
+        std::unordered_map<uint16_t, std::vector<uint32_t>> byAgentItemId;
         bool loaded = false;
 
         const ItemDef* Find(int ref) const
@@ -83,11 +88,43 @@ namespace Equipment
             return (ref >= 0 && ref < static_cast<int>(items.size())) ? &items[ref] : nullptr;
         }
 
+        // The record that was current at `time`.
+        //
+        // BEFORE THE FIRST OBSERVATION, THE FIRST OBSERVATION IS THE ANSWER.
+        //
+        // An ITEM_DEF can land a moment after the pickup that prompted it - 85 ms in
+        // 2026-09-22_Druid's_Isle_05.44 - so insisting on a record that already existed
+        // would answer those first frames with whatever the id used to be.
+        const ItemDef* FindByAgentItemId(uint16_t id, float time) const
+        {
+            const auto* refs = RefsForAgentItemId(id);
+            if (!refs) return nullptr;
+
+            const ItemDef* best  = nullptr;   // latest record at or before `time`
+            const ItemDef* first = nullptr;   // earliest of all, for the rule above
+            for (uint32_t ref : *refs)
+            {
+                const ItemDef* d = Find(static_cast<int>(ref));
+                if (!d) continue;
+                if (!first || d->firstSeen < first->firstSeen) first = d;
+                if (d->firstSeen > time) continue;
+                if (!best || d->firstSeen > best->firstSeen) best = d;
+            }
+            return best ? best : first;
+        }
+
+        // The id's newest record, for callers with no instant in hand.
         const ItemDef* FindByAgentItemId(uint16_t id) const
+        {
+            const auto* refs = RefsForAgentItemId(id);
+            return refs ? Find(static_cast<int>(refs->back())) : nullptr;
+        }
+
+        const std::vector<uint32_t>* RefsForAgentItemId(uint16_t id) const
         {
             if (!id) return nullptr;
             auto it = byAgentItemId.find(id);
-            return it != byAgentItemId.end() ? Find(static_cast<int>(it->second)) : nullptr;
+            return (it != byAgentItemId.end() && !it->second.empty()) ? &it->second : nullptr;
         }
 
         // Item in a slot at time t, for agents whose armour is only in the event stream.
@@ -1192,7 +1229,7 @@ namespace Equipment
                 item.firstSeen = time;
 
                 if (item.ref >= out.items.size()) out.items.resize(item.ref + 1);
-                if (item.agentItemId) out.byAgentItemId[item.agentItemId] = item.ref;
+                if (item.agentItemId) out.byAgentItemId[item.agentItemId].push_back(item.ref);
                 out.items[item.ref] = std::move(item);
             }
             else if (tagLen == 9 && memcmp(f[0].b, "EQUIP_SET", 9) == 0 && n >= 4)

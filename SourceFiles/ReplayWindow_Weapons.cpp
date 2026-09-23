@@ -187,7 +187,11 @@ ReplayWindow::EquippedWeapon ReplayWindow::ResolveEquippedWeapon(const AgentRepl
 
     if (agentItemId != 0)
     {
-        out.item = equipment.FindByAgentItemId(agentItemId);
+        // The id on its own is not enough to name the item: the server recycles them, so
+        // the same number can be a vine seed in one minute and a respawned flag in the
+        // next. Ask for the record that was current at this instant, or a player carrying
+        // a seed is handed the banner its id grew up to be.
+        out.item = equipment.FindByAgentItemId(agentItemId, snap.time);
     }
     else
     {
