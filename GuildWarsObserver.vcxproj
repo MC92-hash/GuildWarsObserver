@@ -287,6 +287,8 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeArtData.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCollection.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScene.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeSceneArt.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMusic.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStyle.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeLogic.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMap.h" />
@@ -554,6 +556,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeArt.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCollection.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScene.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMusic.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStyle.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
