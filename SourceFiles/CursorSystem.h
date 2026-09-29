@@ -258,10 +258,26 @@ inline bool       g_CursorInClientArea = true;
 // yielding its frame budget to a replay).
 inline bool       g_AppBusy = false;
 
+// An ImGui item that is not a control — a 3D stage the mouse turns, say —
+// names its own cursor during the UI pass. The next UpdateCursorMode() uses
+// it while that item is hovered or held, instead of reading the hover as
+// clickable. Good for one frame: the item asks again every frame it is drawn.
+inline ImGuiID    g_ItemCursorId = 0;
+inline CursorMode g_ItemCursorMode = CursorMode::Normal;
+
+inline void SetItemCursor(ImGuiID item, CursorMode mode)
+{
+    g_ItemCursorId = item;
+    g_ItemCursorMode = mode;
+}
+
 // Determine the correct cursor mode from ImGui state.
 // Does NOT call SetCursor — callers can apply overrides before committing.
 inline void UpdateCursorMode()
 {
+    const ImGuiID itemCursorId = g_ItemCursorId;
+    g_ItemCursorId = 0;
+
     if (!g_Cursors.loaded) { g_CurrentCursor = CursorMode::Normal; return; }
 
     // Sticky window-drag: once detected, hold Move until LMB is physically released.
@@ -299,6 +315,13 @@ inline void UpdateCursorMode()
     case ImGuiMouseCursor_ResizeNWSE:  g_CurrentCursor = CursorMode::ResizeDiag1; return;
     case ImGuiMouseCursor_Hand:        g_CurrentCursor = CursorMode::Clickable;   return;
     default: break;
+    }
+
+    // An item that named its own cursor (SetItemCursor), under the pointer or held
+    if (itemCursorId != 0 && (ctx->HoveredId == itemCursorId || ctx->ActiveId == itemCursorId))
+    {
+        g_CurrentCursor = g_ItemCursorMode;
+        return;
     }
 
     // Hovering a clickable widget
