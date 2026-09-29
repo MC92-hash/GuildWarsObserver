@@ -22,6 +22,7 @@
 #include "draw_replay_browser.h"
 #include "CursorSystem.h"
 #include "RunLog.h"
+#include "WardrobeApp.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -337,6 +338,10 @@ MapBrowser::MapBrowser(InputManager* input_manager) noexcept(false)
 
 MapBrowser::~MapBrowser()
 {
+    // The Wardrobe closes first, while the renderer, the device and the interface it draws with
+    // still exist: what it keeps lives past this object, and must not reach back into it.
+    shutdown_wardrobe_app(m_map_renderer.get());
+
     if (s_activeInstance == this)
         s_activeInstance = nullptr;
     // Cancel and join any in-flight cloud download thread
