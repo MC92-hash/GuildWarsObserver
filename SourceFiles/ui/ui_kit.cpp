@@ -682,6 +682,57 @@ void ScreenTitle(const char* text)
     ImGui::GetWindowDrawList()->AddText(font, px, pos, ImGui::GetColorU32(kColorText), text);
 }
 
+// ─── Display type ────────────────────────────────────────────────────────────
+
+ImFont* DisplayFont(float px, int family)
+{
+    ImFont* best_above = nullptr;
+    float best_above_px = 0.0f;
+    ImFont* largest = nullptr;
+    float largest_px = 0.0f;
+    const bool interface_family = (family == kDisplayUi || family == kDisplayUiBold);
+    for (int pass = 0; pass < 2 && best_above == nullptr && largest == nullptr; pass++)
+    {
+        // A family that was not baked (its file is missing, or the font has no bold) answers from
+        // its regular: the serif for the display faces, the interface font's regular for its bold.
+        // The interface font's regular has nothing further to fall back to in the ladder.
+        int want = family;
+        if (pass == 1)
+        {
+            if (family == kDisplayUi)
+                break;
+            want = interface_family ? static_cast<int>(kDisplayUi) : static_cast<int>(kDisplaySerif);
+        }
+        for (int i = 0; i < GuiGlobalConstants::display_font_count; i++)
+        {
+            const DisplayFontRung& rung = GuiGlobalConstants::display_fonts[i];
+            if (rung.font == nullptr || rung.family != want)
+                continue;
+            // Three percent of slack: a rung that small an enlargement away is sharper than the
+            // next one up shrunk by a sixth.
+            if (rung.px >= px * 0.97f && (best_above == nullptr || rung.px < best_above_px))
+            {
+                best_above = rung.font;
+                best_above_px = rung.px;
+            }
+            if (largest == nullptr || rung.px > largest_px)
+            {
+                largest = rung.font;
+                largest_px = rung.px;
+            }
+        }
+    }
+    if (best_above != nullptr) return best_above;
+    if (largest != nullptr) return largest;
+    if ((family == kDisplaySerifBold || family == kDisplayUiBold) && GuiGlobalConstants::boldFont != nullptr)
+        return GuiGlobalConstants::boldFont;
+    // The interface font itself: the atlas's first font, whatever is pushed at the moment.
+    ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+    if (interface_family && atlas != nullptr && atlas->Fonts.Size > 0)
+        return atlas->Fonts[0];
+    return ImGui::GetFont();
+}
+
 // ─── Inputs ──────────────────────────────────────────────────────────────────
 
 bool SearchBox(const char* id, const char* hint, char* buf, size_t bufSize, float width)

@@ -52,16 +52,21 @@ struct ReplayHotkeys
 
 // THE WARDROBE'S OWN KEYS. Fixed and not rebindable - they are single letters and they act inside
 // one sub-application only, while nothing is being typed into - so both places that list the
-// application's shortcuts show them READ-ONLY, and both read them from here.
+// application's shortcuts show them READ-ONLY, and both read them from here. A row with no keys
+// continues the row above it: both lists are narrow, so a long line is broken by hand.
 struct WardrobeShortcut { const char* keys; const char* what; };
 inline constexpr WardrobeShortcut kWardrobeShortcuts[] = {
-    {"Esc",             "Go up one level, or leave the Wardrobe"},
-    {"Enter",           "Open the character the keyboard is on"},
-    {"Arrow keys, Tab", "Move between tiles, swatches and rows"},
-    {"Ctrl + Z / Y",    "Undo, redo"},
-    {"Ctrl + S",        "Save look"},
-    {"F",               "Favourite this character"},
-    {"1 - 5",           "Head, Chest, Hands, Legs, Feet"},
+    {"Esc",             "Go back, or leave the Wardrobe"},
+    {"Enter",           "Open the selected character"},
+    {"Arrow keys, Tab", "Move between tiles, rows and fields"},
+    {"Ctrl + S",        "Save the character (Character section)"},
+    {"",                "or the look (Armor section); a character"},
+    {"",                "that is new or has a new profession or"},
+    {"",                "gender is saved with its look"},
+    {"Ctrl + Z",        "Undo"},
+    {"Ctrl + Y",        "Redo"},
+    {"1 - 5",           "Choose an armor slot (Armor section)"},
+    {"F",               "Favorite the character"},
     {"R",               "Reset the view"},
 };
 

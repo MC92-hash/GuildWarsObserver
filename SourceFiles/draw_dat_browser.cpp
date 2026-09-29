@@ -89,8 +89,13 @@ void apply_filter(const std::vector<int>& new_filter, std::unordered_set<int>& i
 	}
 }
 
+void forget_loaded_map()
+{
+	selected_map_file_index = -1;
+}
+
 bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
-	std::unordered_map<int, std::vector<int>>& hash_index)
+	std::unordered_map<int, std::vector<int>>& hash_index, bool clear_texture_memory)
 {
 	bool success = false;
 
@@ -1086,8 +1091,10 @@ bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
 			selected_ffna_map_file.terrain_chunk.terrain_x_dims *
 			selected_ffna_map_file.terrain_chunk.terrain_y_dims)
 		{
-			// Clear up some GPU memory (especially important for GPUs with little VRAM)
-			map_renderer->GetTextureManager()->Clear();
+			// Clear up some GPU memory (especially important for GPUs with little VRAM) - unless the
+			// caller's own textures share this store (see parse_file's declaration).
+			if (clear_texture_memory)
+				map_renderer->GetTextureManager()->Clear();
 
 
 			const auto& environment_info_chunk = selected_ffna_map_file.environment_info_chunk;

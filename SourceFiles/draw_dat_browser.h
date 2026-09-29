@@ -57,8 +57,15 @@ struct CustomFileInfoEntry
 	bool is_pvp;
 };
 
+// `clear_texture_memory`: loading a map normally empties the renderer's texture store first (to
+// give the previous map's memory back). A caller whose OTHER textures live in the same store - a
+// character drawn over the map - passes false, and retires the map's own textures itself.
 bool parse_file(DATManager* dat_manager, int index, MapRenderer* map_renderer,
-	std::unordered_map<int, std::vector<int>>& hash_index);
+	std::unordered_map<int, std::vector<int>>& hash_index, bool clear_texture_memory = true);
+
+// parse_file skips a map it believes is already loaded. A caller that cleared the scene itself
+// calls this, so the next parse_file of that map loads it again.
+void forget_loaded_map();
 
 void draw_data_browser(DATManager* dat_manager, MapRenderer* map_renderer, bool dat_manager_changed, const std::unordered_set<uint32_t>& dat_compare_filter_result, const bool dat_compare_filter_result_changed,
 	std::vector<std::vector<std::string>>& csv_data, bool custom_file_info_changed);

@@ -500,6 +500,9 @@ static void UpdateWindowSettings(HWND hWnd)
     }
 }
 
+// Whether the map camera's right-button mouse-look is on (it started over no interface window).
+static bool g_mapMouseLookActive = false;
+
 // Windows procedure
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -586,8 +589,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_modelViewerLastMousePos.y = GET_Y_LPARAM(lParam);
             SetCapture(hWnd);
         }
-        else if (!g_modelViewerState.isActive)
+        else if (!g_modelViewerState.isActive && !ImGui::GetIO().WantCaptureMouse)
         {
+            // The map camera's mouse-look (it hides the cursor and pins it) only where no interface
+            // owns the mouse: over a full-window screen it stole every right drag from the screen.
+            g_mapMouseLookActive = true;
             g_input_manager->OnMouseDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         }
         break;
@@ -629,8 +635,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_modelViewerRightDown = false;
             if (!g_modelViewerLeftDown) ReleaseCapture();
         }
-        else
+        else if (g_mapMouseLookActive)
         {
+            // Only the release of a mouse-look that started puts the cursor back where it began.
+            g_mapMouseLookActive = false;
             g_input_manager->OnMouseUp(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), wParam, hWnd, message);
         }
         break;

@@ -264,7 +264,9 @@ PSOutput main(PixelInputType input)
     // while the others climb towards it, instead of an above-1 value surviving into the normal
     // map's highlight and the haze blend. At 1.00x the clamp is inert, because a sampled texel is
     // already saturated, so the pixel is unchanged.
-    float3 final_color = lighting_color * min(1.0, sampled_texture_color.rgb * map_light_gain);
+    // A BACKGROUND surface (bit 12, see the haze below) is a picture: the light gain leaves it too.
+    const float light_gain = (highlight_state & 0x1000) != 0 ? 1.0 : map_light_gain;
+    float3 final_color = lighting_color * min(1.0, sampled_texture_color.rgb * light_gain);
     
     if (highlight_mode == 1)
     {
@@ -319,7 +321,10 @@ PSOutput main(PixelInputType input)
         final_color.rgb = saturate(final_color.rgb + TeamGlow(input.normal, team_glow_id));
     }
 
-    bool should_render_fog = should_render_flags & 4;
+    // Bit 12 of highlight_state: a BACKGROUND surface (a painted backdrop wrapped round a scene, drawn
+    // first by MapRenderer::SetBackgroundMeshIds). It is as far away as the picture says, not as the
+    // geometry is, so the haze leaves it alone.
+    bool should_render_fog = (should_render_flags & 4) && (highlight_state & 0x1000) == 0;
     if (should_render_fog)
     {
         float distance = length(cam_position - input.world_position.xyz);

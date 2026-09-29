@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include "InputManager.h"
 #include "ReplayHotkeys.h"
 #include "GuiGlobalConstants.h"
@@ -324,6 +325,23 @@ public:
     }
 
     bool IsCameraOverrideActive() const { return m_cameraOverrideActive; }
+
+    // A HELD override belongs to a host that sets the camera itself every frame and draws the world
+    // through it: the main loop's per-frame reset (MapBrowser::Update, outside the model viewer)
+    // leaves it in place. Cleared by the host when it lets the camera go.
+    void SetCameraOverrideHeld(bool held) { m_cameraOverrideHeld = held; }
+    bool IsCameraOverrideHeld() const { return m_cameraOverrideHeld; }
+
+    // The override as it stands, for a caller that borrows the camera for an offscreen picture and
+    // must put it back afterwards (clearing it instead hands the next frame's world the window's
+    // own camera). Returns whether an override is active.
+    bool GetCameraOverride(DirectX::XMFLOAT4X4& view, DirectX::XMFLOAT4X4& proj, DirectX::XMFLOAT3& pos) const
+    {
+        view = m_cameraOverrideView;
+        proj = m_cameraOverrideProj;
+        pos = m_cameraOverridePos;
+        return m_cameraOverrideActive;
+    }
 
     void SetFrustumAsPerspective(float fovY, float aspectRatio, float zNear, float zFar,
                                  bool reverse_z = true)
@@ -720,6 +738,20 @@ public:
         }
 
         m_prop_mesh_ids.clear();
+        m_background_mesh_ids.clear();   // they were props, and went with them
+    }
+
+    // BACKGROUND MESHES: props (already added with AddProp) that are the scene's painted backdrop -
+    // a picture of sky and distance wrapped round the set, as the game's character-select scenes
+    // have. They are drawn in the order given, straight after the sky and with the depth test off,
+    // and left out of the prop passes, so every other surface draws over them wherever it stands.
+    // Their per-object data should carry bit 12 of highlight_state, which keeps the haze off them.
+    // ClearProps forgets them.
+    void SetBackgroundMeshIds(const std::vector<int>& mesh_ids)
+    {
+        m_background_mesh_ids = mesh_ids;
+        for (const int mesh_id : m_background_mesh_ids)
+            m_mesh_manager->SetMeshShouldRender(mesh_id, false);   // drawn by RenderWorld only
     }
 
     // Unbinds the shadow map SRV from slot 0 to avoid D3D11 validation errors
@@ -1329,7 +1361,15 @@ public:
             m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
         }
 
-        
+        // The backdrop (SetBackgroundMeshIds): over the sky, under everything else.
+        if (!m_background_mesh_ids.empty()) {
+            m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Disabled);
+            for (const int mesh_id : m_background_mesh_ids) {
+                m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
+                    m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, mesh_id);
+            }
+            m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+        }
 
         // picking_render_target can be null when writing to the offscreen buffer where picking isn't needed.
         if (picking_render_target) {
@@ -1404,7 +1444,25 @@ public:
                 m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, RenderSelectionState::TransparentOnly, true,
                 false, PixelShaderType::OldModel, false, PixelShaderType::NewModel, m_wireframe_mode);
         }
+
+        // The host's world overlay (SetWorldOverlay), last: over every surface of the world.
+        if (m_world_overlay) {
+            m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+            m_world_overlay(m_deviceContext);
+            // What the next draws take for granted (the mesh manager remembers the topology).
+            m_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            BindRegularVertexShader();
+            m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+            m_blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+        }
     }
+
+    // A WORLD OVERLAY: a draw the host adds at the very end of the world pass - after the props,
+    // the animated props, the water and every transparent surface - with the world's render target
+    // and depth buffer bound and this frame's camera already in its constant buffer (b2). It sets
+    // whatever state it needs and must put back any sampler it changes; the renderer restores the
+    // topology, the regular vertex shader, the depth state and the blend state after it. Empty: none.
+    void SetWorldOverlay(std::function<void(ID3D11DeviceContext*)> overlay) { m_world_overlay = std::move(overlay); }
 
     void RenderForReflection(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
     {
@@ -1905,6 +1963,8 @@ private:
     std::vector<int> m_shore_mesh_ids;
     std::vector<int> m_pathfinding_mesh_ids;
     std::vector<std::vector<int>> m_pathfinding_plane_mesh_ids;  // Grouped by plane
+    std::vector<int> m_background_mesh_ids;  // props drawn as the backdrop, see SetBackgroundMeshIds
+    std::function<void(ID3D11DeviceContext*)> m_world_overlay;  // see SetWorldOverlay
 
     DirectionalLight m_directionalLight;
     bool m_per_frame_cb_changed = true;
@@ -1960,5 +2020,6 @@ private:
     bool m_water_reflection_runtime_allowed = false;
 
     PerCameraCB m_per_camera_cb_data;
+    bool m_cameraOverrideHeld = false;   // SetCameraOverrideHeld
 };
 

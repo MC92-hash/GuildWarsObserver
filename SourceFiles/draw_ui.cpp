@@ -996,7 +996,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	// for the target behind it, which today is the Library and later the launcher hub.
 	if (GuiGlobalConstants::app_screen == AppScreen::Wardrobe)
 	{
-		if (!draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, "Library"))
+		if (!draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, &hash_index, "Library"))
 			GuiGlobalConstants::app_screen = AppScreen::Library;
 	}
 	else

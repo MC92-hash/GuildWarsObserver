@@ -333,13 +333,37 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScreens.h">
-      <Filter>GUI</Filter>
-    </ClInclude>
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeArt.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeArtData.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCollection.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScene.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStyle.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeLogic.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMap.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeSceneRender.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeEditor.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="SourceFiles\ReplayWindow.h">
@@ -819,16 +843,40 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCreate.cpp">
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeLogic.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeDress.cpp">
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMap.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeSceneRender.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeEditor.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeEditorCharacter.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeEditorArmor.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeViewport.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeArt.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeCollection.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeScene.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStyle.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow.cpp">

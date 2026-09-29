@@ -1,7 +1,12 @@
 # GW Observer Wardrobe: product and UX design
 
-Status: Implemented as MVP on 2026-09-23 (uncommitted); see
-gwobserver-private-dev/docs/WARDROBE_IMPLEMENTATION.md. Sections 5.3 and 6 below are STILL OPEN.
+Status: SUPERSEDED BY THE REDESIGN. The MVP this document describes was implemented on 2026-09-23;
+it was then redesigned to five approved mockups and rebuilt in stages R1-R4, finished on 2026-09-24
+(uncommitted). Read gwobserver-private-dev/docs/WARDROBE_REDESIGN.md first: it is the current
+specification and wins wherever the two differ (one editor with Character and Armor sections
+instead of the Create and Dress screens, painted backdrops, a height slider, a dye mixture).
+gwobserver-private-dev/docs/WARDROBE_IMPLEMENTATION.md is the engineering record. Of sections 5.3
+and 6 below, height and backdrops now exist (see the redesign); everything else there is STILL OPEN.
 
 Decisions from review (2026-09-23): the Wardrobe is a STANDALONE character-creation sub-application, not a Library mode and not linked to matches, filters or Scout. At launch the app will later open on a 3D hub where the user picks either the Match Library or the Wardrobe; today's Library button is a stand-in for that hub tile. All Wardrobe UI and data code lives in `gwobserver-private-dev`, exactly as the armour rendering for match replays does; the public repo carries only the switch. Everything is built in the dev environment. Companion to `HANDOFF.md` (the card redesign), which fixes the palette this document reuses.
 

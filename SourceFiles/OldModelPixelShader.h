@@ -371,7 +371,10 @@ PSOutput main(PixelInputType input)
         finalColor.rgb = saturate(finalColor.rgb + TeamGlow(input.normal, team_glow_id));
     }
 
-    bool should_render_fog = should_render_flags & 4;
+    // Bit 12 of highlight_state: a BACKGROUND surface (a painted backdrop wrapped round a scene, drawn
+    // first by MapRenderer::SetBackgroundMeshIds). It is as far away as the picture says, not as the
+    // geometry is, so the haze leaves it alone.
+    bool should_render_fog = (should_render_flags & 4) && (highlight_state & 0x1000) == 0;
     if (should_render_fog)
     {
         float distance = length(cam_position - input.world_position.xyz);

@@ -565,11 +565,16 @@ public:
 		{
 			if (!command.should_render)
 				continue;
+			// A mesh that ADDS light (a flame, a glow) is drawn with its own blend state, and only with
+			// the transparent pass - over everything opaque, like the client's effect materials.
+			const bool additive = command.blend_state == BlendState::Additive ||
+			                      command.blend_state == BlendState::AdditiveSrcAlpha;
 			if (render_select_state != RenderSelectionState::All) {
 				if (command.blend_state == BlendState::Opaque && render_select_state != RenderSelectionState::OpaqueOnly) {
 					continue;
 				}
-				if (command.blend_state == BlendState::AlphaBlend && render_select_state != RenderSelectionState::TransparentOnly) {
+				if ((command.blend_state == BlendState::AlphaBlend || additive) &&
+				    render_select_state != RenderSelectionState::TransparentOnly) {
 					continue;
 				}
 			}
@@ -653,7 +658,16 @@ public:
 			memcpy(mappedResource.pData, &transposedData, sizeof(PerObjectCB));
 			m_deviceContext->Unmap(m_perObjectCB.Get(), 0);
 
-			command.meshInstance->Draw(m_deviceContext, lod_quality);
+			if (additive)
+			{
+				blend_state_manager->SetBlendState(command.blend_state);
+				command.meshInstance->Draw(m_deviceContext, lod_quality);
+				blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+			}
+			else
+			{
+				command.meshInstance->Draw(m_deviceContext, lod_quality);
+			}
 		}
 	}
 

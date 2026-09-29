@@ -22,6 +22,42 @@ enum class AppScreen
 	Wardrobe,
 };
 
+// THE DISPLAY TYPE LADDER. Dear ImGui 1.90 bakes every font into the atlas as a bitmap at ONE size;
+// there is no dynamic sizing, and a 60 px title drawn from the 15 px interface font is a blur. So a
+// screen that sets large type needs its typefaces baked at several sizes, and picks the nearest
+// baked size per line of text (ui::DisplayFont). LoadSelectedFont fills the ladder after the
+// interface fonts; it is empty when the font files are missing, and every reader then falls back
+// to the interface font. Generic on purpose: families, sizes and nothing about who uses them.
+//
+// THE INTERFACE FONT'S OWN LADDER. The font chosen in Settings (family and its bold) is baked
+// beside the display faces at the Settings size B times a fixed set of ratios, and rebuilt with
+// the atlas whenever the font or its size changes, so a screen can set its text in the same font
+// as the rest of the application at a few sizes around B. The B rung is baked with the interface
+// font's own settings, so text drawn from it is the interface font's text pixel for pixel.
+enum DisplayFontFamily : int
+{
+	kDisplaySerif = 0,       // Friz Quadrata medium
+	kDisplaySerifBold = 1,   // Friz Quadrata bold
+	kDisplaySmallCaps = 2,   // Fontin SmallCaps, for letter-spaced capitals
+	kDisplayUi = 3,          // the interface font chosen in Settings
+	kDisplayUiBold = 4,      // its bold (the regular one where the family has none)
+	kDisplayFamilyCount
+};
+
+// The ratios of the Settings font size B the interface font is baked at (kDisplayUi and
+// kDisplayUiBold), each rounded to a whole pixel: B-3 .. B+5 at B = 15. The regular face also
+// carries three large rungs for headings (22, 26 and 40 at B = 15), so a screen that sets its titles
+// in the interface font draws them from a rung of their own size rather than an enlarged one.
+inline constexpr float kUiFontRatios[] = {0.8f, 0.87f, 0.93f, 1.0f, 1.07f, 1.13f, 1.2f, 1.33f};
+inline constexpr float kUiHeadingRatios[] = {1.47f, 1.73f, 2.67f};
+
+struct DisplayFontRung
+{
+	ImFont* font = nullptr;
+	float px = 0.0f;         // the size it was baked at
+	int family = kDisplaySerif;
+};
+
 class GuiGlobalConstants
 {
 public:
@@ -300,6 +336,11 @@ public:
 	inline static ImFont* boldFont = nullptr;
 	inline static ImFont* monoFont = nullptr;      // Roboto Mono Regular
 	inline static ImFont* monoBoldFont = nullptr;   // Roboto Mono Bold
+
+	// The display ladder (see DisplayFontRung above), rebuilt with the atlas.
+	inline static constexpr int kMaxDisplayFonts = 48;
+	inline static DisplayFontRung display_fonts[kMaxDisplayFonts] = {};
+	inline static int display_font_count = 0;
 
 	// Window settings
 	inline static int window_width = -1;

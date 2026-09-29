@@ -307,6 +307,25 @@ public:
 		return true;
 	}
 
+	// The id the next texture will get. Two marks around a load bracket every texture it minted.
+	int NextTextureId() const { return m_nextTextureID; }
+
+	// Retire every texture minted in [first, end) - both halves, and its cache entry, as
+	// RemoveTextureByHash does - for a caller that loaded a whole scene between two marks and is
+	// done with it. Textures the load REUSED by hash were minted earlier and are left alone.
+	void RemoveTextureRange(int first, int end)
+	{
+		if (first < 0 || end <= first)
+			return;
+		for (auto it = m_textures.begin(); it != m_textures.end();)
+			it = (it->first >= first && it->first < end) ? m_textures.erase(it) : std::next(it);
+		for (auto it = m_texture_types.begin(); it != m_texture_types.end();)
+			it = (it->first >= first && it->first < end) ? m_texture_types.erase(it) : std::next(it);
+		for (auto it = cached_textures.begin(); it != cached_textures.end();)
+			it = (it->second.textureID >= first && it->second.textureID < end) ? cached_textures.erase(it)
+			                                                                    : std::next(it);
+	}
+
 	bool RemoveTexture(int textureID)
 	{
 		auto it = m_textures.find(textureID);

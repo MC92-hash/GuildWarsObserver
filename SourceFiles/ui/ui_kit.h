@@ -170,6 +170,17 @@ void SectionLabel(const char* text);
 // 22 px bold body text, the one size the Wardrobe adds ("Your characters").
 void ScreenTitle(const char* text);
 
+// ─── Display type ────────────────────────────────────────────────────────────
+
+// The baked font for text drawn at `px` in one DisplayFontFamily (GuiGlobalConstants.h): the
+// smallest rung at least that large, else the largest, so large type is shrunk a little rather
+// than blown up. Draw with ImDrawList::AddText(font, px, ...) at the exact size; a widget that
+// cannot take a size uses the font as pushed. A family that was not baked answers from its
+// nearest relative: a bold from its regular, the small caps from the serif, the interface
+// font's ladder from the interface font itself. Never null: with no ladder baked (missing font
+// files) it answers the interface font, bold for the bold families.
+ImFont* DisplayFont(float px, int family = 0);
+
 // ─── Inputs ──────────────────────────────────────────────────────────────────
 
 // The browser's search field: 4 px frame, hint text, optional fixed width (0 = fill).

@@ -119,6 +119,7 @@ static void LoadSelectedFont(float fontSize)
 {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
+    GuiGlobalConstants::display_font_count = 0;   // the rungs point into the atlas just cleared
 
     int idx = GuiGlobalConstants::saved_font_index;
     if (idx < 0 || idx >= g_fontTableCount)
@@ -195,7 +196,115 @@ static void LoadSelectedFont(float fontSize)
         }
     }
 
+    // THE DISPLAY LADDER (GuiGlobalConstants.h, DisplayFontRung). Added AFTER every interface font,
+    // so the default font - the first one in the atlas - is exactly what it was, and nothing that
+    // does not ask for a display size changes. The display faces are at fixed pixel sizes,
+    // independent of the interface font size: a reader multiplies its own size by that setting and
+    // ui::DisplayFont picks the nearest baked rung. The interface font's own rungs follow. The glyph set is small on purpose - Basic Latin, Latin-1 and the handful
+    // of punctuation marks display copy uses - so eighteen sizes cost a fraction of what one
+    // interface font with its fallbacks does. Large sizes skip horizontal oversampling, which buys
+    // nothing at that size and doubles the glyph area.
+    GuiGlobalConstants::display_font_count = 0;
+    {
+        const std::string base = GetFontBasePath();
+        static const ImWchar kDisplayRanges[] = {
+            0x0020, 0x00FF,   // Basic Latin, Latin-1 (the middle dot is U+00B7)
+            0x2013, 0x2014,   // en and em dash
+            0x2018, 0x2019,   // single curly quotes
+            0x201C, 0x201D,   // double curly quotes
+            0x2022, 0x2022,   // bullet
+            0x2026, 0x2026,   // ellipsis
+            0,
+        };
+        struct Rung { const char* file; float px; int family; };
+        static const Rung kRungs[] = {
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 14.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 16.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 18.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 20.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 22.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 25.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 28.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 32.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 38.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 46.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 56.0f, kDisplaySerif },
+            { "friz-quadrata-std-medium-5870338ec7ef8.otf", 68.0f, kDisplaySerif },
+            { "friz-quadrata-std-bold-587034a220f9f.otf",   20.0f, kDisplaySerifBold },
+            { "friz-quadrata-std-bold-587034a220f9f.otf",   26.0f, kDisplaySerifBold },
+            { "friz-quadrata-std-bold-587034a220f9f.otf",   34.0f, kDisplaySerifBold },
+            { "Fontin-SmallCaps.otf",                        13.0f, kDisplaySmallCaps },
+            { "Fontin-SmallCaps.otf",                        16.0f, kDisplaySmallCaps },
+            { "Fontin-SmallCaps.otf",                        20.0f, kDisplaySmallCaps },
+        };
+        for (const Rung& rung : kRungs)
+        {
+            if (base.empty() || GuiGlobalConstants::display_font_count >= GuiGlobalConstants::kMaxDisplayFonts)
+                break;
+            const std::string path = base + "\\" + rung.file;
+            if (!std::filesystem::exists(path))
+                continue;
+            ImFontConfig config;
+            config.OversampleH = rung.px >= 24.0f ? 1 : 2;
+            config.OversampleV = 1;
+            ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), rung.px, &config, kDisplayRanges);
+            if (font == nullptr)
+                continue;
+            DisplayFontRung& slot = GuiGlobalConstants::display_fonts[GuiGlobalConstants::display_font_count++];
+            slot.font = font;
+            slot.px = rung.px;
+            slot.family = rung.family;
+        }
+
+        // THE INTERFACE FONT'S LADDER (kDisplayUi, kDisplayUiBold): the font chosen in Settings and
+        // its bold, at the Settings size times kUiFontRatios, rounded to whole pixels (a size two
+        // ratios round to is baked once), plus the regular face's heading rungs. Baked with the
+        // default ImFontConfig - the one the interface font itself was baked with above - so the
+        // rung at the Settings size draws the same glyphs at the same advances as the interface
+        // font: the same text, pixel for pixel. Only the glyph set differs (the display ranges,
+        // which add the dashes, quotes and ellipsis the interface font's default ranges leave out).
+        // The built-in font has no file to bake from; there the ladder is empty and readers fall
+        // back to the interface font itself (ui::DisplayFont).
+        auto font_path = [&](const char* file) -> std::string
+        {
+            if (file == nullptr)
+                return std::string();
+            const std::string path = entry.isSystemFont ? std::string("C:\\Windows\\Fonts\\") + file
+                                                         : (base.empty() ? std::string() : base + "\\" + file);
+            return (!path.empty() && std::filesystem::exists(path)) ? path : std::string();
+        };
+        const std::string ui_regular = font_path(entry.fileName);
+        const std::string ui_bold = font_path(entry.boldFileName);
+        auto bake_ui = [&](const std::string& path, float ratio, int family)
+        {
+            if (path.empty() || GuiGlobalConstants::display_font_count >= GuiGlobalConstants::kMaxDisplayFonts)
+                return;
+            const float px = std::round(fontSize * ratio);
+            if (px < 6.0f)
+                return;
+            for (int i = 0; i < GuiGlobalConstants::display_font_count; i++)
+                if (GuiGlobalConstants::display_fonts[i].family == family && GuiGlobalConstants::display_fonts[i].px == px)
+                    return;
+            ImFontConfig config;   // the interface font's own settings
+            ImFont* font = io.Fonts->AddFontFromFileTTF(path.c_str(), px, &config, kDisplayRanges);
+            if (font == nullptr)
+                return;
+            DisplayFontRung& slot = GuiGlobalConstants::display_fonts[GuiGlobalConstants::display_font_count++];
+            slot.font = font;
+            slot.px = px;
+            slot.family = family;
+        };
+        for (const float ratio : kUiFontRatios)
+            bake_ui(ui_regular, ratio, kDisplayUi);
+        for (const float ratio : kUiHeadingRatios)
+            bake_ui(ui_regular, ratio, kDisplayUi);
+        for (const float ratio : kUiFontRatios)
+            bake_ui(ui_bold, ratio, kDisplayUiBold);
+    }
+
     io.Fonts->Build();
+    RunLog::Line("fonts: atlas %d x %d, %d display sizes", io.Fonts->TexWidth, io.Fonts->TexHeight,
+                 GuiGlobalConstants::display_font_count);
 }
 
 using namespace DirectX;
@@ -688,9 +797,10 @@ void MapBrowser::Update(duration<double, std::milli> elapsed)
                 orbitalCam->GetPosition());
         }
     }
-    else
+    else if (!m_map_renderer->IsCameraOverrideHeld())
     {
-        // Clear camera override when not in model viewer mode
+        // Clear camera override when not in model viewer mode - unless a host holds it (the
+        // Wardrobe's scene sets it every frame and its world must be drawn through it).
         m_map_renderer->ClearCameraOverride();
     }
 
