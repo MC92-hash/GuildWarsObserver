@@ -928,6 +928,53 @@ static void ParseSoundEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Speech bubbles (SPEECH_BUBBLE;agent_id;encoded words as UTF-8)
+// ---------------------------------------------------------------------------
+
+static void ParseSpeechBubbleEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                // Split by hand: the message is everything after the second ';', whatever it holds.
+                const char* s1 = static_cast<const char*>(memchr(li.dataStart, ';', li.lineEnd - li.dataStart));
+                const char* s2 = s1 ? static_cast<const char*>(memchr(s1 + 1, ';', li.lineEnd - (s1 + 1))) : nullptr;
+                if (s2 && std::string_view(li.dataStart, s1 - li.dataStart) == "SPEECH_BUBBLE")
+                {
+                    SpeechBubbleEvent ev;
+                    ev.time     = li.time;
+                    ev.agent_id = ToInt(s1 + 1, s2);
+                    const int len = static_cast<int>(li.lineEnd - (s2 + 1));
+                    if (len > 0)
+                    {
+                        const int wlen = MultiByteToWideChar(CP_UTF8, 0, s2 + 1, len, nullptr, 0);
+                        if (wlen > 0)
+                        {
+                            ev.words.resize(wlen);
+                            MultiByteToWideChar(CP_UTF8, 0, s2 + 1, len, ev.words.data(), wlen);
+                        }
+                    }
+                    data.speechBubbles.push_back(std::move(ev));
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Model changes (MODEL_INIT / MODEL_CHANGE / MODEL_RESYNC)
 //
 // MODEL_INIT is the per-player baseline the recorder polls once; MODEL_CHANGE comes from the
@@ -1072,6 +1119,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "door_events",                   ParseDoorEvents },
     { "flag_events",                   ParseFlagEvents },
     { "sound_events",                  ParseSoundEvents },
+    { "speech_bubble_events",          ParseSpeechBubbleEvents },
     { "equipment_events",              ParseEquipmentEvents },
     { "model_events",                  ParseModelEvents },
     { "energy_events",                 ParseEnergyEvents },

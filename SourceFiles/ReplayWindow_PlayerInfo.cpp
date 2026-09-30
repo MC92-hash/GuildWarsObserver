@@ -2117,6 +2117,66 @@ void ReplayWindow::DrawPlayerInfoPanel()
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // SECTION 3C — EFFECTS (flux effects this player carries right now)
+    // ═══════════════════════════════════════════════════════════════
+    if (const BossTenure* boss = FindBossTenure(m_playerInfoAgentId, m_debugTimeline))
+    {
+        float winX = ImGui::GetWindowPos().x;
+        ImVec2 ePos = ImVec2(winX + kPadX, ImGui::GetCursorScreenPos().y);
+
+        dl->AddLine(ImVec2(ePos.x, ePos.y), ImVec2(ePos.x + contentW - 2 * kPadX, ePos.y), kDivider);
+        ePos.y += 8.f;
+
+        dl->AddText(nullptr, 10.f, ePos, kGold, "EFFECTS");
+        ePos.y += 16.f;
+
+        const float iconSz = pipSkillIconSz;
+        ImVec2 iconTL = ePos;
+        ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+        ImTextureID fluxTex = LoadSkillIconFile(dev, "PvP_Flair.png");
+        if (fluxTex)
+            dl->AddImageRounded(fluxTex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                                IM_COL32(255, 255, 255, 255), 6.f);
+        dl->AddRect(iconTL, iconBR, IM_COL32(212, 160, 32, 255), 6.f, 0, 1.5f);
+
+        // Drawn straight into the draw list, so hovering is tested against the rect
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup) &&
+            ImGui::IsMouseHoveringRect(iconTL, iconBR))
+        {
+            ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.039f, 0.055f, 0.071f, 0.96f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.83f, 0.63f, 0.13f, 0.3f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 12));
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(340.f);
+
+            if (fluxTex) { ImGui::Image(fluxTex, ImVec2(40, 40)); ImGui::SameLine(); }
+            ImGui::BeginGroup();
+            ImGui::TextColored(ImVec4(1, 1, 1, 1), "The Boss");
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "Flux effect (Like a Boss)");
+            ImGui::EndGroup();
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted("You're the boss! You have -20 armor, +33% attack speed, +33% "
+                                   "movement speed, -33% skill activation time, +3 Health "
+                                   "regeneration, and +1 Energy regeneration. You lose this buff "
+                                   "when you die.");
+
+            const int held = static_cast<int>(std::max(0.f, m_debugTimeline - boss->start));
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Held for %d:%02d", held / 60, held % 60);
+
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+            ImGui::PopStyleVar(2);
+            ImGui::PopStyleColor(2);
+        }
+
+        ePos.y += iconSz + 8.f;
+        ImGui::SetCursorScreenPos(ImVec2(winX + kPadX, ePos.y));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
     // SECTION 4 — WEAPON SETS
     // ═══════════════════════════════════════════════════════════════
     if (m_pipWeaponSets.built && !m_pipWeaponSets.sets.empty())

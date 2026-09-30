@@ -1656,6 +1656,19 @@ struct LifecycleEvent
 };
 
 // ---------------------------------------------------------------------------
+// Speech bubbles (from speech_bubble_events.txt)
+// ---------------------------------------------------------------------------
+
+// A line the server made an agent say over its head. `words` is the Guild Wars encoded string,
+// one wchar per encoded word; the recorder writes it as UTF-8, so it decodes back word for word.
+struct SpeechBubbleEvent
+{
+    float        time = 0.f;
+    int          agent_id = 0;
+    std::wstring words;
+};
+
+// ---------------------------------------------------------------------------
 // Map object manipulation events (from manipulate_map_object_events.txt)
 // ---------------------------------------------------------------------------
 
@@ -1906,6 +1919,7 @@ struct StoCData
     std::vector<UnknownEvent>           unknown;
     std::vector<StoCLordDamageEvent>    lordDamage;
     std::vector<LifecycleEvent>         lifecycle;
+    std::vector<SpeechBubbleEvent>      speechBubbles;
     std::vector<MapObjectEvent>         mapObject;
     std::vector<DoorEvent>              doorEvents;
     FlagEventData                       flagEvents;

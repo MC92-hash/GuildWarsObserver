@@ -895,6 +895,7 @@ void ReplayWindow::UpdateSpeechBubbles()
     {
         m_speechBubbles.clear();
         m_shoutScanCursor.clear();
+        m_bossClaimScanCursor = 0;
         m_lastShoutScanTime = now;
         return;
     }
@@ -909,6 +910,20 @@ void ReplayWindow::UpdateSpeechBubbles()
             it = m_speechBubbles.erase(it);
         else
             ++it;
+    }
+
+    // The Boss claims are the server's own shout, not a skill, so they have their own list
+    for (; m_bossClaimScanCursor < m_bossClaims.size(); ++m_bossClaimScanCursor)
+    {
+        const BossClaim& claim = m_bossClaims[m_bossClaimScanCursor];
+        if (claim.time > now) break;
+        if (claim.time <= scanFrom) continue;
+
+        SpeechBubble sb;
+        sb.agentId   = claim.agentId;
+        sb.text      = "I am the boss!";
+        sb.spawnTime = claim.time;
+        m_speechBubbles[claim.agentId] = std::move(sb);
     }
 
     const auto& db = m_skillView;
@@ -1039,6 +1054,88 @@ void ReplayWindow::RenderSpeechBubbles()
         dl->AddText(font, fontSize, ImVec2(textX, textY),
                     IM_COL32(255, 255, 255, alpha), sb.text.c_str());
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// The Boss (Like a Boss flux) - who held it, and when
+// ---------------------------------------------------------------------------
+
+void ReplayWindow::BuildBossTimeline()
+{
+    m_bossClaims.clear();
+    m_bossTenures.clear();
+    m_bossClaimScanCursor = 0;
+
+    // "I am the boss!" as the encoded string the server sends with the shout
+    constexpr std::wstring_view kClaimWords = L"\x8103\x08D9";
+    for (const auto& sb : m_replayCtx.stocData.speechBubbles)
+    {
+        auto it = m_replayCtx.agents.find(sb.agent_id);
+        if (it == m_replayCtx.agents.end() || it->second.type != AgentType::Player) continue;
+        if (std::wstring_view(sb.words).starts_with(kClaimWords))
+            m_bossClaims.push_back({ sb.time, sb.agent_id });
+    }
+    if (m_bossClaims.empty()) return;
+    std::stable_sort(m_bossClaims.begin(), m_bossClaims.end(),
+                     [](const BossClaim& a, const BossClaim& b) { return a.time < b.time; });
+
+    // A holder loses it by dying, or by leaving the match for good (a removal with no later add)
+    struct Ending { float time; int agentId; };
+    std::vector<Ending> endings;
+    for (const auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player) continue;
+        bool wasDead = false;
+        for (const auto& snap : ard.snapshots)
+        {
+            if (snap.is_dead && !wasDead) endings.push_back({ snap.time, agentId });
+            wasDead = snap.is_dead;
+        }
+    }
+    std::unordered_map<int, float> lastAdd;
+    for (const auto& ev : m_replayCtx.stocData.lifecycle)
+        if (ev.isAdd) lastAdd[ev.agent_id] = std::max(lastAdd[ev.agent_id], ev.time);
+    for (const auto& ev : m_replayCtx.stocData.lifecycle)
+    {
+        if (ev.isAdd) continue;
+        auto la = lastAdd.find(ev.agent_id);
+        if (la == lastAdd.end() || la->second < ev.time)
+            endings.push_back({ ev.time, ev.agent_id });
+    }
+    std::sort(endings.begin(), endings.end(),
+              [](const Ending& a, const Ending& b) { return a.time < b.time; });
+
+    // Endings are applied in time order up to each shout, so a death before a shout never closes
+    // the tenure that shout opens, and the victim's death just after it closes the victim's.
+    std::unordered_map<int, size_t> open;   // holder -> index in m_bossTenures
+    size_t next = 0;
+    auto closeUntil = [&](float t) {
+        for (; next < endings.size() && endings[next].time < t; ++next)
+        {
+            auto it = open.find(endings[next].agentId);
+            if (it == open.end()) continue;
+            m_bossTenures[it->second].end = endings[next].time;
+            open.erase(it);
+        }
+    };
+    for (const auto& claim : m_bossClaims)
+    {
+        closeUntil(claim.time);
+        if (open.count(claim.agentId)) continue;   // already holding it
+        open[claim.agentId] = m_bossTenures.size();
+        m_bossTenures.push_back({ claim.agentId, claim.time, FLT_MAX });
+    }
+    closeUntil(FLT_MAX);
+}
+
+
+const ReplayWindow::BossTenure* ReplayWindow::FindBossTenure(int agentId, float t) const
+{
+    for (const auto& tenure : m_bossTenures)
+        if (tenure.agentId == agentId && tenure.start <= t && t < tenure.end)
+            return &tenure;
+    return nullptr;
 }
 
 

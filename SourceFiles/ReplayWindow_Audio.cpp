@@ -243,7 +243,10 @@ void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
                                   ? m_audioStocGain[m_audioSoundEventCursor] : 1.0f;
             const SoundLogCategory category =
                 ClassifySoundEvent(ev, m_replayCtx, m_audioAttackSoundIds);
-            if (layerGain > 0.f && !IsSkillCategory(category)) {
+            // The boss sound is scheduled from the shout instead; this recorded copy only exists
+            // when the recording camera was in earshot, and would play it twice.
+            const bool bossCopy = (ev.file_id == kBossSoundFileId) && !m_bossClaims.empty();
+            if (layerGain > 0.f && !IsSkillCategory(category) && !bossCopy) {
                 // The recorder writes positions in GWCA game space (x, y, z_height). The listener
                 // lives in render space (x, height, y) after the map transform, so these have to
                 // go through exactly the same conversion the agents and the skill sounds do -
@@ -345,10 +348,19 @@ void ReplayWindow::BuildSkillSoundTimeline()
     // skillUseHistory is filled in a later phase than audio init; building before it exists would
     // cache an empty timeline permanently, so stay unbuilt and retry on a later frame.
     if (!m_skillUseTimelineBuilt) return;
+    // The Boss claims are scheduled into the same list, so wait for them too.
+    if (!m_bossTimelineBuilt) return;
 
     m_audioSkillTimeline.clear();
     m_audioSkillCursor = 0;
     m_audioSkillTimelineBuilt = true;
+
+    // The Boss: the game plays its sound on the new holder about a second after the shout.
+    // Scheduled like a skill cue, so it follows the holder wherever the recording camera was.
+    for (const auto& claim : m_bossClaims)
+        m_audioSkillTimeline.push_back({ claim.time + kBossSoundDelay, kBossSoundFileId,
+                                         claim.agentId, claim.agentId, 0,
+                                         SoundLogCategory::SkillEffect, 1.0f });
 
     if (!m_skillSoundTable || !m_skillSoundTable->IsLoaded()) return;
 

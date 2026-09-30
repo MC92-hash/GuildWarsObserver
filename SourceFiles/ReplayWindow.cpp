@@ -5867,6 +5867,13 @@ void ReplayWindow::Tick()
         m_knockdownIntervalsBuilt = true;
     }
 
+    // Who held The Boss (Like a Boss flux) and when
+    if (m_agentsClassified && m_replayCtx.stocLoaded && !m_bossTimelineBuilt)
+    {
+        BuildBossTimeline();
+        m_bossTimelineBuilt = true;
+    }
+
     // Solve per-player max_hp timelines from combat decimals before the combat
     // log is built, so absolute damage/heal values benefit from the result.
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_maxHpSolved)

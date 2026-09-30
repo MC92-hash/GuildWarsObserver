@@ -1949,6 +1949,31 @@ private:
     void  UpdateSpeechBubbles();
     void  RenderSpeechBubbles();
 
+    // --- The Boss (Like a Boss flux, every September) ---
+    // Observers never receive the effect itself. They do receive the server making each new holder
+    // shout "I am the boss!" at the killing blow, and a holder keeps it until they die. The game
+    // has granted it with no kill (a prot saving the victim) and to a second player while the
+    // first still held it, so several tenures can be open at once.
+    struct BossClaim {
+        float time    = 0.f;
+        int   agentId = -1;
+    };
+    struct BossTenure {
+        int   agentId = -1;
+        float start   = 0.f;
+        float end     = FLT_MAX;
+    };
+    // The game's sound on the new holder. The client also "plays" file 156282 on them 6 ms later,
+    // but that is an FFNA file, not audio - most likely the aura effect itself.
+    static constexpr uint32_t kBossSoundFileId = 195328;
+    static constexpr float    kBossSoundDelay  = 1.0f;    // after the shout: median of 79 captures
+    std::vector<BossClaim>  m_bossClaims;      // time-ordered "I am the boss!" shouts
+    std::vector<BossTenure> m_bossTenures;
+    bool   m_bossTimelineBuilt   = false;
+    size_t m_bossClaimScanCursor = 0;          // speech-bubble scan position in m_bossClaims
+    void   BuildBossTimeline();
+    const BossTenure* FindBossTenure(int agentId, float t) const;
+
     // --- Spatial Audio ---
     // Background/UI/Music/Dialog/attack-hits play back from StoC/sound_events.txt directly: real
     // captured file_id/position/timing. Skill-cast (Effects/SkillCue) sounds are synthesized from
