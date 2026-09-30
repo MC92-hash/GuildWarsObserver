@@ -415,6 +415,10 @@ private:
         int  uid     = 0;
         int  agentId = -1;
         bool open    = true;
+        // [2026-09-30] What the last "To Wardrobe" said, and when, shown for a few seconds.
+        std::string exportMessage;
+        bool   exportOk = false;
+        double exportAt = -100.0;
     };
     std::vector<CharacterPanelInstance> m_characterPanels;
     int  m_nextCharacterPanelUid = 1;
@@ -1403,6 +1407,11 @@ private:
     void DrawHeadpieceParticles(const DirectX::XMMATRIX& view, int onlyAgentId = -1,
                                 const DirectX::XMFLOAT4X4* attachOverride = nullptr);
     void ReleasePlayerVisuals();   // match teardown
+
+    // [2026-09-30] The character panel's "To Wardrobe": this player's look as the recording has it -
+    // face, hair, colours, height, armour and dyes - saved in the Wardrobe under `playerName` (a
+    // character of that name gets it as a new look). `message` says what happened, for the panel.
+    bool ExportLookToWardrobe(int agentId, const std::string& playerName, std::string& message);
 
     // Effects the game plays on an agent, such as a flux's: a model that follows the agent, with
     // its own clip and particles. The transform pass says where each agent stands this frame, one

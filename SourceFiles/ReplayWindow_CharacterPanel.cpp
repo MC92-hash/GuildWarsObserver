@@ -1661,12 +1661,117 @@ void ReplayWindow::DrawCharacterPanels()
                     ImGui::SameLine(0.f, 6.f);
                 }
             ImGui::TextColored(ImVec4(0.92f, 0.94f, 0.97f, 1.f), "%s", ard->playerName.c_str());
+            const float nameTop = ImGui::GetItemRectMin().y;
 
             std::string subtitle = ProfessionName(ard->primaryProf);
             if (ard->secondaryProf > 0)
                 subtitle += std::string(" / ") + ProfessionName(ard->secondaryProf);
             if (!ard->guildTag.empty()) subtitle += "  -  [" + ard->guildTag + "]";
             ImGui::TextColored(muted, "%s", subtitle.c_str());
+            const float headerBottom = ImGui::GetItemRectMax().y;
+
+            // ── To Wardrobe ───────────────────────────────────────────────────── [2026-09-30] ──
+            //
+            // The player's look - face, hair, colours, height, every worn piece and its dyes - saved
+            // in the Wardrobe, after a yes / no: on the Wardrobe character of the player's name as a
+            // new look, or on a new character made for it. At the name line's right end, the name
+            // being what it is saved under. The game's export arrow (Textures\Toolbar\
+            // ui_template_actions.png: 128x64, the green arrow at rest at x 76..93 and lit at 51..68,
+            // y 2..19), and the prompt's check and cross (confirm_yesno.png: the check on the top row,
+            // the cross below, each at rest on the left and lit on the right).
+            {
+                const std::filesystem::path toolbar = TexturesDir().empty() ? std::filesystem::path()
+                                                                            : TexturesDir() / "Toolbar";
+                ImTextureID actions = toolbar.empty() ? nullptr : ArtFromPath(dev, toolbar / "ui_template_actions.png");
+                ImTextureID yesno = toolbar.empty() ? nullptr : ArtFromPath(dev, toolbar / "confirm_yesno.png");
+
+                // A framed button with a picture and a word; the picture lit under the pointer.
+                auto pictureButton = [&](const char* id, const char* word, ImTextureID sheet, ImVec2 uvRest0,
+                                         ImVec2 uvRest1, ImVec2 uvLit0, ImVec2 uvLit1, ImVec2 at) -> bool
+                {
+                    const float icon = lineH + 2.f;
+                    const float pad = 8.f;
+                    const ImVec2 size(pad * 2.f + (sheet ? icon + 6.f : 0.f) + ImGui::CalcTextSize(word).x, lineH + 8.f);
+                    ImGui::SetCursorScreenPos(at);
+                    const bool clicked = ImGui::InvisibleButton(id, size);
+                    const bool hovered = ImGui::IsItemHovered();
+                    const bool held = ImGui::IsItemActive();
+                    ImDrawList* bdl = ImGui::GetWindowDrawList();
+                    const ImVec2 mx(at.x + size.x, at.y + size.y);
+                    bdl->AddRectFilled(at, mx, held ? IM_COL32(30, 28, 24, 255)
+                                                    : (hovered ? IM_COL32(58, 52, 42, 255) : IM_COL32(40, 37, 32, 255)), 3.f);
+                    bdl->AddRect(at, mx, hovered ? IM_COL32(190, 160, 105, 255) : IM_COL32(113, 102, 80, 255), 3.f);
+                    float x = at.x + pad;
+                    if (sheet)
+                    {
+                        const ImVec2 p0(x, at.y + (size.y - icon) * 0.5f);
+                        bdl->AddImage(sheet, p0, ImVec2(p0.x + icon, p0.y + icon), hovered ? uvLit0 : uvRest0,
+                                      hovered ? uvLit1 : uvRest1);
+                        x += icon + 6.f;
+                    }
+                    bdl->AddText(ImVec2(x, at.y + (size.y - lineH) * 0.5f),
+                                 hovered ? IM_COL32(240, 232, 214, 255) : IM_COL32(216, 208, 192, 255), word);
+                    return clicked;
+                };
+
+                const char* label = "To Wardrobe";
+                const float buttonW = 16.f + lineH + 2.f + 6.f + ImGui::CalcTextSize(label).x;
+                const ImVec2 resume = ImGui::GetCursorScreenPos();
+                // Centred on the two header lines, so it keeps clear of the panel's top edge.
+                const float buttonH = lineH + 8.f;
+                const ImVec2 at(ImGui::GetWindowPos().x + sheetW - buttonW - 8.f,
+                                std::round((nameTop + headerBottom) * 0.5f - buttonH * 0.5f));
+                if (pictureButton("##to_wardrobe", label, actions, ImVec2(76.f / 128.f, 2.f / 64.f),
+                                  ImVec2(93.f / 128.f, 19.f / 64.f), ImVec2(51.f / 128.f, 2.f / 64.f),
+                                  ImVec2(68.f / 128.f, 19.f / 64.f), at))
+                    ImGui::OpenPopup("##to_wardrobe_prompt");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Save this player's look in the Wardrobe");
+                ImGui::SetCursorScreenPos(resume);
+
+                // What the export said, for a few seconds, just left of the button.
+                const double age = ImGui::GetTime() - panel.exportAt;
+                if (!panel.exportMessage.empty() && age >= 0.0 && age < 6.0)
+                {
+                    const float fade = age < 5.0 ? 1.f : static_cast<float>(6.0 - age);
+                    const ImVec2 textSize = ImGui::CalcTextSize(panel.exportMessage.c_str());
+                    const ImU32 colour = panel.exportOk ? IM_COL32(120, 200, 120, static_cast<int>(255 * fade))
+                                                        : IM_COL32(230, 110, 100, static_cast<int>(255 * fade));
+                    dl->AddText(ImVec2(at.x - textSize.x - 12.f, at.y + (buttonH - textSize.y) * 0.5f), colour,
+                                panel.exportMessage.c_str());
+                }
+
+                // The prompt.
+                ImGui::SetNextWindowPos(ImVec2(at.x + buttonW, at.y + buttonH + 6.f), ImGuiCond_Appearing, ImVec2(1.f, 0.f));
+                if (ImGui::BeginPopupModal("##to_wardrobe_prompt", nullptr,
+                                           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar |
+                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove))
+                {
+                    ImGui::TextUnformatted("Export this character's look to the Wardrobe?");
+                    ImGui::Dummy(ImVec2(0.f, 6.f));
+                    const ImVec2 row = ImGui::GetCursorScreenPos();
+                    bool yes = pictureButton("##to_wardrobe_yes", "Yes", yesno, ImVec2(0.f, 0.f), ImVec2(0.5f, 0.5f),
+                                             ImVec2(0.5f, 0.f), ImVec2(1.f, 0.5f), row);
+                    const float yesW = ImGui::GetItemRectSize().x;
+                    const bool no = pictureButton("##to_wardrobe_no", "No", yesno, ImVec2(0.f, 0.5f), ImVec2(0.5f, 1.f),
+                                                  ImVec2(0.5f, 0.5f), ImVec2(1.f, 1.f), ImVec2(row.x + yesW + 8.f, row.y));
+                    if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
+                        yes = true;
+                    if (yes)
+                    {
+                        std::string message;
+                        panel.exportOk = ExportLookToWardrobe(ard->agent_id, ard->playerName, message);
+                        panel.exportMessage = message;
+                        panel.exportAt = ImGui::GetTime();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    else if (no || ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                    {
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
+            }
 
             ImGui::Spacing();
             ImGui::Separator();
