@@ -455,6 +455,7 @@ void ReplayWindow::RenderPiP()
     // touches off the context - which is why the weapon and cylinder passes below still work.
     DrawPlayerVisuals(/*secondaryView=*/true);
     DrawHeadpieceParticles(cam->GetView());
+    DrawAgentEffects(cam->GetView());
     DrawWeaponModels();
     DrawAgentCylinders();
 

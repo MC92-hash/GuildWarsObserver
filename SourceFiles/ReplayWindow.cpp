@@ -723,6 +723,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 ReplayWindow::~ReplayWindow()
 {
     ReleasePlayerVisuals();
+    ReleaseAgentEffects();
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
     if (m_weaponModelLoadThread.joinable())
@@ -6717,7 +6718,10 @@ void ReplayWindow::Render()
     // ...and the particles their headpieces carry, after the character so the head is already in
     // the depth buffer to hide the ones behind it.
     if (Camera* camera = m_mapRenderer->GetCamera())
+    {
         DrawHeadpieceParticles(camera->GetView());
+        DrawAgentEffects(camera->GetView());
+    }
     DrawWeaponModels();
 
     DrawAgentCylinders();

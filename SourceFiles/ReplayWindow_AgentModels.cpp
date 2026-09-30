@@ -1619,8 +1619,9 @@ void ReplayWindow::DrawAgentModels()
     float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 
     // A headpiece hangs where this pass puts it, and nowhere if this pass does not reach its
-    // character: last frame's attachments go first.
+    // character: last frame's attachments go first. So do the agents' effects.
     ClearHeadpieceAttachments();
+    ClearAgentEffectAttachments();
 
     const MapTransform& mt = m_replayCtx.mapTransform;
     const InterpolationSettings& is = m_replayCtx.interpSettings;
@@ -2211,6 +2212,14 @@ void ReplayWindow::DrawAgentModels()
                     animState.controller->GetBoneMatrices(), worldF, animState.perMeshCBs);
             }
 
+            // An effect played on this agent rides its skeleton too.
+            if (m_agentEffects && animState.controller && tmplIt != m_agentModelTemplates.end()) {
+                XMFLOAT4X4 worldF{};
+                XMStoreFloat4x4(&worldF, worldMat);
+                AgentEffectsPlace(agentId, tmplIt->second, animState.controller->GetBoneMatrices(),
+                                  worldF, pos, rotRad);
+            }
+
             // Consumed by DrawWeaponModels, which runs after this pass.
             animState.lastSnapIdx = snapIdx;
 
@@ -2250,6 +2259,7 @@ void ReplayWindow::DrawAgentModels()
     {
         const float pace = m_replayCtx.isPlaying ? frameDt * m_replayCtx.playbackSpeed : 0.f;
         StepHeadpieceParticles(pace);
+        StepAgentEffects(pace);
 
         // A BODY MUST NOT BE INTEGRATED ACROSS A JUMP. The timeline is dragged, stepped and
         // restarted, and a band asked to swing from one end of a match to the other in one frame

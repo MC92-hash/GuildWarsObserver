@@ -49,6 +49,8 @@ class SkillSoundTable;
 // recorder wrote. Opaque here on purpose: this window holds one, asks it four questions and never
 // looks inside. Everything it is lives in the module the project links against.
 namespace PlayerVisuals { class Set; }
+// The effects the game plays on an agent: opaque here for the same reason.
+namespace AgentEffects { class Player; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -1401,6 +1403,20 @@ private:
     void DrawHeadpieceParticles(const DirectX::XMMATRIX& view, int onlyAgentId = -1,
                                 const DirectX::XMFLOAT4X4* attachOverride = nullptr);
     void ReleasePlayerVisuals();   // match teardown
+
+    // Effects the game plays on an agent, such as a flux's: a model that follows the agent, with
+    // its own clip and particles. The transform pass says where each agent stands this frame, one
+    // step per frame brings them to the timeline, one draw per view. Defined in the private
+    // module; with nothing to play not one of them does anything.
+    void ClearAgentEffectAttachments();
+    void AgentEffectsPlace(int agentId, const AgentModelInstance& tmpl,
+                           const std::vector<DirectX::XMFLOAT4X4>& boneMatrices,
+                           const DirectX::XMFLOAT4X4& characterWorld,
+                           const DirectX::XMFLOAT3& position, float heading);
+    void StepAgentEffects(float dt);
+    void DrawAgentEffects(const DirectX::XMMATRIX& view);
+    void ReleaseAgentEffects();   // match teardown
+    std::shared_ptr<AgentEffects::Player> m_agentEffects;
 
     // WHICH ANIMATION FILE A STAND-IN SHOULD PLAY, and not simply the first one that carries its
     // skeleton. Professions SHARE skeletons - male Monk and Mesmer are one rig, male Paragon and
