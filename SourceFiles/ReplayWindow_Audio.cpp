@@ -117,6 +117,18 @@ SoundLogCategory ClassifySoundEvent(const SoundLogEvent& ev, const ReplayContext
     return SoundLogCategory::Footstep;
 }
 
+// The boss sound as the recorder saw it: the type-8 reference, and its MP3 landing with it at the
+// same spot. The MP3 alone is also a Lava Arrows layer, so only the pair counts.
+bool IsRecordedBossSound(const std::vector<SoundLogEvent>& events, size_t i, uint32_t refId, uint32_t sampleId)
+{
+    const auto& e = events[i];
+    if (e.file_id == refId) return true;
+    if (e.file_id != sampleId) return false;
+    for (size_t j = i; j-- > 0 && e.time - events[j].time <= 0.03f; )
+        if (events[j].file_id == refId && events[j].x == e.x && events[j].y == e.y) return true;
+    return false;
+}
+
 } // namespace
 
 static std::filesystem::path GetSkillSoundsJsonPath()
@@ -245,7 +257,8 @@ void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
                 ClassifySoundEvent(ev, m_replayCtx, m_audioAttackSoundIds);
             // The boss sound is scheduled from the shout instead; this recorded copy only exists
             // when the recording camera was in earshot, and would play it twice.
-            const bool bossCopy = (ev.file_id == kBossSoundFileId) && !m_bossClaims.empty();
+            const bool bossCopy = !m_bossClaims.empty() &&
+                IsRecordedBossSound(soundEvents, m_audioSoundEventCursor, kBossSoundRefId, kBossSoundFileId);
             if (layerGain > 0.f && !IsSkillCategory(category) && !bossCopy) {
                 // The recorder writes positions in GWCA game space (x, y, z_height). The listener
                 // lives in render space (x, height, y) after the map transform, so these have to

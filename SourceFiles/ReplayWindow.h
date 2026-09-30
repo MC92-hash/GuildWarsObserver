@@ -1963,9 +1963,10 @@ private:
         float start   = 0.f;
         float end     = FLT_MAX;
     };
-    // The game's sound on the new holder. The client also "plays" file 156282 on them 6 ms later,
-    // but that is an FFNA file, not audio - most likely the aura effect itself.
-    static constexpr uint32_t kBossSoundFileId = 195328;
+    // The game's sound on the new holder: 195328 is an FFNA type-8 reference file pointing at the
+    // MP3 156282, which is what actually plays. The recorder logs both, 6 ms apart.
+    static constexpr uint32_t kBossSoundRefId  = 195328;
+    static constexpr uint32_t kBossSoundFileId = 156282;
     static constexpr float    kBossSoundDelay  = 1.0f;    // after the shout: median of 79 captures
     std::vector<BossClaim>  m_bossClaims;      // time-ordered "I am the boss!" shouts
     std::vector<BossTenure> m_bossTenures;
