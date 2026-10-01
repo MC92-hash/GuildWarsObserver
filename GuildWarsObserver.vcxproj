@@ -394,6 +394,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Compose.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Links.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_TexAnim.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Record.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Shaders.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_ShaderText.h" />
@@ -561,6 +562,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStyle.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Headpiece.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Links.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_TexAnim.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_AgentEffects.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\AgentEffects.cpp" />
