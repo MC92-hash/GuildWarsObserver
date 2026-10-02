@@ -122,7 +122,11 @@ public:
 	inline static const int left_panel_width = 450;
 	inline static const int right_panel_width = 450;
 	inline static const float panel_padding = 6.0f;
-	inline static const float menu_bar_height = 20.0f; // Height of the main menu bar
+	// Legacy debug panels retain their menu offset; workspaces use ContentTop().
+	inline static const float menu_bar_height = 20.0f;
+	inline static const float ribbon_height = 64.0f;
+	// Utility menus and workspace destinations occupy one shared header.
+	static float ContentTop() { return ribbon_height * std::clamp(saved_font_size / 15.f, .85f, 1.6f); }
 
 	inline static bool hide_all = false;
 	inline static bool is_dat_browser_open = true;

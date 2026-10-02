@@ -646,7 +646,8 @@ void MapBrowser::Tick()
     // still holds when this window's frame is skipped (a focused replay window
     // makes Tick() return before Render()).
     {
-        bool busy = !g_loadingScreenDone || g_pendingReplay.requested;
+        bool busy = !g_loadingScreenDone || g_pendingReplay.requested ||
+                    (GuiGlobalConstants::app_screen == AppScreen::Wardrobe && wardrobe_app_busy());
         if (!busy)
         {
             for (const auto& rw : m_replay_windows)
@@ -1249,6 +1250,9 @@ void MapBrowser::Render()
     // the hourglass appears on this frame rather than after the next tick has
     // created the window.
     if (g_pendingReplay.requested)
+        g_AppBusy = true;
+    // The same for the Wardrobe, opened or still getting ready in the UI pass above.
+    if (GuiGlobalConstants::app_screen == AppScreen::Wardrobe && wardrobe_app_busy())
         g_AppBusy = true;
     ApplyCursor();   // honours g_AppBusy
     ImGui::Render();

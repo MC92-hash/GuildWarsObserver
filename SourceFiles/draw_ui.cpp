@@ -16,6 +16,10 @@
 // switch that reaches it, and nothing else about it.
 #include "WardrobeApp.h"
 #include "GuiGlobalConstants.h"
+#include "ui/ui_kit.h"
+#include "ui/app_navigation.h"
+#include "TextureCache.h"
+#include "CursorSystem.h"
 #include "ReplayLibrary.h"
 #include "FolderWatcher.h"
 #include "FontConfig.h"
@@ -864,94 +868,78 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	int initial_dat_manager_to_show = dat_manager_to_show;
 
-	// Main menu bar — always visible
-	if (ImGui::BeginMainMenuBar()) {
-		if (ImGui::BeginMenu("File")) {
-			if (ImGui::MenuItem("Wardrobe")) {
-				GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
-			}
-			ImGui::Separator();
-			if (ImGui::MenuItem("Settings...")) {
-				s_settingsOpen = true;
-			}
-			ImGui::Separator();
-			if (ImGui::MenuItem("Exit")) {
-				PostQuitMessage(0);
-			}
-			ImGui::EndMenu();
-		}
-		if (GuiGlobalConstants::IsDeveloperMode() && ImGui::BeginMenu("Debug")) {
-			if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
-				GuiGlobalConstants::SaveSettings();
-			}
-			if (ImGui::BeginMenu("Simulate Update")) {
-				if (ImGui::MenuItem("Update Available"))
-					g_debugSimulateUpdateState = UpdateChecker::State::UpdateAvailable;
-				if (ImGui::MenuItem("Downloading (40%)"))
-					g_debugSimulateUpdateState = UpdateChecker::State::Downloading;
-				if (ImGui::MenuItem("Ready to Install"))
-					g_debugSimulateUpdateState = UpdateChecker::State::ReadyToInstall;
-				if (ImGui::MenuItem("Error"))
-					g_debugSimulateUpdateState = UpdateChecker::State::Error;
-				if (ImGui::MenuItem("Checking..."))
-					g_debugSimulateUpdateState = UpdateChecker::State::Checking;
+	// Utility menus are drawn inside the shared application header.
+	auto drawHeaderMenus = [&]() {
+		const bool menusOpen = app_navigation::BeginMenus();
+		if (menusOpen) {
+			if (ImGui::BeginMenu("File")) {
+				if (ImGui::MenuItem("Settings...")) {
+					s_settingsOpen = true;
+				}
 				ImGui::Separator();
-				if (ImGui::MenuItem("Full Test (Copy & Restart)"))
-					g_debugFullUpdateTest = true;
-				ImGui::EndMenu();
-			}
-			if (ImGui::BeginMenu("Responsive Test Mode")) {
-				struct Preset { const char* label; int w; int h; };
-				static const Preset presets[] = {
-					{ " 800 x  600", 800, 600 },
-					{ "1024 x  768", 1024, 768 },
-					{ "1366 x  768", 1366, 768 },
-					{ "1600 x  900", 1600, 900 },
-					{ "1920 x 1080", 1920, 1080 },
-					{ "2560 x 1440", 2560, 1440 },
-				};
-				for (const auto& p : presets) {
-					if (ImGui::MenuItem(p.label)) {
-						HWND hw = FindWindowW(L"GuildWarsObserverWindowClass", nullptr);
-						if (hw) {
-							RECT rc = { 0, 0, (LONG)p.w, (LONG)p.h };
-							AdjustWindowRectEx(&rc, GetWindowLong(hw, GWL_STYLE), TRUE, GetWindowLong(hw, GWL_EXSTYLE));
-							SetWindowPos(hw, nullptr, 0, 0,
-								rc.right - rc.left, rc.bottom - rc.top,
-								SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-							ShowWindow(hw, SW_RESTORE);
-						}
-					}
+				if (ImGui::MenuItem("Exit")) {
+					PostQuitMessage(0);
 				}
 				ImGui::EndMenu();
 			}
-			ImGui::EndMenu();
+			if (GuiGlobalConstants::IsDeveloperMode() && ImGui::BeginMenu("Debug")) {
+				if (ImGui::MenuItem("Match Metadata", NULL, &GuiGlobalConstants::is_debug_match_metadata_open)) {
+					GuiGlobalConstants::SaveSettings();
+				}
+				if (ImGui::BeginMenu("Simulate Update")) {
+					if (ImGui::MenuItem("Update Available"))
+						g_debugSimulateUpdateState = UpdateChecker::State::UpdateAvailable;
+					if (ImGui::MenuItem("Downloading (40%)"))
+						g_debugSimulateUpdateState = UpdateChecker::State::Downloading;
+					if (ImGui::MenuItem("Ready to Install"))
+						g_debugSimulateUpdateState = UpdateChecker::State::ReadyToInstall;
+					if (ImGui::MenuItem("Error"))
+						g_debugSimulateUpdateState = UpdateChecker::State::Error;
+					if (ImGui::MenuItem("Checking..."))
+						g_debugSimulateUpdateState = UpdateChecker::State::Checking;
+					ImGui::Separator();
+					if (ImGui::MenuItem("Full Test (Copy & Restart)"))
+						g_debugFullUpdateTest = true;
+					ImGui::EndMenu();
+				}
+				if (ImGui::BeginMenu("Responsive Test Mode")) {
+					struct Preset { const char* label; int w; int h; };
+					static const Preset presets[] = {
+						{ " 800 x  600", 800, 600 },
+						{ "1024 x  768", 1024, 768 },
+						{ "1366 x  768", 1366, 768 },
+						{ "1600 x  900", 1600, 900 },
+						{ "1920 x 1080", 1920, 1080 },
+						{ "2560 x 1440", 2560, 1440 },
+					};
+					for (const auto& p : presets) {
+						if (ImGui::MenuItem(p.label)) {
+							HWND hw = FindWindowW(L"GuildWarsObserverWindowClass", nullptr);
+							if (hw) {
+								RECT rc = { 0, 0, (LONG)p.w, (LONG)p.h };
+								AdjustWindowRectEx(&rc, GetWindowLong(hw, GWL_STYLE), TRUE, GetWindowLong(hw, GWL_EXSTYLE));
+								SetWindowPos(hw, nullptr, 0, 0,
+									rc.right - rc.left, rc.bottom - rc.top,
+									SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+								ShowWindow(hw, SW_RESTORE);
+							}
+						}
+					}
+					ImGui::EndMenu();
+				}
+				ImGui::EndMenu();
+			}
+			if (ImGui::BeginMenu("Help")) {
+				if (ImGui::MenuItem("Check for Updates"))
+					g_checkForUpdatesRequested = true;
+				ImGui::Separator();
+				if (ImGui::MenuItem("Licence & Credits"))
+					s_licenceModalOpen = true;
+				ImGui::EndMenu();
+			}
 		}
-		if (ImGui::BeginMenu("Help")) {
-			if (ImGui::MenuItem("Check for Updates"))
-				g_checkForUpdatesRequested = true;
-			ImGui::Separator();
-			if (ImGui::MenuItem("Licence & Credits"))
-				s_licenceModalOpen = true;
-			ImGui::EndMenu();
-		}
-		// Version label — right-aligned in menu bar
-		{
-			const char* ver = "v" GWO_VERSION;
-			const char* credit = "By Purif & Maverick";
-			float verW = ImGui::CalcTextSize(ver).x;
-			float creditW = ImGui::CalcTextSize(credit).x;
-			float barW = ImGui::GetWindowSize().x;
-			float pad = 12.0f;
-			float gap = 10.0f;
-			ImGui::SameLine(barW - verW - gap - creditW - pad);
-			ImGui::TextColored(ImVec4(0.545f, 0.529f, 0.494f, 1.0f), "%s", credit);
-			ImGui::SameLine(0, gap);
-			ImGui::TextColored(ImVec4(0.784f, 0.608f, 0.235f, 1.0f), "%s", ver);
-		}
-
-		ImGui::EndMainMenuBar();
-	}
+		app_navigation::EndMenus(menusOpen);
+	};
 
 	// DAT file missing notification bar
 	if (!s_settingsOpen && gw_dat_path_set &&
@@ -960,7 +948,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	{
 		ImVec2 display = ImGui::GetIO().DisplaySize;
 		float barH = 28.f;
-		ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::menu_bar_height));
+		ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::ContentTop()));
 		ImGui::SetNextWindowSize(ImVec2(display.x, barH));
 		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.55f, 0.35f, 0.05f, 0.95f));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 4));
@@ -991,13 +979,61 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	if (folder_watcher.HasPendingRefresh() && replay_library.IsLoaded())
 		replay_library.RescanDiff();
 
+	// THE RIBBON [2026-09-30], and the tool it asks for. The Wardrobe is never switched off from
+	// outside: it is asked to leave, closes its visit itself (drafts written, scene released) and
+	// answers false, and only then does the Library - or Scout - come in.
+	static AppTab s_afterWardrobe = AppTab::None;
+	{
+		const AppTab current = GuiGlobalConstants::app_screen == AppScreen::Wardrobe ? AppTab::Wardrobe
+			: (replay_browser_scout_mode() ? AppTab::Scout : AppTab::Library);
+		const AppTab clicked = draw_app_ribbon(current);
+		drawHeaderMenus();
+		if (clicked != AppTab::None && clicked != current)
+		{
+			if (current == AppTab::Wardrobe)
+			{
+				s_afterWardrobe = clicked;
+				request_wardrobe_leave();
+			}
+			else if (clicked == AppTab::Wardrobe)
+			{
+				GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
+			}
+			else
+			{
+				replay_browser_set_scout_mode(clicked == AppTab::Scout);
+				// The click focused the ribbon; the keyboard goes back to the screen.
+				ImGui::SetWindowFocus("##replay_browser");
+			}
+		}
+	}
+
 	// THE APP SWITCH. The Library and the Wardrobe are siblings: exactly one of them owns the
-	// window below the menu bar on any frame. The Wardrobe answers false when the user has asked
-	// for the target behind it, which today is the Library and later the launcher hub.
+	// window below the ribbon on any frame. The Wardrobe answers false on the frame it has left -
+	// asked by the ribbon, or by Esc from its top screen - and has no way back of its own to show
+	// (nullptr): the ribbon is that.
 	if (GuiGlobalConstants::app_screen == AppScreen::Wardrobe)
 	{
-		if (!draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, &hash_index, "Library"))
+		// [2026-09-30] Still getting ready - its first frames read the catalogue and the scene, and
+		// block the loop for seconds: the hourglass, raised before the frame so it is up while they
+		// run (MapBrowser keeps it up between the frames).
+		bool stay = true;
+		if (wardrobe_app_busy())
+		{
+			ScopedWaitCursor hourglass;
+			stay = draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, &hash_index, nullptr);
+		}
+		else
+		{
+			stay = draw_wardrobe_app(dat_managers[dat_manager_to_show].get(), map_renderer, &hash_index, nullptr);
+		}
+		if (!stay)
+		{
 			GuiGlobalConstants::app_screen = AppScreen::Library;
+			if (s_afterWardrobe != AppTab::None)
+				replay_browser_set_scout_mode(s_afterWardrobe == AppTab::Scout);
+			s_afterWardrobe = AppTab::None;
+		}
 	}
 	else
 	{

@@ -4709,18 +4709,71 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
     }
 }
 
-// THE WARDROBE ENTRY. It is deliberately NOT the Scout chrome. Scout is a mode of this screen and
-// wears the amber "this is on" style; this button LEAVES the screen for the other sub-application,
-// and an outlined secondary button with a hanger says "somewhere else" instead of "switched on".
-// When the launcher hub arrives it takes this button's job and this can go.
-static void DrawWardrobeSwitchButton(const char* id)
+// ─── "N new matches added", beside the refresh button ─────────────────── [2026-09-30] ──
+//
+// What the last rescan brought in, as a pill right after the refresh button it belongs to (it was a
+// bar across the top of the screen). It leaves by itself after a few seconds, fading, or at once
+// from its x. Drawn straight after the refresh button: it centres itself on that item.
+static void DrawNewMatchesPill()
 {
-    ImGui::PushID(id);
-    if (ui::IconTextButton("Wardrobe", ui::DrawHangerGlyph))
-        GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Wardrobe - create a character and dress it");
-    ImGui::PopID();
+    if (s_state.notifyDismissed || s_state.notifyStartTime < 0.f || s_state.notifyNewCount <= 0)
+        return;
+
+    const float elapsed = (float)ImGui::GetTime() - s_state.notifyStartTime;
+    constexpr float kAutoDismissTime = 4.f;
+    constexpr float kFadeDuration = 0.3f;
+    if (elapsed > kAutoDismissTime + kFadeDuration)
+    {
+        s_state.notifyNewCount = 0;
+        return;
+    }
+    const float alpha = elapsed > kAutoDismissTime ? 1.f - (elapsed - kAutoDismissTime) / kFadeDuration : 1.f;
+
+    char text[256];
+    if (s_state.notifyNewCount == 1 && !s_state.notifyMatchName.empty())
+    {
+        std::string truncated = s_state.notifyMatchName;
+        if (truncated.size() > 50) truncated = truncated.substr(0, 47) + "...";
+        snprintf(text, sizeof(text), "New match added: %s", truncated.c_str());
+    }
+    else if (s_state.notifyNewCount == 1)
+        snprintf(text, sizeof(text), "1 new match added");
+    else
+        snprintf(text, sizeof(text), "%d new matches added", s_state.notifyNewCount);
+
+    const ImVec2 refMn = ImGui::GetItemRectMin();
+    const ImVec2 refMx = ImGui::GetItemRectMax();
+    const float lineH = ImGui::GetTextLineHeight();
+    const float pillH = lineH + 10.f;
+    const float padX = 10.f;
+    const float closeW = lineH + 8.f;
+    const float textW = ImGui::CalcTextSize(text).x;
+
+    ImGui::SameLine(0, 10);
+    const ImVec2 at(ImGui::GetCursorScreenPos().x, std::floor((refMn.y + refMx.y - pillH) * 0.5f));
+    ImGui::SetCursorScreenPos(at);
+    ImGui::Dummy(ImVec2(padX + textW + 4.f, pillH));
+    ImGui::SameLine(0, 0);
+    const bool dismiss = ImGui::InvisibleButton("##new_matches_dismiss", ImVec2(closeW, pillH));
+    const bool closeHovered = ImGui::IsItemHovered();
+    if (closeHovered)
+        ImGui::SetTooltip("Dismiss");
+
+    const ImVec2 mx(at.x + padX + textW + 4.f + closeW, at.y + pillH);
+    const auto A = [alpha](int a) { return (int)(a * alpha); };
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(at, mx, IM_COL32(0x2A, 0x2A, 0x1C, A(255)), 4.f);
+    dl->AddRect(at, mx, IM_COL32(0x7A, 0x9A, 0x50, A(255)), 4.f);
+    dl->AddText(ImVec2(at.x + padX, at.y + (pillH - lineH) * 0.5f), IM_COL32(0xB8, 0xDC, 0x90, A(255)), text);
+    const float cx = mx.x - closeW * 0.5f - 2.f;
+    const float cy = at.y + pillH * 0.5f;
+    const float r = 3.5f;
+    const ImU32 xCol = closeHovered ? IM_COL32(0xF0, 0xE8, 0xD6, A(255)) : IM_COL32(0xA8, 0xA0, 0x90, A(255));
+    dl->AddLine(ImVec2(cx - r, cy - r), ImVec2(cx + r, cy + r), xCol, 1.5f);
+    dl->AddLine(ImVec2(cx - r, cy + r), ImVec2(cx + r, cy - r), xCol, 1.5f);
+
+    if (dismiss)
+        s_state.notifyDismissed = true;
 }
 
 static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
@@ -4760,61 +4813,39 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         }
     }
 
-    // View toggle: Table | Cards | Prep
-    ImGui::SameLine(0, 16);
-    ImGui::TextColored(kColorTextDim, "|");
-    ImGui::SameLine(0, 8);
+    // View toggle: Table | Cards. The Library's own views: Scout is a tool of its own on the
+    // application ribbon [2026-09-30], and has neither.
+    if (!s_state.tournamentMode)
+    {
+        ImGui::SameLine(0, 16);
+        ImGui::TextColored(kColorTextDim, "|");
+        ImGui::SameLine(0, 8);
 
-    if (ui::SegmentedButton("Table", !s_state.cardGalleryMode && !s_state.tournamentMode))
-    {
-        s_state.cardGalleryMode = false;
-        s_state.tournamentMode = false;
-        GuiGlobalConstants::replay_card_gallery_mode = 0;
-        GuiGlobalConstants::SaveSettings();
-    }
-    ImGui::SameLine(0, 2);
-    if (ui::SegmentedButton("Cards", s_state.cardGalleryMode && !s_state.tournamentMode))
-    {
-        s_state.cardGalleryMode = true;
-        s_state.tournamentMode = false;
-        GuiGlobalConstants::replay_card_gallery_mode = 1;
-        GuiGlobalConstants::SaveSettings();
-    }
-    ImGui::SameLine(0, 2);
-    {
-        // Tournament Prep button - amber accent when active
-        bool prepActive = s_state.tournamentMode;
-        if (prepActive)
+        if (ui::SegmentedButton("Table", !s_state.cardGalleryMode))
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.15f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
+            s_state.cardGalleryMode = false;
+            GuiGlobalConstants::replay_card_gallery_mode = 0;
+            GuiGlobalConstants::SaveSettings();
         }
-        else
+        ImGui::SameLine(0, 2);
+        if (ui::SegmentedButton("Cards", s_state.cardGalleryMode))
         {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.7f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.56f, 0.63f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+            s_state.cardGalleryMode = true;
+            GuiGlobalConstants::replay_card_gallery_mode = 1;
+            GuiGlobalConstants::SaveSettings();
         }
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
-        if (ImGui::Button("Scout"))
-        {
-            s_state.tournamentMode = !s_state.tournamentMode;
-        }
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Scout - what they run, and what beats them");
     }
 
     // ── Opponent guild search + map filter (inline in top bar when Scout is active) ──
     if (s_state.tournamentMode)
     {
-        ImGui::SameLine(0, 16);
-        ImGui::TextColored(kColorTextDim, "|");
-        ImGui::SameLine(0, 8);
+        // First on the bar when the count and the sort are hidden (Scout's own panel).
+        if (!hideSortAndCount)
+        {
+            ImGui::SameLine(0, 16);
+            ImGui::TextColored(kColorTextDim, "|");
+            ImGui::SameLine(0, 8);
+        }
 
         // Opponent guild search with autocomplete
         ImGui::SetNextItemWidth(220.f);
@@ -4997,16 +5028,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
                                         : "Refresh - re-fetch match list from cloud");
-
-    // The far right of the toolbar, which is where a door out of the screen belongs.
-    {
-        const float btnW = ui::IconTextButtonWidth("Wardrobe");
-        const float x = ImGui::GetWindowContentRegionMax().x - btnW;
-        ImGui::SameLine(0, 16);
-        if (x > ImGui::GetCursorPosX())
-            ImGui::SetCursorPosX(x);
-        DrawWardrobeSwitchButton("##gallery_wardrobe");
-    }
+    DrawNewMatchesPill();
 }
 
 // ─── Tournament Prep stats panel ────────────────────────────────────────────
@@ -5702,7 +5724,6 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
     // The refresh badge is the tallest thing on this row, so the row grows to it and every
     // other control is centred against that height instead of sitting on the top edge.
-    constexpr float btnPadY = 2.0f;
     const float rowTopY = ImGui::GetCursorPosY();
     const float topRowH = std::max(RefreshIconButtonHeight(), ImGui::GetFrameHeight());
     auto CentreOnRow = [&](float itemH) {
@@ -5725,47 +5746,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
                                         : "Refresh - re-fetch match list from cloud");
-
-    // Prep button in table header
-    ImGui::SameLine(0, 8);
-    CentreOnRow(ImGui::GetTextLineHeight() + btnPadY * 2.0f + 2.0f);   // +border
-    {
-        bool prepActive = s_state.tournamentMode;
-        if (prepActive)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.961f, 0.620f, 0.043f, 0.15f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.961f, 0.620f, 0.043f, 1.0f));
-        }
-        else
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.12f, 0.15f, 0.7f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.56f, 0.63f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
-        }
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, btnPadY));
-        if (ImGui::Button("Scout"))
-        {
-            s_state.tournamentMode = !s_state.tournamentMode;
-        }
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Scout - what they run, and what beats them");
-    }
-
-    // The far right of the header row, matching the card gallery's own placement.
-    {
-        const float btnW = ui::IconTextButtonWidth("Wardrobe");
-        const float x = ImGui::GetWindowContentRegionMax().x - btnW;
-        ImGui::SameLine(0, 8);
-        if (x > ImGui::GetCursorPosX())
-            ImGui::SetCursorPosX(x);
-        CentreOnRow(ImGui::GetFrameHeight());
-        DrawWardrobeSwitchButton("##table_wardrobe");
-    }
+    DrawNewMatchesPill();
     ImGui::Separator();
 
     // Card mode for mobile
@@ -7260,72 +7241,17 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
     ImGui::PopStyleVar(2);
 }
 
-// ─── Notification bar for new matches ─────────────────────────────────────────
+// ─── Main entry point ────────────────────────────────────────────────────────
 
-static void DrawNotificationBar()
+bool replay_browser_scout_mode()
 {
-    if (s_state.notifyDismissed || s_state.notifyStartTime < 0.f || s_state.notifyNewCount <= 0)
-        return;
-
-    float elapsed = (float)ImGui::GetTime() - s_state.notifyStartTime;
-    constexpr float kAutoDissmissTime = 4.f;
-    constexpr float kFadeDuration = 0.3f;
-
-    if (elapsed > kAutoDissmissTime + kFadeDuration)
-    {
-        s_state.notifyNewCount = 0;
-        return;
-    }
-
-    float alpha = 1.f;
-    if (elapsed > kAutoDissmissTime)
-        alpha = 1.f - (elapsed - kAutoDissmissTime) / kFadeDuration;
-
-    char text[256];
-    if (s_state.notifyNewCount == 1 && !s_state.notifyMatchName.empty())
-    {
-        std::string truncated = s_state.notifyMatchName;
-        if (truncated.size() > 50) truncated = truncated.substr(0, 47) + "...";
-        snprintf(text, sizeof(text), "New match added: %s", truncated.c_str());
-    }
-    else if (s_state.notifyNewCount == 1)
-        snprintf(text, sizeof(text), "1 new match added");
-    else
-        snprintf(text, sizeof(text), "%d new matches added", s_state.notifyNewCount);
-
-    float barH = 28.f;
-    float availW = ImGui::GetContentRegionAvail().x;
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
-
-    dl->AddRectFilled(p, ImVec2(p.x + availW, p.y + barH),
-        IM_COL32(212, 160, 32, (int)(30 * alpha)));
-    dl->AddLine(p, ImVec2(p.x, p.y + barH),
-        IM_COL32(212, 160, 32, (int)(255 * alpha)), 2.f);
-
-    ImGui::SetCursorScreenPos(ImVec2(p.x + 10.f, p.y + (barH - ImGui::GetTextLineHeight()) * 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.85f * alpha));
-    ImGui::TextUnformatted(text);
-    ImGui::PopStyleColor();
-
-    // Dismiss button
-    float btnW = ImGui::CalcTextSize("X").x + 12.f;
-    ImGui::SetCursorScreenPos(ImVec2(p.x + availW - btnW - 4.f, p.y + (barH - ImGui::GetTextLineHeight()) * 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 0.5f * alpha));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.1f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.f, 1.f, 1.f, 0.2f));
-    if (ImGui::SmallButton("X##notif_dismiss"))
-        s_state.notifyDismissed = true;
-    ImGui::PopStyleColor(4);
-    ImGui::PopStyleVar();
-
-    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + barH + 2.f));
+    return s_state.tournamentMode;
 }
 
-// ─── Main entry point ────────────────────────────────────────────────────────
+void replay_browser_set_scout_mode(bool on)
+{
+    s_state.tournamentMode = on;
+}
 
 void draw_replay_browser(ReplayLibrary& library)
 {
@@ -7423,8 +7349,8 @@ void draw_replay_browser(ReplayLibrary& library)
     if (s_state.layout != LayoutMode::Mobile)
         s_state.mobileShowDetail = false;
 
-    ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::menu_bar_height), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(totalW, displaySize.y - GuiGlobalConstants::menu_bar_height), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::ContentTop()), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(totalW, displaySize.y - GuiGlobalConstants::ContentTop()), ImGuiCond_Always);
 
     int themeColors = PushGlassTheme();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(sp, sp));
@@ -7445,7 +7371,6 @@ void draw_replay_browser(ReplayLibrary& library)
         return;
     }
 
-    DrawNotificationBar();
 
     // Debounce global search (200ms)
     if (s_state.lastSearchEditTime >= 0.0f &&

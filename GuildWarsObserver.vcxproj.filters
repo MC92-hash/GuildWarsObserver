@@ -327,6 +327,9 @@
     <ClInclude Include="SourceFiles\ui\ui_kit.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\ui\app_navigation.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h">
       <Filter>GUI</Filter>
     </ClInclude>
