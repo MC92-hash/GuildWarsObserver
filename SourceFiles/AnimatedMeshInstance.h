@@ -64,10 +64,12 @@ public:
      * shader's skinning step becomes a no-op for them.
      */
     bool UpdateVertexPositions(ID3D11DeviceContext* context,
-                               const std::vector<XMFLOAT3>& positions)
+                               const std::vector<XMFLOAT3>& positions,
+                               const std::vector<XMFLOAT3>* normals = nullptr)
     {
         if (!m_dynamicVertices || !m_vertexBuffer || !context ||
-            positions.size() != m_baseVertices.size())
+            positions.size() != m_baseVertices.size() ||
+            (normals != nullptr && normals->size() != positions.size()))
         {
             return false;
         }
@@ -81,6 +83,8 @@ public:
         {
             dst[i] = m_baseVertices[i];
             dst[i].position = positions[i];
+            if (normals != nullptr)
+                dst[i].normal = (*normals)[i];   // a rigid CPU pose (a held weapon's own clip) turns them too
             dst[i].boneIndices[0] = static_cast<uint32_t>(MAX_BONES - 1);
             dst[i].boneIndices[1] = dst[i].boneIndices[2] = dst[i].boneIndices[3] =
                 static_cast<uint32_t>(MAX_BONES - 1);
