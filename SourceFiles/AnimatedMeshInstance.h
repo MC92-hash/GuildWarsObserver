@@ -99,6 +99,30 @@ public:
     }
 
     /**
+     * @brief Writes a whole vertex array, every vertex on the identity bone slot (see UpdateVertexPositions):
+     * particle quads and lightning bolts rebuilt in world space every frame.
+     */
+    bool UpdateVertices(ID3D11DeviceContext* context, const std::vector<GWVertex>& vertices)
+    {
+        if (!m_dynamicVertices || !m_vertexBuffer || !context || vertices.size() != m_baseVertices.size())
+            return false;
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(context->Map(m_vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return false;
+        auto* dst = static_cast<SkinnedGWVertex*>(mapped.pData);
+        for (size_t i = 0; i < vertices.size(); i++)
+        {
+            dst[i] = SkinnedGWVertex(vertices[i]);
+            dst[i].boneIndices[0] = dst[i].boneIndices[1] = dst[i].boneIndices[2] = dst[i].boneIndices[3] =
+                static_cast<uint32_t>(MAX_BONES - 1);
+            dst[i].boneWeights[0] = 1.0f;
+            dst[i].boneWeights[1] = dst[i].boneWeights[2] = dst[i].boneWeights[3] = 0.0f;
+        }
+        context->Unmap(m_vertexBuffer.Get(), 0);
+        return true;
+    }
+
+    /**
      * @brief Puts the rigid, bone-skinned vertices back.
      */
     bool RestoreBaseVertices(ID3D11DeviceContext* context)
