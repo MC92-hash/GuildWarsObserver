@@ -413,6 +413,19 @@ def build_preview_stats(player: dict) -> list | None:
     return [player.get(field) for field in PREVIEW_FIELDS]
 
 
+def normalize_occasion(value: str) -> str:
+    """Collapse whitespace in the occasion label.
+
+    The recorder writes this string free-form and the C++ browser keys its
+    filter leaves, their counts and the selection set on the raw value, so a
+    stray double space becomes a second, visually identical row in the
+    occasion tree ("Automated  Tournament" next to "Automated Tournament").
+    Normalising here, at the single producer of index entries, is what keeps
+    that from reaching index.json in the first place.
+    """
+    return " ".join((value or "").split())
+
+
 def build_index_entry(
     folder_name: str,
     infos: dict,
@@ -429,7 +442,7 @@ def build_index_entry(
         "folder": folder_name,
         "map_id": infos.get("map_id", 0),
         "date": date_str,
-        "occasion": infos.get("occasion", ""),
+        "occasion": normalize_occasion(infos.get("occasion", "")),
         "flux": infos.get("flux", ""),
         "duration": infos.get("match_duration", ""),
         "winner": infos.get("winner_party_id", 0),
