@@ -26,7 +26,10 @@ cbuffer PerFrameCB : register(b0)
     float fog_end;
     float fog_start_y;
     float fog_end_y;
-    uint should_render_flags;
+    uint should_render_flags;   // bit 5 = Classic light mode; whole word in PerFrameCB.h
+    // The user's environment light gain for the map. 1.0 unless the owner moves it, and only ever
+    // non-1.0 while the world pass is running.
+    float map_light_gain;
 };
 
 cbuffer PerObjectCB : register(b1)
@@ -124,8 +127,111 @@ PSOutput main(PixelInputType input)
     result = lerp(result, t1, t1.a);
     result = lerp(result, t2, t2.a);
     
-    // Apply lighting
+    // ---- THE CLIENT'S OWN TERRAIN LIGHTING ---------------------------------------------------
+    //
+    // Terrain does NOT take the light the way a model does, and this used to. The client's terrain
+    // pixel shader is a raw token stream in the executable, and decoded it is four texture layers
+    // blended by their own alphas and then ONE lerp between two endpoint colours:
+    //
+    //     colour = albedo * lerp(lightAmbient, lightDiffusePlusAmbient, lightMap)
+    //
+    // with, computed once per frame on the CPU:
+    //
+    //     lightAmbient            = ambient_bytes / 255 * (ambient_intensity / 256)   -- unclamped
+    //     lightDiffusePlusAmbient = min(1, lightAmbient + sun_bytes / 255 * (cos(a) * sun_I))
+    //
+    // where `a` is the map's single sun angle, an elevation measured from straight up. Note what
+    // is NOT in it: no per-vertex N.L on the sun term at all - the sun contributes a flat amount
+    // scaled only by `cos(a)` - and no specular. The shading variation comes entirely from the
+    // third factor, a baked light map, and THAT is where the surface normal enters.
+    //
+    // THE BAKE, and it is the part that matters most. The client bakes, per terrain vertex:
+    //
+    //     m    = saturate(dot(N, L))
+    //     byte = round(255 * (1 - (1 - m)^4))
+    //
+    // a quartic soft shoulder, not a linear N.L. At `m = 0.5` it gives 0.94, not 0.5; at 0.25 it
+    // gives 0.68. Only fully back-facing ground agrees with the linear form. Using `N.L` directly -
+    // which is what `input.lightingColor` carries - makes every slope far darker than the client's,
+    // and that was the bulk of "the terrain is too dark".
+    //
+    // Two deliberate differences, both recorded in the note under docs/appearance_data:
+    //   * the client bakes this per VERTEX on a 96-unit grid from an area-blended four-triangle
+    //     normal and bilinearly interpolates it into a 256x256 light map per chunk. This evaluates
+    //     the same curve per PIXEL from the interpolated normal, which is smoother than the
+    //     client's but has the same shape and the same endpoints.
+    //   * the client also multiplies in an authored 272x272 one-bit shadow mask per chunk, read
+    //     out of the map file. We do not load it, so baked terrain shadow is missing; the runtime
+    //     shadow map below stands in for it.
+    float3 trn_normal = normalize(input.normal);
+    float3 trn_light_dir = normalize(-directionalLight.direction);
+    float trn_ndotl = saturate(dot(trn_normal, trn_light_dir));
+    float trn_one_minus = 1.0 - trn_ndotl;
+    float trn_sq = trn_one_minus * trn_one_minus;
+    float trn_bake = 1.0 - trn_sq * trn_sq;
+
+    // THE SUN ELEVATION IS NOT APPLIED A SECOND TIME HERE, and this is the one step in the
+    // terrain law that is a conclusion rather than a reading.
+    //
+    // The client's `TrnTexSetLight` computes its sun endpoint as
+    // `min(1, ambient + sun * (cos(a) * sun_intensity))` - the elevation IS in that function, and
+    // that was read correctly. What could NOT be established is that this function's output is
+    // what the terrain's own shader receives: the terrain pass has no vertex shader and its shader
+    // binds no named constants, so the two endpoints arrive as vertex colours filled by code that
+    // was never found.
+    //
+    // Two things say the elevation is not in them:
+    //   * it would be applied TWICE. The baked light map already contains `dot(N, L)`, and for
+    //     flat ground that dot IS cos(a). Multiplying the sun by cos(a) as well attenuates flat
+    //     ground by cos(a) squared - the geometric term applied twice, which is not what any
+    //     renderer does.
+    //   * it is refuted by measurement. On the owner's Corrupted Isle reference frame the lit
+    //     basin reads (0.376, 0.243, 0.166). With cos(a) in the sun term the brightest this law
+    //     can produce there is 0.172 even at an albedo of 1, so the texture would have to be 2.19
+    //     - impossible. Without it the required albedo is (0.95, 0.75, 0.52), an ordinary warm
+    //     sandy brown, and the hue comes out warm instead of grey, which is what the frame shows.
+    //
+    // So the elevation is left to the bake, where it enters through N.L. `directionalLight.pad`
+    // carries cos(a) and is deliberately unused here; it is there for whoever closes the link.
+    //
+    // THE CLIENT APPLIES NO GAIN HERE, and that was established rather than assumed. Its terrain
+    // pixel program is an authored ps_1_1 in the executable's own data - `albedo * lerp(v0, v1,
+    // lightMap.a)` - and every destination token in it carries a zero shift and no saturate; the
+    // one terrain program in the image that does carry a x2 shift has no reference anywhere and
+    // cannot be reached; and the per-map 2x switch that doubles PROP layers is read only by the
+    // model module, never by the terrain module. So the gain below is the user's, not the game's,
+    // and 1.00x is the level the game itself draws.
+    //
+    // THE GAIN GOES ON THE LIGHT'S INPUTS, BEFORE THE PER-CHANNEL CLAMP, and that is the whole
+    // point of it: both endpoints stay colours clamped to 1, the way the client's own pair of
+    // interpolators is, so what the control changes is the LIGHT and not the picture. Applied
+    // after the clamp instead - which is what this did first - a cold entry with ambient
+    // (0.098, 0.170, 0.435) and sun (0.084, 0.097, 0.115) runs its blue to 2.20 at 4x while red
+    // stays at 0.73, and the whole map goes saturated royal blue. Clamped per channel, blue stops
+    // at 1.00 and red and green keep climbing towards it: brighter, and far less saturated, which
+    // is what the game's own cold side looks like. One more thing comes free with it - the terrain
+    // can no longer hand a value above 1 to the haze blend further down.
+    //
+    // At 1.00x this is byte for byte what it was: the ambient a map can express is
+    // `bytes/255 * intensity/256` and cannot reach 1, so its clamp is inert there.
+    float3 trn_ambient = min(1.0, directionalLight.ambient.rgb * map_light_gain);
+    float3 trn_lit     = min(1.0, (directionalLight.ambient.rgb + directionalLight.diffuse.rgb)
+                                      * map_light_gain);
+
+    float3 trn_light = lerp(trn_ambient, trn_lit, trn_bake);
+
+    // ---- WHICH LAW THIS PIXEL USES: flag bit 5, SET = CLASSIC --------------------------------
+    // Classic is the last commit's formula unchanged - `result * 1.4 * input.lightingColor`, the
+    // vertex program's `ambient + sun*N.L + specular`. Not the client's law, but the picture the
+    // owner approved; the host holds the gain at 1.0 there. Clear = the client law above, kept
+    // whole. A constant branch, so the compiler drops the unused half. Word: PerFrameCB.h.
+    bool classic_map_light = (should_render_flags & 32) != 0;
+
     float4 color = result * 1.4 * input.lightingColor;
+    if (!classic_map_light)
+    {
+        color = float4(result.rgb * trn_light, 1.0);
+    }
     color.a = 1.0f;
 
     bool should_render_shadow = should_render_flags & 1;
@@ -168,22 +274,57 @@ PSOutput main(PixelInputType input)
     {
         float distance = length(cam_position - input.world_position.xyz);
 
+        // THE CLIENT'S OWN HAZE CURVE, read out of Gw.exe instruction by instruction - see
+        // the map lighting model note under docs/appearance_data for the addresses.
+        //
+        //     fDist   = (fog_end - d) / (fog_end - fog_start)          linear, no curve
+        //     fHeight = (y - fog_end_y) / (fog_start_y - fog_end_y)
+        //     fNear   = 1 - d / (2 * (fog_start_y - fog_end_y))
+        //     f       = clamp( max( min(fDist, fHeight), fNear ), 0, 1 )
+        //     colour  = lerp(fogColour, colour, f)          f = 1 is clear, f = 0 is all haze
+        //
+        // TWO CHANGES FROM WHAT THIS USED TO DO, and they pull in opposite directions.
+        //
+        // GONE: `clamp(f, 0.20, 1)`. There is no such floor in the client. It capped the haze at
+        // 80% however far away a pixel was, so the far distance could never close up - which is
+        // exactly the "our image is too clear, the client's distance is washed out" report.
+        //
+        // NEW: `fNear`, which the client has and this did not. It is a distance-dependent FLOOR
+        // that starts at 1 (fully clear) at the camera and reaches 0 at twice the height band's
+        // depth, and its job is to stop the HEIGHT term from hazing geometry right in front of the
+        // camera. Without it, removing the 0.20 floor alone would put a permanent wash over the
+        // near field. The client only applies it when the height term is live; when the height
+        // band is degenerate it runs distance-only, which is what `fogNear = 0` reproduces here.
+        //
+        // Known, deliberate difference: the client uses the VIEW-SPACE DEPTH of the pixel and this
+        // uses the radial distance to the camera. They agree on the view axis and this one is
+        // slightly larger towards the edges of a wide screen.
         float fogFactorDistance = 1.0;
         float fogDistanceDenom = fog_end - fog_start;
         if (abs(fogDistanceDenom) >= 1e-3)
         {
-            fogFactorDistance = saturate((fog_end - distance) / fogDistanceDenom);
+            fogFactorDistance = (fog_end - distance) / fogDistanceDenom;
         }
 
         float fogFactorHeight = 1.0;
-        float fogHeightDenom = fog_end_y - fog_start_y;
-        if (abs(fogHeightDenom) >= 1e-3)
+        float fogNear = 0.0;
+        float fogHeightDenom = fog_start_y - fog_end_y;
+        // The client's own gate on the height term, and it is a STRICT `>`, not a magnitude test:
+        // GrDeviceSetHazeHeight's Dx9 handler compares its two arguments (-fog_z_start, -fog_z_end)
+        // and only arms the height half when the second is the greater, i.e. when
+        // fog_z_start > fog_z_end. `abs(denom) >= 1e-3` also admitted a NEGATIVE denominator, and
+        // that does not merely flip the band: it turns fNear into `1 + d / (2*|denom|)`, which is
+        // at least 1 at every distance, so the final max() forces f = 1 and the map loses its haze
+        // entirely. The client runs distance-only there instead, which is what falling through to
+        // fogFactorHeight = 1 / fogNear = 0 reproduces. No guild hall has an inverted band, so this
+        // changes nothing on the sixteen; it stops the failure being silent on anything else.
+        if (fogHeightDenom > 0.0)
         {
-            fogFactorHeight = saturate((fog_end_y - input.world_position.y) / fogHeightDenom);
+            fogFactorHeight = (input.world_position.y - fog_end_y) / fogHeightDenom;
+            fogNear = 1.0 - distance / (2.0 * fogHeightDenom);
         }
 
-        float fogFactor = min(fogFactorDistance, fogFactorHeight);
-        fogFactor = clamp(fogFactor, 0.20, 1);
+        float fogFactor = saturate(max(min(fogFactorDistance, fogFactorHeight), fogNear));
 
         float3 fogColor = fog_color_rgb; // Fog color defined in the constant buffer
         color = lerp(float4(fogColor, 1.0), color, fogFactor);

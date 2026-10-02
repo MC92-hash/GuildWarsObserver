@@ -240,7 +240,7 @@
     <ClInclude Include="SourceFiles\PerFrameCB.h">
       <Filter>Render\Constant buffers</Filter>
     </ClInclude>
-    <ClInclude Include="SourceFiles\PerObjectCB.h">
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PerObjectCB.h">
       <Filter>Render\Constant buffers</Filter>
     </ClInclude>
     <ClInclude Include="SourceFiles\RenderConstants.h">
@@ -336,6 +336,9 @@
     <ClInclude Include="SourceFiles\HeatmapRenderer.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\ProjectedAgentShadows.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\HeatmapMenu.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -351,10 +354,10 @@
     <ClInclude Include="SourceFiles\StoCParser.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="..\gwobserver-private\SourceFiles\AttributeDeducer.h">
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AttributeDeducer.h">
       <Filter>GUI</Filter>
     </ClInclude>
-    <ClInclude Include="..\gwobserver-private\SourceFiles\MaxHpSolver.h">
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.h">
       <Filter>GUI</Filter>
     </ClInclude>
     <ClInclude Include="SourceFiles\FlagTimelineBuilder.h">
@@ -381,7 +384,11 @@
     <ClInclude Include="SourceFiles\SkillDatabase.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="SourceFiles\HistoricalSkillIds.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\ReplayLibrary.h" />
+    <ClInclude Include="SourceFiles\RunLog.h" />
     <ClInclude Include="SourceFiles\DXMathHelpers.h">
       <Filter>Render\Math helpers</Filter>
     </ClInclude>
@@ -469,7 +476,7 @@
     <ClInclude Include="SourceFiles\FFNAType.h">
       <Filter>Dat reader\Dat file parsers\Texture</Filter>
     </ClInclude>
-    <ClInclude Include="SourceFiles\FFNA_ModelFile.h">
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\FFNA_ModelFile.h">
       <Filter>Dat reader\Dat file parsers\Model</Filter>
     </ClInclude>
     <ClInclude Include="SourceFiles\resource.h" />
@@ -794,6 +801,15 @@
     <ClCompile Include="SourceFiles\HeatmapRenderer.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="SourceFiles\ProjectedAgentShadows.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\ReplayWindow_Bloom.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="SourceFiles\HeatmapMenu.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
@@ -806,13 +822,13 @@
     <ClCompile Include="SourceFiles\StoCParser.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="..\gwobserver-private\SourceFiles\SkillDeduction.cpp">
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\SkillDeduction.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="..\gwobserver-private\SourceFiles\AttributeDeducer.cpp">
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeDeducer.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
-    <ClCompile Include="..\gwobserver-private\SourceFiles\MaxHpSolver.cpp">
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\FlagTimelineBuilder.cpp">
@@ -834,6 +850,7 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayLibrary.cpp" />
+    <ClCompile Include="SourceFiles\RunLog.cpp" />
     <ClCompile Include="SourceFiles\DXMathHelpers.cpp">
       <Filter>Render\Math helpers</Filter>
     </ClCompile>

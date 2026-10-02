@@ -1862,7 +1862,14 @@ struct FFNA_ModelFile_Other
 
         // Get total number of textures from filename chunk
         size_t total_textures = texture_filenames_chunk.texture_filenames.size();
+        // Never let this reach 0: it is used as a modulo divisor below, and a BB8 submesh whose
+        // vertices carry no texcoords would turn that into an integer divide by zero (a hardware
+        // exception that no try/catch can stop).
         uint8_t num_vertex_uvs = sub_model.vertices.empty() ? 1 : sub_model.vertices[0].num_texcoords;
+        if (num_vertex_uvs == 0)
+        {
+            num_vertex_uvs = 1;
+        }
 
         // Use material index from sub_model.unknown to look up correct texture group
         uint32_t material_index = sub_model.unknown;

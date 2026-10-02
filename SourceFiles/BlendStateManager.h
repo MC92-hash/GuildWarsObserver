@@ -7,7 +7,10 @@ enum class BlendState
     Additive,
     Multiplicative,
     Screen,
-    Subtractive
+    Subtractive,
+    // SRC_ALPHA / ONE: additive weighted by source alpha, dst += rgb * a. Set by a caller that
+    // draws a mesh itself; nothing in the render batch uses it.
+    AdditiveSrcAlpha
 };
 
 class BlendStateManager
@@ -26,6 +29,8 @@ public:
         CreateBlendState(device, D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_COLOR, &m_screen_blend_state); // Screen
         CreateBlendState(device, D3D11_BLEND_ONE, D3D11_BLEND_ONE, &m_subtractive_blend_state,
                          D3D11_BLEND_OP_REV_SUBTRACT); // Subtractive
+        CreateBlendState(device, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ONE,
+                         &m_additive_src_alpha_blend_state); // AdditiveSrcAlpha
     }
 
     ID3D11BlendState* GetBlendState(BlendState blendState)
@@ -44,6 +49,8 @@ public:
             return m_screen_blend_state.Get();
         case BlendState::Subtractive:
             return m_subtractive_blend_state.Get();
+        case BlendState::AdditiveSrcAlpha:
+            return m_additive_src_alpha_blend_state.Get();
         default:
             return nullptr;
         }
@@ -107,4 +114,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_multiplicative_blend_state;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_screen_blend_state;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_subtractive_blend_state;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_additive_src_alpha_blend_state;
 };

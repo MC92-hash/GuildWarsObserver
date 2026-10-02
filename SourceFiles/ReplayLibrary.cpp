@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "HistoricalSkillIds.h"
 #include "ReplayLibrary.h"
 #include <json.hpp>
 #include <fstream>
@@ -151,6 +152,15 @@ void LocalReplayProvider::ParsePlayerArray(const void* jsonArrayPtr, std::vector
     }
 }
 
+void RepairHistoricalMatchSkillBars(MatchMeta& meta)
+{
+    const int dateKey = meta.year * 10000 + meta.month * 100 + meta.day;
+    for (auto& [id, party] : meta.parties)
+        for (auto& player : party.players)
+            if (RepairHistoricalSkillBar(player.used_skills, dateKey))
+                player.skill_template_code.clear();
+}
+
 bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, MatchMeta& out)
 {
     try
@@ -239,6 +249,7 @@ bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, 
         out.folder_name = jsonPath.parent_path().filename().string();
         out.folder_path = jsonPath.parent_path().string();
 
+        RepairHistoricalMatchSkillBars(out);
         return true;
     }
     catch (const std::exception&)

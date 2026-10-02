@@ -228,6 +228,80 @@ std::vector<RGBA> ProcessDXT5(unsigned char* data, int xr, int yr)
     return image;
 }
 
+// DXTA is the DXT5 ALPHA block on its own: 8 bytes per 4x4 block (two endpoints + sixteen 3-bit
+// interpolation indices) and no colour block at all, i.e. a single-channel image.
+//
+// AtexDecompress already understands this layout as image format 0x14: ImageFormats[0x14] == 0xA1
+// gives ColorDataSize 0 / AlphaDataSize 2 dwords, so BlockSize is 2 dwords = the 8 bytes below, and
+// the alpha-only path (AtexSubCode4, which covers 0x12..0x15) is the one that runs. Only this
+// expander and the dispatch case in ProcessImageFile were missing, which is why such a file came
+// back as a zero-sized DatTexture and failed to upload.
+//
+// The decoded value is broadcast to R/G/B with alpha left opaque: that makes the single channel
+// viewable as a greyscale image and safe to bind as an ordinary modulate texture.
+std::vector<RGBA> ProcessDXTA(unsigned char* data, int xr, int yr)
+{
+    std::vector<RGBA> image(static_cast<size_t>(xr) * static_cast<size_t>(yr));
+    if (image.empty())
+        return image;
+
+    memset(image.data(), 0, image.size() * 4);
+
+    const int blocks_x = xr / 4;
+    const int blocks_y = yr / 4;
+
+    int p = 0;
+    for (int y = 0; y < blocks_y; y++)
+        for (int x = 0; x < blocks_x; x++, p++)
+        {
+            const unsigned char* block = data + static_cast<size_t>(p) * 8;
+
+            unsigned char atbl[8];
+            atbl[0] = block[0];
+            atbl[1] = block[1];
+
+            // Same endpoint interpolation rule as the DXT5 alpha block above. Every result is a
+            // weighted average of two bytes, so the narrowing casts cannot lose anything.
+            if (atbl[0] > atbl[1])
+            {
+                for (int z = 0; z < 6; z++)
+                    atbl[z + 2] = static_cast<unsigned char>(
+                        ((6 - z) * atbl[0] + (z + 1) * atbl[1]) / 7);
+            }
+            else
+            {
+                for (int z = 0; z < 4; z++)
+                    atbl[z + 2] = static_cast<unsigned char>(
+                        ((4 - z) * atbl[0] + (z + 1) * atbl[1]) / 5);
+                atbl[6] = 0;
+                atbl[7] = 255;
+            }
+
+            // Sixteen 3-bit indices packed little endian into the remaining six bytes. Assembled
+            // byte by byte rather than by casting to __int64, so the last block of the image cannot
+            // read past the end of the decompressed buffer.
+            unsigned long long k = 0;
+            for (int z = 0; z < 6; z++)
+                k |= static_cast<unsigned long long>(block[2 + z]) << (8 * z);
+
+            for (int b = 0; b < 4; b++)
+                for (int a = 0; a < 4; a++)
+                {
+                    const unsigned char value = atbl[k & 7];
+                    k >>= 3;
+
+                    RGBA& texel = image[static_cast<size_t>(x) * 4 + a +
+                                        (static_cast<size_t>(y) * 4 + b) * static_cast<size_t>(xr)];
+                    texel.r = value;
+                    texel.g = value;
+                    texel.b = value;
+                    texel.a = 255;
+                }
+        }
+
+    return image;
+}
+
 #include <vector>
 
 DatTexture ProcessImageFile(unsigned char* img, int size)
@@ -302,6 +376,12 @@ DatTexture ProcessImageFile(unsigned char* img, int size)
             image[x].b = (image[x].b * image[x].a) / 255;
         }
         tex_type = TextureType::BC5;
+        break;
+    case 'A':
+        // DXTA: single-channel, 8 byte blocks. See ProcessDXTA above.
+        AtexDecompress((unsigned int*)img, size, 0x14, r, (unsigned int*)output.data());
+        image = ProcessDXTA((unsigned char*)output.data(), r.xres, r.yres);
+        tex_type = TextureType::BC1;
         break;
     default:
         return DatTexture();

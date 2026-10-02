@@ -5,6 +5,7 @@
 #include "Skeleton.h"
 #include <DirectXMath.h>
 #include <vector>
+#include <set>
 #include <cstdint>
 #include <memory>
 #include <functional>
@@ -448,6 +449,22 @@ public:
     const std::vector<uint32_t>& GetLockedBones() const { return m_lockedBones; }
 
     /**
+     * @brief Sets whether to use the matrix-stack skinning algorithm.
+     *
+     * When true, uses GW's exact matrix-stack algorithm from Ghidra RE, which handles bone pivots
+     * and hierarchical transform accumulation the way the client does. When false - the default
+     * here, i.e. unless a caller asks - Update() keeps the decomposed position+rotation path with
+     * the per-bone lock above, which is what every existing caller gets.
+     */
+    void SetUseMatrixStackSkinning(bool use) { m_useMatrixStackSkinning = use; }
+    bool IsUsingMatrixStackSkinning() const { return m_useMatrixStackSkinning; }
+
+    // The matrix-stack path's own locked set, as a non-owning pointer. Overload rather than a
+    // replacement: the vector form above drives the decomposed path and is untouched.
+    void SetLockedBones(const std::set<uint32_t>* locked) { m_lockedBonesSet = locked; }
+    const std::set<uint32_t>* GetLockedBonesSet() const { return m_lockedBonesSet; }
+
+    /**
      * @brief Gets the current sequence index.
      */
     size_t GetCurrentSequenceIndex() const { return m_currentSequenceIndex; }
@@ -874,6 +891,15 @@ private:
         const std::vector<uint32_t>* lockedPtr = m_lockedBones.empty() ? nullptr : &m_lockedBones;
         m_evaluator.EvaluateHierarchical(*m_clip, m_currentTime, m_boneWorldPositions, m_boneWorldRotations, nullptr, m_lockRootPosition, lockedPtr);
 
+        if (m_useMatrixStackSkinning)
+        {
+            // GW's exact matrix-stack algorithm (Ghidra RE @ Model_UpdateSkeletonTransforms).
+            // Off unless a caller asked for it, so this branch changes nothing by default.
+            m_evaluator.ComputeSkinningMatrixStack(*m_clip, m_currentTime, m_boneMatrices,
+                                                   m_lockRootPosition, m_lockedBonesSet);
+            return;
+        }
+
         // Compute skinning matrices using animation bind positions
         // GW's algorithm: T(basePos + delta) * R(localRot) * T(-basePos)
         m_evaluator.ComputeSkinningFromHierarchy(*m_clip, m_currentTime, m_boneMatrices, m_lockRootPosition, lockedPtr);
@@ -898,6 +924,8 @@ private:
     bool m_autoCycleSequences = true;
     bool m_lockRootPosition = false;
     std::vector<uint32_t> m_lockedBones;   // bones forced to bind pose (GWMB per-bone lock)
+    bool m_useMatrixStackSkinning = false;             // off by default: keeps the existing path
+    const std::set<uint32_t>* m_lockedBonesSet = nullptr;  // non-owning, matrix-stack path only
 
     // Smart loop state
     bool m_hasPlayedIntro = false;      // Whether intro has played in current playback

@@ -421,21 +421,12 @@ private:
                 gwmb_submodel_i.has_low_lod = false;
             }
 
+            // The submodel's own material row, and the AMAT that row names, from the one call
+            // that cannot let the two disagree. See FFNA_ModelFile::ModernMaterialForSubmodel.
             AMAT_file amat_file;
-            if (model_file->AMAT_filenames_chunk.texture_filenames.size() > 0) {
-                int sub_model_index = geometry_chunk.models[i].unknown;
-                if (geometry_chunk.tex_and_vertex_shader_struct.uts0.size() > 0)
-                {
-                    sub_model_index %= geometry_chunk.tex_and_vertex_shader_struct.uts0.size();
-                }
-                const auto uts1 = geometry_chunk.uts1[sub_model_index % geometry_chunk.uts1.size()];
-
-                const int amat_file_index = ((uts1.some_flags0 >> 8) & 0xFF) % model_file->AMAT_filenames_chunk.texture_filenames.size();
-                const auto amat_filename = model_file->AMAT_filenames_chunk.texture_filenames[amat_file_index];
-
-                const auto decoded_filename = decode_filename(amat_filename.id0, amat_filename.id1);
-
-
+            int mat_row = FFNA_ModelFile::kModernMaterialRowOrdinal;
+            int decoded_filename = 0;
+            if (model_file->ModernMaterialForSubmodel(i, mat_row, decoded_filename)) {
                 auto mft_entry_it = hash_index.find(decoded_filename);
                 if (mft_entry_it != hash_index.end())
                 {
@@ -444,7 +435,7 @@ private:
                 }
             }
 
-            Mesh prop_mesh = model_file->GetMesh(i, amat_file);
+            Mesh prop_mesh = model_file->GetMesh(i, amat_file, mat_row);
 
             gwmb_submodel_i.texture_indices.resize(prop_mesh.tex_indices.size());
             for (int j = 0; j < prop_mesh.tex_indices.size(); j++) {

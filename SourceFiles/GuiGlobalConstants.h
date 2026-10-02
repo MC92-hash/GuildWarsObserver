@@ -13,6 +13,12 @@ class GuiGlobalConstants
 public:
 	inline static bool settings_loaded = false;
 
+	// Window-visibility flags for the two private character panels. Inert in the Observer, which
+	// has no menu entry for either and never opens them; they exist so that the one shared copy of
+	// those panels compiles against this class in both applications.
+	inline static bool is_character_composer_open = false;
+	inline static bool is_wardrobe_open = false;
+
 	// Persistent gw.dat path (saved across sessions)
 	inline static std::string saved_gw_dat_path;
 
@@ -85,6 +91,149 @@ public:
 
 	// 3D Agent model rendering (persisted)
 	inline static bool use_3d_agent_models = true;
+
+	// SCENE BLOOM (persisted). The game itself has always had it, on every guild hall, with no
+	// setting that turns it off, so a replay without it can never look like the game - but it is
+	// an 11-15% lift on top of a picture whose level is still an open question, and the owner's
+	// decision is that the DEFAULT look is the one the last commit drew. So the toggle stays and
+	// the default is OFF; a user who already turned it on keeps it, in either light mode.
+	static constexpr bool kDefaultMapBloomEnabled = false;
+	inline static bool map_bloom_enabled = kDefaultMapBloomEnabled;
+
+	// ---- THE MAP LIGHT MODE (persisted) -----------------------------------------------------
+	//
+	// Two complete looks, chosen by the owner, not a slider between them. Nothing is deleted:
+	// both paths are live code and this switch picks which one runs.
+	//
+	//   Classic (the DEFAULT) - the light and the terrain law of the last commit, which is the
+	//     picture the owner has approved. The light is the previous override: the map's colour
+	//     bytes over 255*2, with the HSL LIGHTNESS of the result rewritten to
+	//     max(intensity/255 * 0.9, floor) - floor 0.70 for the ambient and 0.50 for the sun - so
+	//     the map keeps its hue and the level comes from the floors. The terrain multiplies its
+	//     blended texture by 1.4 * lightingColor. ONE thing differs from the commit, and it is a
+	//     bug fix rather than a look change: the colours fed into that override are the
+	//     REGION-BLENDED ones the environment table resolves per frame, not entry 0 of every
+	//     list. The committed build never read the region table at all, so every map was drawn
+	//     on its entry 0; now the tower side of Corrupted Isle takes its own warm entry and the
+	//     blue-base side its own blue one, both at the old brightness. The gain below is LIVE in
+	//     this mode too, with its own per-mode value: the floors decide the light's HUE and its
+	//     level relative to the map, and the gain is the one brightness the owner sets on top of
+	//     them. Its Classic default is calibrated, so the flag stand matches the reference
+	//     capture instead of sitting well above it - see the gain block below.
+	//
+	//   Client (experimental) - the client's own light law, read out of Gw.exe
+	//     (colour = bytes/255 * intensity/256, no floors anywhere) and the client's own terrain
+	//     law: one lerp between two endpoint colours at a quartic bake. It is the reading the
+	//     binary supports and it renders the ground too dark against the reference capture, for
+	//     a reason that is still open - see the note under docs/appearance_data. The pre-clamp
+	//     gain below has its own value in this mode and keeps its calibrated default there.
+	//
+	// Everything that is not the light LEVEL is shared by both modes: the region table and the
+	// query point, the haze curve, the per-map prop modulate gate, the shadows, and every one of
+	// the character passes.
+	static constexpr int kMapLightModeClassic   = 0;
+	static constexpr int kMapLightModeClientExp = 1;
+	static constexpr int kDefaultMapLightMode   = kMapLightModeClassic;
+	inline static int map_light_mode = kDefaultMapLightMode;
+
+	static int ClampMapLightMode(int mode)
+	{
+		return (mode == kMapLightModeClientExp) ? kMapLightModeClientExp : kMapLightModeClassic;
+	}
+
+	static bool IsClassicMapLight() { return map_light_mode == kMapLightModeClassic; }
+
+	static const char* MapLightModeName()
+	{
+		return IsClassicMapLight() ? "Classic" : "Client (experimental)";
+	}
+
+	// ENVIRONMENT LIGHT GAIN for the map - the terrain and the world's own models only. The game
+	// applies no gain of its own: its terrain program is an authored one that multiplies the
+	// texture by a plain blend of two light colours with no doubling anywhere, and the per-map
+	// doubling that exists for models is read only by the model code. So 1.00x is the client's
+	// own light law, and this control is a brightness the owner chooses on top of it.
+	//
+	// HOW IT IS APPLIED: to the light's INPUTS - "the same map under brighter lights", not "the
+	// same image, amplified". In Client mode those inputs are then clamped per channel, so a
+	// channel that reaches full stays at full while the others climb towards it, which is why a
+	// cold, blue-ambient hall gets brighter instead of turning saturated royal blue. Classic's
+	// own law carries no clamp there and never did, so the scaling is a plain multiply on its
+	// floored pair and the mode's picture at 1.00x is unchanged to the byte. Both go through the
+	// SAME multiplication in the vertex, terrain and new-model programs - there is no second
+	// path for Classic. See TerrainRevPixelShader.hlsl and VertexShader.hlsl.
+	//
+	// ONE VALUE PER MODE, and that is the whole reason there are two constants here. The two
+	// light laws sit a long way apart - Classic's floors put the ambient at 0.57 to 0.83 per
+	// channel where the client's law asks for a fraction of that - so one shared number cannot
+	// be right in both, and a single setting would silently re-tune the other mode every time
+	// the owner flipped the switch. Each mode owns its own value, each is persisted under its
+	// own key, and switching modes reads the other one back exactly as it was left.
+	//
+	// BOTH DEFAULTS ARE CALIBRATED THE SAME WAY - neither is a value read from the client. Each
+	// is the gain at which this renderer's luminance (Rec. 709) at the one tile both sides can
+	// name equals the luminance of the reference capture's de-bloomed ground: the Tower Flag
+	// Stand, grid cell (144, 89), albedo (0.489, 0.252, 0.121) measured out of the archive,
+	// against (86.2, 55.1, 37.9), with the scene bloom on both sides.
+	//
+	//   Client, 2.03x - under the client's own law and its terrain lerp at a flat-ground bake of
+	//     0.993. Residual there: red x1.30, green x0.89, blue x0.62.
+	//
+	//   Classic, 0.5486x - under the committed law, `albedo * 1.4 * (ambient + sun * N.L)`, with
+	//     the floored pair Corrupted Isle region 0 resolves to, ambient (0.569, 0.633, 0.831)
+	//     and sun (0.726, 0.576, 0.453), at the flat-ground N.L of 0.700. At 1.00x - what the
+	//     previous build drew - that tile lands on (188.0, 93.2, 49.6) of 255 against the
+	//     capture's (86.2, 55.1, 37.9): Classic is about 1.8x too bright in luminance, which is
+	//     the "too bright" the owner reported. 0.5486x brings it to (103.2, 51.1, 27.2), whose
+	//     Rec. 709 luminance is the capture's to the digit. Residual: red x1.20, green x0.93,
+	//     blue x0.72 - the same kind of hue error the Client default leaves, and for the same
+	//     reason: this matches the BRIGHTNESS at one measured tile and nothing more. No scalar
+	//     can close the hue, and that question is still open.
+	//
+	// 1.00x is the previous build's Classic brightness, so an owner who preferred it has one
+	// number to type - and it is the game's own level in Client mode. The range is the same in
+	// both modes.
+	static constexpr float kDefaultMapLightGainClassic = 0.5486f;  // calibrated - see above
+	static constexpr float kDefaultMapLightGainClient  = 2.03f;    // calibrated - see above
+	// There is deliberately no mode-less `kDefaultMapLightGain` any more: "the default" is not a
+	// single number now, and a name that answered for both modes could only be wrong in one.
+	static constexpr float kClientMapLightGain  = 1.0f;   // the level the game itself draws
+	static constexpr float kMinMapLightGain     = 0.25f;
+	static constexpr float kMaxMapLightGain     = 4.0f;
+	inline static float map_light_gain_classic = kDefaultMapLightGainClassic;
+	inline static float map_light_gain_client  = kDefaultMapLightGainClient;
+
+	static float ClampMapLightGain(float gain)
+	{
+		return std::clamp(gain, kMinMapLightGain, kMaxMapLightGain);
+	}
+
+	// The stored value for a mode, by reference, so the panel edits one place. Anything that
+	// reads or writes "the gain" goes through these and therefore cannot address the wrong mode.
+	static float& MapLightGainForMode(int mode)
+	{
+		return (ClampMapLightMode(mode) == kMapLightModeClassic) ? map_light_gain_classic
+		                                                         : map_light_gain_client;
+	}
+	static float& MapLightGain() { return MapLightGainForMode(map_light_mode); }
+
+	static float DefaultMapLightGainForMode(int mode)
+	{
+		return (ClampMapLightMode(mode) == kMapLightModeClassic) ? kDefaultMapLightGainClassic
+		                                                         : kDefaultMapLightGainClient;
+	}
+	static float DefaultMapLightGain() { return DefaultMapLightGainForMode(map_light_mode); }
+
+	// THE GAIN ACTUALLY IN FORCE: the current mode's own value, clamped. It is live in both
+	// modes now - where Classic once forced 1.0 - and there is exactly ONE multiplication behind
+	// it, the existing pre-clamp one in the vertex, terrain and new-model programs. In Classic
+	// that means the FLOORED ambient and sun are scaled before the terrain's
+	// `1.4 * lightingColor` ever sees them, which is why 1.00x here is byte for byte the
+	// previous build and why no second path was added to make the control work in this mode.
+	static float EffectiveMapLightGain()
+	{
+		return ClampMapLightGain(MapLightGain());
+	}
 
 	// Replay window camera vertical FOV in degrees (persisted; GW default gameplay FOV is 50)
 	static constexpr float kDefaultReplayCameraFovDegrees = 50.0f;
@@ -439,6 +588,14 @@ public:
 
 		file << "\n[Rendering]\n";
 		file << "use_3d_agent_models=" << (use_3d_agent_models ? 1 : 0) << "\n";
+		file << "map_bloom_enabled=" << (map_bloom_enabled ? 1 : 0) << "\n";
+		file << "map_light_mode=" << map_light_mode << "\n";
+		// ONE KEY PER MODE. The old single `map_light_gain` key is still READ below, as the
+		// Client mode's value, so an existing settings file keeps the gain it was tuned to; it
+		// is no longer written, because two sources of truth for one number is how a setting
+		// starts drifting.
+		file << "map_light_gain_classic=" << map_light_gain_classic << "\n";
+		file << "map_light_gain_client=" << map_light_gain_client << "\n";
 		file << "replay_camera_fov_degrees=" << replay_camera_fov_degrees << "\n";
 		file << "replay_camera_pan_speed_multiplier=" << replay_camera_pan_speed_multiplier << "\n";
 		file << "replay_camera_rotation_speed_multiplier=" << replay_camera_rotation_speed_multiplier << "\n";
@@ -492,6 +649,28 @@ public:
 			std::string key = line.substr(0, pos);
 			std::string val_str = line.substr(pos + 1);
 
+			if (key == "map_light_gain_classic") {
+				try {
+					map_light_gain_classic = ClampMapLightGain(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
+			if (key == "map_light_gain_client") {
+				try {
+					map_light_gain_client = ClampMapLightGain(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
+			// MIGRATION, read-only: the single pre-per-mode key. It could only ever have been
+			// the Client mode's value - Classic forced 1.0 and the panel greyed the control -
+			// so that is where it lands, and Classic starts at its own calibrated default. The
+			// writer no longer emits this key, so one save replaces it with the pair.
+			if (key == "map_light_gain") {
+				try {
+					map_light_gain_client = ClampMapLightGain(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
 			if (key == "replay_camera_fov_degrees") {
 				try {
 					replay_camera_fov_degrees = ClampReplayCameraFovDegrees(std::stof(val_str));
@@ -579,6 +758,11 @@ public:
 			else if (key == "debug_match_metadata") is_debug_match_metadata_open = (value != 0);
 			else if (key == "replay_browser") is_replay_browser_open = (value != 0);
 			else if (key == "use_3d_agent_models") use_3d_agent_models = (value != 0);
+			else if (key == "map_bloom_enabled") map_bloom_enabled = (value != 0);
+			// An existing settings file has no map_light_mode key, so it takes the default -
+			// Classic - while its saved map_light_gain is still loaded and kept as the Client
+			// mode's own value, Classic taking its calibrated default on that first run.
+			else if (key == "map_light_mode") map_light_mode = ClampMapLightMode(value);
 			else if (key == "autocam_lookahead") autocam_lookahead = static_cast<float>(value);
 			else if (key == "autocam_hp_thresh") autocam_hp_thresh = value;
 			else if (key == "autocam_dwell") autocam_dwell = static_cast<float>(value);

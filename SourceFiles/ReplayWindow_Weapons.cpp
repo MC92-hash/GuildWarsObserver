@@ -360,19 +360,16 @@ void ReplayWindow::LoadWeaponModelsIO()
                 continue;
 
             AMAT_file amat;
+            int matRow = FFNA_ModelFile::kModernMaterialRowOrdinal;
             if (!isOtherFormat && !modelFile.AMAT_filenames_chunk.texture_filenames.empty())
             {
-                const auto& geom = modelFile.geometry_chunk;
-                int subIdx = geom.models[j].unknown;
-                if (!geom.tex_and_vertex_shader_struct.uts0.empty())
-                    subIdx %= static_cast<int>(geom.tex_and_vertex_shader_struct.uts0.size());
-                if (!geom.uts1.empty())
+            // A modern-format submodel's material row is the client's own assignment, and
+            // the AMAT lookup and GetMesh have to agree on it - the AMAT's stage reorder only
+            // fires when its stage count matches the row's, so two different rows silently
+            // produce two different texture lists. One helper answers both.
+                int amatHash = 0;
+                if (modelFile.ModernMaterialForSubmodel(static_cast<int>(j), matRow, amatHash))
                 {
-                    const auto& uts1 = geom.uts1[subIdx % geom.uts1.size()];
-                    int amatIdx = ((uts1.some_flags0 >> 8) & 0xFF)
-                                % static_cast<int>(modelFile.AMAT_filenames_chunk.texture_filenames.size());
-                    auto amatFn = modelFile.AMAT_filenames_chunk.texture_filenames[amatIdx];
-                    auto amatHash = decode_filename(amatFn.id0, amatFn.id1);
                     auto aIt = m_hashIndex->find(amatHash);
                     if (aIt != m_hashIndex->end() && !aIt->second.empty())
                         amat = m_datManager->parse_amat_file(aIt->second.at(0));
@@ -380,7 +377,7 @@ void ReplayWindow::LoadWeaponModelsIO()
             }
 
             Mesh mesh = isOtherFormat ? modelFileOther.GetMesh(static_cast<int>(j), amat)
-                                      : modelFile.GetMesh(static_cast<int>(j), amat);
+                                      : modelFile.GetMesh(static_cast<int>(j), amat, matRow);
             if (!mesh.indices.empty() && mesh.indices.size() % 3 == 0)
                 tmpl.meshes.push_back(std::move(mesh));
         }

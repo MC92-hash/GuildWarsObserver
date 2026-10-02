@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "draw_replay_browser.h"
+#include "RunLog.h"
 #include "ReplayLibrary.h"
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
@@ -889,8 +890,9 @@ static void EnsureSkillIconIndex()
     }
 }
 
-static ImTextureID GetSkillIcon(int skillId)
+static ImTextureID GetSkillIcon(int skillId, const SkillDatabaseView* view = nullptr)
 {
+    if (view && view->IsUnresolvedHistoricalId(skillId)) return nullptr;
     EnsureSkillIconIndex();
     auto it = g_skillIconIndex.find(skillId);
     if (it == g_skillIconIndex.end()) return nullptr;
@@ -938,6 +940,17 @@ static void DrawCostIconInt(const char* iconFile, const char* valueFmt, int val,
 
 static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullptr)
 {
+    if (view && view->IsUnresolvedHistoricalId(skillId))
+    {
+        ImGui::BeginTooltip();
+        ImGui::Text("Unknown historical skill (ID %d)", skillId);
+        ImGui::PushTextWrapPos(340.0f);
+        ImGui::TextUnformatted("This older recording contains an unresolved skill ID. "
+            "Its original identity is not available in the current skill table.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+        return;
+    }
     const SkillInfo* si = view ? view->Get(skillId) : GetSkillDatabase().Get(skillId);
     if (!si) return;
 
@@ -945,7 +958,7 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
     ImGui::PushTextWrapPos(340.0f);
 
     // Skill icon + name header
-    ImTextureID icon = GetSkillIcon(skillId);
+    ImTextureID icon = GetSkillIcon(skillId, view);
     if (icon)
     {
         ImGui::Image(icon, ImVec2(40, 40));
@@ -1692,7 +1705,8 @@ static void BuildSkillIndex(const std::vector<MatchMeta>& matches)
         for (const auto& [pid, party] : m.parties)
             for (const auto& p : party.players)
                 for (int sk : p.used_skills)
-                    if (sk > 0) rawIds.insert(sk);
+                    if (sk > 0 && !IsUnresolvedHistoricalSkillId(sk,
+                            m.year * 10000 + m.month * 100 + m.day)) rawIds.insert(sk);
 
     if (rawIds.empty()) return;
 
@@ -1746,7 +1760,9 @@ static void BuildSkillIndex(const std::vector<MatchMeta>& matches)
                 std::vector<int> skills;
                 skills.reserve(p.used_skills.size());
                 for (int sk : p.used_skills)
-                    if (sk > 0) skills.push_back(CanonicalSkillId(sk));
+                    if (sk > 0 && !IsUnresolvedHistoricalSkillId(sk,
+                            m.year * 10000 + m.month * 100 + m.day))
+                        skills.push_back(CanonicalSkillId(sk));
                 std::sort(skills.begin(), skills.end());
                 skills.erase(std::unique(skills.begin(), skills.end()), skills.end());
                 if (skills.empty()) continue;
@@ -4834,7 +4850,9 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
                 for (int si = 0; si < 8 && si < (int)p.used_skills.size(); si++)
                 {
                     float sx = sp.x + si * (skillIconSize + 2);
-                    ImTextureID skillTex = GetSkillIcon(p.used_skills[si]);
+                    ImTextureID skillTex = IsUnresolvedHistoricalSkillId(p.used_skills[si],
+                        m.year * 10000 + m.month * 100 + m.day)
+                        ? nullptr : GetSkillIcon(p.used_skills[si]);
                     if (skillTex)
                         ImGui::GetWindowDrawList()->AddImage(skillTex,
                             ImVec2(sx, sp.y), ImVec2(sx + skillIconSize, sp.y + skillIconSize));
@@ -6946,7 +6964,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                     {
                         if (ski > 0) ImGui::SameLine(0, 2);
                         int skillId = sortedSkills[ski];
-                        ImTextureID skillTex = GetSkillIcon(skillId);
+                        ImTextureID skillTex = GetSkillIcon(skillId, &matchView);
                         if (skillTex)
                         {
                             ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
@@ -6986,7 +7004,17 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                             }
                         }
                         else
+                        {
+                            ImVec2 pos = ImGui::GetCursorScreenPos();
+                            ImGui::GetWindowDrawList()->AddRectFilled(pos,
+                                ImVec2(pos.x + skillIconSize, pos.y + skillIconSize),
+                                IM_COL32(42, 42, 46, 255), 2.f);
+                            ImGui::GetWindowDrawList()->AddText(
+                                ImVec2(pos.x + skillIconSize * 0.3f, pos.y),
+                                IM_COL32(180, 180, 180, 255), "?");
                             ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
+                            if (ImGui::IsItemHovered()) DrawSkillTooltip(skillId, &matchView);
+                        }
                     }
                 }
             }
@@ -7343,6 +7371,7 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
     ImGui::BeginGroup();
     {
+        const ImVec2 mapPos = ImGui::GetCursorScreenPos();
         ImTextureID mapIcon = GetMapIcon(m.map_id);
         if (mapIcon)
             ImGui::Image(mapIcon, ImVec2(mapImgSize, mapImgSize));
@@ -7356,14 +7385,59 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
             ImGui::PopStyleColor();
         }
 
+        // Keep each cape inside its team's corner of the map, without consuming
+        // metadata space. Draw directly so the layout cursor stays below the map.
+        if (mapImgSize > 0.0f)
+        {
+            const float uiScale = ImGui::GetFontSize() / 16.0f;
+            const float inset = std::min(6.0f * uiScale, mapImgSize * 0.04f);
+            const float capeH = std::min(96.0f * uiScale, mapImgSize * 0.45f);
+            const float capeW = capeH * 0.5f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            auto drawCape = [&](ImTextureID tex, const GuildLabel& label, bool right) {
+                if (!tex) return;
+                const ImVec2 pos(mapPos.x + (right ? mapImgSize - inset - capeW : inset),
+                                 mapPos.y + (right ? mapImgSize - inset - capeH : inset));
+                const ImVec2 end(pos.x + capeW, pos.y + capeH);
+                const float backingPad = inset * 0.5f;
+                dl->PushClipRect(mapPos, ImVec2(mapPos.x + mapImgSize, mapPos.y + mapImgSize), true);
+                dl->AddRectFilled(ImVec2(pos.x - backingPad, pos.y - backingPad),
+                                  ImVec2(end.x + backingPad, end.y + backingPad),
+                                  IM_COL32(0, 0, 0, 90), backingPad);
+                dl->AddImage(tex, pos, end);
+                dl->PopClipRect();
+
+                if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+                    ImGui::IsMouseHoveringRect(pos, end))
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 280.0f * uiScale);
+                    ImGui::TextUnformatted(label.display.empty()
+                        ? (right ? "Team 2" : "Team 1") : label.display.c_str());
+                    ImGui::PopTextWrapPos();
+                    // Reserve a square at least as wide as the guild label, then
+                    // center the preview in both directions without stretching it.
+                    const float previewSide = std::max(192.0f * uiScale, ImGui::GetItemRectSize().x);
+                    const ImVec2 previewSize(96.0f * uiScale, 192.0f * uiScale);
+                    const ImVec2 previewOrigin = ImGui::GetCursorScreenPos();
+                    ImGui::Dummy(ImVec2(previewSide, previewSide));
+                    const ImVec2 previewPos(previewOrigin.x + (previewSide - previewSize.x) * 0.5f,
+                                            previewOrigin.y + (previewSide - previewSize.y) * 0.5f);
+                    ImGui::GetWindowDrawList()->AddImage(tex, previewPos,
+                        ImVec2(previewPos.x + previewSize.x, previewPos.y + previewSize.y));
+                    ImGui::EndTooltip();
+                }
+            };
+            drawCape(GetGuildCape(m, g1), g1, false);
+            drawCape(GetGuildCape(m, g2), g2, true);
+        }
+
         ImGui::Spacing();
 
         ImFont* bold = GuiGlobalConstants::boldFont;
 
-        // The metadata lines are narrow, so the two capes hang in the space beside them
-        // rather than taking a row of their own. Their top is remembered here and the
-        // cursor is put back below the taller of the two blocks afterwards.
-        const float metaTopY = ImGui::GetCursorPosY();
+        // Long map and Flux names stay in the sidebar and grow downward.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + mapImgSize);
 
         const char* mapName = GetMapName(m.map_id);
         char dateBuf[16];
@@ -7397,41 +7471,7 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         }
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
-
-        // ── Guild capes, in the gap to the right of the metadata ──
-        {
-            const float metaBottomY = ImGui::GetCursorPosY();
-
-            ImTextureID cape1 = GetGuildCape(m, g1);
-            ImTextureID cape2 = GetGuildCape(m, g2);
-            if (cape1 || cape2)
-            {
-                // Banners are composed 128x256, so height is twice width. Sized to the
-                // metadata block it sits beside, and clamped so it neither vanishes on a
-                // narrow panel nor outgrows the map image above it.
-                const float gap = 6.0f;
-                float capeH = std::clamp(metaBottomY - metaTopY, 44.0f, 96.0f);
-                float capeW = capeH * 0.5f;
-                float needed = capeW * 2.0f + gap;
-
-                // Only worth doing if the capes fit without crowding the text.
-                if (needed < mapAreaW * 0.75f)
-                {
-                    float x = mapAreaW - needed;
-                    auto drawCape = [&](ImTextureID tex, const GuildLabel& label, float cx) {
-                        if (!tex) return;
-                        ImGui::SetCursorPos(ImVec2(cx, metaTopY));
-                        ImGui::Image(tex, ImVec2(capeW, capeH));
-                        if (ImGui::IsItemHovered() && !label.display.empty())
-                            ImGui::SetTooltip("%s", label.display.c_str());
-                    };
-                    drawCape(cape1, g1, x);
-                    drawCape(cape2, g2, x + capeW + gap);
-
-                    ImGui::SetCursorPosY(std::max(metaBottomY, metaTopY + capeH));
-                }
-            }
-        }
+        ImGui::PopTextWrapPos();
 
         // ── Rating ──
         ImGui::Spacing();
@@ -7681,7 +7721,32 @@ void draw_replay_browser(ReplayLibrary& library)
     }
 
     if (!library.IsLoaded() || library.GetMatches().empty())
+    {
+        // NOTHING IS DRAWN HERE, and a frame with nothing in it is the bare clear colour
+        // with only the menu bar and any toast on top - which is what "the window came up
+        // blank" means. Say so, once per state change, with the reason, so a log answers it.
+        static int s_reported = -1;
+        const int state = library.IsLoaded() ? 1 : 0;
+        if (s_reported != state)
+        {
+            s_reported = state;
+            RunLog::Line("replay browser: drawing nothing - the library is %s",
+                         library.IsLoaded() ? "loaded but holds no matches"
+                                            : "not scanned yet");
+        }
         return;
+    }
+
+    {
+        // ...and say when it recovers, so the log shows how long the blank frames lasted.
+        static bool s_announced = false;
+        if (!s_announced)
+        {
+            s_announced = true;
+            RunLog::Line("replay browser: first frame drawn with %d match(es)",
+                         (int)library.GetMatches().size());
+        }
+    }
 
     // Card gallery always uses Watchtower theme; table view uses user's choice
     int themeToApply = s_state.cardGalleryMode ? 1 : GuiGlobalConstants::replay_browser_theme;

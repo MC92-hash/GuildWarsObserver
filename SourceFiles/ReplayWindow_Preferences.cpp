@@ -655,6 +655,147 @@ void ReplayWindow::DrawInterfacePreferences()
             ImGui::EndDisabled();
 
         ImGui::Dummy(ImVec2(0, 16.f));
+        DrawPrefsSectionHeader("MAP RENDERING");
+        ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(applies to all open replay windows)");
+        ImGui::Dummy(ImVec2(0, 6.f));
+
+        PushPrefsFrameStyle();
+        {
+            // ---- THE LIGHT MODE, and it is the first thing in this panel --------------------
+            //
+            // A two-way choice rather than a checkbox, because neither option is "the other one
+            // turned off": they are two complete looks, each with its own light law and its own
+            // terrain formula. Classic is the default and it is the picture the owner approved.
+            // Switching modes never touches either gain value below - each mode keeps its own,
+            // persisted under its own key - so a user who has tuned one mode finds it exactly as
+            // they left it, at whatever brightness they left it.
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "Map light");
+            if (ImGui::RadioButton("Classic##mapLightClassic",
+                                   GuiGlobalConstants::IsClassicMapLight()))
+            {
+                GuiGlobalConstants::map_light_mode = GuiGlobalConstants::kMapLightModeClassic;
+                GuiGlobalConstants::SaveSettings();
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                               "- the previous look, with region-correct tint and fog");
+            if (ImGui::RadioButton("Client (experimental)##mapLightClient",
+                                   !GuiGlobalConstants::IsClassicMapLight()))
+            {
+                GuiGlobalConstants::map_light_mode = GuiGlobalConstants::kMapLightModeClientExp;
+                GuiGlobalConstants::SaveSettings();
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                               "- the client's light law; terrain level still open");
+
+            ImGui::Dummy(ImVec2(0, 6.f));
+
+            bool bloom = GuiGlobalConstants::map_bloom_enabled;
+            if (ImGui::Checkbox("Scene bloom", &bloom))
+            {
+                GuiGlobalConstants::map_bloom_enabled = bloom;
+                GuiGlobalConstants::SaveSettings();
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                               "(the game always has it; default off while the level is open)");
+
+            ImGui::Dummy(ImVec2(0, 4.f));
+
+            // THE GAIN IS LIVE IN BOTH MODES, and it holds ONE VALUE PER MODE. It used to be
+            // the experimental mode's control alone, greyed in Classic on the grounds that the
+            // floors already decide the level - but the floors decide the level relative to the
+            // map, not relative to the reference capture, and Classic lands about 1.8x above it
+            // in luminance at the flag stand. That gap is the "too bright" this control now
+            // answers. Editing it here writes the CURRENT mode's value only, so flipping modes
+            // reads the other one back exactly as it was left; the two defaults differ because
+            // the two light laws do.
+            float gain = GuiGlobalConstants::MapLightGain();
+            const float gain_default = GuiGlobalConstants::DefaultMapLightGain();
+            const bool classic_light = GuiGlobalConstants::IsClassicMapLight();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "Environment light gain");
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f), "- %s mode's own value",
+                               classic_light ? "Classic" : "Client");
+            float availGain = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(std::max(120.f, availGain - 64.f));
+            if (ImGui::SliderFloat("##mapLightGain", &gain,
+                                   GuiGlobalConstants::kMinMapLightGain,
+                                   GuiGlobalConstants::kMaxMapLightGain, ""))
+            {
+                GuiGlobalConstants::MapLightGain() = GuiGlobalConstants::ClampMapLightGain(gain);
+                GuiGlobalConstants::SaveSettings();
+                changed = true;
+            }
+            // The honest label for the control: what the default is, what it is not, and where
+            // the landmarks sit. One line in Classic, because there the only thing worth saying
+            // is where the reference and the previous build's brightness are.
+            if (ImGui::IsItemHovered())
+            {
+                if (classic_light)
+                    ImGui::SetTooltip("%.2fx matches the reference capture's brightness at the "
+                                      "flag stand; 1.00x is the previous build's brightness",
+                                      GuiGlobalConstants::kDefaultMapLightGainClassic);
+                else
+                    ImGui::SetTooltip(
+                        "The gain scales the environment LIGHT and the light is then clamped per\n"
+                        "channel, so a channel that reaches full stays there while the others climb\n"
+                        "towards it - the same map under brighter lights, not an amplified picture.\n"
+                        "\n"
+                        "%.2fx matches the reference capture at the Tower Flag Stand; 1.00x is the\n"
+                        "game's own light law. The default is NOT a value read from the client: it\n"
+                        "matches the brightness at one measured tile and leaves the hue where it was\n"
+                        "(red x1.30, green x0.89, blue x0.62 there).\n"
+                        "\n"
+                        "Terrain and the map's own models only - never the players.",
+                        GuiGlobalConstants::kDefaultMapLightGainClient);
+            }
+            ImGui::SameLine(0.f, 10.f);
+            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.75f), "%.2fx",
+                               GuiGlobalConstants::MapLightGain());
+            if (classic_light)
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                                   "%.2fx matches the reference capture's brightness at the flag "
+                                   "stand; 1.00x is the previous build's brightness. Terrain and "
+                                   "the map's own models only - never the players.",
+                                   GuiGlobalConstants::kDefaultMapLightGainClassic);
+            else
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                                   "%.2fx matches the reference capture at 1x = the game's own "
+                                   "light law; not a value read from the client. Terrain and the "
+                                   "map's own models only - never the players.",
+                                   GuiGlobalConstants::kDefaultMapLightGainClient);
+            ImGui::Dummy(ImVec2(0, 2.f));
+            char gainResetLabel[64];
+            std::snprintf(gainResetLabel, sizeof(gainResetLabel),
+                          "Reset to %.2fx##mapLightGainReset", gain_default);
+            if (ImGui::SmallButton(gainResetLabel))
+            {
+                GuiGlobalConstants::MapLightGain() = gain_default;
+                GuiGlobalConstants::SaveSettings();
+                changed = true;
+            }
+            // Only in Client mode: there 1.00x is the GAME's own level, a landmark worth a
+            // button of its own. In Classic it is just the previous build's brightness - named
+            // on the line above and one drag away - not a level the game ever drew.
+            if (!classic_light)
+            {
+                ImGui::SameLine(0.f, 8.f);
+                if (ImGui::SmallButton("Client level (1.00x)##mapLightGainClient"))
+                {
+                    GuiGlobalConstants::MapLightGain() = GuiGlobalConstants::kClientMapLightGain;
+                    GuiGlobalConstants::SaveSettings();
+                    changed = true;
+                }
+            }
+        }
+        PopPrefsFrameStyle();
+
+        ImGui::Dummy(ImVec2(0, 16.f));
         DrawPrefsSectionHeader("STYLIZED AGENT ICONS");
         ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(profession icons at distance)");
         ImGui::Dummy(ImVec2(0, 6.f));

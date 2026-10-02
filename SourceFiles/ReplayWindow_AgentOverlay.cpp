@@ -12,6 +12,7 @@
 #include "GuiGlobalConstants.h"
 #include "MapBrowser.h"
 #include "TextureCache.h"
+#include "DirectXTex/DirectXTex.h"
 #include "CursorSystem.h"
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
@@ -34,6 +35,123 @@
 // ReplayWindow:: member functions; only their definitions live here.
 // ---------------------------------------------------------------------------
 
+
+namespace
+{
+static constexpr float stops[] = {0.f, 0.12f, 0.28f, 0.50f, 1.f};
+static constexpr ImU32 red[] = {
+    IM_COL32(151, 33, 131, 255), IM_COL32(216, 114, 118, 255),
+    IM_COL32(193, 83, 90, 255), IM_COL32(167, 16, 20, 255),
+    IM_COL32(176, 0, 0, 255)
+};
+static constexpr ImU32 blue[] = {
+    IM_COL32(73, 74, 196, 255), IM_COL32(143, 146, 253, 255),
+    IM_COL32(37, 42, 180, 255), IM_COL32(7, 10, 171, 255),
+    IM_COL32(0, 0, 176, 255)
+};
+
+// The marker atlas has its gold frame in the left 32x32 tile and its
+// triangular fill mask in the right tile. Replace only that mask with the
+// same exact team gradient as the health bar, preserving the frame and alpha.
+void LoadFocusHealthMarkers(ID3D11Device* device,
+                           ComPtr<ID3D11ShaderResourceView> (&textures)[2])
+{
+    const auto dir = FindTexturesDDSDir();
+    if (dir.empty()) return;
+    DirectX::ScratchImage source, rgba;
+    if (FAILED(DirectX::LoadFromDDSFile((dir / L"texture_104587.dds").c_str(),
+        DirectX::DDS_FLAGS_NONE, nullptr, source))) return;
+    const auto& meta = source.GetMetadata();
+    if (meta.width != 64 || meta.height != 32) return;
+    const DirectX::Image* src = source.GetImage(0, 0, 0);
+    if (DirectX::IsCompressed(meta.format))
+    {
+        if (FAILED(DirectX::Decompress(*src, DXGI_FORMAT_R8G8B8A8_UNORM, rgba))) return;
+        src = rgba.GetImage(0, 0, 0);
+    }
+    else if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM)
+    {
+        if (FAILED(DirectX::Convert(*src, DXGI_FORMAT_R8G8B8A8_UNORM,
+            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, rgba))) return;
+        src = rgba.GetImage(0, 0, 0);
+    }
+    for (int team = 0; team < 2; ++team)
+    {
+        DirectX::ScratchImage marker;
+        if (FAILED(marker.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, 32, 32, 1, 1))) continue;
+        const auto* dst = marker.GetImage(0, 0, 0);
+        const ImU32* colors = team == 0 ? red : blue;
+        for (int y = 0; y < 32; ++y)
+        {
+            const float t = std::clamp((y - 10.f) / 17.f, 0.f, 1.f);
+            int segment = 0;
+            while (segment < 3 && t > stops[segment + 1]) ++segment;
+            const float blend = (t - stops[segment]) / (stops[segment + 1] - stops[segment]);
+            const ImVec4 a = ImGui::ColorConvertU32ToFloat4(colors[segment]);
+            const ImVec4 b = ImGui::ColorConvertU32ToFloat4(colors[segment + 1]);
+            const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(
+                a.x + (b.x - a.x) * blend, a.y + (b.y - a.y) * blend,
+                a.z + (b.z - a.z) * blend, 1.f));
+            for (int x = 0; x < 32; ++x)
+            {
+                const auto* frame = src->pixels + y * src->rowPitch + x * 4;
+                const unsigned mask = frame[32 * 4 + 3];
+                auto* pixel = dst->pixels + y * dst->rowPitch + x * 4;
+                if (mask)
+                {
+                    pixel[0] = (color >> IM_COL32_R_SHIFT) & 255;
+                    pixel[1] = (color >> IM_COL32_G_SHIFT) & 255;
+                    pixel[2] = (color >> IM_COL32_B_SHIFT) & 255;
+                    pixel[3] = static_cast<uint8_t>(std::min(255u, mask * 255u / 240u));
+                }
+                else std::copy_n(frame, 4, pixel);
+            }
+        }
+        DirectX::CreateShaderResourceView(device, marker.GetImages(), marker.GetImageCount(),
+            marker.GetMetadata(), textures[team].ReleaseAndGetAddressOf());
+    }
+}
+
+// texture_95099: two 256x32 frames, then a neutral health-fill strip.
+// Sample only the frame perimeter: its shaded centre would otherwise make
+// missing health opaque. The fill uses exact RGB gradient stops rather than
+// tinting the atlas's grey strip, which would alter the requested colors.
+void DrawOverheadHealthBar(ImDrawList* dl, ImTextureID atlas, ImVec2 topLeft,
+                           float width, float health, bool highlighted, int team)
+{
+    const float scale = width / 256.f;
+    const float heightScale = scale * (2.f / 3.f);
+    const float row = highlighted ? 32.f : 0.f;
+    auto part = [&](float x0, float y0, float x1, float y1,
+                    float u0, float v0, float u1, float v1, ImU32 color)
+    {
+        dl->AddImage(atlas,
+            ImVec2(topLeft.x + x0 * scale, topLeft.y + y0 * heightScale),
+            ImVec2(topLeft.x + x1 * scale, topLeft.y + y1 * heightScale),
+            ImVec2(u0 / 256.f, v0 / 128.f),
+            ImVec2(u1 / 256.f, v1 / 128.f), color);
+    };
+    if (health > 0.f)
+    {
+        const float end = 7.f + 242.f * health;
+        const ImU32* colors = team == 1 ? red : blue;
+        for (int i = 0; i < 4; ++i)
+        {
+            dl->AddRectFilledMultiColor(
+                ImVec2(topLeft.x + 7.f * scale,
+                       topLeft.y + (7.f + 18.f * stops[i]) * heightScale),
+                ImVec2(topLeft.x + end * scale,
+                       topLeft.y + (7.f + 18.f * stops[i + 1]) * heightScale),
+                colors[i], colors[i], colors[i + 1], colors[i + 1]);
+        }
+    }
+    constexpr ImU32 white = IM_COL32_WHITE;
+    part(0, 0, 256, 7, 0, row, 256, row + 7, white);
+    part(0, 25, 256, 32, 0, row + 25, 256, row + 32, white);
+    part(0, 7, 7, 25, 0, row + 7, 7, row + 25, white);
+    part(249, 7, 256, 25, 249, row + 7, 256, row + 25, white);
+}
+}
 
 void ReplayWindow::DrawAgentOverlay()
 {
@@ -60,6 +178,14 @@ void ReplayWindow::DrawAgentOverlay()
 
     struct TopViewTooltipCandidate { float rectMinX, rectMinY, rectMaxX, rectMaxY; std::string name; float dist; };
     std::vector<TopViewTooltipCandidate> topViewTooltipCandidates;
+
+    struct HealthBarCandidate {
+        int agentId, team;
+        float x, y, width, health, depth;
+    };
+    std::vector<HealthBarCandidate> healthBars;
+    XMFLOAT4X4 projection;
+    XMStoreFloat4x4(&projection, cam->GetProj());
 
     // Map boundary clamping: use terrain bounds if available.
     // Bounds are in GWMB mesh coordinates (post-transform), so we clamp after
@@ -288,6 +414,35 @@ void ReplayWindow::DrawAgentOverlay()
 
         bool casting = ard.isCastingAtTime(m_debugTimeline);
         bool dead    = ard.isDeadAtTime(m_debugTimeline);
+
+        // Collect now, draw after picking so only the final hovered player
+        // receives the highlight, including on the first frame of a hover.
+        if (ard.type == AgentType::Player && (ard.teamId == 1 || ard.teamId == 2)
+            && m_debugTimeline >= ard.snapshots.front().time)
+        {
+            const float hp = dead ? 0.f : ard.healthPctAtTime(m_debugTimeline);
+            float modelTop = AgentModelTopY(agentId, ard, pos.y, m_debugTimeline);
+            if (modelTop <= pos.y) modelTop = pos.y + 120.f;
+            XMFLOAT3 anchor{pos.x, modelTop, pos.z};
+            float hx, hy;
+            const XMVECTOR clip = XMVector4Transform(
+                XMVectorSet(anchor.x, anchor.y, anchor.z, 1.f), viewProj);
+            const float clipW = XMVectorGetW(clip);
+            if (std::isfinite(hp) && clipW > 0.f
+                && ProjectToScreen(viewProj, vpW, vpH, anchor, hx, hy))
+            {
+                // Project a fixed world-space width. Perspective distance,
+                // camera FOV and viewport size all affect its on-screen size.
+                const float width = std::clamp(75.f * vpW * projection._11 / (2.f * clipW),
+                                               14.f, 135.f * std::max(1.f, vpH / 1080.f));
+                const float iconSpace = ard.currentLOD != 0 && ard.primaryProf >= 1
+                    ? std::clamp(vpH * 0.020f, 12.f, 20.f) + 4.f : 0.f;
+                const float depth = XMVectorGetZ(XMVector3TransformCoord(
+                    XMLoadFloat3(&anchor), cam->GetView()));
+                healthBars.push_back({agentId, ard.teamId, hx - width * 0.5f,
+                    hy - iconSpace - 2.f - width / 12.f, width, std::clamp(hp, 0.f, 1.f), depth});
+            }
+        }
 
         // Determine if this agent has a 3D representation or needs a 2D dot
         bool is3DAgent = (ard.type == AgentType::Player || ard.type == AgentType::NPC);
@@ -707,6 +862,65 @@ void ReplayWindow::DrawAgentOverlay()
             float dx = pos.x - camP.x, dy = pos.y - camP.y, dz = pos.z - camP.z;
             float dist = sqrtf(dx * dx + dy * dy + dz * dz);
             topViewTooltipCandidates.push_back({ rMinX, rMinY, rMaxX, rMaxY, GetAgentLabel(ard), dist });
+        }
+    }
+
+    // Draw far players first so a nearer bar wins where they overlap.
+    const int focusedAgent = GetFocusedAgentId();
+    std::sort(healthBars.begin(), healthBars.end(), [](const auto& a, const auto& b) {
+        return a.depth > b.depth;
+    });
+    for (const auto& bar : healthBars)
+    {
+        const bool highlighted = bar.agentId == m_hoveredAgentId || bar.agentId == focusedAgent;
+        if (!highlighted && bar.health >= 0.90f) continue;
+        if (!m_overheadHealthAtlasAttempted)
+        {
+            m_overheadHealthAtlasAttempted = true;
+            const auto textureDir = FindTexturesDDSDir();
+            DirectX::ScratchImage atlas;
+            if (!textureDir.empty() && SUCCEEDED(DirectX::LoadFromDDSFile(
+                (textureDir / L"texture_95099.dds").c_str(), DirectX::DDS_FLAGS_NONE, nullptr, atlas)))
+            {
+                DirectX::CreateShaderResourceView(m_deviceResources->GetD3DDevice(),
+                    atlas.GetImages(), atlas.GetImageCount(), atlas.GetMetadata(),
+                    m_overheadHealthAtlas.ReleaseAndGetAddressOf());
+            }
+        }
+        if (m_overheadHealthAtlas)
+        {
+            // Keep the bottom edge anchored when an injured player's smaller
+            // bar expands on hover or camera focus.
+            const float width = bar.width * (highlighted ? 1.f : 0.70f);
+            const ImVec2 topLeft(bar.x + (bar.width - width) * 0.5f,
+                bar.y + (bar.width - width) / 12.f);
+            DrawOverheadHealthBar(dl, (ImTextureID)m_overheadHealthAtlas.Get(),
+                topLeft, width, bar.health, highlighted, bar.team);
+            if (bar.agentId == focusedAgent)
+            {
+                if (!m_focusHealthMarkersAttempted)
+                {
+                    m_focusHealthMarkersAttempted = true;
+                    LoadFocusHealthMarkers(m_deviceResources->GetD3DDevice(), m_focusHealthMarkers);
+                }
+                if (const auto marker = m_focusHealthMarkers[bar.team - 1].Get())
+                {
+                    const float markerWidth = width * 0.22f;
+                    const float markerHeight = markerWidth * (21.f / 32.f);
+                    const float centre = topLeft.x + width * 0.5f;
+                    constexpr float kMarkerPeriod = 1.35f;
+                    const float phase = static_cast<float>(ImGui::GetTime())
+                        * (2.f * DirectX::XM_PI / kMarkerPeriod);
+                    const float motion = 0.5f - 0.5f * cosf(phase);
+                    const float baseGap = std::max(2.f, width * 0.025f);
+                    const float travel = std::clamp(width * 0.045f, 2.f, 6.f);
+                    const float bottom = topLeft.y - baseGap - motion * travel;
+                    dl->AddImage((ImTextureID)marker,
+                        ImVec2(centre - markerWidth * 0.5f, bottom - markerHeight),
+                        ImVec2(centre + markerWidth * 0.5f, bottom),
+                        ImVec2(0.f, 10.f / 32.f), ImVec2(1.f, 31.f / 32.f));
+                }
+            }
         }
     }
 

@@ -374,6 +374,20 @@ public:
 		return false;
 	}
 
+	// Declare an already-added mesh opaque or alpha-blended, which is purely a DRAW ORDER
+	// statement: the render batch draws AlphaBlend meshes after every opaque one and back-to-front
+	// among themselves (the D3D blend state itself is AlphaBlend for all model geometry either
+	// way). Needed because a mesh assembled from several textures may only learn that it blends
+	// after it has been added.
+	bool SetMeshBlendState(int mesh_id, BlendState blend_state)
+	{
+		auto it = m_triangleMeshes.find(mesh_id);
+		if (it == m_triangleMeshes.end()) { return false; }
+
+		m_renderBatch.SetBlendState(mesh_id, blend_state);
+		return true;
+	}
+
 	unsigned int DecodeObjectID(unsigned char* data, int x, int y, int rowPitch)
 	{
 		// Calculate the offset to the pixel at (x, y)

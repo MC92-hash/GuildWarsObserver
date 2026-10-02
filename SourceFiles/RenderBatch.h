@@ -94,6 +94,23 @@ public:
 		}
 	}
 
+	// Re-declare an already-batched mesh as opaque or alpha-blended.
+	//
+	// The blend state is captured into the command when the mesh is added, from Mesh::blend_state,
+	// and it is what SortCommands above orders on: AlphaBlend commands are drawn after every opaque
+	// one and back-to-front among themselves. Whether a mesh actually blends can only be known once
+	// its textures are decided, which may be long after the mesh was added, so it has to be
+	// settable afterwards.
+	void SetBlendState(int mesh_id, BlendState blend_state)
+	{
+		auto it = m_commands.find(mesh_id);
+		if (it != m_commands.end() && it->second.blend_state != blend_state)
+		{
+			it->second.blend_state = blend_state;
+			m_needsSorting = true;
+		}
+	}
+
 	void Clear()
 	{
 		m_commands.clear();

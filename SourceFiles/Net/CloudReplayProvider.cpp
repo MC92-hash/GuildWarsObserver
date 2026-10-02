@@ -126,6 +126,7 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
         meta.parties[pid] = std::move(pm);
     }
 
+    RepairHistoricalMatchSkillBars(meta);
     return meta;
 }
 

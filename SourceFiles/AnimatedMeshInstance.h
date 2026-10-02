@@ -39,14 +39,76 @@ public:
     AnimatedMeshInstance(ID3D11Device* device,
                          const std::vector<SkinnedGWVertex>& vertices,
                          const std::vector<uint32_t>& indices,
-                         int meshId)
+                         int meshId,
+                         // A caller that solves vertex POSITIONS on the CPU every frame needs a
+                         // mappable vertex buffer and a copy of the original vertices to go back
+                         // to. Everything else stays IMMUTABLE.
+                         bool dynamicVertices = false)
         : m_meshId(meshId)
         , m_isSkinned(true)
+        , m_dynamicVertices(dynamicVertices)
     {
+        if (dynamicVertices)
+            m_baseVertices = vertices;
         CreateVertexBuffer(device, vertices);
         CreateIndexBuffer(device, indices);
         CreateBoneMatrixBuffer(device);
     }
+
+    /**
+     * @brief Overwrites the vertex positions with externally computed ones.
+     *
+     * `positions` is one entry per vertex, already in MODEL space - the frame the bone matrices
+     * output - so the vertices are pinned to the IDENTITY bone slot (MAX_BONES - 1, which
+     * UpdateBoneMatrices always leaves as identity because no skeleton fills the array) and the
+     * shader's skinning step becomes a no-op for them.
+     */
+    bool UpdateVertexPositions(ID3D11DeviceContext* context,
+                               const std::vector<XMFLOAT3>& positions)
+    {
+        if (!m_dynamicVertices || !m_vertexBuffer || !context ||
+            positions.size() != m_baseVertices.size())
+        {
+            return false;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(context->Map(m_vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return false;
+
+        auto* dst = static_cast<SkinnedGWVertex*>(mapped.pData);
+        for (size_t i = 0; i < m_baseVertices.size(); i++)
+        {
+            dst[i] = m_baseVertices[i];
+            dst[i].position = positions[i];
+            dst[i].boneIndices[0] = static_cast<uint32_t>(MAX_BONES - 1);
+            dst[i].boneIndices[1] = dst[i].boneIndices[2] = dst[i].boneIndices[3] =
+                static_cast<uint32_t>(MAX_BONES - 1);
+            dst[i].boneWeights[0] = 1.0f;
+            dst[i].boneWeights[1] = dst[i].boneWeights[2] = dst[i].boneWeights[3] = 0.0f;
+        }
+        context->Unmap(m_vertexBuffer.Get(), 0);
+        return true;
+    }
+
+    /**
+     * @brief Puts the rigid, bone-skinned vertices back.
+     */
+    bool RestoreBaseVertices(ID3D11DeviceContext* context)
+    {
+        if (!m_dynamicVertices || !m_vertexBuffer || !context || m_baseVertices.empty())
+            return false;
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        if (FAILED(context->Map(m_vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return false;
+        std::memcpy(mapped.pData, m_baseVertices.data(),
+                    sizeof(SkinnedGWVertex) * m_baseVertices.size());
+        context->Unmap(m_vertexBuffer.Get(), 0);
+        return true;
+    }
+
+    bool HasDynamicVertices() const { return m_dynamicVertices; }
 
     /**
      * @brief Creates an animated mesh instance from a standard mesh.
@@ -257,8 +319,9 @@ private:
         }
 
         D3D11_BUFFER_DESC vbDesc = {};
-        vbDesc.Usage = D3D11_USAGE_IMMUTABLE;
+        vbDesc.Usage = m_dynamicVertices ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_IMMUTABLE;
         vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        vbDesc.CPUAccessFlags = m_dynamicVertices ? D3D11_CPU_ACCESS_WRITE : 0u;
         vbDesc.ByteWidth = static_cast<UINT>(sizeof(SkinnedGWVertex) * vertices.size());
         vbDesc.StructureByteStride = sizeof(SkinnedGWVertex);
 
@@ -315,6 +378,10 @@ private:
 private:
     int m_meshId;
     bool m_isSkinned;
+    // A mesh whose positions are solved on the CPU owns a mappable vertex buffer and keeps the
+    // original bone-skinned vertices so the solver can be switched off without a rebind.
+    bool m_dynamicVertices = false;
+    std::vector<SkinnedGWVertex> m_baseVertices;
     Mesh m_mesh;  // Keep a copy for reference
     PerObjectCB m_perObjectData;
 

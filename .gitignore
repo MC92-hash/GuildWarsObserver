@@ -515,3 +515,6 @@ SourceFiles/HealthModel.h
 SourceFiles/HealthModel.cpp
 SourceFiles/EquipmentHealth.h
 SourceFiles/ReplayWindow_HealthDebug.cpp
+
+# Pairs a working tree with its own private checkout (see GwoPrivateDir in the vcxproj).
+private_path.props

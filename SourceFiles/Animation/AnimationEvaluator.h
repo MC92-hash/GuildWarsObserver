@@ -5,6 +5,7 @@
 #include "../Parsers/VLEDecoder.h"
 #include <DirectXMath.h>
 #include <vector>
+#include <set>
 #include <cstdint>
 #include <algorithm>
 
@@ -416,6 +417,133 @@ public:
             XMStoreFloat4x4(&outSkinningMatrices[storeIdx], skinning);
         }
     }
+
+    /**
+     * @brief Computes skinning matrices using GW's exact matrix-stack algorithm.
+     *
+     * Faithfully reproduces the Ghidra RE of Model_UpdateSkeletonTransforms @ 0x00754720:
+     *
+     * For each bone (processed in order, parents always before children):
+     *   1. Pop matrix stack to parent level (get parent's accumulated matrix)
+     *   2. Build local transform: M_local = R_local * T(basePos + animDelta)
+     *   3. Accumulate: M_accumulated = M_parent * M_local
+     *   4. Apply bind offset: M_bone = T(-basePos) * M_accumulated
+     *   5. Store M_bone on the stack (it becomes the parent for subsequent children)
+     *
+     * The T(-basePos) step is critical: it establishes the bone's bind position as the
+     * rotation pivot. For a door hinge, this means rotation happens around the hinge point,
+     * not the model origin. The matrix stack carries this offset forward so child bones
+     * inherit the correct accumulated transform.
+     *
+     * In bind pose (all rotations = identity, all deltas = 0):
+     *   M_accumulated = I * T(basePos) = T(basePos)
+     *   M_bone = T(-basePos) * T(basePos) = I
+     * So vertices stay at their original model-space positions.
+     *
+     * @param clip Animation clip to evaluate.
+     * @param time Animation time.
+     * @param outSkinningMatrices Output array of skinning matrices.
+     * @param lockRootPosition If true, root bones stay at bind pose position (no position animation).
+     */
+    void ComputeSkinningMatrixStack(const AnimationClip& clip, float time,
+                                     std::vector<XMFLOAT4X4>& outSkinningMatrices,
+                                     bool lockRootPosition = false,
+                                     const std::set<uint32_t>* lockedBones = nullptr)
+    {
+        size_t boneCount = clip.boneTracks.size();
+
+        // Evaluate local transforms for all bones
+        std::vector<BoneTransform> localTransforms(boneCount);
+        for (size_t i = 0; i < boneCount; i++)
+        {
+            localTransforms[i] = EvaluateBoneTrack(clip.boneTracks[i], time);
+        }
+
+        // The matrix stack: each entry is the accumulated matrix AFTER T(-basePos),
+        // which is what child bones inherit from their parent.
+        std::vector<XMMATRIX> stackMatrices(boneCount);
+
+        // Handle intermediate bones (flag 0x10000000)
+        size_t outputBoneCount = clip.GetOutputBoneCount();
+        bool hasIntermediateBones = (outputBoneCount > 0 && outputBoneCount < boneCount);
+
+        outSkinningMatrices.resize(hasIntermediateBones ? outputBoneCount : boneCount);
+
+        for (size_t i = 0; i < boneCount; i++)
+        {
+            const XMFLOAT3& basePos = clip.boneTracks[i].basePosition;
+            const BoneTransform& local = localTransforms[i];
+            int32_t parentIdx = (i < clip.boneParents.size()) ? clip.boneParents[i] : -1;
+
+            bool boneLocked = lockedBones && lockedBones->count(static_cast<uint32_t>(i)) > 0;
+
+            // Step 1: Get parent's accumulated matrix
+            XMMATRIX parentMatrix = XMMatrixIdentity();
+            if (parentIdx >= 0 && parentIdx < static_cast<int32_t>(i))
+            {
+                parentMatrix = stackMatrices[parentIdx];
+            }
+
+            XMMATRIX M_bone;
+
+            if (boneLocked)
+            {
+                // Locked bone: force identity (vertices stay at bind pose)
+                M_bone = XMMatrixIdentity();
+            }
+            else
+            {
+                // Step 2: Build local transform = R_local * T(basePos + animDelta)
+                XMFLOAT3 translationPos = basePos;
+                if (parentIdx < 0 && lockRootPosition)
+                {
+                    // Root bone locked: use bind position only (no animation delta)
+                }
+                else
+                {
+                    translationPos.x += local.position.x;
+                    translationPos.y += local.position.y;
+                    translationPos.z += local.position.z;
+                }
+
+                XMMATRIX R_local = XMMatrixRotationQuaternion(XMLoadFloat4(&local.rotation));
+                XMMATRIX T_local = XMMatrixTranslation(translationPos.x, translationPos.y, translationPos.z);
+
+                // Include scale if present
+                XMMATRIX S_local = XMMatrixScaling(local.scale.x, local.scale.y, local.scale.z);
+
+                // M_local = S * R * T (scale, then rotate, then translate)
+                XMMATRIX M_local = S_local * R_local * T_local;
+
+                // Step 3: Accumulate with parent
+                XMMATRIX M_accumulated = M_local * parentMatrix;
+
+                // Step 4: Apply bind offset to create the bone matrix
+                // T(-basePos) moves vertices from model space to bone-local space
+                XMMATRIX T_negBase = XMMatrixTranslation(-basePos.x, -basePos.y, -basePos.z);
+                M_bone = T_negBase * M_accumulated;
+            }
+
+            // The stack stores M_bone so children inherit the accumulated transform
+            stackMatrices[i] = M_bone;
+
+            // Store the skinning matrix at the appropriate output index
+            if (hasIntermediateBones)
+            {
+                int32_t outputIdx = clip.GetOutputFromAnimBone(static_cast<uint32_t>(i));
+                if (outputIdx < 0)
+                {
+                    continue; // Intermediate bone, no output
+                }
+                XMStoreFloat4x4(&outSkinningMatrices[static_cast<size_t>(outputIdx)], M_bone);
+            }
+            else
+            {
+                XMStoreFloat4x4(&outSkinningMatrices[i], M_bone);
+            }
+        }
+    }
+
 
 private:
     /**
