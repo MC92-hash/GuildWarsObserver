@@ -65,7 +65,8 @@ public:
      */
     bool UpdateVertexPositions(ID3D11DeviceContext* context,
                                const std::vector<XMFLOAT3>& positions,
-                               const std::vector<XMFLOAT3>* normals = nullptr)
+                               const std::vector<XMFLOAT3>* normals = nullptr,
+                               const XMFLOAT2* tex_coord1 = nullptr)
     {
         if (!m_dynamicVertices || !m_vertexBuffer || !context ||
             positions.size() != m_baseVertices.size() ||
@@ -85,6 +86,8 @@ public:
             dst[i].position = positions[i];
             if (normals != nullptr)
                 dst[i].normal = (*normals)[i];   // a rigid CPU pose (a held weapon's own clip) turns them too
+            if (tex_coord1 != nullptr)
+                dst[i].tex_coord1 = *tex_coord1;   // a glow card's ramp texel this frame
             dst[i].boneIndices[0] = static_cast<uint32_t>(MAX_BONES - 1);
             dst[i].boneIndices[1] = dst[i].boneIndices[2] = dst[i].boneIndices[3] =
                 static_cast<uint32_t>(MAX_BONES - 1);
