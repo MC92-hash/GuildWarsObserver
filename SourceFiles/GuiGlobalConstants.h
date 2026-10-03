@@ -254,7 +254,9 @@ public:
 	// 1.00x is the previous build's Classic brightness, so an owner who preferred it has one
 	// number to type - and it is the game's own level in Client mode. The range is the same in
 	// both modes.
-	static constexpr float kDefaultMapLightGainClassic = 0.5486f;  // calibrated - see above
+	// [the owner, 2026-10-03] The Classic default is 1.00x - the standard brightness. 0.5486x (above) matched
+	// one tile's luminance and left every map too dark against the game; it stays a number to type.
+	static constexpr float kDefaultMapLightGainClassic = 1.0f;
 	static constexpr float kDefaultMapLightGainClient  = 2.03f;    // calibrated - see above
 	// There is deliberately no mode-less `kDefaultMapLightGain` any more: "the default" is not a
 	// single number now, and a name that answered for both modes could only be wrong in one.
