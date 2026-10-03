@@ -48,7 +48,7 @@ class SkillSoundTable;
 // A recorded player's own character, built once at match load from the appearance snapshot the
 // recorder wrote. Opaque here on purpose: this window holds one, asks it four questions and never
 // looks inside. Everything it is lives in the module the project links against.
-namespace PlayerVisuals { class Set; }
+namespace PlayerVisuals { class Set; class ReplayWeapons; }
 // The effects the game plays on an agent: opaque here for the same reason.
 namespace AgentEffects { class Player; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
@@ -1212,6 +1212,13 @@ private:
         int headLinkBone = -1;
         DirectX::XMFLOAT3 headLinkOffsetGw{0.f, 0.f, 0.f};
         DirectX::XMFLOAT3 headLinkBindDx{0.f, 0.f, 0.f};
+
+        // ...and where each of the four weapon link slots hangs, the same way and out of the same
+        // files: 0 = not looked for yet, 1 = read, 2 = this rig carried no table.
+        int weaponLinkState = 0;
+        int weaponLinkBone[4] = {-1, -1, -1, -1};
+        DirectX::XMFLOAT3 weaponLinkOffsetGw[4]{};
+        DirectX::XMFLOAT3 weaponLinkBindDx[4]{};
     };
 
     // file hash -> parsed model template (shared geometry, one AddProp per unique model)
@@ -1279,6 +1286,8 @@ private:
     };
 
     std::shared_ptr<PlayerVisuals::Set> m_playerVisuals;
+    // A recorded player's held weapons, composed per set. Defined in the private module.
+    std::shared_ptr<PlayerVisuals::ReplayWeapons> m_playerVisualWeapons;
     int m_playerVisualsPhase = 0;
     std::string m_playerVisualsNote;   // what the load ended up doing, for the debug window
     std::thread m_playerVisualsThread;
@@ -1386,6 +1395,20 @@ private:
                               const DirectX::XMFLOAT4X4& characterWorld,
                               std::vector<PerObjectCB>& cbs);
     void EnsureHeadLink(AgentModelInstance& tmpl);
+
+    // A recorded player's held weapons, drawn from compositions of their own rather than the
+    // stand-in weapon models: the sets are composed after the characters, a few per frame
+    // (StepPlayerVisualWeaponSets), stepped once per frame (StepPlayerVisualWeapons) and drawn by
+    // DrawComposedHeldWeapons - which returns false whenever the stand-in path should draw the hands
+    // instead (a carried item, a set not composed yet, a player with no record). All defined in the
+    // private module.
+    void StepPlayerVisualWeaponSets();
+    void StepPlayerVisualWeapons(float dt, bool reseed);
+    bool DrawComposedHeldWeapons(int agentId, const Equipment::ItemDef* mainItem,
+                                 const Equipment::ItemDef* offItem,
+                                 const GW::Animation::AnimationController& pose,
+                                 const PerObjectCB& agentCB, bool portrait);
+    void EnsureWeaponLinks(AgentModelInstance& tmpl);
 
     // The particles an Elementalist headpiece carries: one step per frame for every character, and
     // one draw per view. Defined in the private module; with no such piece in the match not one of
@@ -1526,7 +1549,8 @@ private:
                          const GW::Animation::AnimationController& pose,
                          const PerObjectCB& agentCB, bool& shadersBound, int& boundPixelShader,
                          const Equipment::ItemDef* fallbackMain = nullptr,
-                         const Equipment::ItemDef* fallbackOff = nullptr);
+                         const Equipment::ItemDef* fallbackOff = nullptr,
+                         bool portrait = false);
 
     bool m_showWeaponModels = true;
 

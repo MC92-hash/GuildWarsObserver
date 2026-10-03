@@ -2268,6 +2268,9 @@ void ReplayWindow::DrawAgentModels()
         const float moved = std::abs(m_debugTimeline - m_lastSoftBodyTimeline);
         const float ordinary = std::max(0.35f, pace * 4.f);
         StepPlayerVisualSoftBodies(pace, !m_replayCtx.isPlaying || moved > ordinary);
+        // ...and the composed held weapons: their clips, cards, cloth and particles. A jump re-seats
+        // them, but a paused timeline only stops them - they rest where they are.
+        StepPlayerVisualWeapons(pace, moved > ordinary);
         m_lastSoftBodyTimeline = m_debugTimeline;
     }
 

@@ -443,7 +443,7 @@ void ReplayWindow::RenderCharacterPortraits()
             int boundPixelShader = -1;
             DrawHeldWeapons(agentId, ard, FindSnapshotIndex(ard.snapshots, m_debugTimeline),
                             tmpl.weaponSocket, *p.controller, agentCB, shadersBound,
-                            boundPixelShader, firstMain, firstOff);
+                            boundPixelShader, firstMain, firstOff, /*portrait=*/true);
         }
 
         // ---- hand the submeshes back their live pose ---------------------------------------

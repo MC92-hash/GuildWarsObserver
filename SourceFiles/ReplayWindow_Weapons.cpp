@@ -639,7 +639,8 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
                                    const PerObjectCB& agentCB, bool& shadersBound,
                                    int& boundPixelShader,
                                    const Equipment::ItemDef* fallbackMain,
-                                   const Equipment::ItemDef* fallbackOff)
+                                   const Equipment::ItemDef* fallbackOff,
+                                   bool portrait)
 {
     auto* context = m_deviceResources->GetD3DDeviceContext();
     auto* meshManager = m_mapRenderer->GetMeshManager();
@@ -747,6 +748,16 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
             drawAtBone(gripDef.forceOffHand ? offBone : mainBone, *urn, gripDef);
             return;
         }
+    }
+
+    // A RECORDED PLAYER'S OWN WEAPONS, composed the way the Wardrobe composes them, once the set in
+    // hand has been. Everything else - a carried item, a set still composing, a player the recording
+    // has no appearance for - keeps the stand-in models below.
+    if (DrawComposedHeldWeapons(agentId, mainItem.item, offItem.item, pose, agentCB, portrait))
+    {
+        shadersBound = false;   // that pass bound programs of its own
+        boundPixelShader = -1;
+        return;
     }
 
     if (WeaponModelTemplate* mainTmpl = templateFor(mainItem))
