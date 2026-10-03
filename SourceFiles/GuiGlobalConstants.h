@@ -81,6 +81,7 @@ public:
 
 	// Persistent match data folder path (saved across sessions)
 	inline static std::string saved_match_data_folder_path;
+	inline static std::string saved_looks_folder_path;
 
 	// Cloud storage settings
 	inline static std::string storage_mode = GWO_CLOUD_ENABLED ? "online_only" : "local";
@@ -566,6 +567,14 @@ public:
 		return GetExeDir() / L"UserData";
 	}
 
+	// Keep the active wardrobe folder stable while an editor session is open.
+	static const std::filesystem::path& GetLooksFolder()
+	{
+		static const auto folder = saved_looks_folder_path.empty()
+			? GetUserDataDir() / L"wardrobe" : std::filesystem::u8path(saved_looks_folder_path);
+		return folder;
+	}
+
 	// Match cache directory, created on first use.
 	//
 	// Prefers "MatchCache" next to the executable. If that cannot be created
@@ -689,6 +698,7 @@ public:
 		file << "\n[Config]\n";
 		file << "gw_dat_path=" << saved_gw_dat_path << "\n";
 		file << "match_data_folder=" << saved_match_data_folder_path << "\n";
+		file << "looks_folder=" << saved_looks_folder_path << "\n";
 		if (!contributor_key.empty())
 			file << "contributor_key=" << contributor_key << "\n";
 
@@ -791,6 +801,10 @@ public:
 			}
 			if (key == "match_data_folder") {
 				saved_match_data_folder_path = val_str;
+				continue;
+			}
+			if (key == "looks_folder") {
+				saved_looks_folder_path = val_str;
 				continue;
 			}
 			if (key == "contributor_key") {

@@ -80,6 +80,9 @@ static void draw_settings_window()
 	static char folderBuf[512] = "";
 	static FolderValidation folderVal = FolderValidation::None;
 	static bool folderDialogOpen = false;
+	static char looksBuf[4096] = "";
+	static bool looksDialogOpen = false;
+	static std::string looksMessage;
 
 	static bool initialized = false;
 	static Clock::time_point datSaveTime;
@@ -90,6 +93,11 @@ static void draw_settings_window()
 	if (!initialized)
 	{
 		initialized = true;
+		const auto activeLooks = GuiGlobalConstants::GetLooksFolder().u8string();
+		const std::string looksCurrent = GuiGlobalConstants::saved_looks_folder_path.empty()
+			? std::string(reinterpret_cast<const char*>(activeLooks.data()), activeLooks.size())
+			: GuiGlobalConstants::saved_looks_folder_path;
+		strncpy_s(looksBuf, looksCurrent.c_str(), _TRUNCATE);
 
 		std::string datCur = SetupConfig::dat_file_path;
 		if (datCur.empty()) datCur = GuiGlobalConstants::saved_gw_dat_path;
@@ -364,7 +372,7 @@ static void draw_settings_window()
 	ImGui::Dummy(ImVec2(0, 12.f));
 
 	// -- Match Data Folder --
-	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Match Data Folder");
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Match Data Folder (Library)");
 	ImGui::Dummy(ImVec2(0, 4.f));
 
 	{
@@ -461,6 +469,62 @@ static void draw_settings_window()
 	}
 
 	// ──── Replay Camera ─────────────────────────────────────────
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Saved Looks Folder (Wardrobe)");
+	ImGui::Dummy(ImVec2(0, 4.f));
+	// the same field as the match data folder's: dark ground, a faint border
+	ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.f, 0.f, 0.f, 0.4f));
+	ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+	ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+	ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.f, 1.f, 1.f, 0.15f));
+	ImGui::SetNextItemWidth(inputW);
+	if (ImGui::InputText("##settingslookspath", looksBuf, sizeof(looksBuf)))
+		looksMessage.clear();
+	ImGui::PopStyleColor(2);
+	ImGui::PopStyleVar();
+	ImGui::SameLine(0.f, 4.f);
+	if (ImGui::Button("Browse##looks", ImVec2(browseW, 0)))
+	{
+		CustomFileBrowser::Instance().Open("SettingsChooseLooksFolder", "Select Saved Looks Folder",
+			CustomFileBrowser::Mode::SelectFolder, nullptr, looksBuf);
+		looksDialogOpen = true;
+	}
+	ImGui::SameLine(0.f, 4.f);
+	ImGui::BeginDisabled(looksBuf[0] == '\0');
+	if (ImGui::Button("Save##looks", ImVec2(saveW, 0)))
+	{
+		std::error_code ec;
+		const auto folder = std::filesystem::u8path(looksBuf);
+		if (!folder.is_absolute())
+			looksMessage = "Please choose an absolute folder path.";
+		else
+		{
+			std::filesystem::create_directories(folder, ec);
+			if (ec)
+				looksMessage = "Could not use this folder: " + ec.message();
+			else
+			{
+				const auto probe = folder / (L".gwo-write-check-" + std::to_wstring(GetCurrentProcessId()) +
+					L"-" + std::to_wstring(GetTickCount64()));
+				HANDLE file = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+					FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+				if (file == INVALID_HANDLE_VALUE)
+					looksMessage = "Cannot write to this folder. Please choose a writable folder.";
+				else
+				{
+					CloseHandle(file);
+					GuiGlobalConstants::saved_looks_folder_path = looksBuf;
+					GuiGlobalConstants::SaveSettings();
+					looksMessage = "Saved. Restart GW Observer to use this folder.";
+				}
+			}
+		}
+	}
+	ImGui::EndDisabled();
+	ImGui::PopStyleVar();
+	ImGui::TextWrapped("Changes apply after restarting. Existing looks stay in their current folder; copy them to the new folder to keep using them.");
+	if (!looksMessage.empty())
+		ImGui::TextWrapped("%s", looksMessage.c_str());
 	ImGui::Spacing();
 	ImGui::SeparatorText("Replay Camera");
 	ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f),
@@ -767,6 +831,16 @@ static void draw_settings_window()
 		}
 		CustomFileBrowser::Instance().Close();
 		folderDialogOpen = false;
+	}
+	if (looksDialogOpen && CustomFileBrowser::Instance().Display("SettingsChooseLooksFolder"))
+	{
+		if (CustomFileBrowser::Instance().IsOk())
+		{
+			strncpy_s(looksBuf, CustomFileBrowser::Instance().GetSelectedPath().c_str(), _TRUNCATE);
+			looksMessage.clear();
+		}
+		CustomFileBrowser::Instance().Close();
+		looksDialogOpen = false;
 	}
 
 	if (!s_settingsOpen)
