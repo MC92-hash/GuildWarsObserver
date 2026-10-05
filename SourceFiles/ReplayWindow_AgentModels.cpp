@@ -2079,6 +2079,12 @@ void ReplayWindow::DrawAgentModels()
                 float speedMult = 1.0f;
                 if (dead) {
                     speedMult = 0.8f;
+                } else if ((snap.is_casting || animState.wasCasting) && snap.animation_type > 0.f) {
+                    // The client does NOT fit a cast animation to the cast time: it plays at the
+                    // recorded rate (animation_type, ~1.0) and runs on past the moment the skill
+                    // fires (a 1 s cast shows ~2 s of animation). Fitting it to the cast window
+                    // played 545 of 562 casts of a recorded match 2-6x too fast.
+                    speedMult = snap.animation_type;
                 } else if (snap.is_casting && ctrl) {
                     const CastInterval* ci = ard.castIntervalAtTime(m_debugTimeline);
                     if (ci) {
@@ -2089,7 +2095,14 @@ void ReplayWindow::DrawAgentModels()
                         if (castDur > 0.001f && segDurSec > 0.001f)
                             speedMult = segDurSec / castDur;
                     }
+                } else if (snap.animation_type > 0.f) {
+                    // The recorded rate is the client's own (AgentLiving +0xE0, Gw.exe 0x7FCCF0):
+                    // exact for attacks, attack skills, combat stance and idles alike. Fitting to
+                    // the weapon attack time (below) played attack skills ~3x too slow and
+                    // stretched the combat stance between hits.
+                    speedMult = snap.animation_type;
                 } else if (snap.animation_speed > 0.f) {
+                    // Older recordings without animation_type.
                     speedMult = snap.animation_speed;
                     // Use timing-based formula for attack animations when weapon data
                     // is available.  This fits the segment to the real attack window,
