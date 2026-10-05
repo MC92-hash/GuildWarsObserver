@@ -55,6 +55,27 @@ constexpr uint32_t kVineSeedModelFileId              = 94207;
 constexpr uint32_t kBundleItemType                   = 6;
 constexpr uint32_t kFlagItemType                     = 28;
 
+// A Ritualist weapon spell turns the main-hand weapon into the game's weapon-spell skin for its
+// family, for as long as the spell lasts, whatever weapon is held then. The skins are the
+// owner-approved "Ritualist Weapon Spell (<family> effect)" rows of the Wardrobe's catalogue; the
+// off-hand items (focus, shield) have none and keep their own model.
+static uint32_t WeaponSpellSkinModel(uint32_t itemType)
+{
+    switch (itemType)
+    {
+        case 2:  return 153621;   // axe
+        case 5:  return 153624;   // bow
+        case 15: return 153627;   // hammer
+        case 22: return 153630;   // wand
+        case 26: return 153633;   // staff
+        case 27: return 153636;   // sword
+        case 32: return 164529;   // daggers (both hands: one item worn as a pair)
+        case 35: return 265607;   // scythe
+        case 36: return 265608;   // spear
+        default: return 0;
+    }
+}
+
 // Several of these models carry a submesh that is not part of the item and must never
 // be drawn — the repair kit's stand, and the urns' own extra piece.
 static int HiddenSubmeshFor(uint32_t modelFileId)
@@ -270,13 +291,22 @@ void ReplayWindow::CollectHandHeldModelFileIds(std::vector<uint32_t>& out) const
         if (const auto* item = equipment.Find(ev.ref); item && item->modelFileId)
             unique.insert(item->modelFileId);
     }
+    bool anyWeaponSpell = false;
     for (const auto& [agentId, ard] : m_replayCtx.agents)
     {
         for (const auto& snap : ard.snapshots)
+        {
+            anyWeaponSpell = anyWeaponSpell || snap.has_weapon_spell;
             for (uint16_t id : { snap.weapon_item_id, snap.offhand_item_id })
                 if (const auto* item = equipment.FindByAgentItemId(id); item && item->modelFileId)
                     unique.insert(item->modelFileId);
+        }
     }
+    // The weapon-spell skins are named by no item record either (see WeaponSpellSkinModel).
+    if (anyWeaponSpell)
+        for (uint32_t itemType : kWeaponItemTypes)
+            if (const uint32_t skin = WeaponSpellSkinModel(itemType))
+                unique.insert(skin);
 
     out.assign(unique.begin(), unique.end());
 }
@@ -773,6 +803,22 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
                 flagItem.dyes[i] = static_cast<uint8_t>((word >> (4 * i)) & 0xFu);
         }
         composedMain = &flagItem;
+    }
+    // Under a Ritualist weapon spell the main hand shows the spell's skin for its family, undyed;
+    // both paths below draw it (the composed one composes it like any other set).
+    Equipment::ItemDef spellItem;
+    if (mainItem.item && composedMain == mainItem.item &&
+        snapIdx >= 0 && snapIdx < static_cast<int>(ard.snapshots.size()) &&
+        ard.snapshots[snapIdx].has_weapon_spell)
+    {
+        if (const uint32_t skin = WeaponSpellSkinModel(mainItem.itemType))
+        {
+            spellItem = *mainItem.item;
+            spellItem.modelFileId = skin;
+            for (auto& dye : spellItem.dyes) dye = 0;
+            composedMain = &spellItem;
+            mainItem.modelFileId = skin;
+        }
     }
     if (DrawComposedHeldWeapons(agentId, rigSlotKey >= 0 ? rigSlotKey : agentId, composedMain,
                                 offItem.item, pose, agentCB, portrait))
