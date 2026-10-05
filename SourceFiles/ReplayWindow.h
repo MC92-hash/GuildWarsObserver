@@ -1401,10 +1401,11 @@ private:
     // (StepPlayerVisualWeaponSets), stepped once per frame (StepPlayerVisualWeapons) and drawn by
     // DrawComposedHeldWeapons - which returns false whenever the stand-in path should draw the hands
     // instead (a carried item, a set not composed yet, a player with no record). All defined in the
-    // private module.
+    // private module. `rigSlotKey` is the model slot whose rig `pose` belongs to - an avatar form's
+    // own slot while one is worn - so the link slots are read off the skeleton actually posed.
     void StepPlayerVisualWeaponSets();
     void StepPlayerVisualWeapons(float dt, bool reseed);
-    bool DrawComposedHeldWeapons(int agentId, const Equipment::ItemDef* mainItem,
+    bool DrawComposedHeldWeapons(int agentId, int rigSlotKey, const Equipment::ItemDef* mainItem,
                                  const Equipment::ItemDef* offItem,
                                  const GW::Animation::AnimationController& pose,
                                  const PerObjectCB& agentCB, bool portrait);
@@ -1550,7 +1551,7 @@ private:
                          const PerObjectCB& agentCB, bool& shadersBound, int& boundPixelShader,
                          const Equipment::ItemDef* fallbackMain = nullptr,
                          const Equipment::ItemDef* fallbackOff = nullptr,
-                         bool portrait = false);
+                         bool portrait = false, int rigSlotKey = -1);   // -1: the agent's own slot
 
     bool m_showWeaponModels = true;
 
