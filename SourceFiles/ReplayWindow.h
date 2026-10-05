@@ -33,6 +33,7 @@
 #include <chrono>
 #include "BitmapFont.h"
 #include "AttributeDeducer.h"
+#include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "SkillDatabase.h"
 #include <string>
@@ -468,6 +469,17 @@ private:
     mutable std::unordered_map<int, std::vector<float>> m_moraleBoosts; // by team id
     mutable std::vector<std::pair<float, int>> m_moraleTeamSum[2];     // players' summed morale, [0] = team 1
     mutable bool m_moraleTimelineBuilt = false;
+
+    // Skill cooldowns and disables (ReplayWindow_SkillCooldowns.cpp): one model behind every skill bar.
+    mutable std::unordered_map<int, std::vector<SkillDisable>>  m_skillDisables;   // by the agent disabled
+    mutable std::unordered_map<int, std::vector<RechargeReset>> m_rechargeResets;  // by the agent recharged
+    mutable bool m_skillDisablesBuilt = false;
+    mutable bool m_skillDisablesUsedAttributes = false;  // rebuilt once the attribute ranks are solved
+    void  BuildSkillDisables() const;
+    int   AttributeRankFor(int agentId, int attribute) const;
+    float SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed) const;
+    std::vector<SkillCooldownState> ComputeSkillCooldowns(const AgentReplayData& ard,
+                                                          const std::vector<int>& skillIds, float t) const;
     void BuildMoraleTimelines() const;
     int  MoralePercentAtTime(const AgentReplayData& ard, float t) const;
 
@@ -1912,6 +1924,10 @@ private:
     bool m_showFocusHud = true;
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
+    void DrawFocusHudSkillBar(int agentId);
+    // The followed player's bar in display order: the recorded bar, then any skill seen used
+    // that it lacks, sorted the way the player info panel sorts them.
+    std::vector<int> SkillBarDisplayOrder(int agentId) const;
 
     // --- Skill Analytics Panel ---
     struct SkillAnalyticsStat {

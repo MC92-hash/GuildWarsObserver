@@ -130,6 +130,7 @@ void ReplayWindow::DrawFocusedPlayerHud()
     if (it->second.type != AgentType::Player) return;
 
     DrawFocusHudWeaponSets(focused);
+    DrawFocusHudSkillBar(focused);
 }
 
 
@@ -340,6 +341,245 @@ void ReplayWindow::DrawFocusHudWeaponSets(int agentId)
         // draggable anywhere and hovering is tested against the rect directly.
         if (hovered)
             DrawWeaponSetTooltip(ws);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+
+// ---------------------------------------------------------------------------
+// Skill bar: the followed player's eight skills, bottom centre, drawn with the client's own art
+// and recipe (GmSkillBar / GmSkSlot, decoded from Gw.exe 2026-10-05; DAT ids below). Every slot
+// reads its state from ComputeSkillCooldowns -- the same model as the player info panel -- so the
+// two can never disagree about what is up.
+//
+//   frame    143021 SkillBarLockedHorz (the in-instance art), 9-slice, art rect = slots grown
+//            16 px left/right, 7 above, 11 below; slots touch, no spacing
+//   slot     icon UV 0.0625..0.9375 (its inner 56x56) under frame cell 0 of 265556, cell 1 = elite
+//   empty    solid 0xC0404040 under frame cell 0
+//   recharge black 0xA0 fan: the wedge still to come back, edge sweeping clockwise from 12
+//            o'clock, measured against max(base recharge, remaining); no countdown, no flash
+//   disabled the bright red no-sign, cell 3 of 157942, stretched over the icon
+//   number   keycap image from 143032 (24x24 at 1x), bottom right
+//   marker   164476, top right at 32/56 of the icon: hex, enchantment, weapon spell, lead,
+//            off-hand, dual
+//   in use   143774, 16 frames at 16 fps over the icon (premultiplied; rebaked to straight alpha)
+// Sizes are given at the client's 1x, where an icon is 56 px; the bar scales with the window as
+// the owner's 2560x1440 client does (70 px slots).
+// ---------------------------------------------------------------------------
+namespace
+{
+    constexpr int   kBarSlots      = 8;
+    constexpr float kBarAboveHud   = 8.f;      // gap above the play bar / event timeline
+    constexpr float kRefSlot       = 70.f;     // owner's client at 1440 px tall
+    constexpr float kRefHeight     = 1440.f;
+    constexpr float kUnitSlot      = 56.f;     // a slot at UI scale 1x
+
+    // Frame atlas 265556: 56x56 cells, 4 per row, sampled 1/512 inside their edges.
+    void FrameCellUV(int cell, ImVec2& uv0, ImVec2& uv1)
+    {
+        const float x = static_cast<float>((cell % 4) * 56), y = static_cast<float>((cell / 4) * 56);
+        constexpr float in = 1.f / 512.f;
+        uv0 = ImVec2(x / 256.f + in, y / 256.f + in);
+        uv1 = ImVec2((x + 56.f) / 256.f - in, (y + 56.f) / 256.f - in);
+    }
+
+    // The client's GmClock: a black fan over the part still recharging, its edge leaving 12
+    // o'clock and sweeping clockwise as the skill comes back.
+    void DrawClockWedge(ImDrawList* dl, ImVec2 tl, float sz, float remainingFrac, ImU32 col)
+    {
+        const float frac = std::min(remainingFrac, 1.f);
+        if (frac <= 0.001f) return;
+        const ImVec2 c(tl.x + sz * 0.5f, tl.y + sz * 0.5f);
+        const float r = sz * 0.75f;            // past the corners; the clip squares it off
+        const float aEdge = -IM_PI * 0.5f + 2.f * IM_PI * (1.f - frac);
+        const float sweep = 2.f * IM_PI * frac;
+        const int segs = std::max(6, static_cast<int>(48.f * frac));
+        dl->PushClipRect(tl, ImVec2(tl.x + sz, tl.y + sz), true);
+        dl->PathClear();
+        dl->PathLineTo(c);
+        for (int s = 0; s <= segs; ++s) {
+            const float a = aEdge + sweep * (static_cast<float>(s) / segs);
+            dl->PathLineTo(ImVec2(c.x + r * cosf(a), c.y + r * sinf(a)));
+        }
+        dl->PathFillConvex(col);
+        dl->PopClipRect();
+    }
+
+    // Image of 164476 the client puts in the top-right corner, from the skill's own data
+    // (combo / type): -1 for none.
+    int ProvidedMarker(const SkillInfo* si)
+    {
+        if (!si) return -1;
+        switch (si->type) {
+        case 5:  return 0;   // Lead Attack: single slash
+        case 6:  return 1;   // Off-Hand Attack: cross
+        case 7:  return 3;   // Dual Attack: starburst
+        case 24: return 4;   // Hex Spell: purple down triangle
+        case 27: return 5;   // Weapon Spell: sword
+        }
+        if (SkillDatabase::IsEnchantmentType(si->type)) return 2;   // yellow up triangle
+        return -1;
+    }
+}
+
+
+void ReplayWindow::DrawFocusHudSkillBar(int agentId)
+{
+    auto agentIt = m_replayCtx.agents.find(agentId);
+    if (agentIt == m_replayCtx.agents.end()) return;
+    const AgentReplayData& ard = agentIt->second;
+
+    std::vector<int> bar = SkillBarDisplayOrder(agentId);
+    if (bar.empty()) return;
+    if (bar.size() > kBarSlots) bar.resize(kBarSlots);
+
+    const float t = m_debugTimeline;
+    const std::vector<SkillCooldownState> cds = ComputeSkillCooldowns(ard, bar, t);
+    using CdState = SkillCooldownState::State;
+
+    // The skill in use right now, and since when (the sparkle's phase).
+    int   usingSkill = 0;
+    float usingSince = 0.f;
+    for (const auto& ev : ard.skillUseHistory) {
+        if (ev.startTime > t) break;
+        if (!ev.isInstant && ev.endTime > t) {
+            usingSkill = m_skillView.ResolvePvpSkillId(ev.skillId);
+            usingSince = ev.startTime;
+        }
+    }
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float slot  = std::round(std::clamp(kRefSlot * vp->Size.y / kRefHeight, 40.f, 84.f));
+    const float scale = slot / kUnitSlot;
+
+    // The frame art reaches past the slots; the window covers it all.
+    const float artL = 16.f * scale, artR = 16.f * scale, artT = 7.f * scale, artB = 11.f * scale;
+    const float winW = artL + kBarSlots * slot + artR;
+    const float winH = artT + slot + artB;
+
+    const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
+    const float posX = std::round(vp->Pos.x + (vp->Size.x - winW) * 0.5f);
+    const float posY = std::round(std::max(vp->Pos.y, floorY - kBarAboveHud - winH));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::SetNextWindowPos(ImVec2(posX, posY));
+    ImGui::SetNextWindowSize(ImVec2(winW, winH));
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar   | ImGuiWindowFlags_NoResize        |
+        ImGuiWindowFlags_NoMove       | ImGuiWindowFlags_NoScrollbar     |
+        ImGuiWindowFlags_NoCollapse   | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!ImGui::Begin("##focus_hud_skill_bar", nullptr, kFlags))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        return;
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+    const ImVec2 origin = ImGui::GetWindowPos();
+    const bool windowHovered = ImGui::IsWindowHovered();
+
+    ImTextureID texFrame   = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_frame.png");
+    ImTextureID texSlots   = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png");
+    ImTextureID texKeys    = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_keycaps.png");
+    ImTextureID texMarkers = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_markers.png");
+    ImTextureID texNoSign  = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_check_forbidden.png");
+    ImTextureID texSparkle = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_sparkle.png");
+
+    if (texFrame)
+        DrawGameNineSlice(dl, texFrame, origin, ImVec2(origin.x + winW, origin.y + winH),
+                          64.f * scale, 64.f * scale);
+    else
+        dl->AddRectFilled(origin, ImVec2(origin.x + winW, origin.y + winH), IM_COL32(12, 12, 14, 200), 8.f);
+
+    for (int i = 0; i < kBarSlots; ++i)
+    {
+        const ImVec2 tl(origin.x + artL + i * slot, origin.y + artT);
+        const ImVec2 br(tl.x + slot, tl.y + slot);
+        const bool filled = i < static_cast<int>(bar.size());
+        const SkillInfo* si = filled ? m_skillView.Get(bar[i]) : nullptr;
+
+        // Icon (or the empty slot's grey), then the slot frame over it.
+        if (!filled)
+            dl->AddRectFilled(tl, br, IM_COL32(0x40, 0x40, 0x40, 0xC0));
+        else if (ImTextureID tex = LoadSkillIcon(this, dev, bar[i], m_skillIconIndex, m_skillIconCache))
+            dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+        if (texSlots) {
+            ImVec2 uv0, uv1;
+            FrameCellUV(si && si->is_elite ? 1 : 0, uv0, uv1);
+            dl->AddImage(texSlots, tl, br, uv0, uv1);
+        }
+        if (!filled) continue;
+
+        const SkillCooldownState& cd = cds[i];
+        const bool disabled = cd.state == CdState::Disabled;
+
+        // Skill in use: the client's looping sparkle.
+        if (texSparkle && bar[i] == usingSkill) {
+            const int frame = static_cast<int>((t - usingSince) * 16.f) & 15;
+            const float fx = static_cast<float>(frame % 4) * 0.25f, fy = static_cast<float>(frame / 4) * 0.25f;
+            dl->AddImage(texSparkle, tl, br, ImVec2(fx, fy), ImVec2(fx + 0.25f, fy + 0.25f));
+        }
+
+        // Corner marker, from the skill's own data.
+        if (texMarkers) {
+            const int m = ProvidedMarker(si);
+            if (m >= 0) {
+                const float ms = slot * 32.f / 56.f;
+                const float mx = static_cast<float>(m % 4) * 0.25f, my = static_cast<float>(m / 4) * 0.5f;
+                dl->AddImage(texMarkers, ImVec2(br.x - ms, tl.y), ImVec2(br.x, tl.y + ms),
+                             ImVec2(mx, my), ImVec2(mx + 0.25f, my + 0.5f));
+            }
+        }
+
+        // Unavailable: the clock fan, measured as the client measures it, then the no-sign over a
+        // disabled skill. Resurrection Signet after its use is a full fan until a morale boost.
+        if (cd.state == CdState::Spent) {
+            DrawClockWedge(dl, tl, slot, 1.f, IM_COL32(0, 0, 0, 0xA0));
+        } else if ((cd.state == CdState::Recharging || disabled) && cd.remaining > 0.f) {
+            const float base = si ? si->recharge : 0.f;
+            const float total = disabled ? std::max(cd.total, cd.remaining)
+                                         : std::max(base, cd.remaining);
+            DrawClockWedge(dl, tl, slot, total > 0.f ? cd.remaining / total : 1.f, IM_COL32(0, 0, 0, 0xA0));
+        }
+        if (disabled && texNoSign)
+            dl->AddImage(texNoSign, tl, br, ImVec2(0.5f, 0.5f), ImVec2(1.f, 1.f));
+
+        // Keycap, bottom right.
+        if (texKeys) {
+            const float ks = 24.f * scale;
+            const float kx = static_cast<float>(i % 5) * 24.f / 128.f, ky = static_cast<float>(i / 5) * 24.f / 128.f;
+            dl->AddImage(texKeys, ImVec2(br.x - ks, br.y - ks), br,
+                         ImVec2(kx, ky), ImVec2(kx + 24.f / 128.f, ky + 24.f / 128.f));
+        }
+
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
+            std::string line = si ? si->name : "?";
+            char buf[192];
+            if (disabled) {
+                const SkillInfo* src = m_skillView.Get(cd.disableSourceSkill);
+                std::string who;
+                if (cd.disableSourceAgent == agentId) who = "own skill";
+                else if (auto ait = m_replayCtx.agents.find(cd.disableSourceAgent); ait != m_replayCtx.agents.end())
+                    who = ait->second.playerName;
+                snprintf(buf, sizeof(buf), "\nDisabled by %s%s%s%s: %.0fs", src ? src->name.c_str() : "?",
+                         who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")", std::ceil(cd.remaining));
+                line += buf;
+            } else if (cd.state == CdState::Recharging) {
+                snprintf(buf, sizeof(buf), "\nRecharging: %.0fs", std::ceil(cd.remaining));
+                line += buf;
+            } else if (cd.state == CdState::Spent) {
+                line += "\nUsed: back on a morale boost";
+            }
+            if (!cd.modifierText.empty()) line += "\nRecharge: " + cd.modifierText;
+            ImGui::SetTooltip("%s", line.c_str());
+        }
     }
 
     ImGui::End();

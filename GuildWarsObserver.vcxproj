@@ -638,6 +638,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_LordDamage.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CombatLog.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Morale.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_SkillCooldowns.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_PianoRoll.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_SkillAnalytics.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_DebugWindows.cpp" />

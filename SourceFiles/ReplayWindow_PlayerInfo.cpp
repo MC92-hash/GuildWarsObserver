@@ -1026,427 +1026,17 @@ void ReplayWindow::DrawPlayerInfoPanel()
         float kCountFontX = (kSkIconSz < 32.f) ? 10.f : 12.f;
         float kCountFontSm = (kSkIconSz < 32.f) ? 9.f : 11.f;
 
-        // ── Compute per-skill cooldown state for current timestamp ──
-        constexpr int kResSigId = 2;
-        constexpr int kComplicateId = 932;
-        constexpr float kComplicateDuration = 12.f;
+        // ── Cooldown state at the current time: one model behind every skill bar ──
+        // (ReplayWindow_SkillCooldowns.cpp: recharge, recharge modifiers, morale boosts, disables)
+        std::vector<int> slotIds;
+        slotIds.reserve(slots.size());
+        for (const auto& s : slots) slotIds.push_back(s.skillId);
+        const std::vector<SkillCooldownState> cooldowns = ComputeSkillCooldowns(ard, slotIds, m_debugTimeline);
+        using CdState = SkillCooldownState::State;
 
-        // Recharge modifier skill IDs
-        constexpr int kSqSkillId  = 456;   // Serpent's Quickness
-        constexpr int kPsSkillId  = 449;   // Practiced Stance
-        constexpr int kDpSkillId  = 572;   // Deadly Paradox
-        constexpr int kAolSkillId = 1521;  // Avatar of Lyssa
-        constexpr int kLhSkillId  = 1512;  // Lyssa's Haste
-        constexpr uint32_t kQzSpiritModelId = 2937;
-        constexpr float kQzRange = 2512.f;
-
-        struct RechargeModifier {
-            int   sourceSkillId    = 0;
-            float multiplier       = 1.f;
-            bool  appliesToAll     = false;
-            bool  preparationsOnly = false;
-            bool  assassinOnly     = false;
-            bool  dervishEnchOnly  = false;
-            const char* sourceName = "";
-        };
-        std::vector<RechargeModifier> activeModifiers;
-        bool dpDisableAttacks = false;
-        float dpDisableExpiry = 0.f;
-        bool qzActive = false;
-
-        // ── Build active modifiers from skill cast history (recomputed every frame for scrub) ──
-        const auto& skDb = m_skillView;
-        {
-            float curTime = m_debugTimeline;
-
-            // --- Quickening Zephyr: check all QZ spirits alive + in range ---
-            {
-                float playerX = 0, playerY = 0, playerZ = 0;
-                InterpolateAgentPosition(ard, curTime, m_replayCtx.interpSettings, playerX, playerY, playerZ);
-
-                for (auto& [spiritId, spiritArd] : m_replayCtx.agents)
-                {
-                    if (spiritArd.modelId != kQzSpiritModelId) continue;
-                    if (spiritArd.isDeadAtTime(curTime)) continue;
-                    if (!spiritArd.isAliveAtTime(curTime)) continue;
-
-                    float spX = 0, spY = 0, spZ = 0;
-                    InterpolateAgentPosition(spiritArd, curTime, m_replayCtx.interpSettings, spX, spY, spZ);
-                    float dx = playerX - spX, dy = playerY - spY;
-                    float dist = std::sqrt(dx * dx + dy * dy);
-                    if (dist <= kQzRange)
-                    {
-                        qzActive = true;
-                        break;
-                    }
-                }
-            }
-
-            // --- Scan focused agent's own casts for buff-type modifiers ---
-            for (const auto& ev : ard.skillUseHistory)
-            {
-                if (ev.wasCancelled) continue;
-                float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
-                if (castEnd > curTime) continue;
-
-                // Serpent's Quickness (SQ): all skills x0.67, 20s, ends if HP<50%
-                if (ev.skillId == kSqSkillId)
-                {
-                    float expiresAt = castEnd + 20.f;
-                    if (curTime < expiresAt)
-                    {
-                        float hpPct = ard.healthPctAtTime(curTime);
-                        if (hpPct >= 0.50f)
-                        {
-                            RechargeModifier m;
-                            m.sourceSkillId = kSqSkillId;
-                            m.multiplier = 0.67f;
-                            m.appliesToAll = true;
-                            m.sourceName = "SQ";
-                            activeModifiers.push_back(m);
-                        }
-                    }
-                }
-
-                // Practiced Stance (PS): preparations only x0.50
-                if (ev.skillId == kPsSkillId)
-                {
-                    const SkillInfo* psInfo = skDb.Get(kPsSkillId);
-                    float dur = psInfo ? psInfo->recharge : 30.f;
-                    float expiresAt = castEnd + dur;
-                    if (curTime < expiresAt)
-                    {
-                        RechargeModifier m;
-                        m.sourceSkillId = kPsSkillId;
-                        m.multiplier = 0.50f;
-                        m.preparationsOnly = true;
-                        m.sourceName = "PS";
-                        activeModifiers.push_back(m);
-                    }
-                }
-
-                // Deadly Paradox (DP): assassin skills x0.67 + disable attacks, 10s
-                if (ev.skillId == kDpSkillId)
-                {
-                    float expiresAt = castEnd + 10.f;
-                    if (curTime < expiresAt)
-                    {
-                        RechargeModifier m;
-                        m.sourceSkillId = kDpSkillId;
-                        m.multiplier = 0.67f;
-                        m.assassinOnly = true;
-                        m.sourceName = "DP";
-                        activeModifiers.push_back(m);
-
-                        dpDisableAttacks = true;
-                        dpDisableExpiry = expiresAt;
-                    }
-                }
-
-                // Avatar of Lyssa: dervish enchantments x0.50
-                if (ev.skillId == kAolSkillId)
-                {
-                    const SkillInfo* aolInfo = skDb.Get(kAolSkillId);
-                    float dur = aolInfo ? aolInfo->recharge : 45.f;
-                    float expiresAt = castEnd + dur;
-                    if (curTime < expiresAt && !ev.wasCancelled)
-                    {
-                        RechargeModifier m;
-                        m.sourceSkillId = kAolSkillId;
-                        m.multiplier = 0.50f;
-                        m.dervishEnchOnly = true;
-                        m.sourceName = "AoL";
-                        activeModifiers.push_back(m);
-                    }
-                }
-
-                // Lyssa's Haste: dervish enchantments x0.67
-                if (ev.skillId == kLhSkillId)
-                {
-                    const SkillInfo* lhInfo = skDb.Get(kLhSkillId);
-                    float dur = lhInfo ? lhInfo->recharge : 20.f;
-                    float expiresAt = castEnd + dur;
-                    if (curTime < expiresAt && !ev.wasCancelled)
-                    {
-                        RechargeModifier m;
-                        m.sourceSkillId = kLhSkillId;
-                        m.multiplier = 0.67f;
-                        m.dervishEnchOnly = true;
-                        m.sourceName = "LH";
-                        activeModifiers.push_back(m);
-                    }
-                }
-            }
-        }
-
-        // Lambda: compute effective recharge multiplier for a given skill
-        auto GetRechargeMultiplier = [&](int skillId) -> float
-        {
-            const SkillInfo* si = skDb.Get(skillId);
-            float mult = 1.f;
-
-            // QZ applies to all skills
-            if (qzActive) mult *= 0.50f;
-
-            for (const auto& mod : activeModifiers)
-            {
-                if (mod.appliesToAll)
-                {
-                    mult *= mod.multiplier;
-                    continue;
-                }
-                if (mod.preparationsOnly && si && si->type == 17)
-                {
-                    mult *= mod.multiplier;
-                    continue;
-                }
-                if (mod.assassinOnly && si && si->profession == 7)
-                {
-                    mult *= mod.multiplier;
-                    continue;
-                }
-                if (mod.dervishEnchOnly && si && si->profession == 10 &&
-                    (si->type == 15 || si->type == 23 || si->type == 33 || si->type == 34))
-                {
-                    mult *= mod.multiplier;
-                    continue;
-                }
-            }
-
-            return mult;
-        };
-
-        // Lambda: is this skill an attack skill (disabled by Deadly Paradox)
-        auto IsAttackSkill = [&](int skillId) -> bool
-        {
-            const SkillInfo* si = skDb.Get(skillId);
-            if (!si) return false;
-            return si->type == 2 || si->type == 3 || si->type == 4 ||
-                   si->type == 5 || si->type == 6 || si->type == 7 ||
-                   si->type == 8 || si->type == 9 || si->type == 10;
-        };
-
-        // Collect morale boost timestamps for this team
         std::vector<float> teamMoraleBoosts;
-        for (auto& jmb : m_replayCtx.stocData.jumbo)
-        {
-            if (jmb.time > m_debugTimeline) break;
-            if (jmb.message == "MORALE_BOOST")
-            {
-                bool isTeam1 = (jmb.party_value == 1635021873);
-                bool isTeam2 = (jmb.party_value == 1635021874);
-                if ((ard.teamId == 1 && isTeam1) || (ard.teamId == 2 && isTeam2))
-                    teamMoraleBoosts.push_back(jmb.time);
-            }
-        }
-
-        // Collect Complicate lockouts affecting this agent
-        struct ComplicateLock {
-            int skillId = 0;
-            float start = 0.f;
-            float end = 0.f;
-        };
-        std::vector<ComplicateLock> complicateLocks;
-        for (const auto& ev : ard.skillUseHistory)
-        {
-            if (!ev.wasInterrupted) continue;
-            if (ev.endTime > m_debugTimeline) break;
-            // Check if a Complicate was the source of this interrupt
-            for (const auto& [eid, eard] : m_replayCtx.agents)
-            {
-                if (eard.teamId == ard.teamId) continue;
-                for (const auto& eev : eard.skillUseHistory)
-                {
-                    if (eev.skillId != kComplicateId) continue;
-                    if (eev.wasCancelled) continue;
-                    if (eev.targetId != m_playerInfoAgentId) continue;
-                    if (std::abs(eev.endTime - ev.endTime) < 0.3f)
-                    {
-                        float lockEnd = eev.endTime + kComplicateDuration;
-                        bool clearedByBoost = false;
-                        for (float bt : teamMoraleBoosts)
-                            if (bt > eev.endTime && bt <= m_debugTimeline) { clearedByBoost = true; break; }
-                        if (!clearedByBoost && lockEnd > m_debugTimeline)
-                        {
-                            ComplicateLock cl; cl.skillId = ev.skillId; cl.start = eev.endTime; cl.end = lockEnd;
-                            complicateLocks.push_back(cl);
-                        }
-                    }
-                }
-            }
-        }
-        // Also check Complicate against allies in range (AoE effect on focused agent)
-        for (const auto& [eid, eard] : m_replayCtx.agents)
-        {
-            if (eard.teamId == ard.teamId) continue;
-            for (const auto& eev : eard.skillUseHistory)
-            {
-                if (eev.skillId != kComplicateId || eev.wasCancelled) continue;
-                if (eev.endTime > m_debugTimeline) continue;
-                if (eev.targetId == m_playerInfoAgentId) continue;
-                // Find the target agent (ally of focused)
-                auto targetIt = m_replayCtx.agents.find(eev.targetId);
-                if (targetIt == m_replayCtx.agents.end()) continue;
-                if (targetIt->second.teamId != ard.teamId) continue;
-                // Find interrupted skill on the direct target
-                int intSkill = 0;
-                for (const auto& tev : targetIt->second.skillUseHistory)
-                {
-                    if (!tev.wasInterrupted) continue;
-                    if (std::abs(tev.endTime - eev.endTime) < 0.3f)
-                    { intSkill = tev.skillId; break; }
-                }
-                if (intSkill == 0) continue;
-                // Check distance: focused agent must be in range of direct target
-                float tx, ty, tz, fx, fy, fz;
-                InterpolateAgentPosition(targetIt->second, eev.endTime, m_replayCtx.interpSettings, tx, ty, tz);
-                InterpolateAgentPosition(ard, eev.endTime, m_replayCtx.interpSettings, fx, fy, fz);
-                float dx = tx - fx, dy = ty - fy, dz = tz - fz;
-                float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
-                if (dist > 322.f) continue;
-                float lockEnd = eev.endTime + kComplicateDuration;
-                bool clearedByBoost = false;
-                for (float bt : teamMoraleBoosts)
-                    if (bt > eev.endTime && bt <= m_debugTimeline) { clearedByBoost = true; break; }
-                if (!clearedByBoost && lockEnd > m_debugTimeline)
-                {
-                    ComplicateLock cl; cl.skillId = intSkill; cl.start = eev.endTime; cl.end = lockEnd;
-                    complicateLocks.push_back(cl);
-                }
-            }
-        }
-
-        // 0=available, 1=recharging, 2=permanent (Res Signet)
-        struct SkillCooldown {
-            int state = 0;
-            float rechargeStart = 0.f;
-            float rechargeDuration = 0.f;
-            float remaining = 0.f;
-            bool isComplicate = false;
-            float rechargeMult = 1.f;
-            bool isDisabledByDP = false;
-            float dpCountdown = 0.f;
-            std::string modifierTooltip;
-        };
-        constexpr int RS_AVAILABLE = 0, RS_RECHARGING = 1, RS_PERMANENT = 2;
-        std::vector<SkillCooldown> cooldowns;
-        cooldowns.resize(slots.size());
-
-        for (int si2 = 0; si2 < (int)slots.size(); si2++)
-        {
-            int sid = slots[si2].skillId;
-            SkillCooldown& cd = cooldowns[si2];
-
-            // Scan all successful casts for this skill up to current time
-            for (const auto& ev : ard.skillUseHistory)
-            {
-                if (ev.skillId != sid) continue;
-                if (ev.wasCancelled) continue;
-                if (ev.endTime > m_debugTimeline) continue;
-                float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
-                if (sid == kResSigId)
-                {
-                    cd.state = RS_PERMANENT;
-                    cd.rechargeStart = castEnd;
-                }
-                else if (ev.rechargeDuration > 0.f)
-                {
-                    cd.state = RS_RECHARGING;
-                    cd.rechargeStart = castEnd;
-                    cd.rechargeDuration = ev.rechargeDuration;
-                }
-            }
-
-            // Check if recharge expired
-            if (cd.state == RS_RECHARGING)
-            {
-                cd.remaining = cd.rechargeStart + cd.rechargeDuration - m_debugTimeline;
-                if (cd.remaining <= 0.f)
-                    cd.state = RS_AVAILABLE;
-            }
-
-            // Morale boost clears both RECHARGING and PERMANENT
-            if (cd.state != RS_AVAILABLE)
-            {
-                for (float bt : teamMoraleBoosts)
-                {
-                    if (bt > cd.rechargeStart && bt <= m_debugTimeline)
-                    { cd.state = RS_AVAILABLE; break; }
-                }
-            }
-
-            // Complicate override (takes priority if still active)
-            for (const auto& cl : complicateLocks)
-            {
-                if (cl.skillId == sid)
-                {
-                    float rem = cl.end - m_debugTimeline;
-                    if (rem > 0.f && (cd.state == RS_AVAILABLE || rem > cd.remaining))
-                    {
-                        cd.state = RS_RECHARGING;
-                        cd.rechargeStart = cl.start;
-                        cd.rechargeDuration = kComplicateDuration;
-                        cd.remaining = rem;
-                        cd.isComplicate = true;
-                    }
-                }
-            }
-
-            // Apply recharge modifier to remaining time
-            cd.rechargeMult = GetRechargeMultiplier(sid);
-            if (cd.state == RS_RECHARGING && !cd.isComplicate)
-            {
-                float effectiveDur = cd.rechargeDuration * cd.rechargeMult;
-                cd.remaining = cd.rechargeStart + effectiveDur - m_debugTimeline;
-                if (cd.remaining <= 0.f)
-                    cd.state = RS_AVAILABLE;
-            }
-            else if (cd.state == RS_RECHARGING)
-            {
-                cd.remaining = cd.rechargeStart + cd.rechargeDuration - m_debugTimeline;
-            }
-
-            // Deadly Paradox disables attack skills
-            if (dpDisableAttacks && IsAttackSkill(sid))
-            {
-                cd.isDisabledByDP = true;
-                cd.dpCountdown = dpDisableExpiry - m_debugTimeline;
-            }
-
-            // Build modifier tooltip string
-            if (cd.rechargeMult < 0.999f || cd.isDisabledByDP)
-            {
-                std::string tt;
-                if (qzActive) tt += "QZ x0.50";
-                for (const auto& mod : activeModifiers)
-                {
-                    bool applies = false;
-                    if (mod.appliesToAll) applies = true;
-                    else if (mod.preparationsOnly) {
-                        const SkillInfo* si = skDb.Get(sid);
-                        if (si && si->type == 17) applies = true;
-                    }
-                    else if (mod.assassinOnly) {
-                        const SkillInfo* si = skDb.Get(sid);
-                        if (si && si->profession == 7) applies = true;
-                    }
-                    else if (mod.dervishEnchOnly) {
-                        const SkillInfo* si = skDb.Get(sid);
-                        if (si && si->profession == 10 &&
-                            (si->type == 15 || si->type == 23 || si->type == 33 || si->type == 34))
-                            applies = true;
-                    }
-                    if (applies)
-                    {
-                        if (!tt.empty()) tt += " + ";
-                        char buf[32];
-                        snprintf(buf, sizeof(buf), "%s x%.2f", mod.sourceName, mod.multiplier);
-                        tt += buf;
-                    }
-                }
-                cd.modifierTooltip = tt;
-            }
-        }
+        if (auto bit = m_moraleBoosts.find(static_cast<int>(ard.teamId)); bit != m_moraleBoosts.end())
+            for (float bt : bit->second) if (bt <= m_debugTimeline) teamMoraleBoosts.push_back(bt);
 
         // Detect recent morale boost for white flash effect
         float moraleFlashAlpha = 0.f;
@@ -1483,25 +1073,24 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
                              ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1));
 
-            // ── Recharge arc overlay ──
-            const SkillCooldown& cd = cooldowns[i];
-            if (cd.state == RS_PERMANENT)
+            // ── Recharge / disable sweep ──
+            const SkillCooldownState& cd = cooldowns[i];
+            const bool disabled = cd.state == CdState::Disabled;
+            if (cd.state == CdState::Spent)
             {
-                // Full dark overlay (Res Signet — permanent until morale boost)
+                // Full dark overlay (Res Signet — spent until a morale boost)
                 float cx = ix + kSkIconSz * 0.5f, cy = iy + kSkIconSz * 0.5f;
                 float r = kSkIconSz * 0.5f;
                 dl->AddCircleFilled(ImVec2(cx, cy), r, IM_COL32(0, 0, 0, 166), 32);
             }
-            else if (cd.state == RS_RECHARGING && cd.rechargeDuration > 0.f)
+            else if ((cd.state == CdState::Recharging || disabled) && cd.total > 0.f)
             {
-                float effectiveDur = cd.isComplicate ? cd.rechargeDuration : cd.rechargeDuration * cd.rechargeMult;
-                float progress = (effectiveDur > 0.f) ? std::clamp(cd.remaining / effectiveDur, 0.f, 1.f) : 0.f;
+                float progress = std::clamp(cd.remaining / cd.total, 0.f, 1.f);
                 float cx = ix + kSkIconSz * 0.5f, cy = iy + kSkIconSz * 0.5f;
                 float r = kSkIconSz * 0.5f;
 
-                ImU32 arcCol = cd.isComplicate
-                    ? IM_COL32(80, 0, 80, 179)
-                    : IM_COL32(0, 0, 0, 166);
+                // A disable reads purple, a recharge black.
+                ImU32 arcCol = disabled ? IM_COL32(80, 0, 80, 179) : IM_COL32(0, 0, 0, 166);
 
                 if (progress > 0.001f)
                 {
@@ -1534,76 +1123,45 @@ void ReplayWindow::DrawPlayerInfoPanel()
                         IM_COL32(0, 0, 0, 200), cdBuf);
                     dl->AddText(nullptr, 10.f,
                         ImVec2(cx - cdW * 0.5f, cy - cdH * 0.5f),
-                        IM_COL32(255, 255, 255, 230), cdBuf);
+                        disabled ? IM_COL32(230, 170, 255, 240) : IM_COL32(255, 255, 255, 230), cdBuf);
                 }
             }
 
             // Morale boost white flash
-            if (moraleFlashAlpha > 0.f && cd.state == RS_AVAILABLE)
+            if (moraleFlashAlpha > 0.f && cd.state == CdState::Ready)
             {
                 ImU8 flashA = (ImU8)(moraleFlashAlpha * 255.f);
                 dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
                     IM_COL32(255, 255, 255, flashA), 5.f);
             }
 
-            // Deadly Paradox disabled overlay (attack skills)
-            if (cd.isDisabledByDP && cd.dpCountdown > 0.f)
-            {
-                dl->AddRectFilled(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
-                    IM_COL32(0, 0, 0, 191), 5.f);
-                // Red X
-                const char* xStr = "X";
-                ImVec2 xSz = ImGui::CalcTextSize(xStr);
-                float xScale = 14.f / ImGui::GetFontSize();
-                float xW = xSz.x * xScale, xH = xSz.y * xScale;
-                float cxDP = ix + kSkIconSz * 0.5f, cyDP = iy + kSkIconSz * 0.35f;
-                dl->AddText(nullptr, 14.f,
-                    ImVec2(cxDP - xW * 0.5f, cyDP - xH * 0.5f),
-                    IM_COL32(204, 48, 48, 255), xStr);
-                // Countdown below X
-                char dpBuf[8];
-                snprintf(dpBuf, sizeof(dpBuf), "%.0f", ceilf(cd.dpCountdown));
-                ImVec2 dpSz = ImGui::CalcTextSize(dpBuf);
-                float dpScale = 9.f / ImGui::GetFontSize();
-                float dpW = dpSz.x * dpScale;
-                dl->AddText(nullptr, 9.f,
-                    ImVec2(cxDP - dpW * 0.5f, cyDP + xH * 0.4f),
-                    IM_COL32(204, 48, 48, 200), dpBuf);
-            }
-
-            // QZ active indicator: thin cyan border ring
-            if (qzActive && cd.rechargeMult < 0.999f)
+            // Recharge modifier indicator: thin cyan border ring
+            if (cd.rechargeMult < 0.999f)
             {
                 dl->AddRect(ImVec2(ix - 1, iy - 1),
                     ImVec2(ix + kSkIconSz + 1, iy + kSkIconSz + 1),
                     IM_COL32(48, 160, 160, 200), 5.f, 0, 1.5f);
             }
 
-            // Complicate tooltip on hover
-            if (cd.isComplicate && cd.state == RS_RECHARGING)
+            // Icon hover: who disabled it, or the skill description
+            bool iconHovered = ImGui::IsMouseHoveringRect(
+                ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz));
+            if (iconHovered && disabled)
             {
-                if (ImGui::IsMouseHoveringRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz)))
-                {
-                    char ttBuf[128];
-                    if (qzActive)
-                        snprintf(ttBuf, sizeof(ttBuf), "On cooldown: Complicate (%.0fs) + QZ active", cd.remaining);
-                    else
-                        snprintf(ttBuf, sizeof(ttBuf), "On cooldown: Complicate (%.0fs)", cd.remaining);
-                    ImGui::SetTooltip("%s", ttBuf);
-                }
+                const SkillInfo* src = m_skillView.Get(cd.disableSourceSkill);
+                std::string who;
+                if (cd.disableSourceAgent == m_playerInfoAgentId) who = "own skill";
+                else if (auto ait = m_replayCtx.agents.find(cd.disableSourceAgent); ait != m_replayCtx.agents.end())
+                    who = ait->second.playerName;
+                ImGui::SetTooltip("Disabled by %s%s%s%s (%.0fs)",
+                    src ? src->name.c_str() : "?",
+                    who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")",
+                    ceilf(cd.remaining));
             }
-
-            // Icon hover → skill description tooltip (only if not showing complicate tooltip)
-            bool iconHovered = false;
-            if (!(cd.isComplicate && cd.state == RS_RECHARGING))
+            else if (iconHovered)
             {
-                iconHovered = ImGui::IsMouseHoveringRect(
-                    ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz));
-                if (iconHovered)
-                {
-                    const char* modTip = (!cd.modifierTooltip.empty()) ? cd.modifierTooltip.c_str() : nullptr;
-                    DrawPipSkillTooltip(sl.skillId, skillTex, modTip);
-                }
+                const char* modTip = (!cd.modifierText.empty()) ? cd.modifierText.c_str() : nullptr;
+                DrawPipSkillTooltip(sl.skillId, skillTex, modTip);
             }
 
             // Cast counter text
