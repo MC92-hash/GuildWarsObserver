@@ -52,6 +52,8 @@ ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
 ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
 // Minimap cursor / zoom-button textures: Textures/Game_UI/Cursor/<filename>
 ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename);
+// Any texture under Textures/Game_UI/: <relative> e.g. "Castbar\\ui_castbar.png"
+ImTextureID LoadGameUITexture(ID3D11Device* device, const char* relative);
 ImTextureID LoadPartyIcon(ID3D11Device* device, const char* filename);
 ImTextureID LoadEffectIcon(ID3D11Device* device, const char* filename);
 ImTextureID LoadSkillIcon(ReplayWindow* rw, ID3D11Device* device, int skillId,
@@ -176,8 +178,6 @@ int FindSnapshotIndex(const std::vector<AgentSnapshot>& snaps, float t);
 int FindMoveEventIndex(const std::vector<MoveToPointEvent>& moves, float t);
 float LerpGradChannel(float a, float b, float t);
 void SaveMapTransform(int mapId, const MapTransform& t);
-Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> BuildGradientTex1xN(ID3D11Device* device, int height, const GradStop* stops, int nStops);
-Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> BuildCastBarFillTex2D(ID3D11Device* device, int width, int height, const GradStop* hStops, int nH, float topBlackAlpha, float botBlackAlpha);
 
 // --- Weapon texture resolution (shared: PlayerInfo, AgentOverlay) ---
 struct WeaponTextureResult {

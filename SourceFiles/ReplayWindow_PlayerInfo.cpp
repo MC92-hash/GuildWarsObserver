@@ -1931,22 +1931,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
     if (!isDead)
     {
         auto sv = ard.skillVisualAtTime(m_debugTimeline);
-        bool isNonInstant = false;
         if (sv.skillId > 0 && sv.alpha > 0.f)
-        {
-            // Find the matching event
-            int lo = 0, hi = static_cast<int>(ard.skillUseHistory.size()) - 1, best = -1;
-            while (lo <= hi) {
-                int mid = lo + (hi - lo) / 2;
-                if (ard.skillUseHistory[mid].startTime <= m_debugTimeline) { best = mid; lo = mid + 1; }
-                else hi = mid - 1;
-            }
-            if (best >= 0)
-                isNonInstant = !ard.skillUseHistory[best].isInstant &&
-                    (ard.skillUseHistory[best].endTime - ard.skillUseHistory[best].startTime > 0.001f);
-        }
-
-        if (sv.skillId > 0 && sv.alpha > 0.f && isNonInstant)
         {
             float winX = ImGui::GetWindowPos().x;
             constexpr float kCbPadT = 6.f, kCbPadB = 8.f;
@@ -1973,97 +1958,12 @@ void ReplayWindow::DrawPlayerInfoPanel()
             float barY = cbPos.y + (kCbIconSz - kCbBarH) * 0.5f;
             ImVec2 barMin(barLeft, barY);
             ImVec2 barMax(barRight, barY + kCbBarH);
-            float midY = barY + kCbBarH * 0.5f;
             ImU8 barAlpha = (ImU8)(sv.alpha * 255.f);
 
-            // Background
-            {
-                ImU32 bgD = IM_COL32(0, 0, 0, barAlpha);
-                ImU32 bgM = IM_COL32(36, 36, 36, barAlpha);
-                dl->AddRectFilledMultiColor(barMin, ImVec2(barMax.x, midY), bgD, bgD, bgM, bgM);
-                dl->AddRectFilledMultiColor(ImVec2(barMin.x, midY), barMax, bgM, bgM, bgD, bgD);
-            }
-
-            // Green = success/casting, Yellow = cancelled, Purple = interrupted
             const auto& db = m_skillView;
             const SkillInfo* castSi = db.IsLoaded() ? db.Get(sv.skillId) : nullptr;
-
-            static const GradStop sGreenH[] = {
-                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
-                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
-                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
-            };
-            static const GradStop sYellowH[] = {
-                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
-                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
-                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
-                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
-            };
-            static const GradStop sPurpleH[] = {
-                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
-                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
-            };
-
-            const GradStop* hStops;
-            int nStops;
-            ImU32 glowCol;
-            if (sv.interrupted) {
-                hStops = sPurpleH; nStops = 4;
-                glowCol = IM_COL32(128, 48, 192, (ImU8)(0.3f * barAlpha));
-            } else if (sv.cancelled) {
-                hStops = sYellowH; nStops = 8;
-                glowCol = IM_COL32(192, 120, 0, (ImU8)(0.3f * barAlpha));
-            } else {
-                hStops = sGreenH; nStops = 6;
-                glowCol = IM_COL32(96, 208, 32, (ImU8)(0.3f * barAlpha));
-            }
-
-            float pct = sv.progress;
-            float fillW = barW * pct;
-            if (pct > 0.005f)
-            {
-                int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
-                float topV = (sv.cancelled || sv.interrupted) ? 0.58f : 0.55f;
-                float botV = (sv.cancelled || sv.interrupted) ? 0.52f : 0.50f;
-                for (int si2 = 0; si2 < nSegs; ++si2)
-                {
-                    float u0 = (float)si2 / nSegs;
-                    float u1 = (float)(si2 + 1) / nSegs;
-                    float r0, g0, b0, r1, g1, b1;
-                    SampleGradient(hStops, nStops, u0 * pct, r0, g0, b0);
-                    SampleGradient(hStops, nStops, u1 * pct, r1, g1, b1);
-
-                    float x0 = barMin.x + fillW * u0;
-                    float x1 = barMin.x + fillW * u1;
-
-                    auto vig = [&](float r, float g, float b, float d) -> ImU32 {
-                        float m = 1.f - d;
-                        return IM_COL32((ImU8)(r * m), (ImU8)(g * m), (ImU8)(b * m), barAlpha);
-                    };
-                    ImU32 tl = vig(r0,g0,b0, topV);
-                    ImU32 tr = vig(r1,g1,b1, topV);
-                    ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, barAlpha);
-                    ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, barAlpha);
-                    ImU32 bl = vig(r0,g0,b0, botV);
-                    ImU32 br = vig(r1,g1,b1, botV);
-
-                    dl->AddRectFilledMultiColor(
-                        ImVec2(x0, barMin.y), ImVec2(x1, midY), tl, tr, mr, ml);
-                    dl->AddRectFilledMultiColor(
-                        ImVec2(x0, midY), ImVec2(x1, barMax.y), ml, mr, br, bl);
-                }
-
-                // Leading-edge glow
-                float fillX = barMin.x + fillW;
-                float gw = 6.f;
-                dl->AddRectFilled(
-                    ImVec2(fillX - gw * 0.5f, barMin.y),
-                    ImVec2(fillX + gw * 0.5f, barMax.y), glowCol);
-                ImU32 glowOuter = (glowCol & 0x00FFFFFF) | ((ImU32)((barAlpha * 0.15f)) << 24);
-                dl->AddRectFilled(
-                    ImVec2(fillX - gw, barMin.y - 1.f),
-                    ImVec2(fillX + gw, barMax.y + 1.f), glowOuter);
-            }
+            const float fillW = barW * sv.progress;
+            DrawGameCastBar(dl, barMin, barMax, sv);
 
             // Skill name inside bar (if wide enough)
             constexpr float kCbNameFontSz = 12.f;

@@ -8653,17 +8653,24 @@ ImTextureID LoadWeaponTexture(ID3D11Device* device, const char* filename)
 }
 
 // Load a minimap cursor / zoom-button texture from Textures/Game_UI/Cursor/.
-// Caches results (including misses) since this is called every frame.
 ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename)
+{
+    return LoadGameUITexture(device, (std::string("Cursor\\") + filename).c_str());
+}
+
+// Load a texture from Textures/Game_UI/<relative>.
+// Caches results (including misses) since this is called every frame.
+ImTextureID LoadGameUITexture(ID3D11Device* device, const char* relative)
 {
     static ID3D11Device* s_cachedDevice = nullptr;
     static std::unordered_map<std::string, ComPtr<ID3D11ShaderResourceView>> s_cache;
     if (device != s_cachedDevice) { s_cache.clear(); s_cachedDevice = device; }
 
+    const char* filename = relative;
     auto it = s_cache.find(filename);
     if (it != s_cache.end()) return (ImTextureID)it->second.Get();
 
-    auto fullPath = GetGameUIBasePath() / "Cursor" / filename;
+    auto fullPath = GetGameUIBasePath() / relative;
     if (!std::filesystem::exists(fullPath)) { s_cache[filename] = nullptr; return nullptr; }
 
     DirectX::ScratchImage image;
@@ -8835,94 +8842,6 @@ std::filesystem::path GetEffectsBasePath()
     }
     cached = std::filesystem::path(exePath).parent_path() / "Textures" / "effects";
     return cached;
-}
-
-// ---------------------------------------------------------------------------
-// Cast bar gradient textures (1-pixel wide, built once)
-// ---------------------------------------------------------------------------
-
-ComPtr<ID3D11ShaderResourceView> BuildGradientTex1xN(
-    ID3D11Device* device, int height, const GradStop* stops, int nStops)
-{
-    std::vector<uint32_t> pixels(height);
-    for (int y = 0; y < height; ++y)
-    {
-        float t = (height > 1) ? float(y) / float(height - 1) : 0.f;
-        float R, G, B;
-        SampleGradient(stops, nStops, t, R, G, B);
-        pixels[y] = IM_COL32((uint8_t)R, (uint8_t)G, (uint8_t)B, 255);
-    }
-
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width = 1;
-    td.Height = (UINT)height;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA sd = {};
-    sd.pSysMem = pixels.data();
-    sd.SysMemPitch = sizeof(uint32_t);
-
-    ComPtr<ID3D11Texture2D> tex;
-    if (FAILED(device->CreateTexture2D(&td, &sd, &tex))) return nullptr;
-    ComPtr<ID3D11ShaderResourceView> srv;
-    if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) return nullptr;
-    return srv;
-}
-
-ComPtr<ID3D11ShaderResourceView> BuildCastBarFillTex2D(
-    ID3D11Device* device, int width, int height,
-    const GradStop* hStops, int nH,
-    float topBlackAlpha, float botBlackAlpha)
-{
-    std::vector<uint32_t> pixels(width * height);
-    for (int y = 0; y < height; ++y)
-    {
-        float v = (height > 1) ? float(y) / float(height - 1) : 0.5f;
-        float dark;
-        if (v < 0.5f)
-            dark = topBlackAlpha * (1.0f - v * 2.0f);
-        else
-            dark = botBlackAlpha * ((v - 0.5f) * 2.0f);
-
-        for (int x = 0; x < width; ++x)
-        {
-            float u = (width > 1) ? float(x) / float(width - 1) : 0.f;
-            float R, G, B;
-            SampleGradient(hStops, nH, u, R, G, B);
-            R *= (1.0f - dark);
-            G *= (1.0f - dark);
-            B *= (1.0f - dark);
-            pixels[y * width + x] = IM_COL32(
-                (uint8_t)std::clamp(R, 0.f, 255.f),
-                (uint8_t)std::clamp(G, 0.f, 255.f),
-                (uint8_t)std::clamp(B, 0.f, 255.f), 255);
-        }
-    }
-
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width = (UINT)width;
-    td.Height = (UINT)height;
-    td.MipLevels = 1;
-    td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA sd = {};
-    sd.pSysMem = pixels.data();
-    sd.SysMemPitch = (UINT)(width * sizeof(uint32_t));
-
-    ComPtr<ID3D11Texture2D> tex;
-    if (FAILED(device->CreateTexture2D(&td, &sd, &tex))) return nullptr;
-    ComPtr<ID3D11ShaderResourceView> srv;
-    if (FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) return nullptr;
-    return srv;
 }
 
 // ---------------------------------------------------------------------------

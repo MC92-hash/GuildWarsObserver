@@ -1036,12 +1036,9 @@ public:
     void DrawRangeRingToolbar();
 
 private:
-    // Cast bar gradient textures (1-pixel wide, N-pixel tall)
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarBgTex;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarFillTex;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_castBarCancelTex;
-    int  m_castBarTexH = 0;
-    void EnsureCastBarTextures();
+    // The game's cast bar in [barMin, barMax] (the fill area; the border is drawn round it).
+    void DrawGameCastBar(ImDrawList* dl, ImVec2 barMin, ImVec2 barMax,
+                         const AgentReplayData::SkillVisual& sv);
     bool m_showMapCalibrationWindow = false;
     bool m_showInterpolationWindow = false;
     bool m_showRawPositions = false;

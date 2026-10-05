@@ -513,122 +513,15 @@ void ReplayWindow::DrawAgentOverlay()
                                      IM_COL32(255, 255, 255, alpha));
                     }
 
-                    // Cast bar (non-instant skills: casting, cancelled, interrupted, or just completed)
-                    bool showBar = sv.isCasting || sv.cancelled || sv.interrupted;
-                    if (showBar)
+                    // Cast bar: the game's own (see DrawGameCastBar)
+                    if (sv.skin != AgentReplayData::CastBarSkin::None)
                     {
                         float barW = iconSz * 1.6f;
                         float barH = 6.f  * dpiScale;
                         float gap  = 2.f  * dpiScale;
-
                         ImVec2 barMin(skX - barW * 0.5f, skY + iconSz * 0.5f + gap);
                         ImVec2 barMax(barMin.x + barW, barMin.y + barH);
-                        float pct   = sv.progress;
-                        float midY  = barMin.y + barH * 0.5f;
-
-                        // Background: procedural vertical gradient (black→gray→black)
-                        {
-                            ImU32 bgD = IM_COL32(0, 0, 0, alpha);
-                            ImU32 bgM = IM_COL32(36, 36, 36, alpha);
-                            dl->AddRectFilledMultiColor(barMin, ImVec2(barMax.x, midY),
-                                bgD, bgD, bgM, bgM);
-                            dl->AddRectFilledMultiColor(ImVec2(barMin.x, midY), barMax,
-                                bgM, bgM, bgD, bgD);
-                        }
-
-                        // Fill: procedural horizontal gradient + vertical vignette
-                        // Green = success, Yellow/orange = cancelled, Purple = interrupted
-                        float fillW = barW * pct;
-                        if (pct > 0.005f)
-                        {
-                            static const GradStop sGreenH[] = {
-                                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
-                                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
-                                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
-                            };
-                            static const GradStop sOrangeH[] = {
-                                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
-                                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
-                                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
-                                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
-                            };
-                            static const GradStop sPurpleH[] = {
-                                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
-                                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
-                            };
-                            const GradStop* hS;
-                            int nH;
-                            float topV, botV;
-                            if (sv.interrupted) {
-                                hS = sPurpleH; nH = 4; topV = 0.58f; botV = 0.52f;
-                            } else if (sv.cancelled) {
-                                hS = sOrangeH; nH = 8; topV = 0.58f; botV = 0.52f;
-                            } else {
-                                hS = sGreenH; nH = 6; topV = 0.55f; botV = 0.50f;
-                            }
-
-                            int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
-                            for (int si = 0; si < nSegs; ++si)
-                            {
-                                float u0 = (float)si / nSegs;
-                                float u1 = (float)(si + 1) / nSegs;
-                                float r0, g0, b0, r1, g1, b1;
-                                SampleGradient(hS, nH, u0 * pct, r0, g0, b0);
-                                SampleGradient(hS, nH, u1 * pct, r1, g1, b1);
-
-                                float x0 = barMin.x + fillW * u0;
-                                float x1 = barMin.x + fillW * u1;
-
-                                auto vig = [&](float r, float g, float b, float d) -> ImU32 {
-                                    float m = 1.f - d;
-                                    return IM_COL32((ImU8)(r * m), (ImU8)(g * m), (ImU8)(b * m), alpha);
-                                };
-                                ImU32 tl = vig(r0,g0,b0, topV);
-                                ImU32 tr = vig(r1,g1,b1, topV);
-                                ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, alpha);
-                                ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, alpha);
-                                ImU32 bl = vig(r0,g0,b0, botV);
-                                ImU32 br = vig(r1,g1,b1, botV);
-
-                                dl->AddRectFilledMultiColor(
-                                    ImVec2(x0, barMin.y), ImVec2(x1, midY),
-                                    tl, tr, mr, ml);
-                                dl->AddRectFilledMultiColor(
-                                    ImVec2(x0, midY), ImVec2(x1, barMax.y),
-                                    ml, mr, br, bl);
-                            }
-                        }
-
-                        // Outer glow at leading edge
-                        float fillX = barMin.x + fillW;
-                        if (pct > 0.01f)
-                        {
-                            float gw = 6.f * dpiScale;
-                            ImU8 glA1 = (ImU8)(140 * sv.alpha);
-                            ImU8 glA2 = (ImU8)( 60 * sv.alpha);
-                            ImU32 gc1, gc2;
-                            if (sv.interrupted)
-                            {
-                                gc1 = IM_COL32(128, 48,192, glA1);
-                                gc2 = IM_COL32(128, 48,192, glA2);
-                            }
-                            else if (sv.cancelled)
-                            {
-                                gc1 = IM_COL32(192,120,  0, glA1);
-                                gc2 = IM_COL32(192,120,  0, glA2);
-                            }
-                            else
-                            {
-                                gc1 = IM_COL32( 96,208, 32, glA1);
-                                gc2 = IM_COL32( 96,208, 32, glA2);
-                            }
-                            dl->AddRectFilled(
-                                ImVec2(fillX - gw * 0.5f, barMin.y),
-                                ImVec2(fillX + gw * 0.5f, barMax.y), gc1);
-                            dl->AddRectFilled(
-                                ImVec2(fillX - gw, barMin.y - 1.f * dpiScale),
-                                ImVec2(fillX + gw, barMax.y + 1.f * dpiScale), gc2);
-                        }
+                        DrawGameCastBar(dl, barMin, barMax, sv);
                     }
                 }
             }
@@ -1462,49 +1355,73 @@ void ReplayWindow::DrawSkillLaserPanel()
 }
 
 
-void ReplayWindow::EnsureCastBarTextures()
+// The game's cast bar (Gw.exe UiCtlProgress, fill mesh 0x8871f0, paint 0x8898a0):
+// - the 256x16 fill texture SLIDES, it is never stretched: square texels, its bright tip
+//   (texels 180..186) sits at P = x0 + (W - tip) * progress, and the texels after the tip (opaque
+//   black) are the empty part. Column 0 pads the left, column 255 the right.
+// - the previous fill is drawn on top while it fades (0.3 s colour cross-fade);
+// - the glow (205425 executed, 205423 interrupted): a 32x32 nine-slice round
+//   (x0-3, y0-3, x1+4, y1+2). The game also draws its border art (205424) on that rect; the
+//   replay leaves it out by choice.
+void ReplayWindow::DrawGameCastBar(ImDrawList* dl, ImVec2 barMin, ImVec2 barMax,
+                                   const AgentReplayData::SkillVisual& sv)
 {
-    if (m_castBarBgTex) return;
+    using Skin = AgentReplayData::CastBarSkin;
+    const float w = barMax.x - barMin.x;
+    const float h = barMax.y - barMin.y;
+    if (w <= 0.f || h <= 0.f || sv.alpha <= 0.f) return;
+
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-    if (!dev) return;
-
-    constexpr int H = 64;
-    constexpr int W = 512;
-    m_castBarTexH = H;
-
-    // Background: symmetric black vignette (1xN, vertical only)
-    static const GradStop bgStops[] = {
-        { 0.00f,  0,  0,  0 },
-        { 0.25f, 18, 18, 18 },
-        { 0.50f, 36, 36, 36 },
-        { 0.75f, 18, 18, 18 },
-        { 1.00f,  0,  0,  0 }
+    auto fillTex = [&](Skin skin) -> ImTextureID {
+        switch (skin) {
+        case Skin::Casting:     return LoadGameUITexture(dev, "Castbar\\ui_castbar.png");
+        case Skin::Executed:    return LoadGameUITexture(dev, "Castbar\\ui_castbar_yellow.png");
+        case Skin::Interrupted: return LoadGameUITexture(dev, "Castbar\\ui_castbar_purple.png");
+        case Skin::Cancelled:   return LoadGameUITexture(dev, "Castbar\\ui_castbar_red.png");
+        default:                return nullptr;
+        }
     };
-    m_castBarBgTex = BuildGradientTex1xN(dev, H, bgStops, 5);
+    auto alphaCol = [](float a) { return IM_COL32(255, 255, 255, (int)(std::clamp(a, 0.f, 1.f) * 255.f)); };
 
-    // Green casting fill (horizontal gradient + vertical vignette 55%/50%)
-    static const GradStop greenH[] = {
-        { 0.000f,  10, 10, 10 },
-        { 0.200f,  26, 58, 10 },
-        { 0.400f,  64,176, 32 },
-        { 0.600f, 168,240, 80 },
-        { 0.800f, 200,255,112 },
-        { 1.000f, 144,224, 64 }
+    const float s    = h / 16.f;   // texel -> pixel
+    const float tipX = std::floor(barMin.x + (w - 6.f * s) * std::clamp(sv.progress, 0.f, 1.f));
+    const float texL = tipX - 180.f * s;
+    const float texR = texL + 256.f * s;
+    auto drawFill = [&](ImTextureID tex, float a) {
+        if (!tex || a <= 0.f) return;
+        const ImU32 col = alphaCol(a);
+        dl->PushClipRect(barMin, barMax, true);
+        if (texL > barMin.x)
+            dl->AddImage(tex, barMin, ImVec2(texL, barMax.y),
+                         ImVec2(0.5f / 256.f, 0.f), ImVec2(0.5f / 256.f, 1.f), col);
+        dl->AddImage(tex, ImVec2(texL, barMin.y), ImVec2(texR, barMax.y),
+                     ImVec2(0.f, 0.f), ImVec2(1.f, 1.f), col);
+        if (texR < barMax.x)
+            dl->AddImage(tex, ImVec2(texR, barMin.y), barMax,
+                         ImVec2(255.5f / 256.f, 0.f), ImVec2(255.5f / 256.f, 1.f), col);
+        dl->PopClipRect();
     };
-    m_castBarFillTex = BuildCastBarFillTex2D(dev, W, H, greenH, 6, 0.55f, 0.50f);
+    drawFill(fillTex(sv.skin), sv.alpha);
+    drawFill(fillTex(sv.prevSkin), sv.alpha * sv.prevSkinAlpha);
 
-    // Orange cancelled fill (horizontal gradient + vertical vignette 58%/52%)
-    static const GradStop orangeH[] = {
-        { 0.000f,  10,  8,  0 },
-        { 0.143f,  58, 30,  0 },
-        { 0.286f, 122, 58,  0 },
-        { 0.429f, 192, 96,  0 },
-        { 0.571f, 232,144, 16 },
-        { 0.714f, 255,184, 32 },
-        { 0.857f, 255,208, 64 },
-        { 1.000f, 232,160, 16 }
+    const ImVec2 r0(barMin.x - 3.f * s, barMin.y - 3.f * s);
+    const ImVec2 r1(barMax.x + 4.f * s, barMax.y + 2.f * s);
+    auto nineSlice = [&](ImTextureID tex, float a) {
+        if (!tex || a <= 0.f) return;
+        const float c = std::min({ 16.f * s, (r1.x - r0.x) * 0.5f, (r1.y - r0.y) * 0.5f });
+        const float xs[4] = { r0.x, r0.x + c, r1.x - c, r1.x };
+        const float ys[4] = { r0.y, r0.y + c, r1.y - c, r1.y };
+        const float uv[4] = { 0.f, 0.5f, 0.5f, 1.f };
+        const ImU32 col = alphaCol(a);
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                if (xs[i + 1] > xs[i] && ys[j + 1] > ys[j])
+                    dl->AddImage(tex, ImVec2(xs[i], ys[j]), ImVec2(xs[i + 1], ys[j + 1]),
+                                 ImVec2(uv[i], uv[j]), ImVec2(uv[i + 1], uv[j + 1]), col);
     };
-    m_castBarCancelTex = BuildCastBarFillTex2D(dev, W, H, orangeH, 8, 0.58f, 0.52f);
+    nineSlice(LoadGameUITexture(dev, sv.flashPurple ? "Castbar\\ui_castbar_flash_purple.png"
+                                                    : "Castbar\\ui_castbar_flash_yellow.png"),
+              sv.alpha * sv.flash);
 }
 
 

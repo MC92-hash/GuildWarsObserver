@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <filesystem>
@@ -1253,20 +1254,38 @@ struct AgentReplayData
         return (t <= it->end) ? &*it : nullptr;
     }
 
+    // The game's cast bar fills (Textures/Game_UI/Castbar = DAT 205419-205422). Green while
+    // casting, yellow once the skill fires (instants show a full yellow bar), purple when
+    // interrupted. The game has no cancel colour; the replay shows red (the loading-bar fill).
+    enum class CastBarSkin : uint8_t { None, Casting, Executed, Interrupted, Cancelled };
+
     // Combined visual state for skill icon + cast bar (always in sync).
     struct SkillVisual {
         int   skillId     = 0;
         float alpha       = 0.f;   // shared icon+bar opacity
         bool  isCasting   = false;  // currently filling the bar
         float progress    = 0.f;   // 0..1 bar fill
-        bool  cancelled   = false;  // self-cancel (yellow)
+        bool  cancelled   = false;  // self-cancel (red)
         bool  interrupted = false;  // enemy interrupt (purple)
+        CastBarSkin skin     = CastBarSkin::None;
+        CastBarSkin prevSkin = CastBarSkin::None;  // drawn over `skin`, fading out
+        float prevSkinAlpha  = 0.f;                // 0..1
+        float flash          = 0.f;                // 0..1 glow round the bar
+        bool  flashPurple    = false;              // interrupt glow, else the yellow one
     };
 
+    // Timings decoded from Gw.exe (UiCtlProgress / GmSkMonitor / GmSkWarmup): fade in 0.1 s; on
+    // the result the colour cross-fades over 0.3 s and the glow rises over 0.2 s then falls over
+    // 1.0 s (smoothstep); the bar fades out over 1 s after the skill fires, 2 s after an interrupt.
     SkillVisual skillVisualAtTime(float t) const
     {
-        constexpr float LINGER = 2.0f;
-        constexpr float FADE   = 0.8f;
+        constexpr float FADE_IN        = 0.1f;
+        constexpr float FADE_EXECUTED  = 1.0f;
+        constexpr float FADE_INTERRUPT = 2.0f;
+        constexpr float CROSS_FADE     = 0.3f;
+        constexpr float FLASH_UP       = 0.2f;
+        constexpr float FLASH_DOWN     = 1.0f;
+        auto smooth = [](float x) { x = std::clamp(x, 0.f, 1.f); return x * x * (3.f - 2.f * x); };
         if (skillUseHistory.empty()) return {};
         int lo = 0, hi = static_cast<int>(skillUseHistory.size()) - 1, best = -1;
         while (lo <= hi) {
@@ -1276,39 +1295,46 @@ struct AgentReplayData
         }
         if (best < 0) return {};
         const auto& ev = skillUseHistory[best];
-        float showEnd = ev.endTime + LINGER;
-        float fadeEnd = showEnd + FADE;
         if (t < ev.startTime) return {};
-        if (t > fadeEnd) return {};
+
+        const float dur     = ev.endTime - ev.startTime;   // actual cast time
+        const float fullDur = (ev.fullCastDuration > 0.001f) ? ev.fullCastDuration : dur;
+        const bool  instant = ev.isInstant || dur <= 0.001f;
+        const bool  stopped = ev.wasInterrupted || ev.wasCancelled;
+        const float fadeOut = (!instant && stopped) ? FADE_INTERRUPT : FADE_EXECUTED;
+        if (t > ev.endTime + fadeOut) return {};
 
         SkillVisual sv;
         sv.skillId = ev.skillId;
+        sv.alpha   = std::min((t - ev.startTime) / FADE_IN, 1.f);
 
-        // Alpha (shared by icon + bar)
-        if (t <= showEnd) sv.alpha = 1.0f;
-        else              sv.alpha = 1.0f - (t - showEnd) / FADE;
+        if (!instant && t < ev.endTime) {
+            sv.isCasting = true;
+            sv.skin      = CastBarSkin::Casting;
+            // Against the FULL cast time: a cancelled cast stops part-way, it does not race to
+            // the end of its shortened window first.
+            sv.progress  = std::min((t - ev.startTime) / std::max(fullDur, 0.001f), 1.f);
+            return sv;
+        }
 
-        // Cast bar progress + state
-        float dur     = ev.endTime - ev.startTime;   // actual cast time
-        float fullDur = (ev.fullCastDuration > 0.001f) ? ev.fullCastDuration : dur;
-        if (!ev.isInstant && dur > 0.001f) {
-            if (t < ev.endTime) {
-                sv.isCasting = true;
-                sv.cancelled = false;
-                sv.progress  = std::min((t - ev.startTime) / dur, 1.f);
-            } else {
-                sv.isCasting   = false;
-                sv.cancelled   = ev.wasCancelled && !ev.wasInterrupted;
-                sv.interrupted = ev.wasInterrupted;
-                sv.progress    = ev.wasCancelled
-                    ? std::min(dur / fullDur, 1.f)
-                    : 1.0f;
-            }
-        } else {
-            // Instant skill — no cast bar
-            sv.isCasting = false;
-            sv.cancelled = false;
-            sv.progress  = 1.0f;
+        const float since = t - ev.endTime;
+        sv.alpha *= 1.f - since / fadeOut;
+        sv.interrupted = !instant && ev.wasInterrupted;
+        sv.cancelled   = !instant && ev.wasCancelled && !ev.wasInterrupted;
+        if (sv.interrupted)     sv.skin = CastBarSkin::Interrupted;
+        else if (sv.cancelled)  sv.skin = CastBarSkin::Cancelled;
+        else                    sv.skin = CastBarSkin::Executed;
+        sv.progress = (sv.interrupted || sv.cancelled)
+            ? std::min(dur / std::max(fullDur, 0.001f), 1.f)   // frozen where it stopped
+            : 1.f;
+        if (!instant) {
+            sv.prevSkin      = CastBarSkin::Casting;
+            sv.prevSkinAlpha = 1.f - smooth(since / CROSS_FADE);
+        }
+        if (!sv.cancelled) {
+            sv.flashPurple = sv.interrupted;
+            sv.flash = since < FLASH_UP ? smooth(since / FLASH_UP)
+                                        : 1.f - smooth((since - FLASH_UP) / FLASH_DOWN);
         }
         return sv;
     }

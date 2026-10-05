@@ -1362,98 +1362,9 @@ void ReplayWindow::DrawFollowedAgentHUD()
 
         float cbX = barX + CAST_ICON + CAST_GAP;
         float cbY = castY + (CAST_ICON - CAST_BAR_H) * 0.5f;
-        constexpr float CB_R = 6.f;
         ImVec2 cbTL(cbX, cbY);
         ImVec2 cbBR(cbX + castBarW, cbY + CAST_BAR_H);
-        float midY = cbTL.y + CAST_BAR_H * 0.5f;
-
-        dl->AddRectFilled(cbTL, cbBR, IM_COL32(0x0C, 0x0C, 0x0C, castAlpha), CB_R);
-
-        float pct = sv.progress;
-        float fillW = castBarW * pct;
-        if (pct > 0.005f)
-        {
-            static const GradStop sGreenH[] = {
-                { 0.000f,  10, 10, 10 }, { 0.200f,  26, 58, 10 },
-                { 0.400f,  64,176, 32 }, { 0.600f, 168,240, 80 },
-                { 0.800f, 200,255,112 }, { 1.000f, 144,224, 64 }
-            };
-            static const GradStop sOrangeH[] = {
-                { 0.000f,  10,  8,  0 }, { 0.143f,  58, 30,  0 },
-                { 0.286f, 122, 58,  0 }, { 0.429f, 192, 96,  0 },
-                { 0.571f, 232,144, 16 }, { 0.714f, 255,184, 32 },
-                { 0.857f, 255,208, 64 }, { 1.000f, 232,160, 16 }
-            };
-            static const GradStop sPurpleH[] = {
-                { 0.000f,  10, 10, 10 }, { 0.300f, 120, 32,192 },
-                { 0.600f, 224,160,255 }, { 1.000f, 160, 80,224 }
-            };
-            const GradStop* hS;
-            int nH;
-            float topV, botV;
-            if (sv.interrupted) {
-                hS = sPurpleH; nH = 4; topV = 0.58f; botV = 0.52f;
-            } else if (sv.cancelled) {
-                hS = sOrangeH; nH = 8; topV = 0.58f; botV = 0.52f;
-            } else {
-                hS = sGreenH; nH = 6; topV = 0.55f; botV = 0.50f;
-            }
-
-            // Clip gradient to inset rect so it doesn't overflow rounded corners
-            ImVec2 inTL(cbTL.x + CB_R, cbTL.y + 1.f);
-            ImVec2 inBR(cbBR.x - CB_R, cbBR.y - 1.f);
-            float clipRight = std::min(cbTL.x + fillW, inBR.x);
-
-            dl->PushClipRect(inTL, ImVec2(clipRight, inBR.y), true);
-            int nSegs = std::clamp((int)(fillW / 3.f), 4, 24);
-            for (int seg = 0; seg < nSegs; ++seg)
-            {
-                float u0 = (float)seg / nSegs;
-                float u1 = (float)(seg + 1) / nSegs;
-                float r0, g0, b0, r1, g1, b1;
-                SampleGradient(hS, nH, u0 * pct, r0, g0, b0);
-                SampleGradient(hS, nH, u1 * pct, r1, g1, b1);
-                float x0 = cbTL.x + fillW * u0;
-                float x1 = cbTL.x + fillW * u1;
-
-                auto vig = [&](float rv, float gv, float bv, float d) -> ImU32 {
-                    float m = 1.f - d;
-                    return IM_COL32((ImU8)(rv * m), (ImU8)(gv * m), (ImU8)(bv * m), castAlpha);
-                };
-                ImU32 tl = vig(r0,g0,b0, topV);
-                ImU32 tr = vig(r1,g1,b1, topV);
-                ImU32 ml = IM_COL32((ImU8)r0,(ImU8)g0,(ImU8)b0, castAlpha);
-                ImU32 mr = IM_COL32((ImU8)r1,(ImU8)g1,(ImU8)b1, castAlpha);
-                ImU32 bl = vig(r0,g0,b0, botV);
-                ImU32 br = vig(r1,g1,b1, botV);
-
-                dl->AddRectFilledMultiColor(ImVec2(x0, cbTL.y), ImVec2(x1, midY), tl, tr, mr, ml);
-                dl->AddRectFilledMultiColor(ImVec2(x0, midY), ImVec2(x1, cbBR.y), ml, mr, br, bl);
-            }
-            dl->PopClipRect();
-
-            // Leading edge glow (also clipped)
-            float fillX = cbTL.x + fillW;
-            if (pct > 0.01f && fillX > inTL.x && fillX < inBR.x)
-            {
-                ImU8 glA1 = (ImU8)(140 * sv.alpha);
-                ImU8 glA2 = (ImU8)( 60 * sv.alpha);
-                ImU32 gc1, gc2;
-                if (sv.interrupted) {
-                    gc1 = IM_COL32(128, 48,192, glA1); gc2 = IM_COL32(128, 48,192, glA2);
-                } else if (sv.cancelled) {
-                    gc1 = IM_COL32(192,120,  0, glA1); gc2 = IM_COL32(192,120,  0, glA2);
-                } else {
-                    gc1 = IM_COL32( 96,208, 32, glA1); gc2 = IM_COL32( 96,208, 32, glA2);
-                }
-                dl->PushClipRect(inTL, inBR, true);
-                dl->AddRectFilled(ImVec2(fillX - 3.f, cbTL.y), ImVec2(fillX + 3.f, cbBR.y), gc1);
-                dl->AddRectFilled(ImVec2(fillX - 5.f, cbTL.y - 1.f), ImVec2(fillX + 5.f, cbBR.y + 1.f), gc2);
-                dl->PopClipRect();
-            }
-        }
-
-        dl->AddRect(cbTL, cbBR, IM_COL32(0x60, 0x60, 0x60, castAlpha), CB_R);
+        DrawGameCastBar(dl, cbTL, cbBR, sv);
 
         if (si && !si->name.empty())
         {
