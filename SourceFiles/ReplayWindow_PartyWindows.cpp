@@ -224,6 +224,10 @@ void ReplayWindow::DrawPartyWindows()
     constexpr float kBarHeight    = 23.f;
     constexpr float kNpcBarHeight = 17.f;
     constexpr float kBarSpacing   = 4.f;
+    // The calculated energy strip under each player's health bar (the row with the name), and the
+    // gap above it.
+    constexpr float kEnergyH      = 7.f;
+    constexpr float kEnergyGap    = 2.f;   // room for the strip's 1 px outline
     constexpr float kDeathGraceSec = 5.f;
     float padY = ImGui::GetStyle().WindowPadding.y;
     float titleBarH = ImGui::GetFrameHeight();
@@ -277,7 +281,7 @@ void ReplayWindow::DrawPartyWindows()
     auto DrawBars = [&](ImDrawList* dl, float availW,
                         const std::vector<int>& ids, float barH,
                         bool filterSpirits, bool leftSide, float maxBarW,
-                        int teamTotalDmg, int teamTotalHeal)
+                        int teamTotalDmg, int teamTotalHeal, bool withEnergy = false)
     {
         int n = static_cast<int>(ids.size());
         for (int i = 0; i < n; ++i)
@@ -296,10 +300,12 @@ void ReplayWindow::DrawPartyWindows()
             bool isDead = snap ? snap->is_dead : false;
 
             ImVec2 cursor = ImGui::GetCursorScreenPos();
+            withEnergy = withEnergy && m_showPartyEnergy;
+            const float energyRowH = withEnergy ? kEnergyH + kEnergyGap : 0.f;
 
             char btnId[32];
             snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
-            ImGui::InvisibleButton(btnId, ImVec2(availW, barH));
+            ImGui::InvisibleButton(btnId, ImVec2(availW, barH + energyRowH));
             if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !m_annotationMgr.IsDrawModeActive())
             {
                 EnterFollowMode(agentId);
@@ -346,6 +352,12 @@ void ReplayWindow::DrawPartyWindows()
                                m_followedAgentId, agentId, isFogHidden,
                                carriedFlagTex, absMaxHp, hpEstimated,
                                dev, m_debugTimeline);
+
+            if (withEnergy)
+            {
+                const float ey = cursor.y + barH + kEnergyGap;
+                DrawPartyEnergyBar(dl, ard, ImVec2(cursor.x, ey), ImVec2(cursor.x + availW, ey + kEnergyH));
+            }
 
             if (m_showDamageMeter || m_showHealMeter)
             {
@@ -417,7 +429,8 @@ void ReplayWindow::DrawPartyWindows()
         if (auto pit = m_replayCtx.agents.find(playerIds.front()); pit != m_replayCtx.agents.end())
             panelTeam = pit->second.teamId;
 
-        float playersH = nPlayers * kBarHeight + (nPlayers - 1) * kBarSpacing;
+        const float energyRowsH = m_showPartyEnergy ? nPlayers * (kEnergyH + kEnergyGap) : 0.f;
+        float playersH = nPlayers * kBarHeight + energyRowsH + (nPlayers - 1) * kBarSpacing;
         float alliesHeaderH = hasNpcs ? treeNodeH + kBarSpacing : 0.f;
         float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + 4.f;
 
@@ -522,6 +535,24 @@ void ReplayWindow::DrawPartyWindows()
             if (wPos.y + wSize.y > vp->Pos.y + vpH) { wPos.y = vp->Pos.y + vpH - wSize.y; clamped = true; }
             if (clamped) ImGui::SetWindowPos(wPos);
 
+            // Toggling the energy strips grows or shrinks the panel by exactly their height.
+            static std::unordered_map<std::string, bool> s_energyShown;
+            if (auto [it, fresh] = s_energyShown.try_emplace(layoutKey, m_showPartyEnergy);
+                !fresh && it->second != m_showPartyEnergy)
+            {
+                it->second = m_showPartyEnergy;
+                const float rows = nPlayers * (kEnergyH + kEnergyGap);
+                wSize.y = std::max(collapsedH, wSize.y + (m_showPartyEnergy ? rows : -rows));
+                ImGui::SetWindowSize(wSize);
+            }
+
+            // A size saved before the rows grew (the energy strip) would cut the last player off.
+            if (wSize.y < collapsedH)
+            {
+                wSize.y = collapsedH;
+                ImGui::SetWindowSize(wSize);
+            }
+
             float availW = ImGui::GetContentRegionAvail().x;
             ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -535,7 +566,8 @@ void ReplayWindow::DrawPartyWindows()
                 float iconY = wPos.y + 12.f + 2.f;
 
                 float closeBtnW = 27.f;
-                float heartX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
+                float energyX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
+                float heartX = energyX - iconPad - iconSz;
                 float swordX = heartX - iconPad - iconSz;
 
                 dl->PushClipRect(wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y), false);
@@ -589,13 +621,15 @@ void ReplayWindow::DrawPartyWindows()
 
                 DrawToggleIcon(swordTex, swordX, m_showDamageMeter, "Toggle Damage Meter");
                 DrawToggleIcon(heartTex, heartX, m_showHealMeter, "Toggle Heal Meter");
+                DrawToggleIcon(LoadSkillDescIcon(dev, "energy.png"), energyX,
+                               m_showPartyEnergy, "Toggle Energy Bars");
 
                 dl->PopClipRect();
             }
 
             float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
             DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW,
-                     teamTotalDmg, teamTotalHeal);
+                     teamTotalDmg, teamTotalHeal, true);
 
             if (m_showDamageMeter || m_showHealMeter)
             {

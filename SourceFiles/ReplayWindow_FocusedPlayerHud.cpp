@@ -462,7 +462,10 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     // units above it.
     const float hpH    = std::round(14.f * slot / kRefSlot) + 1.f;   // one pixel over the client, for the text
     const float hpArtT = 2.f * scale;
-    const float frameY = std::round(hpArtT + hpH);
+    // The energy bar stands above the health bar, same height, its own frame clear of the health
+    // bar's: each frame reaches 2 UI units past its bar, so the gap is 4.
+    const float enGap  = std::round(4.f * scale);
+    const float frameY = std::round(hpArtT + hpH + enGap + hpH);
     const float winH   = frameY + artT + slot + artB;
 
     const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
@@ -508,6 +511,8 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     // Bar rect = the slot row grown 7 UI units each side (measured on the owner's client).
     DrawFocusHudHealthBar(ard, ImVec2(origin.x + artL - 7.f * scale, frameTL.y - hpH),
                           ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y), scale);
+    DrawFocusHudEnergyBar(ard, ImVec2(origin.x + artL - 7.f * scale, frameTL.y - hpH - enGap - hpH),
+                          ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y - hpH - enGap), scale);
 
     for (int i = 0; i < kBarSlots; ++i)
     {
@@ -701,6 +706,68 @@ void ReplayWindow::DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, 
                          ImVec2(0.f, 0.f), ImVec2(10.f / 32.f, 1.f));
     }
 }
+
+
+// Energy bar above the followed player's health bar, in the same HUD frame: the game's blue fill,
+// the value centred, the regeneration arrows beside it.
+void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale)
+{
+    const EnergyModel::Track* track = EnergyTrackFor(ard.agent_id);
+    if (!track) return;
+    const EnergyModel::Sample s = track->At(m_debugTimeline);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    auto tex = [&](const char* file) {
+        return LoadGameUITexture(dev, (std::string("Progressbar\\") + file).c_str());
+    };
+
+    dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, 0xA0));
+    if (!s.dead) DrawGameStatBarFill(dl, tex("ui_progress_energy.png"), b0, b1, EnergyBarFraction(s));
+    DrawEnergyOvercast(dl, b0, b1, s);
+    if (ImTextureID frame = tex("ui_hud_bar_frame.png"))
+        DrawHudBarFrame(dl, frame, ImVec2(b0.x - 7.f * scale, b0.y - 2.f * scale),
+                        ImVec2(b1.x + 7.f * scale, b1.y + 2.f * scale), scale);
+
+    // The client shows the whole points, and 0 while the pool is below zero.
+    const int value = s.dead ? 0 : std::max(0, static_cast<int>(std::floor(s.energy)));
+    char num[16];
+    snprintf(num, sizeof(num), "%d", value);
+    const float cx = std::round((b0.x + b1.x) * 0.5f), cy = (b0.y + b1.y) * 0.5f;
+    ImFont* font = ImGui::GetFont();
+    const float fs = std::min(ImGui::GetFontSize(), std::max(8.f, std::round(b1.y - b0.y)));
+    const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.f, num);
+    const ImVec2 tp(std::round(cx - ts.x * 0.5f), std::round(cy - ts.y * 0.5f));
+    dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, 0xCC), num);
+    dl->AddText(font, fs, tp, IM_COL32(0xF0, 0xF0, 0xF0, 0xFF), num);
+
+    if (ImGui::IsMouseHoveringRect(b0, b1))
+        ImGui::SetTooltip("Energy %d / %d (calculated)\nRegeneration %+d pips%s", value,
+                          static_cast<int>(std::floor(s.maxEnergy)), static_cast<int>(s.pips),
+                          s.overcast >= 1.f ? "\nOvercast shown in grey" : "");
+
+    ImTextureID arrows = tex("ui_health_arrows.png");
+    const int pips = s.dead ? 0 : static_cast<int>(s.pips);
+    if (pips == 0 || !arrows) return;
+    const float ah = fs;
+    const float aw = std::round(ah * 10.f / 16.f);
+    const int   n  = std::abs(pips);
+    const float D  = ts.x + 2.f * aw;
+    const float G  = static_cast<float>(n + 1) * aw;
+    const float y0 = std::round(cy - ah * 0.5f);
+    if (pips > 0) {
+        const float S = std::min(cx + D * 0.5f, b1.x - G);
+        for (int k = 0; k < n; ++k)
+            dl->AddImage(arrows, ImVec2(S + k * aw, y0), ImVec2(S + (k + 1) * aw, y0 + ah),
+                         ImVec2(10.f / 32.f, 0.f), ImVec2(20.f / 32.f, 1.f));
+    } else {
+        const float S = std::max(cx - D * 0.5f, b0.x + G);
+        for (int k = 0; k < n; ++k)
+            dl->AddImage(arrows, ImVec2(S - (k + 1) * aw, y0), ImVec2(S - k * aw, y0 + ah),
+                         ImVec2(0.f, 0.f), ImVec2(10.f / 32.f, 1.f));
+    }
+}
+
 
 
 // ---------------------------------------------------------------------------

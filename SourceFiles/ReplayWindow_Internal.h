@@ -129,6 +129,10 @@ void DrawGameNineSlice(ImDrawList* dl, ImTextureID tex, ImVec2 r0, ImVec2 r1,
 // column 15 the right, full height.
 void DrawGameStatBarFill(ImDrawList* dl, ImTextureID tex, ImVec2 c0, ImVec2 c1, float frac,
                          ImU32 col = IM_COL32_WHITE);
+// Energy bar helpers (ReplayWindow_Energy.cpp): the filled share of the full maximum, and the
+// overcast part greyed at the right end.
+float EnergyBarFraction(const EnergyModel::Sample& s);
+void  DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s);
 void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const AgentSnapshot* snap, uint8_t teamId, bool isDead,
                         const char* name, const PartyIcons& icons,

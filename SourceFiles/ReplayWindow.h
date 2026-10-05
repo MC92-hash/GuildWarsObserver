@@ -35,6 +35,7 @@
 #include "AttributeDeducer.h"
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
+#include "EnergyModel.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -400,6 +401,15 @@ private:
     HealthModel::Inputs BuildHealthModelInputs() const;
     HealthModel::Inputs m_healthInputs;
     bool m_healthInputsBuilt = false;
+
+    // Each player's energy, calculated forward from the match start (EnergyModel, private). Built
+    // lazily on first use and rebuilt once the attribute solve lands, the way the skill disables
+    // are, because Expertise, Energy Storage and the skill ranks all feed it.
+    void BuildEnergyTracks() const;
+    const EnergyModel::Track* EnergyTrackFor(int agentId) const;
+    mutable std::unordered_map<int, EnergyModel::Track> m_energyTracks;
+    mutable bool m_energyBuilt = false;
+    mutable bool m_energyUsedAttributes = false;
 
     // Morale as a step function per player, folded once over the match. Both the health model and
     // the morale panel read it, so the rules exist in exactly one place; the panel used to carry
@@ -799,6 +809,7 @@ private:
     // --- Damage / Heal meter (party window bars) ---
     bool m_showDamageMeter = false;
     bool m_showHealMeter   = false;
+    bool m_showPartyEnergy = true;    // calculated energy strips under the players' health bars
     bool m_showAbsoluteHp  = true;
 
     struct MeterEntry { int value = 0; };
@@ -1927,6 +1938,9 @@ private:
     void DrawFocusHudSkillBar(int agentId);
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
+    void DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
+    // The energy strip under a party row's health bar. Players only.
+    void DrawPartyEnergyBar(ImDrawList* dl, const AgentReplayData& ard, ImVec2 b0, ImVec2 b1) const;
     // The followed player's bar in display order: the recorded bar, then any skill seen used
     // that it lacks, sorted the way the player info panel sorts them.
     std::vector<int> SkillBarDisplayOrder(int agentId) const;
