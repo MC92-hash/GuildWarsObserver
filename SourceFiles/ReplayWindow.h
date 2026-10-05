@@ -1925,6 +1925,7 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
+    void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     // The followed player's bar in display order: the recorded bar, then any skill seen used
     // that it lacks, sorted the way the player info panel sorts them.

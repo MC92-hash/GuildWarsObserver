@@ -460,7 +460,7 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     // The health bar (StatHealth) stands on the skill bar frame: its rect ends where the frame
     // art begins, 14 px tall at the owner's 70 px slots, and its own pewter frame reaches 2 UI
     // units above it.
-    const float hpH    = std::round(14.f * slot / kRefSlot);
+    const float hpH    = std::round(14.f * slot / kRefSlot) + 1.f;   // one pixel over the client, for the text
     const float hpArtT = 2.f * scale;
     const float frameY = std::round(hpArtT + hpH);
     const float winH   = frameY + artT + slot + artB;
@@ -570,27 +570,8 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
                          ImVec2(kx, ky), ImVec2(kx + 24.f / 128.f, ky + 24.f / 128.f));
         }
 
-        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
-            std::string line = si ? si->name : "?";
-            char buf[192];
-            if (disabled) {
-                const SkillInfo* src = m_skillView.Get(cd.disableSourceSkill);
-                std::string who;
-                if (cd.disableSourceAgent == agentId) who = "own skill";
-                else if (auto ait = m_replayCtx.agents.find(cd.disableSourceAgent); ait != m_replayCtx.agents.end())
-                    who = ait->second.playerName;
-                snprintf(buf, sizeof(buf), "\nDisabled by %s%s%s%s: %.0fs", src ? src->name.c_str() : "?",
-                         who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")", std::ceil(cd.remaining));
-                line += buf;
-            } else if (cd.state == CdState::Recharging) {
-                snprintf(buf, sizeof(buf), "\nRecharging: %.0fs", std::ceil(cd.remaining));
-                line += buf;
-            } else if (cd.state == CdState::Spent) {
-                line += "\nUsed: back on a morale boost";
-            }
-            if (!cd.modifierText.empty()) line += "\nRecharge: " + cd.modifierText;
-            ImGui::SetTooltip("%s", line.c_str());
-        }
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br))
+            DrawGameSkillTooltip(bar[i], agentId, &cd);
     }
 
     ImGui::End();
@@ -719,4 +700,129 @@ void ReplayWindow::DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, 
             dl->AddImage(arrows, ImVec2(S - (k + 1) * aw, y0), ImVec2(S - k * aw, y0 + ah),
                          ImVec2(0.f, 0.f), ImVec2(10.f / 32.f, 1.f));
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// The client's skill tooltip, for a slot of the followed player's bar: the name with its costs
+// right-aligned (value, then the game's glyph), then one paragraph -- "<Type>." + the description
+// with every "A...B" answered at this player's solved rank, in green, + "(Attrib: <attribute>)".
+// The replay state (what disabled it, how long it is still out) follows under a rule, muted.
+// ---------------------------------------------------------------------------
+void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd)
+{
+    const SkillInfo* si = m_skillView.Get(skillId);
+    if (!si) return;
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+
+    constexpr ImU32 kName   = IM_COL32(0xF2, 0xEC, 0xD6, 0xFF);
+    constexpr ImU32 kPlain  = IM_COL32(0xE6, 0xE6, 0xE6, 0xFF);
+    constexpr ImU32 kGreen  = IM_COL32(0x5C, 0xE6, 0x3C, 0xFF);
+    constexpr ImU32 kMuted  = IM_COL32(0xA8, 0xA8, 0xA0, 0xFF);
+    constexpr float kWrap   = 300.f;
+
+    // Costs, in the client's order.
+    struct Cost { std::string value; const char* icon; };
+    std::vector<Cost> costs;
+    auto secs = [](float v) {
+        char b[16];
+        if (v == 0.25f) snprintf(b, sizeof(b), "\xC2\xBC");
+        else if (v == 0.5f) snprintf(b, sizeof(b), "\xC2\xBD");
+        else if (v == 0.75f) snprintf(b, sizeof(b), "\xC2\xBE");
+        else if (v == std::floor(v)) snprintf(b, sizeof(b), "%d", static_cast<int>(v));
+        else snprintf(b, sizeof(b), "%.1f", v);
+        return std::string(b);
+    };
+    if (si->upkeep < 0)     costs.push_back({ std::to_string(si->upkeep), "upkeep.png" });
+    if (si->energy > 0)     costs.push_back({ std::to_string(si->energy), "energy.png" });
+    if (si->adrenaline > 0) costs.push_back({ std::to_string(si->adrenaline), "adrenaline.png" });
+    if (si->sacrifice > 0)  costs.push_back({ std::to_string(si->sacrifice) + "%", "sacrifice.png" });
+    if (si->overcast > 0)   costs.push_back({ std::to_string(si->overcast), "overcast.png" });
+    if (si->activation > 0) costs.push_back({ secs(si->activation), "activation.png" });
+    if (si->recharge > 0)   costs.push_back({ secs(si->recharge), "recharge.png" });
+
+    const float lineH = ImGui::GetTextLineHeight();
+    const float iconSz = lineH;
+    float costsW = 0.f;
+    for (const auto& c : costs) costsW += ImGui::CalcTextSize(c.value.c_str()).x + 2.f + iconSz + 8.f;
+    const float nameW = ImGui::CalcTextSize(si->name.c_str()).x;
+    const float width = std::max(kWrap, nameW + 16.f + costsW);
+
+    // One paragraph: type, description at this player's rank, attribute.
+    const AttributeModel::AttributeRange* rank = nullptr;
+    if (auto bit = m_attrProfiles.find(agentId); bit != m_attrProfiles.end())
+        if (auto it = bit->second.attributes.find(si->attribute); it != bit->second.attributes.end())
+            if (!it->second.budgetOnly) rank = &it->second;
+
+    std::vector<SkillTextRun> runs;
+    std::string lead = std::string(si->is_elite ? "Elite " : "") + SkillDatabase::GetTypeName(si->type) + ". ";
+    runs.push_back({ lead, kPlain });
+    for (auto& r : BuildSkillTextRuns(*si, rank, kPlain, kGreen)) runs.push_back(std::move(r));
+    const char* attrName = SkillDatabase::GetAttributeName(si->attribute);
+    if (si->attribute < 101 && attrName && attrName[0])
+        runs.push_back({ std::string(" (Attrib: ") + attrName + ")", kPlain });
+
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.11f, 0.105f, 0.085f, 0.96f));
+    ImGui::PushStyleColor(ImGuiCol_Border,  ImVec4(0.62f, 0.58f, 0.46f, 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 2.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(7.f, 5.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+    ImGui::BeginTooltip();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+
+    // Header: name left, costs right.
+    dl->AddText(p0, kName, si->name.c_str());
+    float x = p0.x + width - costsW + 8.f;
+    for (const auto& c : costs) {
+        dl->AddText(ImVec2(x, p0.y), kName, c.value.c_str());
+        x += ImGui::CalcTextSize(c.value.c_str()).x + 2.f;
+        if (ImTextureID icon = LoadGameUITexture(dev, (std::string("Skill Description\\") + c.icon).c_str()))
+            dl->AddImage(icon, ImVec2(x, p0.y), ImVec2(x + iconSz, p0.y + iconSz));
+        x += iconSz + 8.f;
+    }
+
+    const ImVec2 bodyAt(p0.x, p0.y + lineH + 2.f);
+    const ImVec2 body = DrawSkillTextRuns(dl, bodyAt, width, runs);
+    ImGui::Dummy(ImVec2(width, lineH + 2.f + body.y));
+
+    // The replay's own word on the slot.
+    if (cd) {
+        std::string state;
+        char buf[192];
+        using CdState = SkillCooldownState::State;
+        if (cd->state == CdState::Disabled) {
+            const SkillInfo* src = m_skillView.Get(cd->disableSourceSkill);
+            std::string who;
+            if (cd->disableSourceAgent == agentId) who = "own skill";
+            else if (auto ait = m_replayCtx.agents.find(cd->disableSourceAgent); ait != m_replayCtx.agents.end())
+                who = ait->second.playerName;
+            snprintf(buf, sizeof(buf), "Disabled by %s%s%s%s: %.0fs", src ? src->name.c_str() : "?",
+                     who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")", std::ceil(cd->remaining));
+            state = buf;
+        } else if (cd->state == CdState::Recharging) {
+            snprintf(buf, sizeof(buf), "Recharging: %.0fs", std::ceil(cd->remaining));
+            state = buf;
+        } else if (cd->state == CdState::Spent) {
+            state = "Used: back on a morale boost";
+        }
+        if (!cd->modifierText.empty())
+            state += (state.empty() ? "" : "\n") + std::string("Recharge: ") + cd->modifierText;
+        if (!state.empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(kMuted));
+            ImGui::TextUnformatted(state.c_str());
+            ImGui::PopStyleColor();
+        }
+        if (rank) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(kMuted));
+            ImGui::Text("Green: this player's %s, read off the match.", attrName);
+            ImGui::PopStyleColor();
+        }
+    }
+
+    ImGui::EndTooltip();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
 }
