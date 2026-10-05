@@ -457,7 +457,13 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     // The frame art reaches past the slots; the window covers it all.
     const float artL = 16.f * scale, artR = 16.f * scale, artT = 7.f * scale, artB = 11.f * scale;
     const float winW = artL + kBarSlots * slot + artR;
-    const float winH = artT + slot + artB;
+    // The health bar (StatHealth) stands on the skill bar frame: its rect ends where the frame
+    // art begins, 14 px tall at the owner's 70 px slots, and its own pewter frame reaches 2 UI
+    // units above it.
+    const float hpH    = std::round(14.f * slot / kRefSlot);
+    const float hpArtT = 2.f * scale;
+    const float frameY = std::round(hpArtT + hpH);
+    const float winH   = frameY + artT + slot + artB;
 
     const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
     const float posX = std::round(vp->Pos.x + (vp->Size.x - winW) * 0.5f);
@@ -492,15 +498,20 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     ImTextureID texNoSign  = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_check_forbidden.png");
     ImTextureID texSparkle = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_sparkle.png");
 
+    const ImVec2 frameTL(origin.x, origin.y + frameY);
     if (texFrame)
-        DrawGameNineSlice(dl, texFrame, origin, ImVec2(origin.x + winW, origin.y + winH),
+        DrawGameNineSlice(dl, texFrame, frameTL, ImVec2(origin.x + winW, origin.y + winH),
                           64.f * scale, 64.f * scale);
     else
-        dl->AddRectFilled(origin, ImVec2(origin.x + winW, origin.y + winH), IM_COL32(12, 12, 14, 200), 8.f);
+        dl->AddRectFilled(frameTL, ImVec2(origin.x + winW, origin.y + winH), IM_COL32(12, 12, 14, 200), 8.f);
+
+    // Bar rect = the slot row grown 7 UI units each side (measured on the owner's client).
+    DrawFocusHudHealthBar(ard, ImVec2(origin.x + artL - 7.f * scale, frameTL.y - hpH),
+                          ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y), scale);
 
     for (int i = 0; i < kBarSlots; ++i)
     {
-        const ImVec2 tl(origin.x + artL + i * slot, origin.y + artT);
+        const ImVec2 tl(origin.x + artL + i * slot, frameTL.y + artT);
         const ImVec2 br(tl.x + slot, tl.y + slot);
         const bool filled = i < static_cast<int>(bar.size());
         const SkillInfo* si = filled ? m_skillView.Get(bar[i]) : nullptr;
@@ -584,4 +595,128 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
 
     ImGui::End();
     ImGui::PopStyleVar(2);
+}
+
+
+// ---------------------------------------------------------------------------
+// Health bar over the skill bar: the client's StatHealth window (GmAgentStatus, style 0xa2000;
+// decoded from Gw.exe 2026-10-05). The fills are the party bars' (UiCtlProgress), in the game's
+// own red whatever the team -- this is the player's own bar -- changed by poison > bleeding >
+// degeneration hex with a 0.2 s cross-fade, Deep Wound capping the last fifth. Unlike a party row
+// the bar has no inset: the fill covers the whole rect, and the HUD frame 205437 (pewter, metal
+// caps both ends) is drawn over it on the rect grown 7 UI units left/right and 2 up/down.
+// The value sits centred in F0F0F0; the regeneration pips (DAT 31522) start one
+// arrow width from the widest value shown so far -- degeneration to the left, regeneration to the
+// right -- pips = round(hp_pips * max health / 2), one pip being 2 health per second, at most 10.
+// ---------------------------------------------------------------------------
+namespace
+{
+    // FrApi's nine-slice as the HUD bars meet it: margins art/3 drawn texel for texel, and a rect
+    // shorter than two margins is cut at its middle, each half showing its own edge 1:1 rather
+    // than the corners being shrunk.
+    void DrawHudBarFrame(ImDrawList* dl, ImTextureID tex, ImVec2 r0, ImVec2 r1, float scale)
+    {
+        constexpr float art = 32.f, m = art / 3.f;
+        const float mx = m * scale;
+        const float h = r1.y - r0.y;
+        // Rows: top band, middle (stretched; empty for a short rect), bottom band.
+        const float band  = std::min(mx, h * 0.5f);
+        const float tBand = band / scale;
+        const float ys[4] = { r0.y, r0.y + band, r1.y - band, r1.y };
+        const float vs[4] = { 0.f, tBand / art, 1.f - tBand / art, 1.f };
+        const float xs[4] = { r0.x, r0.x + mx, r1.x - mx, r1.x };
+        const float us[4] = { 0.f, m / art, 1.f - m / art, 1.f };
+        for (int row = 0; row < 3; ++row) {
+            if (ys[row + 1] <= ys[row]) continue;
+            for (int col = 0; col < 3; ++col) {
+                if (xs[col + 1] <= xs[col]) continue;
+                dl->AddImage(tex, ImVec2(xs[col], ys[row]), ImVec2(xs[col + 1], ys[row + 1]),
+                             ImVec2(us[col], vs[row]), ImVec2(us[col + 1], vs[row + 1]));
+            }
+        }
+    }
+}
+
+
+void ReplayWindow::DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale)
+{
+    const float t = m_debugTimeline;
+    const AgentSnapshot* snap = FindSnapshotAtTime(ard, t);
+    if (!snap) return;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    auto tex = [&](const char* file) {
+        return LoadGameUITexture(dev, (std::string("Progressbar\\") + file).c_str());
+    };
+    const bool dead = snap->is_dead;
+
+    const char* fill = "ui_progress_health.png";
+    if (!dead) {
+        if (snap->has_poison)         fill = "ui_progress_health_poisoned.png";
+        else if (snap->has_bleeding)  fill = "ui_progress_health_bleeding.png";
+        else if (snap->has_degen_hex) fill = "ui_progress_health_hexed.png";
+    }
+
+    // 0.2 s smoothstep cross-fade from the previous fill, on the replay clock. The widest value
+    // shown is kept with it: the client never lets the pips move back in.
+    struct BarState { int agentId = -1; std::string fill, prev; float changed = -1.f; float textW = 0.f; };
+    static BarState s_bar;
+    if (s_bar.agentId != ard.agent_id) s_bar = { ard.agent_id, fill, "", -1.f, 0.f };
+    if (s_bar.fill != fill) { s_bar.prev = s_bar.fill; s_bar.fill = fill; s_bar.changed = t; }
+    float prevAlpha = 0.f;
+    if (!s_bar.prev.empty() && t >= s_bar.changed && t - s_bar.changed < 0.2f) {
+        const float x = (t - s_bar.changed) / 0.2f;
+        prevAlpha = 1.f - x * x * (3.f - 2.f * x);
+    }
+
+    const bool  deepWound = snap->has_deep_wound && !dead;
+    const float hp = dead ? 0.f : std::clamp(snap->health_pct, 0.f, 1.f);
+    DrawGameStatBarFill(dl, tex(fill), b0, b1, deepWound ? hp * 0.8f : hp);
+    if (prevAlpha > 0.f && !deepWound)
+        DrawGameStatBarFill(dl, tex(s_bar.prev.c_str()), b0, b1, hp,
+                            IM_COL32(255, 255, 255, static_cast<int>(prevAlpha * 255.f)));
+    if (deepWound)
+        DrawGameStatBarFill(dl, tex("ui_health_deep_wound.png"), b0, b1, 0.8f);
+    if (ImTextureID frame = tex("ui_hud_bar_frame.png"))
+        DrawHudBarFrame(dl, frame, ImVec2(b0.x - 7.f * scale, b0.y - 2.f * scale),
+                        ImVec2(b1.x + 7.f * scale, b1.y + 2.f * scale), scale);
+
+    const MaxHpSample mhp = ResolveMaxHp(ard, t);
+    if (mhp.value == 0) return;
+
+    const float cx = std::round((b0.x + b1.x) * 0.5f), cy = (b0.y + b1.y) * 0.5f;
+    char num[16];
+    snprintf(num, sizeof(num), "%d", static_cast<int>(std::lround(hp * static_cast<float>(mhp.value))));
+    // The bar scales with the window and the text with it: never taller than the bar allows.
+    ImFont* font = ImGui::GetFont();
+    const float fs = std::min(ImGui::GetFontSize(), std::max(8.f, std::round(b1.y - b0.y)));
+    const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.f, num);
+    const ImVec2 tp(std::round(cx - ts.x * 0.5f), std::round(cy - ts.y * 0.5f));
+    dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, 0xCC), num);
+    dl->AddText(font, fs, tp, IM_COL32(0xF0, 0xF0, 0xF0, 0xFF), num);
+    s_bar.textW = std::max(s_bar.textW, ts.x);
+
+    if (dead) return;
+    const int pips = std::clamp(static_cast<int>(std::lround(snap->hp_pips * static_cast<float>(mhp.value) / 2.f)), -10, 10);
+    ImTextureID arrows = tex("ui_health_arrows.png");
+    if (pips == 0 || !arrows) return;
+
+    const float ah = fs;
+    const float aw = std::round(ah * 10.f / 16.f);
+    const int   n  = std::abs(pips);
+    const float D  = s_bar.textW + 2.f * aw;
+    const float G  = static_cast<float>(n + 1) * aw;
+    const float y0 = std::round(cy - ah * 0.5f);
+    if (pips > 0) {
+        const float S = std::min(cx + D * 0.5f, b1.x - G);
+        for (int k = 0; k < n; ++k)
+            dl->AddImage(arrows, ImVec2(S + k * aw, y0), ImVec2(S + (k + 1) * aw, y0 + ah),
+                         ImVec2(10.f / 32.f, 0.f), ImVec2(20.f / 32.f, 1.f));
+    } else {
+        const float S = std::max(cx - D * 0.5f, b0.x + G);
+        for (int k = 0; k < n; ++k)
+            dl->AddImage(arrows, ImVec2(S - (k + 1) * aw, y0), ImVec2(S - k * aw, y0 + ah),
+                         ImVec2(0.f, 0.f), ImVec2(10.f / 32.f, 1.f));
+    }
 }
