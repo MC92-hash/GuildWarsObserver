@@ -1859,13 +1859,31 @@ public:
     {
         m_mapId = mapId;
         m_firstDeclared.clear();
+        m_colourWords.clear();
         for (const auto& e : items)
         {
             uint32_t id = static_cast<uint32_t>(e.item_id);
             auto it = m_firstDeclared.find(id);
             if (it == m_firstDeclared.end() || e.time < it->second)
                 m_firstDeclared[id] = e.time;
+            if (e.extra_id == kRedFlagColourWord || e.extra_id == kBlueFlagColourWord)
+                m_colourWords[id].emplace_back(e.time, static_cast<uint16_t>(e.extra_id));
         }
+        for (auto& [id, words] : m_colourWords)
+            std::sort(words.begin(), words.end());
+    }
+
+    // The team colour the server gave this flag item, as the client's old packed colour word (the
+    // FLAG_ITEM packet's extra id): red 0xE038 (the identity), blue 0xE9A0. 0 when it never said.
+    uint16_t ColourWordAt(uint32_t itemId, float time) const
+    {
+        auto it = m_colourWords.find(itemId);
+        if (it == m_colourWords.end() || it->second.empty()) return 0;
+        constexpr float kTolerance = 1.0f;
+        uint16_t word = it->second.front().second;   // a snapshot stamped before the first packet
+        for (const auto& [t, w] : it->second)
+            if (t <= time + kTolerance) word = w;
+        return word;
     }
 
     bool IsFlagAt(uint32_t itemId, float time) const
@@ -1892,7 +1910,10 @@ public:
     }
 
 private:
+    static constexpr uint32_t kRedFlagColourWord  = 57400;   // 0xE038
+    static constexpr uint32_t kBlueFlagColourWord = 59808;   // 0xE9A0
     std::unordered_map<uint32_t, float> m_firstDeclared;
+    std::unordered_map<uint32_t, std::vector<std::pair<float, uint16_t>>> m_colourWords;
     int m_mapId = 0;
 };
 

@@ -754,7 +754,27 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
     // A RECORDED PLAYER'S OWN WEAPONS, composed the way the Wardrobe composes them, once the set in
     // hand has been. Everything else - a carried item, a set still composing, a player the recording
     // has no appearance for - keeps the stand-in models below.
-    if (DrawComposedHeldWeapons(agentId, rigSlotKey >= 0 ? rigSlotKey : agentId, mainItem.item,
+    // The GvG flag goes that way too, for its cloth: handed in as a bundle of the flag model, its team
+    // colour (the client's old packed word, from the item or else the server's FLAG_ITEM) in the dyes.
+    const Equipment::ItemDef* composedMain = mainItem.item;
+    Equipment::ItemDef flagItem;
+    if (mainItem.item && mainItem.modelFileId == kFlagModelFileId)
+    {
+        flagItem = *mainItem.item;
+        flagItem.modelFileId = kFlagModelFileId;
+        flagItem.itemType = kBundleItemType;
+        const bool ownWord = flagItem.dyes[0] || flagItem.dyes[1] || flagItem.dyes[2] || flagItem.dyes[3];
+        if (!ownWord)
+        {
+            const float time = (snapIdx >= 0 && snapIdx < static_cast<int>(ard.snapshots.size()))
+                                   ? ard.snapshots[snapIdx].time : m_debugTimeline;
+            const uint16_t word = m_flagItems.ColourWordAt(mainItem.item->itemId, time);
+            for (int i = 0; i < 4; i++)
+                flagItem.dyes[i] = static_cast<uint8_t>((word >> (4 * i)) & 0xFu);
+        }
+        composedMain = &flagItem;
+    }
+    if (DrawComposedHeldWeapons(agentId, rigSlotKey >= 0 ? rigSlotKey : agentId, composedMain,
                                 offItem.item, pose, agentCB, portrait))
     {
         shadersBound = false;   // that pass bound programs of its own
