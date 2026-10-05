@@ -9507,44 +9507,74 @@ PartyIcons LoadAllPartyIcons(ID3D11Device* dev)
     return icons;
 }
 
+void DrawGameNineSlice(ImDrawList* dl, ImTextureID tex, ImVec2 r0, ImVec2 r1,
+                       float artW, float artH, ImU32 col)
+{
+    if (!tex || r1.x <= r0.x || r1.y <= r0.y) return;
+    const float mx = std::min(artW / 3.f, (r1.x - r0.x) * 0.5f);
+    const float my = std::min(artH / 3.f, (r1.y - r0.y) * 0.5f);
+    const float xs[4] = { r0.x, r0.x + mx, r1.x - mx, r1.x };
+    const float ys[4] = { r0.y, r0.y + my, r1.y - my, r1.y };
+    const float us[4] = { 0.5f / artW, 1.f / 3.f, 2.f / 3.f, 1.f - 0.5f / artW };
+    const float vs[4] = { 0.5f / artH, 1.f / 3.f, 2.f / 3.f, 1.f - 0.5f / artH };
+    for (int j = 0; j < 3; j++)
+        for (int i = 0; i < 3; i++)
+            if (xs[i + 1] > xs[i] && ys[j + 1] > ys[j])
+                dl->AddImage(tex, ImVec2(xs[i], ys[j]), ImVec2(xs[i + 1], ys[j + 1]),
+                             ImVec2(us[i], vs[j]), ImVec2(us[i + 1], vs[j + 1]), col);
+}
+
+void DrawGameStatBarFill(ImDrawList* dl, ImTextureID tex, ImVec2 c0, ImVec2 c1, float frac, ImU32 col)
+{
+    if (!tex || c1.x <= c0.x || c1.y <= c0.y) return;
+    // P = roundf(x0 + (W + 1) * value / range): at 1.0 the white edge falls just past x1.
+    const float P = std::round(c0.x + (c1.x - c0.x + 1.f) * std::clamp(frac, 0.f, 1.f));
+    const float texL = P - 6.f, texR = P + 12.f;   // 16 texels over 18 px
+    dl->PushClipRect(c0, c1, true);
+    if (texL > c0.x)
+        dl->AddImage(tex, c0, ImVec2(texL, c1.y), ImVec2(0.5f / 16.f, 0.f), ImVec2(0.5f / 16.f, 1.f), col);
+    dl->AddImage(tex, ImVec2(texL, c0.y), ImVec2(texR, c1.y), ImVec2(0.f, 0.f), ImVec2(1.f, 1.f), col);
+    if (texR < c1.x)
+        dl->AddImage(tex, ImVec2(texR, c0.y), c1, ImVec2(15.5f / 16.f, 0.f), ImVec2(15.5f / 16.f, 1.f), col);
+    dl->PopClipRect();
+}
+
+// A party row as the game draws it (GmAgentStatus 0x519920 / UiCtlProgress stat skins, decoded
+// 2026-10-05): the game's own 16x16 fills; poison > bleeding > degen hex, otherwise the TEAM fill
+// (the game's 205435 baked through its team colour shifts - in the game a team-coloured bar ignores
+// conditions, the replay keeps them); a fill change cross-fades over 0.2 s; deep wound scales the
+// value by 0.8 under a grey cap (the game's regen chevrons are left out by choice); a dark
+// frame round the row, olive on hover, yellow on the followed agent (the game's target), gold both.
 void DrawPartyHealthBar(
     ImDrawList* dl, ImVec2 barTL, float barW, float barH,
     const AgentSnapshot* snap, uint8_t teamId, bool isDead,
     const char* name, const PartyIcons& icons,
     int followedAgentId, int agentId, bool fogHidden,
-    ImTextureID flagTex, uint32_t absMaxHp, bool hpEstimated)
+    ImTextureID flagTex, uint32_t absMaxHp, bool hpEstimated,
+    ID3D11Device* dev, float now)
 {
     ImVec2 barBR(barTL.x + barW, barTL.y + barH);
+    const bool isHovered  = ImGui::IsMouseHoveringRect(barTL, barBR);
+    const bool isFollowed = (followedAgentId == agentId);
 
-    // Border
-    bool isHovered = ImGui::IsMouseHoveringRect(barTL, barBR);
-    bool isFollowed = (followedAgentId == agentId);
-    ImU32 borderCol = IM_COL32(0x4E, 0x4D, 0x48, 0xFF);
-    if (isFollowed)
-        borderCol = IM_COL32(0xCB, 0xAA, 0x09, 0xFF);
-    else if (isHovered)
-        borderCol = IM_COL32(0x9A, 0x8A, 0x3E, 0xFF);
-
-    if (isFollowed)
-    {
-        dl->AddRectFilled(ImVec2(barTL.x - 2, barTL.y - 2), ImVec2(barBR.x + 2, barBR.y + 2),
-                          IM_COL32(0xD8, 0xD0, 0x73, 0x3C), 3.f);
-        dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 2.0f);
-        dl->AddRect(ImVec2(barTL.x - 1, barTL.y - 1), ImVec2(barBR.x + 1, barBR.y + 1),
-                    IM_COL32(0xD8, 0xD0, 0x73, 0x80), 0.f, 0, 1.0f);
-    }
-    else
-    {
-        dl->AddRect(barTL, barBR, borderCol, 0.f, 0, 1.0f);
-    }
-
-    // Inner area (1px inset from border)
-    ImVec2 innerTL(barTL.x + 1, barTL.y + 1);
-    ImVec2 innerBR(barBR.x - 1, barBR.y - 1);
+    // Client rect: 2 px inside the frame on every side.
+    ImVec2 innerTL(barTL.x + 2, barTL.y + 2);
+    ImVec2 innerBR(barBR.x - 2, barBR.y - 2);
     float innerW = innerBR.x - innerTL.x;
     float innerH = innerBR.y - innerTL.y;
 
-    if (!snap) return;
+    auto tex = [&](const char* file) -> ImTextureID {
+        return dev ? LoadGameUITexture(dev, (std::string("Progressbar\\") + file).c_str()) : nullptr;
+    };
+    auto drawFrames = [&]() {
+        DrawGameNineSlice(dl, tex("ui_progress_frame.png"), barTL, barBR, 16.f, 16.f);
+        const char* hl = isFollowed && isHovered ? "ui_progress_frame_hover_target.png"
+                       : isFollowed              ? "ui_progress_frame_target.png"
+                       : isHovered               ? "ui_progress_frame_hover.png" : nullptr;
+        if (hl) DrawGameNineSlice(dl, tex(hl), barTL, barBR, 16.f, 16.f);
+    };
+
+    if (!snap) { drawFrames(); return; }
 
     if (fogHidden)
     {
@@ -9554,60 +9584,62 @@ void DrawPartyHealthBar(
         ImVec2 tp(innerTL.x + (innerW - ts.x) * 0.5f, innerTL.y + (innerH - ts.y) * 0.5f);
         dl->AddText(ImVec2(tp.x + 1, tp.y + 1), IM_COL32(0, 0, 0, 0xCC), fogText);
         dl->AddText(tp, IM_COL32(0x80, 0x80, 0x80, 0xFF), fogText);
+        drawFrames();
         return;
     }
 
-    float healthPct = std::clamp(snap->health_pct, 0.f, 1.f);
-    bool hasDeepWound = snap->has_deep_wound && !isDead;
-
-    // Choose gradient by priority
-    const Gradient5* fillGrad = nullptr;
-    if (isDead)
-        fillGrad = Team::IsRed(teamId) ? &kDeadRed : &kDeadBlue;
-    else if (snap->has_degen_hex)
-        fillGrad = &kDegenHex;
-    else if (snap->has_poison)
-        fillGrad = &kPoison;
-    else if (snap->has_bleeding)
-        fillGrad = &kBleeding;
+    // Red team: the game's own red health fill (205431); other teams: their baked team fill.
+    char teamFill[40];
+    if (Team::IsRed(teamId))
+        snprintf(teamFill, sizeof(teamFill), "ui_progress_health.png");
     else
-        fillGrad = Team::IsRed(teamId) ? &kAliveRed : &kAliveBlue;
-
-    // Dead background fills full width
-    if (isDead)
+        snprintf(teamFill, sizeof(teamFill), "ui_progress_health_team%d.png",
+                 (teamId >= 1 && teamId <= 6) ? teamId : 7);
+    const char* fill = teamFill;
+    if (!isDead)
     {
-        DrawGradientRect(dl, innerTL, innerBR, *fillGrad);
+        if (snap->has_poison)          fill = "ui_progress_health_poisoned.png";
+        else if (snap->has_bleeding)   fill = "ui_progress_health_bleeding.png";
+        else if (snap->has_degen_hex)  fill = "ui_progress_health_hexed.png";
     }
-    else
+
+    // 0.2 s cross-fade from the previous fill (smoothstep), tracked per agent on the timeline.
+    struct FillState { std::string fill, prev; float changed = -1.f; };
+    static std::unordered_map<int, FillState> s_fills;
+    FillState& fs = s_fills[agentId];
+    if (fs.fill != fill)
     {
-        // Background: dark fill for empty portion
-        const Gradient5* deadGrad = Team::IsRed(teamId) ? &kDeadRed : &kDeadBlue;
-        DrawGradientRect(dl, innerTL, innerBR, *deadGrad);
-
-        // Health fill
-        float fillPct = hasDeepWound ? std::min(healthPct, 0.80f) : healthPct;
-        if (fillPct > 0.f)
-        {
-            float fillW = innerW * fillPct;
-            DrawGradientRect(dl, innerTL, ImVec2(innerTL.x + fillW, innerBR.y), *fillGrad);
-        }
-
-        // Deep wound overlay on rightmost 20%
-        if (hasDeepWound)
-        {
-            float dwStart = innerTL.x + innerW * 0.80f;
-            DrawGradientRect(dl, ImVec2(dwStart, innerTL.y), innerBR, kDeepWound);
-        }
+        fs.prev = fs.fill;
+        fs.fill = fill;
+        fs.changed = now;
     }
+    float prevAlpha = 0.f;
+    if (!fs.prev.empty() && now >= fs.changed && now - fs.changed < 0.2f)
+    {
+        const float x = (now - fs.changed) / 0.2f;
+        prevAlpha = 1.f - x * x * (3.f - 2.f * x);
+    }
+
+    const bool hasDeepWound = snap->has_deep_wound && !isDead;
+    const float hp = isDead ? 0.f : std::clamp(snap->health_pct, 0.f, 1.f);
+    const float frac = hasDeepWound ? hp * 0.8f : hp;
+    DrawGameStatBarFill(dl, tex(fill), innerTL, innerBR, frac);
+    if (prevAlpha > 0.f && !hasDeepWound)
+        DrawGameStatBarFill(dl, tex(fs.prev.c_str()), innerTL, innerBR, frac,
+                            IM_COL32(255, 255, 255, (int)(prevAlpha * 255.f)));
+    if (hasDeepWound)
+        DrawGameStatBarFill(dl, tex("ui_health_deep_wound.png"), innerTL, innerBR, 0.8f);
+
+    drawFrames();
 
     // Player name (text with shadow) + eye icon when followed
     if (name && name[0])
     {
         float textOffsetX = 4.f;
         ImVec2 textPos(innerTL.x + textOffsetX, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
-        ImU32 textCol = isDead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+        ImU32 textCol = isDead ? IM_COL32(0xA0, 0xA0, 0xA0, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
         if (isFollowed)
-            textCol = IM_COL32(0xF5, 0xE4, 0x5A, 0xFF);
+            textCol = IM_COL32(0xFF, 0xEB, 0x46, 0xFF);
         dl->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 0xCC), name);
         dl->AddText(textPos, textCol, name);
 

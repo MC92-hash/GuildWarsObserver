@@ -120,11 +120,21 @@ struct PartyIcons {
     ImTextureID hexed       = nullptr;
 };
 PartyIcons LoadAllPartyIcons(ID3D11Device* dev);
+// The game's UI nine-slice (Gw.exe 0x630e30 -> 0x647d00): margins = art size / 3 on screen and in
+// UV, edges and centre stretched, margins shrunk proportionally when the rect is too small.
+void DrawGameNineSlice(ImDrawList* dl, ImTextureID tex, ImVec2 r0, ImVec2 r1,
+                       float artW, float artH, ImU32 col = IM_COL32_WHITE);
+// The game's 16x16 stat-bar fill (UiCtlProgress, mesh 0x8871f0) in the client rect [c0, c1] at
+// fraction `frac`: the texture spans x P-6..P+12 round the value point P, column 0 fills the left,
+// column 15 the right, full height.
+void DrawGameStatBarFill(ImDrawList* dl, ImTextureID tex, ImVec2 c0, ImVec2 c1, float frac,
+                         ImU32 col = IM_COL32_WHITE);
 void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const AgentSnapshot* snap, uint8_t teamId, bool isDead,
                         const char* name, const PartyIcons& icons,
                         int followedAgentId, int agentId, bool fogHidden = false,
-                        ImTextureID flagTex = nullptr, uint32_t absMaxHp = 0, bool hpEstimated = false);
+                        ImTextureID flagTex = nullptr, uint32_t absMaxHp = 0, bool hpEstimated = false,
+                        ID3D11Device* dev = nullptr, float now = 0.f);
 void DrawMeterBar(ImDrawList* dl, ImVec2 healthTL, float healthW, float slotY,
                   float barH, int value, int maxValue, int totalValue,
                   bool leftSide, float maxBarW, ImU32 barColor);

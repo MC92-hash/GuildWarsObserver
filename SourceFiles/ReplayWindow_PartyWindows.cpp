@@ -344,7 +344,8 @@ void ReplayWindow::DrawPartyWindows()
                                snap, ard.teamId, isDead,
                                barLabel, icons,
                                m_followedAgentId, agentId, isFogHidden,
-                               carriedFlagTex, absMaxHp, hpEstimated);
+                               carriedFlagTex, absMaxHp, hpEstimated,
+                               dev, m_debugTimeline);
 
             if (m_showDamageMeter || m_showHealMeter)
             {
@@ -408,9 +409,17 @@ void ReplayWindow::DrawPartyWindows()
         bool hasNpcs = !npcIds.empty();
         float panelW = std::clamp(vpW * 0.18f, 220.f, 350.f);
 
+        // The game's dialog frame (UiCtlDlgProc 0x87d340, decoded 2026-10-05). The ImGui window IS
+        // the game's art rect: a 32 px title strip (134731) on top, the 128x128 frame (158484)
+        // below, the client area 17 px in from the sides, 42 from the top, 21 from the bottom.
+        constexpr float kFrameSide = 17.f, kFrameTop = 42.f, kFrameBottom = 21.f;
+        uint8_t panelTeam = 0;
+        if (auto pit = m_replayCtx.agents.find(playerIds.front()); pit != m_replayCtx.agents.end())
+            panelTeam = pit->second.teamId;
+
         float playersH = nPlayers * kBarHeight + (nPlayers - 1) * kBarSpacing;
         float alliesHeaderH = hasNpcs ? treeNodeH + kBarSpacing : 0.f;
-        float collapsedH = titleBarH + padY * 2 + playersH + alliesHeaderH + 4.f;
+        float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + 4.f;
 
         if (!m_partyWindowsPositioned)
         {
@@ -436,18 +445,72 @@ void ReplayWindow::DrawPartyWindows()
             }
         }
 
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, bgCol);
+        (void)bgCol;
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.f, 0.f, 0.f, 0.f));
         ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.06f, 0.06f, 0.08f, 0.90f));
         ImGui::PushStyleColor(ImGuiCol_TitleBgActive,  ImVec4(0.08f, 0.08f, 0.10f, 0.95f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.89f, 0.71f, 1.0f));
 
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, kBarSpacing));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kFrameSide, kFrameBottom));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
 
-        if (ImGui::Begin(title, show))
+        if (ImGui::Begin(title, show, ImGuiWindowFlags_NoTitleBar))
         {
             ImGui::PopStyleColor();
 
             m_panelLayout.TrackWindow(layoutKey);
+
+            // --- The game's frame, under everything the window draws next ---
+            {
+                const ImVec2 A0 = ImGui::GetWindowPos();
+                const ImVec2 A1(A0.x + ImGui::GetWindowSize().x, A0.y + ImGui::GetWindowSize().y);
+                ImDrawList* fdl = ImGui::GetWindowDrawList();
+                fdl->PushClipRect(A0, A1, false);
+
+                // Team body colour (PtFrameSetColor 0x565980), alpha 0xBE, under the frame art.
+                static const ImU32 kBody[8] = {
+                    0, IM_COL32(0, 0, 255, 0xBE), IM_COL32(255, 0, 0, 0xBE), IM_COL32(255, 255, 0, 0xBE),
+                    IM_COL32(0, 255, 255, 0xBE), IM_COL32(255, 0, 255, 0xBE), IM_COL32(0, 255, 0, 0xBE),
+                    IM_COL32(0x60, 0x60, 0x60, 0xBE) };
+                const ImU32 body = kBody[(panelTeam >= 1 && panelTeam <= 6) ? panelTeam : 7];
+                fdl->AddRectFilled(ImVec2(A0.x + 10.f, A0.y + 32.f), ImVec2(A1.x - 10.f, A1.y - 14.f), body);
+
+                DrawGameNineSlice(fdl, LoadGameUITexture(dev, "Window\\ui_window_frame_team.png"),
+                                  ImVec2(A0.x, A0.y + 32.f), A1, 128.f, 128.f);
+                DrawGameNineSlice(fdl, LoadGameUITexture(dev, "Window\\ui_window_titlebar.png"),
+                                  A0, ImVec2(A1.x, A0.y + 32.f), 128.f, 32.f);
+
+                // Title text: light grey, x 16 in from the window, in the 20 px band under the horns.
+                std::string titleText(title);
+                if (size_t cut = titleText.find("##"); cut != std::string::npos) titleText.resize(cut);
+                const float bandY = A0.y + 12.f;
+                fdl->PushClipRect(ImVec2(A0.x + 19.f, bandY), ImVec2(A1.x - 49.f, bandY + 20.f), true);
+                fdl->AddText(ImVec2(A0.x + 19.f, bandY + (20.f - ImGui::GetFontSize()) * 0.5f),
+                             IM_COL32(0xDC, 0xDC, 0xDC, 0xFF), titleText.c_str());
+                fdl->PopClipRect();
+
+                // Close button: the game's 16x16 X (cell 0 normal, 1 hover, 2 pressed).
+                const ImVec2 x0(A1.x - 3.f - 24.f, bandY + 2.f), x1(x0.x + 16.f, x0.y + 16.f);
+                ImGuiIO& io = ImGui::GetIO();
+                ImGuiContext* ctx = ImGui::GetCurrentContext();
+                const bool winHovered = ctx && ctx->HoveredWindow == ImGui::GetCurrentWindow();
+                const bool xHover = winHovered && io.MousePos.x >= x0.x && io.MousePos.x < x1.x &&
+                                    io.MousePos.y >= x0.y && io.MousePos.y < x1.y;
+                const int cell = xHover ? (io.MouseDown[0] ? 2 : 1) : 0;
+                if (ImTextureID btn = LoadGameUITexture(dev, "Window\\ui_window_buttons.png"))
+                    fdl->AddImage(btn, x0, x1, ImVec2(cell * 16.f / 128.f, 0.f), ImVec2((cell + 1) * 16.f / 128.f, 1.f));
+                if (xHover)
+                {
+                    g_CurrentCursor = CursorMode::Clickable;
+                    if (ctx->MovingWindow == ImGui::GetCurrentWindow())
+                        ctx->MovingWindow = nullptr;
+                    if (io.MouseReleased[0])
+                        *show = false;
+                }
+                fdl->PopClipRect();
+            }
+            ImGui::SetCursorPosY(kFrameTop);
 
             // Clamp window within viewport
             ImVec2 wPos = ImGui::GetWindowPos();
@@ -466,11 +529,12 @@ void ReplayWindow::DrawPartyWindows()
             {
                 ImTextureID swordTex = LoadFlagIcon(dev, "damagedone.png");
                 ImTextureID heartTex = LoadFlagIcon(dev, "healingreceived.png");
-                const float iconSz = titleBarH - 6.f;
+                // In the game's title band (y 12..32), left of its close button (x W-27).
+                const float iconSz = 16.f;
                 const float iconPad = 3.f;
-                float iconY = wPos.y + (titleBarH - iconSz) * 0.5f;
+                float iconY = wPos.y + 12.f + 2.f;
 
-                float closeBtnW = titleBarH;
+                float closeBtnW = 27.f;
                 float heartX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
                 float swordX = heartX - iconPad - iconSz;
 
@@ -545,7 +609,7 @@ void ReplayWindow::DrawPartyWindows()
                 }
                 ImDrawList* fgDl = ImGui::GetForegroundDrawList();
                 float sumAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
-                DrawMeterSumText(fgDl, sumAnchorX, wPos.y, titleBarH,
+                DrawMeterSumText(fgDl, sumAnchorX, wPos.y + 12.f, 20.f,
                                  pDmg, pHeal,
                                  m_showDamageMeter, m_showHealMeter, leftSide);
             }
@@ -614,7 +678,7 @@ void ReplayWindow::DrawPartyWindows()
             m_panelLayout.TrackWindow(layoutKey);
         }
         ImGui::End();
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(3);
     };
 
