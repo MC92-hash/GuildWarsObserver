@@ -713,6 +713,26 @@ void ReplayWindow::DrawInterfacePreferences()
             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
                                "(the game always has it; default off while the level is open)");
 
+            // THE CHARACTER LOOK (2026-10-04): the owner's choice after comparing each term on the
+            // same frame - see GuiGlobalConstants. Characters only, except the saturation.
+            const auto look_checkbox = [&](const char* label, bool& value, const char* note) {
+                if (ImGui::Checkbox(label, &value))
+                {
+                    GuiGlobalConstants::SaveSettings();
+                    changed = true;
+                }
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f), "%s", note);
+            };
+            look_checkbox("Studio light on characters", GuiGlobalConstants::character_studio_light,
+                          "(the Wardrobe's light, always from the camera side)");
+            look_checkbox("Shadows on characters", GuiGlobalConstants::character_shadows,
+                          "(the map's shadows darken players under props)");
+            look_checkbox("Haze on characters", GuiGlobalConstants::character_haze,
+                          "(far players fade into the map's haze)");
+            look_checkbox("Map saturation", GuiGlobalConstants::map_saturation_enabled,
+                          "(the map's own colour level, whole frame; needs bloom on)");
+
             ImGui::Dummy(ImVec2(0, 4.f));
 
             // THE GAIN IS LIVE IN BOTH MODES, and it holds ONE VALUE PER MODE. It used to be

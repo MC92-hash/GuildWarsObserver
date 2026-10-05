@@ -288,6 +288,20 @@ public:
 	}
 	static float DefaultMapLightGain() { return DefaultMapLightGainForMode(map_light_mode); }
 
+	// CHARACTER LOOK IN THE REPLAY (persisted). Measured 2026-10-04 at the Isle of Meditation bridge:
+	// a map's sun is fixed, so a player seen from the side away from it gets the ambient alone
+	// (camera-side N.L 0, light 0.68 against the Wardrobe's ~0.90) and reads far darker than in the
+	// Wardrobe or the hero panel. The owner compared each term on and off and chose all four:
+	//   studio light   - the Wardrobe's levels (0.5 ambient, 0.5 sun) with the sun over the
+	//                    CAMERA's shoulder, so the side in view is always the lit one
+	//   shadows        - the shadow map darkening characters (x0.65 at full shadow), off
+	//   haze           - the distance haze on characters, off
+	//   map saturation - the map's whole-frame desaturation (0.557 there), off
+	inline static bool character_studio_light = true;
+	inline static bool character_shadows      = false;
+	inline static bool character_haze         = false;
+	inline static bool map_saturation_enabled = false;
+
 	// THE GAIN ACTUALLY IN FORCE: the current mode's own value, clamped. It is live in both
 	// modes now - where Classic once forced 1.0 - and there is exactly ONE multiplication behind
 	// it, the existing pre-clamp one in the vertex, terrain and new-model programs. In Classic
@@ -666,6 +680,10 @@ public:
 		file << "\n[Rendering]\n";
 		file << "use_3d_agent_models=" << (use_3d_agent_models ? 1 : 0) << "\n";
 		file << "map_bloom_enabled=" << (map_bloom_enabled ? 1 : 0) << "\n";
+		file << "character_studio_light=" << (character_studio_light ? 1 : 0) << "\n";
+		file << "character_shadows=" << (character_shadows ? 1 : 0) << "\n";
+		file << "character_haze=" << (character_haze ? 1 : 0) << "\n";
+		file << "map_saturation_enabled=" << (map_saturation_enabled ? 1 : 0) << "\n";
 		file << "map_light_mode=" << map_light_mode << "\n";
 		// ONE KEY PER MODE. The old single `map_light_gain` key is still READ below, as the
 		// Client mode's value, so an existing settings file keeps the gain it was tuned to; it
@@ -841,6 +859,10 @@ public:
 			else if (key == "replay_browser") is_replay_browser_open = (value != 0);
 			else if (key == "use_3d_agent_models") use_3d_agent_models = (value != 0);
 			else if (key == "map_bloom_enabled") map_bloom_enabled = (value != 0);
+			else if (key == "character_studio_light") character_studio_light = (value != 0);
+			else if (key == "character_shadows") character_shadows = (value != 0);
+			else if (key == "character_haze") character_haze = (value != 0);
+			else if (key == "map_saturation_enabled") map_saturation_enabled = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -
 			// Classic - while its saved map_light_gain is still loaded and kept as the Client
 			// mode's own value, Classic taking its calibrated default on that first run.

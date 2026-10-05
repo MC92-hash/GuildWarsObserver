@@ -290,7 +290,9 @@ void ReplayWindow::DrawSceneBloom()
 {
     if (!GuiGlobalConstants::map_bloom_enabled) return;
     if (!m_deviceResources) return;
-    if (!(m_mapBloomAmount > 0.0f) && m_mapSceneSaturation >= 0.999f) return;
+    // The map's whole-frame saturation is a preference of its own (Preferences, under Map light).
+    const float saturation = GuiGlobalConstants::map_saturation_enabled ? m_mapSceneSaturation : 1.0f;
+    if (!(m_mapBloomAmount > 0.0f) && saturation >= 0.999f) return;
 
     InitBloomShaders();
     if (!m_bloomVS || !m_bloomBrightPS || !m_bloomBlurPS || !m_bloomCompositePS || !m_bloomCB)
@@ -438,7 +440,7 @@ void ReplayWindow::DrawSceneBloom()
     {
         ctx->OMSetRenderTargets(1, &backRTV, nullptr);
         ctx->PSSetShader(m_bloomCompositePS.Get(), nullptr, 0);
-        setCB(fullTexelX, fullTexelY, 0.0f, 0.0f, m_mapBloomAmount, m_mapSceneSaturation);
+        setCB(fullTexelX, fullTexelY, 0.0f, 0.0f, m_mapBloomAmount, saturation);
         ID3D11ShaderResourceView* srvs[2] = {m_bloomSceneSRV.Get(), m_bloomSRV[src].Get()};
         ctx->PSSetShaderResources(0, 2, srvs);
         ctx->Draw(3, 0);

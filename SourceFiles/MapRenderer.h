@@ -392,6 +392,8 @@ public:
 
 
     const DirectionalLight GetDirectionalLight() { return m_directionalLight; }
+    // The frame's clock as last uploaded, so a pass that re-uploads the per-frame buffer keeps it.
+    float GetLastTimeElapsed() const { return m_last_time_elapsed; }
 
     // THE ENVIRONMENT LIGHT GAIN FOR THE MAP. A plain multiplier on the light the terrain and the
     // world's own models receive, 1.0 by default, owned by the user. It is deliberately NOT part
