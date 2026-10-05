@@ -516,7 +516,9 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
         bool spent = false;
         const SkillUseEvent* last = nullptr;
         for (const auto& ev : ard.skillUseHistory) {
-            if (ev.wasCancelled || ev.endTime > t || resolve(ev.skillId) != sid) continue;
+            // A cast the player let go of starts no recharge; an interrupted one (also recorded as
+            // stopped) recharges in full, with any interrupt disable laid on top.
+            if ((ev.wasCancelled && !ev.wasInterrupted) || ev.endTime > t || resolve(ev.skillId) != sid) continue;
             last = &ev;
         }
         if (last) {

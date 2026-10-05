@@ -5797,7 +5797,9 @@ void ReplayWindow::Tick()
                 for (int i = 0; i < (int)ard.skillUseHistory.size(); i++)
                 {
                     auto& ev = ard.skillUseHistory[i];
-                    if (ev.wasCancelled) continue;
+                    // An interrupted cast is recorded as stopped too, but unlike a cast the
+                    // player let go of it still costs the skill its full recharge.
+                    if (ev.wasCancelled && !ev.wasInterrupted) continue;
                     skillEventIndices[ev.skillId].push_back(i);
                 }
 
