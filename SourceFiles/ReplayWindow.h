@@ -466,6 +466,7 @@ private:
     mutable std::unordered_map<int, std::vector<std::pair<float, int>>> m_moraleTimeline;
     mutable std::unordered_map<int, std::vector<float>> m_moraleDeaths; // by agent, signet backfires removed
     mutable std::unordered_map<int, std::vector<float>> m_moraleBoosts; // by team id
+    mutable std::vector<std::pair<float, int>> m_moraleTeamSum[2];     // players' summed morale, [0] = team 1
     mutable bool m_moraleTimelineBuilt = false;
     void BuildMoraleTimelines() const;
     int  MoralePercentAtTime(const AgentReplayData& ard, float t) const;
@@ -913,6 +914,7 @@ public:
 
     // --- Morale Panel ---
     bool m_showMoralePanel = false;
+    bool m_moraleDetailsExpanded = false;
     void DrawMoralePanel();
     int  ComputeAgentMorale(const AgentReplayData& ard, float curTime, int* outDeathCount = nullptr, int* outBoostCount = nullptr) const;
 

@@ -174,6 +174,34 @@ void ReplayWindow::BuildMoraleTimelines() const
         }
     }
 
+    // Each team's party morale is the plain sum of its players' (pets left out), the quantity the
+    // game's Score Chart plots. Folded from the per-player steps so the two can never disagree.
+    for (int team = 1; team <= 2; ++team) {
+        std::vector<std::pair<float, int>> deltas;
+        for (const auto& [aid, steps] : m_moraleTimeline) {
+            auto it = m_replayCtx.agents.find(aid);
+            if (it == m_replayCtx.agents.end()) continue;
+            if (it->second.type != AgentType::Player || it->second.teamId != team) continue;
+            int prev = 0;
+            for (const auto& [t, m] : steps) {
+                if (m != prev) deltas.push_back({ t, m - prev });
+                prev = m;
+            }
+        }
+        std::sort(deltas.begin(), deltas.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        auto& sum = m_moraleTeamSum[team - 1];
+        sum.clear();
+        sum.push_back({ 0.f, 0 });
+        int total = 0;
+        for (const auto& [t, d] : deltas) {
+            total += d;
+            if (sum.back().first == t) sum.back().second = total;
+            else sum.push_back({ t, total });
+        }
+    }
+
     m_moraleTimelineBuilt = true;
 }
 
@@ -370,166 +398,320 @@ void ReplayWindow::DrawMoralePanel()
         ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
     }
 
-    float rowStartY = ImGui::GetCursorScreenPos().y;
+    // Party morale chart, laid out like the game's Score Chart but on the morale % scale: each
+    // team's line is its average morale, from +10% at the top to the -60% floor, with dashed lines
+    // at each death's worth (-15/-30/-45). Lines stop at the playhead. Click or drag to seek.
+    {
+        if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
 
-    auto drawPlayerRow = [&](const PlayerMorale& pm, float x, float y) {
-        float cx = x;
+        const float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+        const float tNow = std::clamp(curTime, 0.f, maxT);
+        constexpr float vTop = 10.f;
+        constexpr float vBot = -60.f;
+        const float blueN = static_cast<float>(std::max<size_t>(1, blueTeam.size()));
+        const float redN  = static_cast<float>(std::max<size_t>(1, redTeam.size()));
 
-        // Primary profession icon
-        if (dev && pm.primaryProf >= 1) {
-            ImTextureID tex = LoadProfIcon(dev, pm.primaryProf);
-            if (tex) {
-                float iy = y + (kRowH - kIconSz) * 0.5f;
-                dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+        ImFont* font = ImGui::GetFont();
+        const float smallSz = fontSize * 0.85f;
+        constexpr float kLabelW = 38.f;
+        constexpr float kChartH = 140.f;
+        const float axisH = smallSz + 7.f;
+        constexpr ImU32 kGold = IM_COL32(0xFF, 0xD7, 0x64, 0xFF);
+
+        auto sumAt = [](const std::vector<std::pair<float, int>>& s, float t) {
+            auto it = std::upper_bound(s.begin(), s.end(), t,
+                [](float v, const std::pair<float, int>& e) { return v < e.first; });
+            return it == s.begin() ? 0 : (--it)->second;
+        };
+        const auto& blueSum = m_moraleTeamSum[0];
+        const auto& redSum  = m_moraleTeamSum[1];
+
+        ImGui::Dummy(ImVec2(0.f, 2.f));
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 plotMin(origin.x + kLabelW, origin.y);
+        const ImVec2 plotMax(origin.x + contentW, origin.y + kChartH);
+        const float  plotW = plotMax.x - plotMin.x;
+        auto X = [&](float t) { return plotMin.x + std::clamp(t / maxT, 0.f, 1.f) * plotW; };
+        auto Y = [&](float v) { return plotMin.y + (vTop - v) / (vTop - vBot) * kChartH; };
+
+        ImGui::SetCursorScreenPos(plotMin);
+        ImGui::InvisibleButton("##morale_chart", ImVec2(plotW, kChartH + axisH));
+        const bool hovered = ImGui::IsItemHovered();
+        const float mouseT = std::clamp((ImGui::GetIO().MousePos.x - plotMin.x) / plotW, 0.f, 1.f) * maxT;
+        if (ImGui::IsItemActive()) m_debugTimeline = mouseT;
+
+        dl->AddRectFilled(plotMin, plotMax, IM_COL32(0, 0, 0, 110), 3.f);
+
+        for (float g : { -15.f, -30.f, -45.f }) {
+            const float gy = std::floor(Y(g)) + 0.5f;
+            for (float x = plotMin.x; x < plotMax.x; x += 6.f)
+                dl->AddLine(ImVec2(x, gy), ImVec2(std::min(x + 3.f, plotMax.x), gy),
+                            IM_COL32(255, 255, 255, 45), 1.f);
+        }
+        const float y0 = std::floor(Y(0.f)) + 0.5f;
+        dl->AddLine(ImVec2(plotMin.x, y0), ImVec2(plotMax.x, y0), IM_COL32(0xFF, 0xD7, 0x64, 0x40), 1.f);
+
+        // Y labels at every gridline.
+        auto yLabel = [&](float v, float y) {
+            char buf[16];
+            if (v > 0.f) snprintf(buf, sizeof(buf), "+%d%%", static_cast<int>(v));
+            else         snprintf(buf, sizeof(buf), "%d%%", static_cast<int>(v));
+            const ImVec2 sz = font->CalcTextSizeA(smallSz, FLT_MAX, 0.f, buf);
+            const float ty = std::clamp(y - sz.y * 0.5f, plotMin.y, plotMax.y - sz.y);
+            dl->AddText(font, smallSz, ImVec2(plotMin.x - 5.f - sz.x, ty), kMuted, buf);
+        };
+        yLabel(vTop, plotMin.y);
+        for (float g : { 0.f, -15.f, -30.f, -45.f }) yLabel(g, Y(g));
+        yLabel(vBot, plotMax.y);
+
+        // Time axis: the finest of the game's half-minute ticks whose labels still fit.
+        {
+            const float labelPx = font->CalcTextSizeA(smallSz, FLT_MAX, 0.f, "00:00").x + 10.f;
+            static constexpr float kSteps[] = { 30.f, 60.f, 120.f, 300.f, 600.f, 900.f, 1800.f };
+            float step = kSteps[std::size(kSteps) - 1];
+            for (float s : kSteps)
+                if (s / maxT * plotW >= labelPx) { step = s; break; }
+
+            dl->AddLine(ImVec2(plotMin.x, plotMax.y), ImVec2(plotMax.x, plotMax.y),
+                        IM_COL32(255, 255, 255, 70), 1.f);
+            for (float t = 0.f; t <= maxT + 0.01f; t += step) {
+                const float x = std::floor(X(t)) + 0.5f;
+                dl->AddLine(ImVec2(x, plotMax.y), ImVec2(x, plotMax.y + 3.f), IM_COL32(255, 255, 255, 90), 1.f);
+                char buf[16];
+                FormatMMSS(buf, sizeof(buf), t);
+                const float w = font->CalcTextSizeA(smallSz, FLT_MAX, 0.f, buf).x;
+                const float lx = std::clamp(x - w * 0.5f, plotMin.x, plotMax.x - w);
+                dl->AddText(font, smallSz, ImVec2(lx, plotMax.y + 4.f), kMuted, buf);
             }
         }
-        cx += kIconSz + 1.f;
 
-        // Secondary profession icon
-        if (dev && pm.secondaryProf >= 1) {
-            ImTextureID tex = LoadProfIcon(dev, pm.secondaryProf);
-            if (tex) {
-                float iy = y + (kRowH - kIconSz) * 0.5f;
-                dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+        // Team lines, stepped, up to the playhead only.
+        auto drawSeries = [&](const std::vector<std::pair<float, int>>& s, float n, ImU32 col, float thickness) {
+            std::vector<ImVec2> pts;
+            float v = 0.f;
+            pts.push_back(ImVec2(X(0.f), Y(0.f)));
+            for (const auto& [t, m] : s) {
+                if (t > tNow) break;
+                const float avg = static_cast<float>(m) / n;
+                if (t <= 0.f) { v = avg; pts.back().y = Y(avg); continue; }
+                pts.push_back(ImVec2(X(t), Y(v)));
+                pts.push_back(ImVec2(X(t), Y(avg)));
+                v = avg;
             }
+            pts.push_back(ImVec2(X(tNow), Y(v)));
+            dl->AddPolyline(pts.data(), static_cast<int>(pts.size()), col, ImDrawFlags_None, thickness);
+        };
+        dl->PushClipRect(ImVec2(plotMin.x, plotMin.y - 2.f), ImVec2(plotMax.x + 2.f, plotMax.y + 2.f), true);
+        drawSeries(redSum,  redN,  kRedTeam,  2.f);
+        drawSeries(blueSum, blueN, kBlueTeam, 2.f);
+        dl->PopClipRect();
+
+        const float px = std::floor(X(tNow)) + 0.5f;
+        dl->AddLine(ImVec2(px, plotMin.y), ImVec2(px, plotMax.y), (kGold & 0x00FFFFFF) | 0xA0000000, 1.f);
+
+        if (hovered) {
+            const float hx = std::floor(X(mouseT)) + 0.5f;
+            dl->AddLine(ImVec2(hx, plotMin.y), ImVec2(hx, plotMax.y), IM_COL32(255, 255, 255, 60), 1.f);
+            char tb[16];
+            FormatMMSS(tb, sizeof(tb), mouseT);
+            // Past the playhead the chart has not happened yet; only the time is shown.
+            if (mouseT <= tNow)
+                ImGui::SetTooltip("%s\nBlue %.1f%%\nRed  %.1f%%", tb,
+                                  sumAt(blueSum, mouseT) / blueN, sumAt(redSum, mouseT) / redN);
+            else
+                ImGui::SetTooltip("%s", tb);
         }
-        cx += kIconSz + 3.f;
 
-        // Player name in standard white/grey
-        ImU32 nameCol = pm.dead ? kTextDead : kText;
-        dl->AddText(ImVec2(cx, y + (kRowH - fontSize) * 0.5f), nameCol, pm.name.c_str());
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::Dummy(ImVec2(contentW, kChartH + axisH));
+    }
 
-        // Right side: morale value + dots or star
-        float rightEdge = x + colW;
-        char valBuf[16];
+    // Per-player table, folded away behind this row until asked for.
+    // Header row: the whole row toggles the per-player table, the arrow shows which way it is.
+    {
+        ImGui::Dummy(ImVec2(0.f, 2.f));
+        const ImVec2 hp = ImGui::GetCursorScreenPos();
+        const float rowH = fontSize + 4.f;
+        if (ImGui::InvisibleButton("##morale_details_toggle", ImVec2(contentW, rowH)))
+            m_moraleDetailsExpanded = !m_moraleDetailsExpanded;
+        const bool hdrHover = ImGui::IsItemHovered();
+        if (hdrHover)
+            dl->AddRectFilled(hp, ImVec2(hp.x + contentW, hp.y + rowH), IM_COL32(255, 255, 255, 12), 3.f);
 
-        if (pm.morale > 0) {
-            snprintf(valBuf, sizeof(valBuf), "+%d%%", pm.morale);
-            ImVec2 valSz = ImGui::CalcTextSize(valBuf);
-            int stars = std::min(4, pm.boostCount);
-            ImVec2 starSz = ImGui::CalcTextSize("\xe2\x98\x85");
-            float starSpacing = starSz.x + 1.f;
-            float starsWidth = stars > 0 ? (stars * starSpacing) : 0.f;
-            float totalW = starsWidth + 2.f + valSz.x + 2.f;
-            float vx = rightEdge - totalW;
-            float ty = y + (kRowH - fontSize) * 0.5f;
-            for (int s = 0; s < stars; ++s)
-                dl->AddText(ImVec2(vx + s * starSpacing, ty), kGreen, "\xe2\x98\x85");
-            dl->AddText(ImVec2(rightEdge - valSz.x - 2.f, ty), kGreen, valBuf);
-        }
-        else if (pm.morale == 0) {
-            ImVec2 zSz = ImGui::CalcTextSize("0%");
-            dl->AddText(ImVec2(rightEdge - zSz.x - 2.f, y + (kRowH - fontSize) * 0.5f), kMuted, "0%");
-        }
-        else {
-            snprintf(valBuf, sizeof(valBuf), "%d%%", pm.morale);
-            ImU32 valCol = moraleColor(pm.morale);
-            ImVec2 valSz = ImGui::CalcTextSize(valBuf);
+        const ImU32 arrowCol = hdrHover ? kText : kMuted;
+        const float r = fontSize * 0.28f;
+        const ImVec2 c(hp.x + 2.f + fontSize * 0.4f, hp.y + rowH * 0.5f);
+        if (m_moraleDetailsExpanded)
+            dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f),
+                                  ImVec2(c.x, c.y + r * 0.8f), arrowCol);
+        else
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.6f, c.y - r), ImVec2(c.x + r * 0.8f, c.y),
+                                  ImVec2(c.x - r * 0.6f, c.y + r), arrowCol);
+        dl->AddText(ImVec2(hp.x + fontSize + 2.f, hp.y + 2.f), kText, "Player Morale");
+    }
 
-            int dots = std::min(4, pm.deathCount);
-            float dotSpacing = 10.f;
-            float dotsWidth = dots > 0 ? (dots * dotSpacing) : 0.f;
+    if (m_moraleDetailsExpanded) {
+        float rowStartY = ImGui::GetCursorScreenPos().y;
 
-            float totalW = valSz.x + 4.f + dotsWidth + 2.f;
-            float vx = rightEdge - totalW;
+        auto drawPlayerRow = [&](const PlayerMorale& pm, float x, float y) {
+            float cx = x;
 
-            dl->AddText(ImVec2(vx, y + (kRowH - fontSize) * 0.5f), valCol, valBuf);
-            vx += valSz.x + 4.f;
-
-            for (int d = 0; d < dots; ++d) {
-                dl->AddCircleFilled(
-                    ImVec2(vx + d * dotSpacing + 3.f, y + kRowH * 0.5f),
-                    3.f, valCol);
+            // Primary profession icon
+            if (dev && pm.primaryProf >= 1) {
+                ImTextureID tex = LoadProfIcon(dev, pm.primaryProf);
+                if (tex) {
+                    float iy = y + (kRowH - kIconSz) * 0.5f;
+                    dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+                }
             }
-        }
-    };
+            cx += kIconSz + 1.f;
 
-    for (size_t i = 0; i < maxRows; ++i) {
-        float rowY = rowStartY + i * kRowH;
-        if (i < blueTeam.size())
-            drawPlayerRow(blueTeam[i], startX, rowY);
-        if (i < redTeam.size())
-            drawPlayerRow(redTeam[i], startX + colW + 1.f, rowY);
-    }
+            // Secondary profession icon
+            if (dev && pm.secondaryProf >= 1) {
+                ImTextureID tex = LoadProfIcon(dev, pm.secondaryProf);
+                if (tex) {
+                    float iy = y + (kRowH - kIconSz) * 0.5f;
+                    dl->AddImage(tex, ImVec2(cx, iy), ImVec2(cx + kIconSz, iy + kIconSz));
+                }
+            }
+            cx += kIconSz + 3.f;
 
-    float divX = startX + colW;
-    float divTop = rowStartY;
-    float divBot = rowStartY + maxRows * kRowH;
-    dl->AddLine(ImVec2(divX, divTop), ImVec2(divX, divBot),
-                IM_COL32(0xFF, 0xD7, 0x64, 0x30), 1.f);
+            // Player name in standard white/grey
+            ImU32 nameCol = pm.dead ? kTextDead : kText;
+            dl->AddText(ImVec2(cx, y + (kRowH - fontSize) * 0.5f), nameCol, pm.name.c_str());
 
-    ImGui::Dummy(ImVec2(0.f, maxRows * kRowH + 4.f));
+            // Right side: morale value + dots or star
+            float rightEdge = x + colW;
+            char valBuf[16];
 
-    // Footer divider
-    {
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + contentW, p.y),
-                    IM_COL32(0xFF, 0xD7, 0x64, 0x20), 1.f);
-        ImGui::Dummy(ImVec2(0.f, 4.f));
-    }
+            if (pm.morale > 0) {
+                snprintf(valBuf, sizeof(valBuf), "+%d%%", pm.morale);
+                ImVec2 valSz = ImGui::CalcTextSize(valBuf);
+                int stars = std::min(4, pm.boostCount);
+                ImVec2 starSz = ImGui::CalcTextSize("\xe2\x98\x85");
+                float starSpacing = starSz.x + 1.f;
+                float starsWidth = stars > 0 ? (stars * starSpacing) : 0.f;
+                float totalW = starsWidth + 2.f + valSz.x + 2.f;
+                float vx = rightEdge - totalW;
+                float ty = y + (kRowH - fontSize) * 0.5f;
+                for (int s = 0; s < stars; ++s)
+                    dl->AddText(ImVec2(vx + s * starSpacing, ty), kGreen, "\xe2\x98\x85");
+                dl->AddText(ImVec2(rightEdge - valSz.x - 2.f, ty), kGreen, valBuf);
+            }
+            else if (pm.morale == 0) {
+                ImVec2 zSz = ImGui::CalcTextSize("0%");
+                dl->AddText(ImVec2(rightEdge - zSz.x - 2.f, y + (kRowH - fontSize) * 0.5f), kMuted, "0%");
+            }
+            else {
+                snprintf(valBuf, sizeof(valBuf), "%d%%", pm.morale);
+                ImU32 valCol = moraleColor(pm.morale);
+                ImVec2 valSz = ImGui::CalcTextSize(valBuf);
 
-    auto computeAvg = [](const std::vector<PlayerMorale>& team) -> float {
-        if (team.empty()) return 0.f;
-        float sum = 0.f;
-        for (auto& pm : team) sum += static_cast<float>(pm.morale);
-        return sum / static_cast<float>(team.size());
-    };
+                int dots = std::min(4, pm.deathCount);
+                float dotSpacing = 10.f;
+                float dotsWidth = dots > 0 ? (dots * dotSpacing) : 0.f;
 
-    float blueAvg = computeAvg(blueTeam);
-    float redAvg  = computeAvg(redTeam);
+                float totalW = valSz.x + 4.f + dotsWidth + 2.f;
+                float vx = rightEdge - totalW;
 
-    // Footer: team averages
-    {
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        char buf[32];
+                dl->AddText(ImVec2(vx, y + (kRowH - fontSize) * 0.5f), valCol, valBuf);
+                vx += valSz.x + 4.f;
 
-        snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
-        dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(blueAvg), buf);
+                for (int d = 0; d < dots; ++d) {
+                    dl->AddCircleFilled(
+                        ImVec2(vx + d * dotSpacing + 3.f, y + kRowH * 0.5f),
+                        3.f, valCol);
+                }
+            }
+        };
 
-        snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
-        dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(redAvg), buf);
-
-        ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
-    }
-
-    // Bottom bar
-    {
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        float barW = contentW;
-        float barH = 8.f;
-        float halfW = barW * 0.5f;
-
-        dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + barW, p.y + barH),
-                          IM_COL32(255, 255, 255, 15), 3.f);
-
-        float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
-        if (blueLen > 1.f) {
-            dl->AddRectFilled(
-                ImVec2(p.x + halfW - blueLen, p.y),
-                ImVec2(p.x + halfW, p.y + barH),
-                IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
-        }
-
-        float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
-        if (redLen > 1.f) {
-            dl->AddRectFilled(
-                ImVec2(p.x + halfW, p.y),
-                ImVec2(p.x + halfW + redLen, p.y + barH),
-                IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
+        for (size_t i = 0; i < maxRows; ++i) {
+            float rowY = rowStartY + i * kRowH;
+            if (i < blueTeam.size())
+                drawPlayerRow(blueTeam[i], startX, rowY);
+            if (i < redTeam.size())
+                drawPlayerRow(redTeam[i], startX + colW + 1.f, rowY);
         }
 
-        dl->AddLine(ImVec2(p.x + halfW, p.y), ImVec2(p.x + halfW, p.y + barH),
-                    IM_COL32(0xFF, 0xD7, 0x64, 0x60), 1.f);
+        float divX = startX + colW;
+        float divTop = rowStartY;
+        float divBot = rowStartY + maxRows * kRowH;
+        dl->AddLine(ImVec2(divX, divTop), ImVec2(divX, divBot),
+                    IM_COL32(0xFF, 0xD7, 0x64, 0x30), 1.f);
 
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%.0f%%", blueAvg);
-        dl->AddText(ImVec2(p.x + 2.f, p.y + barH + 2.f), avgColor(blueAvg), buf);
+        ImGui::Dummy(ImVec2(0.f, maxRows * kRowH + 4.f));
 
-        snprintf(buf, sizeof(buf), "%.0f%%", redAvg);
-        ImVec2 rSz = ImGui::CalcTextSize(buf);
-        dl->AddText(ImVec2(p.x + barW - rSz.x - 2.f, p.y + barH + 2.f), avgColor(redAvg), buf);
+        // Footer divider
+        {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            dl->AddLine(ImVec2(p.x, p.y), ImVec2(p.x + contentW, p.y),
+                        IM_COL32(0xFF, 0xD7, 0x64, 0x20), 1.f);
+            ImGui::Dummy(ImVec2(0.f, 4.f));
+        }
 
-        ImGui::Dummy(ImVec2(0.f, barH + fontSize + 4.f));
+        auto computeAvg = [](const std::vector<PlayerMorale>& team) -> float {
+            if (team.empty()) return 0.f;
+            float sum = 0.f;
+            for (auto& pm : team) sum += static_cast<float>(pm.morale);
+            return sum / static_cast<float>(team.size());
+        };
+
+        float blueAvg = computeAvg(blueTeam);
+        float redAvg  = computeAvg(redTeam);
+
+        // Footer: team averages
+        {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            char buf[32];
+
+            snprintf(buf, sizeof(buf), "Avg  %.0f%%", blueAvg);
+            dl->AddText(ImVec2(p.x + 2.f, p.y), avgColor(blueAvg), buf);
+
+            snprintf(buf, sizeof(buf), "Avg  %.0f%%", redAvg);
+            dl->AddText(ImVec2(p.x + colW + 1.f + 2.f, p.y), avgColor(redAvg), buf);
+
+            ImGui::Dummy(ImVec2(0.f, fontSize + 4.f));
+        }
+
+        // Bottom bar
+        {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            float barW = contentW;
+            float barH = 8.f;
+            float halfW = barW * 0.5f;
+
+            dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + barW, p.y + barH),
+                              IM_COL32(255, 255, 255, 15), 3.f);
+
+            float blueLen = std::min(1.f, std::abs(blueAvg) / 60.f) * halfW;
+            if (blueLen > 1.f) {
+                dl->AddRectFilled(
+                    ImVec2(p.x + halfW - blueLen, p.y),
+                    ImVec2(p.x + halfW, p.y + barH),
+                    IM_COL32(0x4A, 0xC8, 0xFF, 0xB3), 2.f);
+            }
+
+            float redLen = std::min(1.f, std::abs(redAvg) / 60.f) * halfW;
+            if (redLen > 1.f) {
+                dl->AddRectFilled(
+                    ImVec2(p.x + halfW, p.y),
+                    ImVec2(p.x + halfW + redLen, p.y + barH),
+                    IM_COL32(0xFF, 0x6B, 0x6B, 0xB3), 2.f);
+            }
+
+            dl->AddLine(ImVec2(p.x + halfW, p.y), ImVec2(p.x + halfW, p.y + barH),
+                        IM_COL32(0xFF, 0xD7, 0x64, 0x60), 1.f);
+
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.0f%%", blueAvg);
+            dl->AddText(ImVec2(p.x + 2.f, p.y + barH + 2.f), avgColor(blueAvg), buf);
+
+            snprintf(buf, sizeof(buf), "%.0f%%", redAvg);
+            ImVec2 rSz = ImGui::CalcTextSize(buf);
+            dl->AddText(ImVec2(p.x + barW - rSz.x - 2.f, p.y + barH + 2.f), avgColor(redAvg), buf);
+
+            ImGui::Dummy(ImVec2(0.f, barH + fontSize + 4.f));
+        }
     }
 
     ImGui::End();
