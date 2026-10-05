@@ -1995,13 +1995,24 @@ void ReplayWindow::DrawAgentModels()
                         // Quantize to 8 compass sectors (each 45 deg)
                         int dirIndex = (static_cast<int>(std::round(relAngle / (XM_PI / 4.f))) + 8) % 8;
 
-                        if (dirIndex != animState.currentMovementDirIndex || !animState.isPlayingMovementAnim) {
-                            // Use "Running" movement table (index 2)
-                            constexpr int kRunningTableIdx = 2;
-                            uint8_t stateIdx = GW::Animation::g_movementTables[kRunningTableIdx].indices[dirIndex];
-                            if (stateIdx < GW::Animation::g_animationStateCount) {
-                                uint32_t primaryHash = GW::Animation::g_animationStateTable[stateIdx].primaryHash;
-                                auto segIt = codeMap.find(primaryHash);
+                        // The client picks the ANIMATION by speed (Gw.exe 0x7FC490): walk below
+                        // 150 u/s, run up to 315, the player fast run above (when the bank has
+                        // it). g_movementTables rows: 4 = walk, 2 = run, 1 = fast run.
+                        constexpr int kWalkTableIdx = 4, kRunTableIdx = 2, kFastRunTableIdx = 1;
+                        const float v = animState.smoothVelocity;
+                        auto findMoveSeg = [&](int tableIdx) -> decltype(codeMap.end()) {
+                            uint8_t stateIdx = GW::Animation::g_movementTables[tableIdx].indices[dirIndex];
+                            if (stateIdx >= GW::Animation::g_animationStateCount) return codeMap.end();
+                            return codeMap.find(GW::Animation::g_animationStateTable[stateIdx].primaryHash);
+                        };
+                        int tableIdx = v < 150.f ? kWalkTableIdx : (v >= 315.f ? kFastRunTableIdx : kRunTableIdx);
+                        if (tableIdx != kRunTableIdx && findMoveSeg(tableIdx) == codeMap.end())
+                            tableIdx = kRunTableIdx;
+
+                        if (dirIndex != animState.currentMovementDirIndex || !animState.isPlayingMovementAnim
+                            || tableIdx != animState.currentMovementTableIdx) {
+                            {
+                                auto segIt = findMoveSeg(tableIdx);
                                 if (segIt != codeMap.end()) {
                                     SegmentRef ref = segIt->second;
                                     if (ref.clipIndex != animState.currentClipIndex &&
@@ -2017,6 +2028,7 @@ void ReplayWindow::DrawAgentModels()
                                 }
                             }
                             animState.currentMovementDirIndex = dirIndex;
+                            animState.currentMovementTableIdx = tableIdx;
                             animState.isPlayingMovementAnim = true;
                             animState.isPlayingIdleAnim = false;
                         }
@@ -2062,9 +2074,8 @@ void ReplayWindow::DrawAgentModels()
                 ctrl->SetLooping(!playOnce);
 
                 // Playback speed — use the game's animation_speed when available.
-                // NPC/hero agents always have animation_speed > 0 in snapshot data.
-                // Player agents have animation_speed = 0 (sparse observer data),
-                // so we fall back to duration-based or velocity-based formulas.
+                // Recordings carry animation_speed/animation_type for every living agent;
+                // older ones without them fall back to duration-based formulas.
                 float speedMult = 1.0f;
                 if (dead) {
                     speedMult = 0.8f;
@@ -2083,8 +2094,11 @@ void ReplayWindow::DrawAgentModels()
                     // Use timing-based formula for attack animations when weapon data
                     // is available.  This fits the segment to the real attack window,
                     // just like the casting formula above.
+                    // Not while moving: the snapshot keeps the LAST attack's weapon speed during
+                    // the run that follows, and fitting the run cycle to it played it at ~0.3-0.5x.
+                    const bool moving = animState.smoothVelocity > 15.f;
                     bool attackTiming = false;
-                    if (!animState.isPlayingMovementAnim && !animState.isPlayingIdleAnim
+                    if (!moving && !animState.isPlayingMovementAnim && !animState.isPlayingIdleAnim
                         && snap.weapon_attack_speed > 0.f && snap.attack_speed_modifier > 0.f && ctrl) {
                         float effectiveAttackTime = snap.weapon_attack_speed * snap.attack_speed_modifier;
                         float segStart = ctrl->GetSequenceStartTime();
@@ -2095,16 +2109,13 @@ void ReplayWindow::DrawAgentModels()
                             attackTiming = true;
                         }
                     }
-                    // The server sends a fixed animation_speed for running (typically
-                    // 0.667) regardless of actual velocity.  When the character has a
-                    // speed buff the legs need to move faster to match, just like the
-                    // real game client does locally.  Use the higher of the two speeds
-                    // so attack/cast anims (which have speed > 1) are never reduced.
-                    if (animState.smoothVelocity > 15.f) {
-                        constexpr float kBaseRunAnimSpeedNPC = 432.f;
-                        float velSpeed = animState.smoothVelocity / kBaseRunAnimSpeedNPC;
-                        if (velSpeed > speedMult)
-                            speedMult = velSpeed;
+                    // animation_speed is NOT a rate: it is the segment's duration in seconds
+                    // (AgentLiving +0x188). The client's real rate is animation_type (+0xE0):
+                    // duration / target duration, or exactly 1.0 for walk/run/fast run, which
+                    // play at their authored length whatever the move speed (Gw.exe 0x7FCCF0;
+                    // 1.000 in every moving sample of a recorded match, 108-383 u/s).
+                    if (moving) {
+                        speedMult = snap.animation_type > 0.f ? snap.animation_type : 1.0f;
                     }
                     else if (!attackTiming) {
                         // Idle / stationary stance (breathing, spirit channel,
@@ -2147,9 +2158,8 @@ void ReplayWindow::DrawAgentModels()
                         speedMult = segDurSec / getUpDur;
                 } else {
                     if (animState.isPlayingMovementAnim) {
-                        constexpr float kBaseRunAnimSpeed = 432.f;
-                        speedMult = animState.smoothVelocity / kBaseRunAnimSpeed;
-                        speedMult = std::clamp(speedMult, 0.1f, 4.0f);
+                        // The client never scales locomotion by velocity (see above).
+                        speedMult = 1.0f;
                     } else if (!animState.isPlayingIdleAnim
                                && snap.weapon_attack_speed > 0.f && snap.attack_speed_modifier > 0.f && ctrl) {
                         float effectiveAttackTime = snap.weapon_attack_speed * snap.attack_speed_modifier;

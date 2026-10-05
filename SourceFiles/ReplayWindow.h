@@ -1256,6 +1256,7 @@ private:
         float prevTime = -1.f;
         float smoothVelocity = 0.f;
         int   currentMovementDirIndex = -1;
+        int   currentMovementTableIdx = -1;
         bool  isPlayingMovementAnim = false;
         bool  isPlayingIdleAnim = false;
 
