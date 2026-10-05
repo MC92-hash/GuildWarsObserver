@@ -1360,9 +1360,9 @@ void ReplayWindow::DrawSkillLaserPanel()
 //   (texels 180..186) sits at P = x0 + (W - tip) * progress, and the texels after the tip (opaque
 //   black) are the empty part. Column 0 pads the left, column 255 the right.
 // - the previous fill is drawn on top while it fades (0.3 s colour cross-fade);
-// - the glow (205425 executed, 205423 interrupted): a 32x32 nine-slice round
-//   (x0-3, y0-3, x1+4, y1+2). The game also draws its border art (205424) on that rect; the
-//   replay leaves it out by choice.
+// - the interrupt glow (205423): a 32x32 nine-slice round (x0-3, y0-3, x1+4, y1+2). The game
+//   also draws its border art (205424) and a yellow "skill fired" glow (205425) on that rect;
+//   the replay leaves both out by choice.
 void ReplayWindow::DrawGameCastBar(ImDrawList* dl, ImVec2 barMin, ImVec2 barMax,
                                    const AgentReplayData::SkillVisual& sv)
 {
@@ -1419,9 +1419,8 @@ void ReplayWindow::DrawGameCastBar(ImDrawList* dl, ImVec2 barMin, ImVec2 barMax,
                     dl->AddImage(tex, ImVec2(xs[i], ys[j]), ImVec2(xs[i + 1], ys[j + 1]),
                                  ImVec2(uv[i], uv[j]), ImVec2(uv[i + 1], uv[j + 1]), col);
     };
-    nineSlice(LoadGameUITexture(dev, sv.flashPurple ? "Castbar\\ui_castbar_flash_purple.png"
-                                                    : "Castbar\\ui_castbar_flash_yellow.png"),
-              sv.alpha * sv.flash);
+    if (sv.flashPurple)
+        nineSlice(LoadGameUITexture(dev, "Castbar\\ui_castbar_flash_purple.png"), sv.alpha * sv.flash);
 }
 
 

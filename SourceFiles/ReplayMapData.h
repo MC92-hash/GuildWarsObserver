@@ -1331,8 +1331,9 @@ struct AgentReplayData
             sv.prevSkin      = CastBarSkin::Casting;
             sv.prevSkinAlpha = 1.f - smooth(since / CROSS_FADE);
         }
-        if (!sv.cancelled) {
-            sv.flashPurple = sv.interrupted;
+        // Only the interrupt glow: the game's yellow "skill fired" glow is left out by choice.
+        if (sv.interrupted) {
+            sv.flashPurple = true;
             sv.flash = since < FLASH_UP ? smooth(since / FLASH_UP)
                                         : 1.f - smooth((since - FLASH_UP) / FLASH_DOWN);
         }
