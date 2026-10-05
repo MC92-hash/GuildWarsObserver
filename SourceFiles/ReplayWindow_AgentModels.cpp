@@ -1256,6 +1256,11 @@ void ReplayWindow::LoadAgentModelsIO()
                     redirected++;
                 }
                 wi.tmpl.localSegmentsOnly = true;
+                wi.tmpl.bankSegmentRefs.assign(segCount, SegmentRef{ -1, -1 });
+                for (size_t si = 0; si < segCount; si++)
+                    wi.tmpl.bankSegmentRefs[si] = bank.GetSegmentSourceType(si) == 0
+                        ? SegmentRef{ static_cast<int>(chosen), static_cast<int>(si) }
+                        : externalRedirect[si];
                 RunLog::Line("anim bank: model 0x%08X bank 0x%08X - FA8 %zu file(s), %d external"
                              " segment(s), %d redirected", wi.fileHash, bankId, fa8.size(),
                              external, redirected);
@@ -1881,6 +1886,29 @@ void ReplayWindow::DrawAgentModels()
                     if (segIt != codeMap.end()) {
                         resolvedRef = segIt->second;
                         resolved = true;
+                    }
+
+                    // Strategy 0: the recorded animation_id is the bank segment the client
+                    // actually played. Animations started by hash (attack skills: Gw.exe
+                    // 0x7F5000) keep the REQUESTED hash as the code but play whatever segment the
+                    // bank lookup resolved, so the code is often in no bank at all (Hammer Bash
+                    // 32F813E3 played bank segment 110) and the hash strategies below then
+                    // picked the plain attack. Trusted unless the code is a real bank hash that
+                    // the index contradicts.
+                    {
+                        const auto& bankRefs = tmplIt->second.bankSegmentRefs;
+                        const uint32_t id = snap.animation_id;
+                        if (id < bankRefs.size() && bankRefs[id].clipIndex >= 0) {
+                            const auto& bankSegs =
+                                tmplIt->second.allClips[tmplIt->second.clipOrder[0]].clip->animationSegments;
+                            const bool hashAgrees = id < bankSegs.size() && bankSegs[id].hash == animCode;
+                            const bool codeInBank = std::any_of(bankSegs.begin(), bankSegs.end(),
+                                [animCode](const auto& s) { return s.hash == animCode; });
+                            if (hashAgrees || !codeInBank) {
+                                resolvedRef = bankRefs[id];
+                                resolved = true;
+                            }
+                        }
                     }
 
                     // Strategy 2: treat animCode as primaryHash, compute segment hash per bone slot

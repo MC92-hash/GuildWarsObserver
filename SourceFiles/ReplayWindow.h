@@ -1193,6 +1193,9 @@ private:
         std::vector<int> clipOrder;
         // Set for a pinned player bank: external segments are never played in place.
         bool localSegmentsOnly = false;
+        // Pinned bank only: the playable ref of each bank segment index (= the recorded
+        // animation_id), externals redirected; {-1,-1} where nothing plays.
+        std::vector<SegmentRef> bankSegmentRefs;
         std::shared_ptr<GW::Animation::AnimationClip> clip;
         std::shared_ptr<GW::Animation::Skeleton> skeleton;
         std::vector<AnimationPanelState::SubmeshBoneData> submeshBoneData;
