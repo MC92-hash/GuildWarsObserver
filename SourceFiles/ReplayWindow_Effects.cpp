@@ -1403,3 +1403,79 @@ void ReplayWindow::DrawFollowedAgentHUD()
         }
     }
 }
+
+// Energy gains and drains over every player but the followed one, in the client's purple digits:
+// the same rise, fade and lifetime as the followed player's numbers, the skill's icon beside the
+// number. Only energy, which the energy model knows for everyone; damage and heals stay on the
+// followed player.
+void ReplayWindow::RenderEnergyPopsOverPlayers()
+{
+    if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
+    Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
+    if (!cam) return;
+    EnsureBitmapFontsLoaded();
+    if (!m_energyBitmapFont.srv.Get()) return;
+
+    const float now = m_debugTimeline;
+    const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float vpW = vp->Size.x, vpH = vp->Size.y;
+    const float glyphHeight = std::clamp(vpH * 0.013f, 9.f, 18.f);
+    const float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
+    constexpr float kFloat = 90.f, kIcon = 22.f, kGap = 4.f;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+
+    for (int pid : m_playerIds)
+    {
+        if (pid == m_focusedAgentId) continue;
+        const EnergyModel::Track* track = EnergyTrackFor(pid);
+        if (!track || track->gains.empty()) continue;
+        auto first = std::upper_bound(track->gains.begin(), track->gains.end(), now - kEffectLifetime,
+                                      [](float v, const EnergyModel::Gain& g) { return v < g.time; });
+        if (first == track->gains.end() || first->time > now) continue;
+
+        auto it = m_replayCtx.agents.find(pid);
+        if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+        const AgentReplayData& ard = it->second;
+        if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(pid)) continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, now, m_replayCtx.interpSettings, sx, sy, sz);
+        const XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+        float topY = AgentModelTopY(pid, ard, worldPos.y, now);
+        if (topY <= worldPos.y) topY = worldPos.y + 120.f;
+        float ax, ay;
+        if (!ProjectToScreen(viewProj, vpW, vpH, XMFLOAT3{ worldPos.x, topY, worldPos.z }, ax, ay)) continue;
+        ay -= iconSz + 8.f;
+
+        int k = 0;
+        for (auto g = first; g != track->gains.end() && g->time <= now; ++g, ++k)
+        {
+            const int amount = static_cast<int>(std::lround(g->amount));
+            if (amount == 0) continue;
+            const float t = (now - g->time) / kEffectLifetime;
+            const float opacity = std::clamp(t < 0.65f ? 1.f : 1.f - (t - 0.65f) / 0.35f, 0.f, 1.f);
+            const uint8_t alpha = static_cast<uint8_t>(opacity * 255.f);
+            const float fy = ay - t * kFloat;
+            // Two pops at once on one player sit side by side rather than on top of each other.
+            const float fx = ax + (k % 2 ? 28.f : -28.f) * (k > 0 ? 1.f : 0.f);
+
+            char label[16];
+            snprintf(label, sizeof(label), "%c%d", amount > 0 ? '+' : '-', std::abs(amount));
+            const float labelW = m_energyBitmapFont.MeasureString(label, glyphHeight);
+            ImTextureID tex = g->skillId > 0
+                ? LoadSkillIcon(this, dev, g->skillId, m_skillIconIndex, m_skillIconCache) : nullptr;
+            const float totalW = (tex ? kIcon + kGap : 0.f) + labelW;
+            float x = fx - totalW * 0.5f;
+            if (tex)
+            {
+                dl->AddImage(tex, ImVec2(x, fy - kIcon * 0.5f), ImVec2(x + kIcon, fy + kIcon * 0.5f),
+                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
+                x += kIcon + kGap;
+            }
+            m_energyBitmapFont.DrawString(dl, label, x + labelW * 0.5f, fy, glyphHeight, alpha);
+        }
+    }
+}

@@ -2011,6 +2011,9 @@ private:
     void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();
+    // The energy model's gains and drains over every OTHER player on screen (the followed one has
+    // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
+    void RenderEnergyPopsOverPlayers();
     void RenderIncomingEffects();
     void DrawFollowedAgentHUD();
     int  GetFocusedAgentId() const;

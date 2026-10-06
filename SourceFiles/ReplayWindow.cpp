@@ -7099,6 +7099,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSkillLasers();
     UpdateIncomingEffects();
     RenderIncomingEffects();
+    RenderEnergyPopsOverPlayers();
     UpdateSpeechBubbles();
     RenderSpeechBubbles();
     {
