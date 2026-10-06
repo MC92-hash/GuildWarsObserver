@@ -5562,6 +5562,73 @@ void ReplayWindow::Tick()
     // INSTANT_SKILL_USED has no cast time so we skip it.
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_castIntervalsBuilt)
     {
+        // A ranged attack skill (bow, spear, ranged) never gets ATTACK_SKILL_FINISHED: measured
+        // over the archive (2026-10-06), 0 of ~5,700 uses, against 27,000 melee ones that do. Its
+        // table activation is 0 (an attack takes its weapon's time), so it read as instant. It
+        // fires when its projectile leaves: the first PROJECTILE from the shooter after the
+        // activation, 18,441 of 18,727 uses in 93 recordings (the rest were stopped). That line
+        // closes the use here. A recording without projectile lines closes it at the measured
+        // median (bow 1.10 s, spear 0.28 s), never past the shooter's next attack skill.
+        {
+            auto& atk = m_replayCtx.stocData.attackSkill;
+            const auto& proj = m_replayCtx.stocData.projectiles;
+            std::unordered_map<int, std::vector<float>> shots;   // shooter -> launch times
+            for (const auto& p : proj) shots[p.sourceId].push_back(p.time);
+            for (auto& [id, v] : shots) std::sort(v.begin(), v.end());
+
+            auto rangedType = [&](int skillId) -> int {
+                const SkillInfo* si = m_skillView.IsLoaded() ? m_skillView.Get(skillId) : nullptr;
+                return (si && (si->type == 2 || si->type == 12 || si->type == 31)) ? si->type : 0;
+            };
+            std::vector<AttackSkillEvent> releases;
+            for (size_t i = 0; i < atk.size(); ++i)
+            {
+                const auto& a = atk[i];
+                if (a.type != "ATTACK_SKILL_ACTIVATED" || a.skill_id <= 0) continue;
+                const int type = rangedType(a.skill_id);
+                if (!type) continue;
+                // The window: up to the shooter's next attack-skill line (or 3 s at most).
+                float limit = a.time + 3.f;
+                bool closed = false;
+                for (size_t j = i + 1; j < atk.size() && atk[j].time <= limit; ++j)
+                {
+                    if (atk[j].caster_id != a.caster_id) continue;
+                    if (atk[j].type != "ATTACK_SKILL_ACTIVATED") closed = true;
+                    limit = atk[j].time;
+                    break;
+                }
+                if (closed) continue;
+                float release = -1.f;
+                if (!proj.empty())
+                {
+                    auto s = shots.find(a.caster_id);
+                    if (s != shots.end())
+                    {
+                        auto it = std::upper_bound(s->second.begin(), s->second.end(), a.time);
+                        if (it != s->second.end() && *it < limit) release = *it;
+                    }
+                }
+                else
+                    release = std::min(a.time + (type == 12 ? 0.28f : 1.10f), limit - 0.001f);
+                if (release < 0.f) continue;
+                AttackSkillEvent f;
+                f.time      = release;
+                f.type      = "ATTACK_SKILL_FINISHED";
+                f.skill_id  = a.skill_id;
+                f.caster_id = a.caster_id;
+                f.target_id = a.target_id;
+                f.raw_line  = proj.empty() ? "(release estimated)" : "(released: projectile)";
+                releases.push_back(std::move(f));
+            }
+            if (!releases.empty())
+            {
+                atk.insert(atk.end(), std::make_move_iterator(releases.begin()),
+                           std::make_move_iterator(releases.end()));
+                std::stable_sort(atk.begin(), atk.end(),
+                    [](const AttackSkillEvent& x, const AttackSkillEvent& y) { return x.time < y.time; });
+            }
+        }
+
         // Track open (unfinished) casts per caster_id
         std::unordered_map<int, CastInterval> openCasts;
 

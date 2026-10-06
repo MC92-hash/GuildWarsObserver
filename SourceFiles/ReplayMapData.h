@@ -1795,6 +1795,14 @@ struct SkillDamageEvent
     int   skillId  = 0;
 };
 
+// A PROJECTILE line: something the agent shot left its hands. The only record of when a ranged
+// attack skill fires -- the server never sends ATTACK_SKILL_FINISHED for one.
+struct ProjectileEvent
+{
+    float time     = 0.f;
+    int   sourceId = 0;
+};
+
 struct EnergyCoverage
 {
     int skillId  = 0;
@@ -2000,6 +2008,7 @@ struct StoCData
     std::vector<EnergyCoverage>         energyCoverage;
     std::vector<EnergyNoPay>            energyNoPay;
     std::vector<SkillDamageEvent>       skillDamage;
+    std::vector<ProjectileEvent>        projectiles;
     Equipment::Data                     equipment;
 };
 

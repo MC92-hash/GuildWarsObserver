@@ -1132,6 +1132,42 @@ static void ParseSkillDamageEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Projectiles: PROJECTILE;source;dest_x;dest_y;... - only the shooter and the moment are kept
+// ---------------------------------------------------------------------------
+
+static void ParseProjectileEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[3];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 3);
+                if (n >= 2 && std::string_view(tok[0].begin, tok[0].end - tok[0].begin) == "PROJECTILE")
+                {
+                    ProjectileEvent ev;
+                    ev.time     = li.time;
+                    ev.sourceId = ToInt(tok[1].begin, tok[1].end);
+                    data.projectiles.push_back(ev);
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Equipment (weapon/armour skins, dyes and raw mod words)
 // ---------------------------------------------------------------------------
 
@@ -1169,6 +1205,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "model_events",                  ParseModelEvents },
     { "energy_events",                 ParseEnergyEvents },
     { "skill_damage_events",           ParseSkillDamageEvents },
+    { "projectile_events",             ParseProjectileEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));
