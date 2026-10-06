@@ -166,7 +166,7 @@ void ReplayWindow::UpdateIncomingEffects()
             if (amount == 0) continue;
             IncomingEffect eff;
             eff.spawnTime = g->time;
-            eff.skillId = g->skillId;
+            eff.skillId = 0;   // the number alone, no skill icon
             eff.type = IncomingEffectType::Energy;
             eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
             pushEffect(std::move(eff));
@@ -1465,8 +1465,7 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
             char label[16];
             snprintf(label, sizeof(label), "%c%d", amount > 0 ? '+' : '-', std::abs(amount));
             const float labelW = m_energyBitmapFont.MeasureString(label, glyphHeight);
-            ImTextureID tex = g->skillId > 0
-                ? LoadSkillIcon(this, dev, g->skillId, m_skillIconIndex, m_skillIconCache) : nullptr;
+            ImTextureID tex = nullptr;   // the number alone, no skill icon
             const float totalW = (tex ? kIcon + kGap : 0.f) + labelW;
             float x = fx - totalW * 0.5f;
             if (tex)
