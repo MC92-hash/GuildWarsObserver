@@ -159,7 +159,7 @@ void ReplayWindow::UpdateIncomingEffects()
     };
 
     // A skill that landed on the followed player without a number in its own tick shows its icon
-    // alone: a hex, a skill that deals no damage, an enchantment by name. A cast that explained a
+    // alone: a hex, a skill that deals no damage, an enchantment. A cast that explained a
     // packet in its tick has its icon beside that number already, and a damage skill with nothing
     // to show was blocked, dodged or absorbed.
     for (const auto& [agentId, ard] : m_replayCtx.agents)
@@ -181,14 +181,12 @@ void ReplayWindow::UpdateIncomingEffects()
             eff.skillId = su.skillId;
             if (skillType == 24)
                 eff.type = IncomingEffectType::Hex;
+            // An enchantment whose text mentions damage (Protective Spirit from a caster with no
+            // Divine Favor, so no bonus heal) shows its icon like any other.
             else if (isCasterDamageOnly(su.skillId) ||
-                     (si && !si->description.empty() && si->description.find("damage") == std::string::npos))
+                     (si && !si->description.empty() && si->description.find("damage") == std::string::npos) ||
+                     skillType == 23 || skillType == 33 || skillType == 34)
                 eff.type = IncomingEffectType::Condition;
-            else if (skillType == 23 || skillType == 33 || skillType == 34)
-            {
-                eff.type = IncomingEffectType::Heal;
-                eff.label = si ? si->name : "Enchantment";
-            }
             else
                 continue;
             pushEffect(std::move(eff));
