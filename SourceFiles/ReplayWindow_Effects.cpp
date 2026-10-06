@@ -141,7 +141,7 @@ void ReplayWindow::UpdateIncomingEffects()
             eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
                      : pop.heal      ? IncomingEffectType::Heal
                                      : IncomingEffectType::Damage;
-            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, pop.time), pop.firstValue);
+            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, pop.time), pop.value);
             eff.label = DamagePopLabel(pop, mhp);
             pushEffect(std::move(eff));
         }

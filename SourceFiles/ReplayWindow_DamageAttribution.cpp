@@ -100,61 +100,23 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
     auto cached = m_damagePops.find(agentId);
     if (cached != m_damagePops.end()) return cached->second;
 
-    constexpr float kBurst = 0.15f;
     std::vector<DamagePop>& pops = m_damagePops[agentId];
-    std::unordered_map<int, size_t> open;   // cause -> its last damage pop
     const auto& combat = m_replayCtx.stocData.combat;
     for (size_t i = 0; i < combat.size(); ++i)
     {
         const CombatEvent& ce = combat[i];
         if (ce.target_id != agentId || !ce.IsDamageOrHeal()) continue;
         const DamageAttribution::Result& r = table->packets[i];
-        const bool heal = ce.type == "HEAL";
-        const bool vamp = !heal && r.weaponHit && ce.damage_type == 55;   // a weapon's vampiric part
-
-        if (!heal)
-        {
-            auto o = open.find(ce.caster_id);
-            if (o != open.end())
-            {
-                DamagePop& p = pops[o->second];
-                // A pop holding nothing but a vampiric part so far: the packet that arrived first in
-                // the tick was the vampiric one, and the hit it belongs to is this one.
-                if (ce.time - p.time <= kBurst &&
-                    (vamp || p.vampOnly || (p.weaponHit == r.weaponHit && p.skillId == r.skillId)))
-                {
-                    if (p.vampOnly && !vamp)
-                    {
-                        p.vampOnly   = false;
-                        p.skillId    = r.skillId;
-                        p.weaponHit  = r.weaponHit;
-                        p.firstValue = ce.value;              // the hit's own, for the max-HP correction
-                        if (!p.weaponHit) p.vampValue = 0.f;  // a skill hit shows one sum
-                    }
-                    p.value += ce.value;
-                    if (p.weaponHit) (vamp ? p.vampValue : p.weaponValue) += ce.value;
-                    continue;
-                }
-            }
-        }
-
         DamagePop p;
-        p.time       = ce.time;
-        p.casterId   = ce.caster_id;
-        p.skillId    = r.skillId;
-        p.weaponHit  = r.weaponHit;
-        p.heal       = heal;
-        p.value      = ce.value;
-        p.firstValue = ce.value;
-        if (p.weaponHit) (vamp ? p.vampValue : p.weaponValue) = ce.value;
-        p.vampOnly   = vamp;
+        p.time     = ce.time;
+        p.casterId = ce.caster_id;
+        p.skillId  = r.skillId;
+        p.heal     = ce.type == "HEAL";
+        // A weapon's vampiric part is life stolen, not an attack: its number has no attack icon.
+        p.weaponHit = r.weaponHit && !(ce.damage_type == 55 && !p.heal);
+        p.value    = ce.value;
         pops.push_back(p);
-        if (!heal) open[ce.caster_id] = pops.size() - 1;
     }
-    // A vampiric part with no weapon damage beside it (no hit joined it, or the hit did 0) is life
-    // stolen, not an attack: the number alone, no attack icon.
-    for (DamagePop& p : pops)
-        if (p.weaponHit && p.weaponValue == 0.f) { p.weaponHit = false; p.vampValue = 0.f; p.vampOnly = false; }
     std::stable_sort(pops.begin(), pops.end(), [](const DamagePop& a, const DamagePop& b) { return a.time < b.time; });
     return pops;
 }
@@ -166,7 +128,5 @@ std::string ReplayWindow::DamagePopLabel(const DamagePop& pop, uint32_t maxHp)
         return raw > 0 ? std::format("{}", raw) : std::format("{:.0f}%", std::fabs(fraction) * 100.f);
     };
     const char* sign = pop.heal ? "+" : "-";
-    if (pop.weaponHit && pop.weaponValue != 0.f && pop.vampValue != 0.f)
-        return std::format("-{} -{}", amount(pop.weaponValue), amount(pop.vampValue));
     return std::format("{}{}", sign, amount(pop.value));
 }

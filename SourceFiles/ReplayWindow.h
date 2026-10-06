@@ -421,21 +421,17 @@ private:
     mutable DamageAttribution::Table m_damageAttribution;
     mutable bool m_damageAttributionBuilt = false;
 
-    // One floating number: the packets of one cause in one burst (0.15 s) under one attribution. A
-    // weapon hit keeps its vampiric part apart ("-35 -5"); a vampiric part riding on a skill hit
-    // joins that skill's number.
+    // One floating number per damage or heal packet, as the client shows them: Mind Burn's second
+    // packet, a weapon hit's vampiric part or an attack skill's armour-ignoring bonus is a number of
+    // its own, never added to the hit beside it.
     struct DamagePop
     {
-        float time        = 0.f;     // the first packet's
-        int   casterId    = 0;
-        int   skillId     = 0;       // the icon, 0 for none
-        bool  weaponHit   = false;   // shown with the attack icon
-        bool  heal        = false;
-        float value       = 0.f;     // summed fraction of maximum health, negative for damage
-        float firstValue  = 0.f;     // the first packet's, for the max-HP correction
-        float weaponValue = 0.f;     // a weapon hit's two parts
-        float vampValue   = 0.f;
-        bool  vampOnly    = false;   // so far nothing but a vampiric part (its hit may follow)
+        float time      = 0.f;
+        int   casterId  = 0;
+        int   skillId   = 0;       // the icon, 0 for none
+        bool  weaponHit = false;   // shown with the attack icon
+        bool  heal      = false;
+        float value     = 0.f;     // fraction of maximum health, negative for damage
     };
     // The agent's pops in time order, built on first use per agent.
     const std::vector<DamagePop>& DamagePopsOn(int agentId) const;
