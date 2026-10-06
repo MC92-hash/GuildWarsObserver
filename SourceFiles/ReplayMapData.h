@@ -1311,9 +1311,11 @@ struct AgentReplayData
         if (!instant && t < ev.endTime) {
             sv.isCasting = true;
             sv.skin      = CastBarSkin::Casting;
-            // Against the FULL cast time: a cancelled cast stops part-way, it does not race to
-            // the end of its shortened window first.
-            sv.progress  = std::min((t - ev.startTime) / std::max(fullDur, 0.001f), 1.f);
+            // A cast that completed fills over its own measured time, so a sped-up cast (fast
+            // casting, "next spell casts faster") sweeps smoothly to the end. A stopped cast has
+            // no end of its own, so it runs against the FULL cast time and stops part-way.
+            const float span = stopped ? fullDur : dur;
+            sv.progress  = std::min((t - ev.startTime) / std::max(span, 0.001f), 1.f);
             return sv;
         }
 
