@@ -255,7 +255,8 @@ float ReplayWindow::FloaterBoxWidth(const IncomingEffect& e)
 {
     const bool icon = FloaterHasIcon(e);
     if (FloaterUsesDigits(e))
-        return OverheadFloaters::NumberWidth(static_cast<int>(e.label.size()), icon);
+        return OverheadFloaters::NumberWidth(static_cast<int>(e.label.size()), icon)
+             - (1.f - kFloaterDigitScale) * OverheadFloaters::kAdvance * static_cast<float>(e.label.size());
     if (e.label.empty())
         return icon ? OverheadFloaters::kIconSize : 0.f;
     const float text = ImGui::GetFont()->CalcTextSizeA(kFloaterTextSize, FLT_MAX, 0.f, e.label.c_str()).x + 8.f;
@@ -349,9 +350,9 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
         {
             // The digits centre on the floater; the icon sits 10 past the digits' box, so a number
             // with an icon hangs to the right, as in the client.
-            font->DrawCells(dl, e.label.c_str(), cx, cy, OverheadFloaters::kCell * s, alpha);
+            font->DrawCells(dl, e.label.c_str(), cx, cy, OverheadFloaters::kCell * kFloaterDigitScale * s, alpha);
             if (icon)
-                drawIcon(cx + (OverheadFloaters::kAdvance * 0.5f * static_cast<float>(e.label.size())
+                drawIcon(cx + (OverheadFloaters::kAdvance * kFloaterDigitScale * 0.5f * static_cast<float>(e.label.size())
                                + OverheadFloaters::kIconGap) * s);
             return;
         }

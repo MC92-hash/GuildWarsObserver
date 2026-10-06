@@ -2053,6 +2053,7 @@ private:
                         bool& toggle, float baseScale) const;
     float FloaterBaseScale(int agentId, float time) const;
     static constexpr float kFloaterTextSize = 16.f;   // our own text floaters, in floater units
+    static constexpr float kFloaterDigitScale = 0.8f; // the owner's choice: digits a little under the client's size
     static bool  FloaterUsesDigits(const IncomingEffect& e);
     static bool  FloaterHasIcon(const IncomingEffect& e);
     static float FloaterBoxWidth(const IncomingEffect& e);
