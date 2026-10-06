@@ -940,7 +940,7 @@ struct SkillUseEvent
     int   targetId  = -1;    // resolved target agent id (-1 = self/none)
     bool  isInstant      = false;
     bool  wasCancelled   = false;  // true if SKILL_STOPPED / ATTACK_SKILL_STOPPED
-    bool  wasInterrupted = false;  // true if a matching INTERRUPTED event was found
+    bool  wasInterrupted = false;  // true if a matching INTERRUPTED event was found, or a knockdown stopped it
     float rechargeDuration = 0.f;  // precomputed actual recharge (may differ from DB if fast recast)
     bool  wasFastRecast    = false; // true if next cast happened before normal recharge expired
 };

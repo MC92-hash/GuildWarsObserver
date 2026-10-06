@@ -5787,6 +5787,27 @@ void ReplayWindow::Tick()
             }
         }
 
+        // 5b) A knockdown interrupts the cast under way, and like an interrupt it costs the skill
+        // its recharge -- but the server often sends no INTERRUPTED for it, only the STOPPED.
+        // Measured over the archive (2026-10-06, 93 millisecond-stamped matches): of the casts
+        // stopped by a knockdown with no INTERRUPTED, 399 of 427 stop on the very millisecond of
+        // the KNOCKED_DOWN line, and none of those comes back within 2 s; casts the player let go
+        // of even a few tenths before the knockdown come back at once. So only a stop at the
+        // knockdown's own timestamp counts. Older recordings write the victim second (0;victim).
+        for (const auto& ce : m_replayCtx.stocData.combat)
+        {
+            if (ce.type != "KNOCKED_DOWN") continue;
+            const int victimId = ce.target_id > 0 ? ce.target_id : ce.caster_id;
+            auto ait = m_replayCtx.agents.find(victimId);
+            if (ait == m_replayCtx.agents.end()) continue;
+            for (auto& h : ait->second.skillUseHistory)
+            {
+                if (!h.wasCancelled || h.wasInterrupted) continue;
+                if (std::fabs(h.endTime - ce.time) > 0.015f) continue;
+                h.wasInterrupted = true;
+            }
+        }
+
         // 6) Precompute recharge durations per cast event (fast recast detection)
         // NOTE: Fast recast detection may produce false positives if recharge-reduction
         // skills are active (e.g. Quickening Zephyr). In standard GvG this is rare.
