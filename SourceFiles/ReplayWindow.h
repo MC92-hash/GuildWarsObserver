@@ -37,6 +37,7 @@
 #include "HealthModel.h"
 #include "EnergyModel.h"
 #include "DamageAttribution.h"
+#include "OverheadFloaters.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -2033,12 +2034,33 @@ private:
         std::string     label;
         IncomingEffectType type     = IncomingEffectType::Damage;
         float           spawnTime   = 0.f;
+        // Laid out by the client's floater rules (OverheadFloaters) when it spawns: its sideways
+        // offset and box in floater units, the base scale it spawned with, and which spline it rides.
         float           xOffset     = 0.f;
+        float           boxWidth    = 0.f;
+        float           baseScale   = 1.f;
+        OverheadFloaters::Motion motion = OverheadFloaters::Motion::Loss;
     };
-    static constexpr float kEffectLifetime  = 1.5f;
+    static constexpr float kEffectLifetime  = OverheadFloaters::kLifetime;
     std::vector<IncomingEffect> m_incomingEffects;
     float m_lastEffectScanTime = -1.f;
     int   m_focusedAgentId     = -1;
+    bool  m_floaterToggle      = false;   // the client's left/right switch, flips on every spawn
+
+    // The client's layout of new floaters among the live ones on the same agent: `batch` is placed
+    // in time order and appended to `live`.
+    void  PlaceFloaters(std::vector<IncomingEffect>& live, std::vector<IncomingEffect>& batch,
+                        bool& toggle, float baseScale) const;
+    float FloaterBaseScale(int agentId, float time) const;
+    static constexpr float kFloaterTextSize = 16.f;   // our own text floaters, in floater units
+    static bool  FloaterUsesDigits(const IncomingEffect& e);
+    static bool  FloaterHasIcon(const IncomingEffect& e);
+    static float FloaterBoxWidth(const IncomingEffect& e);
+    static OverheadFloaters::Motion FloaterMotion(const IncomingEffect& e);
+    // One floater at its age, `anchor` the agent's point on screen, `view` the pixel factor of the
+    // view it is drawn in (1 in the main view).
+    void  DrawFloater(ImDrawList* dl, const IncomingEffect& e, float now, float anchorX, float anchorY,
+                      float view);
 
     // Bitmap font textures for GW-style floating numbers
     BitmapFont m_damageBitmapFont;
@@ -2058,6 +2080,7 @@ private:
     std::vector<IncomingEffect> m_pipIncomingEffects;
     float m_pipLastEffectScanTime = -1.f;
     int   m_pipEffectAgentId      = -1;
+    bool  m_pipFloaterToggle      = false;
     void  UpdatePiPIncomingEffects();
 
     // --- Shout speech bubbles ---

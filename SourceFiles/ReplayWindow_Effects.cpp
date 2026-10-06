@@ -57,6 +57,7 @@ void ReplayWindow::UpdateIncomingEffects()
     if (focused != m_focusedAgentId || now < m_lastEffectScanTime - 0.5f)
     {
         m_incomingEffects.clear();
+        m_floaterToggle = false;
         m_focusedAgentId = focused;
         m_lastEffectScanTime = now;
         return;
@@ -98,26 +99,9 @@ void ReplayWindow::UpdateIncomingEffects()
 
     const auto& db = m_skillView;
 
-    auto pushEffect = [&](IncomingEffect eff) {
-        constexpr float kMinSep = 35.f;
-        constexpr float kTimeWindow = 0.4f;
-        float bestOff = 0.f;
-        float bestDist = 0.f;
-        for (int attempt = 0; attempt < 8; ++attempt)
-        {
-            float candidate = (float)(rand() % 181) - 90.f;
-            float minDist = 999.f;
-            for (const auto& ex : m_incomingEffects)
-            {
-                if (std::abs(ex.spawnTime - eff.spawnTime) > kTimeWindow) continue;
-                minDist = std::min(minDist, std::abs(candidate - ex.xOffset));
-            }
-            if (minDist > bestDist) { bestDist = minDist; bestOff = candidate; }
-            if (bestDist >= kMinSep) break;
-        }
-        eff.xOffset = bestOff;
-        m_incomingEffects.push_back(std::move(eff));
-    };
+    // Collected here and laid out together at the end, in time order, by the client's rule.
+    std::vector<IncomingEffect> batch;
+    auto pushEffect = [&](IncomingEffect eff) { batch.push_back(std::move(eff)); };
 
     // Energy gains and drains, in the client's purple: the energy model's discrete changes (a
     // skill's payout, a critical hit, Soul Reaping, a foe's denial), not regeneration and not
@@ -225,6 +209,9 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.label = "INTERRUPT";
         pushEffect(std::move(eff));
     }
+
+    if (!batch.empty())
+        PlaceFloaters(m_incomingEffects, batch, m_floaterToggle, FloaterBaseScale(focused, now));
 }
 
 
@@ -242,6 +229,160 @@ void ReplayWindow::EnsureBitmapFontsLoaded()
         m_healBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0xA0629E7F.dds").c_str());
     if (!m_energyBitmapFont.loaded)
         m_energyBitmapFont.Load(dev, (ddsDir / L"texture_265569.dds").c_str());
+}
+
+
+// ---------------------------------------------------------------------------
+// The client's floater layout (OverheadFloaters): box, spline, place, draw
+// ---------------------------------------------------------------------------
+
+// Damage, heal and energy figures are the client's own digits; everything else (an icon alone, a
+// skill name, INTERRUPT) is ours and draws as text in a pill.
+bool ReplayWindow::FloaterUsesDigits(const IncomingEffect& e)
+{
+    using T = IncomingEffectType;
+    if (e.label.empty()) return false;
+    if (e.type == T::Damage || e.type == T::BasicAttack || e.type == T::Energy) return true;
+    // A heal floater carries a number, or an enchantment's name when it landed without one.
+    const char c = e.label[0];
+    return e.type == T::Heal && (c == '+' || c == '-' || (c >= '0' && c <= '9'));
+}
+
+bool ReplayWindow::FloaterHasIcon(const IncomingEffect& e)
+{
+    return e.skillId > 0 || e.type == IncomingEffectType::BasicAttack;
+}
+
+float ReplayWindow::FloaterBoxWidth(const IncomingEffect& e)
+{
+    const bool icon = FloaterHasIcon(e);
+    if (FloaterUsesDigits(e))
+        return OverheadFloaters::NumberWidth(static_cast<int>(e.label.size()), icon);
+    if (e.label.empty())
+        return icon ? OverheadFloaters::kIconSize : 0.f;
+    const float text = ImGui::GetFont()->CalcTextSizeA(kFloaterTextSize, FLT_MAX, 0.f, e.label.c_str()).x + 8.f;
+    return text + (icon ? OverheadFloaters::kIconGap + OverheadFloaters::kIconSize : 0.f);
+}
+
+// A gain fades in, a loss pops: the sign of the amount decides, as in the client.
+OverheadFloaters::Motion ReplayWindow::FloaterMotion(const IncomingEffect& e)
+{
+    using T = IncomingEffectType;
+    if (e.type == T::Heal) return OverheadFloaters::Motion::Gain;
+    if (e.type == T::Energy && !e.label.empty() && e.label[0] == '+') return OverheadFloaters::Motion::Gain;
+    return OverheadFloaters::Motion::Loss;
+}
+
+void ReplayWindow::PlaceFloaters(std::vector<IncomingEffect>& live, std::vector<IncomingEffect>& batch,
+                                 bool& toggle, float baseScale) const
+{
+    std::stable_sort(batch.begin(), batch.end(),
+                     [](const IncomingEffect& a, const IncomingEffect& b) { return a.spawnTime < b.spawnTime; });
+    std::vector<OverheadFloaters::Live> boxes;
+    boxes.reserve(live.size() + batch.size());
+    for (const IncomingEffect& e : live)
+        boxes.push_back({ e.spawnTime, e.xOffset, e.boxWidth, e.motion });
+    std::stable_sort(boxes.begin(), boxes.end(),
+                     [](const OverheadFloaters::Live& a, const OverheadFloaters::Live& b) { return a.spawn < b.spawn; });
+
+    for (IncomingEffect& e : batch)
+    {
+        e.boxWidth  = FloaterBoxWidth(e);
+        e.motion    = FloaterMotion(e);
+        e.baseScale = baseScale;
+        e.xOffset   = OverheadFloaters::Place(boxes, e.spawnTime, e.boxWidth, baseScale, toggle);
+        boxes.push_back({ e.spawnTime, e.xOffset, e.boxWidth, e.motion });
+        live.push_back(std::move(e));
+    }
+    batch.clear();
+}
+
+// The client's base scale for a floater over this agent: its floater-size slider at the middle, and
+// the camera's distance in game units.
+float ReplayWindow::FloaterBaseScale(int agentId, float time) const
+{
+    constexpr float kFloaterScalePref = 50.f;
+    const Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
+    auto it = m_replayCtx.agents.find(agentId);
+    if (!cam || it == m_replayCtx.agents.end() || it->second.snapshots.empty())
+        return OverheadFloaters::BaseScale(kFloaterScalePref, 1000.f);
+    float sx, sy, sz;
+    InterpolateAgentPosition(it->second, time, m_replayCtx.interpSettings, sx, sy, sz);
+    const XMFLOAT3 p = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+    const XMFLOAT3 c = cam->GetPosition3f();
+    const float dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z;
+    const float unitScale = std::abs(m_replayCtx.mapTransform.scaleX);
+    const float unit = unitScale > 1e-6f ? unitScale : 1.f;
+    return OverheadFloaters::BaseScale(kFloaterScalePref, std::sqrt(dx * dx + dy * dy + dz * dz) / unit);
+}
+
+void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float now, float anchorX, float anchorY,
+                               float view)
+{
+    const float age = now - e.spawnTime;
+    if (age < 0.f || age >= OverheadFloaters::kLifetime) return;
+    const OverheadFloaters::Pose pose = OverheadFloaters::Evaluate(e.motion, age);
+    const uint8_t alpha = static_cast<uint8_t>(pose.alpha * 255.f);
+    if (alpha == 0) return;
+
+    // Screen y grows downward; the client's floater y grows upward.
+    const float cx = anchorX + e.xOffset * e.baseScale * view;
+    const float cy = anchorY - (OverheadFloaters::kBaseY + pose.rise * e.baseScale) * view;
+    const float s  = e.baseScale * view * pose.scale;   // the whole model scales, icon and gaps too
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    auto drawIcon = [&](float left) {
+        ImTextureID tex = (e.type == IncomingEffectType::BasicAttack)
+                              ? LoadFlagIcon(dev, "kill.png")
+                              : LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+        if (!tex) return;
+        const float sz = OverheadFloaters::kIconSize * s;
+        dl->AddImage(tex, ImVec2(left, cy - sz * 0.5f), ImVec2(left + sz, cy + sz * 0.5f),
+                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
+    };
+    const bool icon = FloaterHasIcon(e);
+
+    if (FloaterUsesDigits(e))
+    {
+        const BitmapFont* font = (e.type == IncomingEffectType::Heal)   ? &m_healBitmapFont
+                               : (e.type == IncomingEffectType::Energy) ? &m_energyBitmapFont
+                                                                        : &m_damageBitmapFont;
+        if (font->srv.Get())
+        {
+            // The digits centre on the floater; the icon sits 10 past the digits' box, so a number
+            // with an icon hangs to the right, as in the client.
+            font->DrawCells(dl, e.label.c_str(), cx, cy, OverheadFloaters::kCell * s, alpha);
+            if (icon)
+                drawIcon(cx + (OverheadFloaters::kAdvance * 0.5f * static_cast<float>(e.label.size())
+                               + OverheadFloaters::kIconGap) * s);
+            return;
+        }
+    }
+
+    if (e.label.empty())
+    {
+        if (icon) drawIcon(cx - OverheadFloaters::kIconSize * 0.5f * s);
+        return;
+    }
+
+    ImU32 col;
+    switch (e.type) {
+    case IncomingEffectType::Interrupt:
+    case IncomingEffectType::Condition: col = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
+    case IncomingEffectType::Hex:       col = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+    case IncomingEffectType::Energy:    col = IM_COL32(0xE0, 0x60, 0xF0, alpha); break;
+    default:                            col = IM_COL32(0xFF, 0xFF, 0xFF, alpha); break;
+    }
+    ImFont* font = ImGui::GetFont();
+    const float fs = kFloaterTextSize * s;
+    const ImVec2 tsz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, e.label.c_str());
+    const float pad = 4.f * s;
+    const float left = cx - (tsz.x * 0.5f + pad);
+    dl->AddRectFilled(ImVec2(left, cy - tsz.y * 0.5f - pad), ImVec2(left + tsz.x + 2.f * pad, cy + tsz.y * 0.5f + pad),
+                      IM_COL32(0, 0, 0, static_cast<uint8_t>(0.55f * alpha)), 3.f * s);
+    dl->AddText(font, fs, ImVec2(left + pad, cy - tsz.y * 0.5f), col, e.label.c_str());
+    if (icon)
+        drawIcon(left + tsz.x + 2.f * pad + OverheadFloaters::kIconGap * s);
 }
 
 
@@ -268,12 +409,8 @@ void ReplayWindow::RenderIncomingEffects()
     InterpolateAgentPosition(ard, now, m_replayCtx.interpSettings, sx, sy, sz);
     XMFLOAT3 worldPos = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
 
-    constexpr float FLOAT_DISTANCE   = 90.f;
-    constexpr float ICON_SZ   = 26.f;
-    constexpr float GAP       = 4.f;
-
-    // Compute model-top Y using the same logic as the profession icon in DrawAgentOverlay,
-    // so the floating numbers anchor just above the icon regardless of camera zoom/angle.
+    // Anchored just above the profession icon, which sits on the model's top, so the numbers keep
+    // clear of it at any camera zoom or angle.
     float modelTopY = AgentModelTopY(focused, ard, worldPos.y, now);
     if (modelTopY <= worldPos.y)
         modelTopY = worldPos.y + 120.f;
@@ -281,161 +418,17 @@ void ReplayWindow::RenderIncomingEffects()
     XMFLOAT3 topPos = { worldPos.x, modelTopY, worldPos.z };
     float anchorX, anchorY;
     if (!ProjectToScreen(viewProj, vpW, vpH, topPos, anchorX, anchorY)) return;
-
-    // Offset upward in screen space: skip past the profession icon (iconSz + padding)
-    // plus a small gap so numbers don't overlap the icon.
     float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
     constexpr float kScreenPad = 4.f;
     anchorY -= iconSz + kScreenPad * 2.f;
 
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-
-    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     EnsureSkillIconIndex();
     EnsureBitmapFontsLoaded();
 
-    const float glyphHeight = std::clamp(vpH * 0.013f, 9.f, 18.f);
-
-    // Sort render order: oldest first (background) → newest last (foreground).
-    // ImGui draws later calls on top, so newest effects appear in front.
-    static std::vector<size_t> sortedIdx;
-    sortedIdx.clear();
-    for (size_t i = 0; i < m_incomingEffects.size(); ++i)
-    {
-        float age = now - m_incomingEffects[i].spawnTime;
-        if (age >= 0.f && age < kEffectLifetime)
-            sortedIdx.push_back(i);
-    }
-    std::sort(sortedIdx.begin(), sortedIdx.end(), [&](size_t a, size_t b) {
-        return m_incomingEffects[a].spawnTime < m_incomingEffects[b].spawnTime;
-    });
-
-    const size_t totalActive = sortedIdx.size();
-
-    for (size_t si = 0; si < totalActive; ++si)
-    {
-        const auto& e = m_incomingEffects[sortedIdx[si]];
-        float age = now - e.spawnTime;
-
-        float t = age / kEffectLifetime;
-        float opacity = (t < 0.65f) ? 1.f : 1.f - ((t - 0.65f) / 0.35f);
-        opacity = std::clamp(opacity, 0.f, 1.f);
-
-        // Depth effect: older effects (drawn first) appear receded.
-        // depthRank 0.0 = oldest, 1.0 = newest.
-        float depthRank = (totalActive > 1)
-            ? static_cast<float>(si) / static_cast<float>(totalActive - 1)
-            : 1.f;
-        float depthDim     = 0.55f + 0.45f * depthRank;
-        opacity *= depthDim;
-
-        uint8_t alpha = static_cast<uint8_t>(opacity * 255.f);
-
-        float fy = anchorY - t * FLOAT_DISTANCE;
-        float fx = anchorX + e.xOffset;
-
-        bool isBasicAttack = (e.type == IncomingEffectType::BasicAttack);
-        bool hasIcon = (e.skillId > 0) || isBasicAttack;
-        constexpr float ATK_ICON_SZ = 18.f;
-        float iconW = isBasicAttack ? ATK_ICON_SZ : ICON_SZ;
-
-        bool useBitmapFont = !e.label.empty()
-            && (e.type == IncomingEffectType::Damage
-                || e.type == IncomingEffectType::Heal
-                || e.type == IncomingEffectType::BasicAttack
-                || e.type == IncomingEffectType::Energy);
-
-        const BitmapFont* bmFont = nullptr;
-        if (useBitmapFont)
-        {
-            bmFont = (e.type == IncomingEffectType::Heal)   ? &m_healBitmapFont
-                   : (e.type == IncomingEffectType::Energy) ? &m_energyBitmapFont
-                                                            : &m_damageBitmapFont;
-            if (!bmFont->srv.Get()) bmFont = nullptr;
-        }
-
-        float labelW = 0.f;
-        if (bmFont && !e.label.empty())
-            labelW = bmFont->MeasureString(e.label.c_str(), glyphHeight);
-
-        float totalW = 0.f;
-        if (hasIcon) totalW += iconW;
-        if (hasIcon && labelW > 0.f) totalW += GAP;
-        if (labelW > 0.f) totalW += labelW;
-
-        if (!bmFont && !e.label.empty())
-        {
-            const float labelFs = 13.f;
-            ImFont* font = ImGui::GetFont();
-            ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
-            constexpr float PILL_PAD = 4.f;
-            totalW = 0.f;
-            if (hasIcon) totalW += iconW;
-            if (hasIcon && tsz.x > 0) totalW += GAP;
-            if (tsz.x > 0) totalW += PILL_PAD * 2.f + tsz.x;
-
-            float startX = fx - totalW * 0.5f;
-            float curX = startX;
-
-            if (hasIcon)
-            {
-                ImTextureID tex = nullptr;
-                if (isBasicAttack)
-                    tex = LoadFlagIcon(dev, "kill.png");
-                else
-                    tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
-                ImVec2 iconTL(curX, fy - iconW * 0.5f);
-                ImVec2 iconBR(curX + iconW, fy + iconW * 0.5f);
-                if (tex)
-                    dl->AddImage(tex, iconTL, iconBR,
-                        ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
-                curX += iconW + GAP;
-            }
-
-            ImU32 labelCol;
-            switch (e.type) {
-            case IncomingEffectType::Interrupt:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-            case IncomingEffectType::Condition:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
-            case IncomingEffectType::Hex:         labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
-            case IncomingEffectType::Energy:      labelCol = IM_COL32(0xE0, 0x60, 0xF0, alpha); break;
-            default:                              labelCol = IM_COL32(0xFF, 0xFF, 0xFF, alpha); break;
-            }
-
-            float pillX = curX;
-            float pillY = fy - (tsz.y + PILL_PAD * 2.f) * 0.5f;
-            float pillW = tsz.x + PILL_PAD * 2.f;
-            float pillH = tsz.y + PILL_PAD * 2.f;
-
-            dl->AddRectFilled(ImVec2(pillX, pillY), ImVec2(pillX + pillW, pillY + pillH),
-                IM_COL32(0, 0, 0, (uint8_t)(0.55f * 255.f * opacity)), 3.f);
-            dl->AddText(font, labelFs,
-                ImVec2(pillX + PILL_PAD, fy - tsz.y * 0.5f), labelCol, e.label.c_str());
-            continue;
-        }
-
-        float startX = fx - totalW * 0.5f;
-        float curX = startX;
-
-        if (hasIcon)
-        {
-            ImTextureID tex = nullptr;
-            if (isBasicAttack)
-                tex = LoadFlagIcon(dev, "kill.png");
-            else
-                tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
-            ImVec2 iconTL(curX, fy - iconW * 0.5f);
-            ImVec2 iconBR(curX + iconW, fy + iconW * 0.5f);
-            if (tex)
-                dl->AddImage(tex, iconTL, iconBR,
-                    ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, alpha));
-            curX += iconW + GAP;
-        }
-
-        if (e.label.empty()) continue;
-
-        float labelCenterX = curX + labelW * 0.5f;
-        bmFont->DrawString(dl, e.label.c_str(), labelCenterX, fy, glyphHeight, alpha);
-    }
+    // Spawn order, so the newest draws on top.
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    for (const IncomingEffect& e : m_incomingEffects)
+        DrawFloater(dl, e, now, anchorX, anchorY, 1.f);
 }
 
 
@@ -936,10 +929,9 @@ void ReplayWindow::DrawFollowedAgentHUD()
     }
 }
 
-// Energy gains and drains over every player but the followed one, in the client's purple digits:
-// the same rise, fade and lifetime as the followed player's numbers, the skill's icon beside the
-// number. Only energy, which the energy model knows for everyone; damage and heals stay on the
-// followed player.
+// Energy gains and drains over every player but the followed one, in the client's purple digits and
+// with the client's floater layout. Only energy, which the energy model knows for everyone; damage
+// and heals stay on the followed player.
 void ReplayWindow::RenderEnergyPopsOverPlayers()
 {
     if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
@@ -952,12 +944,9 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
     const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float vpW = vp->Size.x, vpH = vp->Size.y;
-    const float glyphHeight = std::clamp(vpH * 0.013f, 9.f, 18.f);
     const float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
-    constexpr float kFloat = 90.f, kIcon = 22.f, kGap = 4.f;
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
-    EnsureSkillIconIndex();
+    std::vector<IncomingEffect> live, batch;
 
     for (int pid : m_playerIds)
     {
@@ -982,31 +971,29 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
         if (!ProjectToScreen(viewProj, vpW, vpH, XMFLOAT3{ worldPos.x, topY, worldPos.z }, ax, ay)) continue;
         ay -= iconSz + 8.f;
 
-        int k = 0;
-        for (auto g = first; g != track->gains.end() && g->time <= now; ++g, ++k)
+        // Nothing is kept between frames here, so the layout is replayed from the start of the
+        // current run of overlapping pops: back to a pop that spawned when every earlier one had
+        // expired. The side switch starts afresh there; the same frame always gives the same layout.
+        auto start = first;
+        while (start != track->gains.begin() && std::prev(start)->time > start->time - kEffectLifetime)
+            --start;
+
+        live.clear();
+        batch.clear();
+        bool toggle = false;
+        const float scale = FloaterBaseScale(pid, now);
+        for (auto g = start; g != track->gains.end() && g->time <= now; ++g)
         {
             const int amount = static_cast<int>(std::lround(g->amount));
             if (amount == 0) continue;
-            const float t = (now - g->time) / kEffectLifetime;
-            const float opacity = std::clamp(t < 0.65f ? 1.f : 1.f - (t - 0.65f) / 0.35f, 0.f, 1.f);
-            const uint8_t alpha = static_cast<uint8_t>(opacity * 255.f);
-            const float fy = ay - t * kFloat;
-            // Two pops at once on one player sit side by side rather than on top of each other.
-            const float fx = ax + (k % 2 ? 28.f : -28.f) * (k > 0 ? 1.f : 0.f);
-
-            char label[16];
-            snprintf(label, sizeof(label), "%c%d", amount > 0 ? '+' : '-', std::abs(amount));
-            const float labelW = m_energyBitmapFont.MeasureString(label, glyphHeight);
-            ImTextureID tex = nullptr;   // the number alone, no skill icon
-            const float totalW = (tex ? kIcon + kGap : 0.f) + labelW;
-            float x = fx - totalW * 0.5f;
-            if (tex)
-            {
-                dl->AddImage(tex, ImVec2(x, fy - kIcon * 0.5f), ImVec2(x + kIcon, fy + kIcon * 0.5f),
-                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, alpha));
-                x += kIcon + kGap;
-            }
-            m_energyBitmapFont.DrawString(dl, label, x + labelW * 0.5f, fy, glyphHeight, alpha);
+            IncomingEffect eff;
+            eff.spawnTime = g->time;
+            eff.type = IncomingEffectType::Energy;
+            eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
+            batch.push_back(std::move(eff));
+            PlaceFloaters(live, batch, toggle, scale);
         }
+        for (const IncomingEffect& e : live)
+            DrawFloater(dl, e, now, ax, ay, 1.f);
     }
 }

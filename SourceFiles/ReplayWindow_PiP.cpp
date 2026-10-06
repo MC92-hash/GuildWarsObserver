@@ -50,6 +50,7 @@ void ReplayWindow::UpdatePiPIncomingEffects()
 
     if (pipTarget != m_pipEffectAgentId || now < m_pipLastEffectScanTime - 0.5f) {
         m_pipIncomingEffects.clear();
+        m_pipFloaterToggle = false;
         m_pipEffectAgentId = pipTarget;
         m_pipLastEffectScanTime = now;
         return;
@@ -83,23 +84,9 @@ void ReplayWindow::UpdatePiPIncomingEffects()
         return it->second.solvedMaxHpAtTime(t);
     };
 
-    auto pushPipEffect = [&](IncomingEffect eff) {
-        constexpr float kMinSep = 35.f;
-        constexpr float kTimeWindow = 0.4f;
-        float bestOff = 0.f, bestDist = 0.f;
-        for (int attempt = 0; attempt < 8; ++attempt) {
-            float candidate = (float)(rand() % 181) - 90.f;
-            float minDist = 999.f;
-            for (const auto& ex : m_pipIncomingEffects) {
-                if (std::abs(ex.spawnTime - eff.spawnTime) > kTimeWindow) continue;
-                minDist = std::min(minDist, std::abs(candidate - ex.xOffset));
-            }
-            if (minDist > bestDist) { bestDist = minDist; bestOff = candidate; }
-            if (bestDist >= kMinSep) break;
-        }
-        eff.xOffset = bestOff;
-        m_pipIncomingEffects.push_back(std::move(eff));
-    };
+    // Laid out together at the end, in time order, by the client's floater rule.
+    std::vector<IncomingEffect> batch;
+    auto pushPipEffect = [&](IncomingEffect eff) { batch.push_back(std::move(eff)); };
 
     // The same numbers and icons as over the followed player: one attribution table for both.
     {
@@ -133,6 +120,10 @@ void ReplayWindow::UpdatePiPIncomingEffects()
         eff.label = "INTERRUPT";
         pushPipEffect(std::move(eff));
     }
+
+    // The PiP camera's distance is not the main view's; the client's scale at its usual distance.
+    if (!batch.empty())
+        PlaceFloaters(m_pipIncomingEffects, batch, m_pipFloaterToggle, OverheadFloaters::BaseScale(50.f, 1000.f));
 }
 
 
@@ -954,125 +945,14 @@ void ReplayWindow::DrawPiPPanel()
                         float anchorX, anchorY;
                         if (ProjectToImage(tgtPos, anchorX, anchorY))
                         {
-                            constexpr float kFloatDist = 80.f;
-                            constexpr float kStartOffsetY = 30.f;
-                            anchorY -= kStartOffsetY;
-
+                            // The client's floaters, the PiP image taken as a scaled-down screen,
+                            // from a little above the feet (the PiP has no model-top anchor).
+                            anchorY -= 30.f;
                             EnsureBitmapFontsLoaded();
-                            const float glyphH = std::clamp(imgH * 0.016f, 9.f, 16.f);
-
-                            static std::vector<size_t> pipSorted;
-                            pipSorted.clear();
-                            for (size_t i = 0; i < m_pipIncomingEffects.size(); ++i) {
-                                float age = now - m_pipIncomingEffects[i].spawnTime;
-                                if (age >= 0.f && age < kEffectLifetime)
-                                    pipSorted.push_back(i);
-                            }
-                            std::sort(pipSorted.begin(), pipSorted.end(), [&](size_t a, size_t b) {
-                                return m_pipIncomingEffects[a].spawnTime < m_pipIncomingEffects[b].spawnTime;
-                            });
-
-                            constexpr float ICON_SZ = 20.f;
-                            constexpr float GAP = 3.f;
                             EnsureSkillIconIndex();
-
-                            const size_t total = pipSorted.size();
-                            for (size_t si = 0; si < total; ++si)
-                            {
-                                const auto& e = m_pipIncomingEffects[pipSorted[si]];
-                                if (e.label.empty() && e.skillId <= 0) continue;
-                                float age = now - e.spawnTime;
-                                float t = age / kEffectLifetime;
-                                float opacity = (t < 0.65f) ? 1.f : 1.f - ((t - 0.65f) / 0.35f);
-                                opacity = std::clamp(opacity, 0.f, 1.f);
-
-                                float depthRank = (total > 1) ? (float)si / (float)(total - 1) : 1.f;
-                                opacity *= 0.55f + 0.45f * depthRank;
-
-                                uint8_t alpha = (uint8_t)(opacity * 255.f);
-                                float fy = anchorY - t * kFloatDist;
-                                float fx = anchorX + e.xOffset * (imgW / 800.f);
-
-                                bool hasIcon = (e.skillId > 0);
-                                float iconW = ICON_SZ;
-
-                                const BitmapFont* bmFont = nullptr;
-                                if (e.type == IncomingEffectType::Heal && m_healBitmapFont.srv.Get())
-                                    bmFont = &m_healBitmapFont;
-                                else if ((e.type == IncomingEffectType::Damage || e.type == IncomingEffectType::BasicAttack) && m_damageBitmapFont.srv.Get())
-                                    bmFont = &m_damageBitmapFont;
-
-                                float labelW = 0.f;
-                                if (bmFont && !e.label.empty())
-                                    labelW = bmFont->MeasureString(e.label.c_str(), glyphH);
-
-                                if (bmFont) {
-                                    float totalW = 0.f;
-                                    if (hasIcon) totalW += iconW;
-                                    if (hasIcon && labelW > 0.f) totalW += GAP;
-                                    if (labelW > 0.f) totalW += labelW;
-
-                                    float startX = fx - totalW * 0.5f;
-                                    float curX = startX;
-
-                                    if (hasIcon) {
-                                        ImTextureID tex = LoadSkillIcon(
-                                            const_cast<ReplayWindow*>(this), dev,
-                                            e.skillId, m_skillIconIndex, m_skillIconCache);
-                                        if (tex)
-                                            dl->AddImage(tex,
-                                                ImVec2(curX, fy - iconW * 0.5f),
-                                                ImVec2(curX + iconW, fy + iconW * 0.5f),
-                                                ImVec2(0, 0), ImVec2(1, 1),
-                                                IM_COL32(255, 255, 255, alpha));
-                                        curX += iconW + GAP;
-                                    }
-
-                                    if (!e.label.empty()) {
-                                        float labelCX = curX + labelW * 0.5f;
-                                        bmFont->DrawString(dl, e.label.c_str(), labelCX, fy, glyphH, alpha);
-                                    }
-                                } else {
-                                    ImU32 col;
-                                    if (e.type == IncomingEffectType::Heal)
-                                        col = IM_COL32(100, 255, 100, alpha);
-                                    else if (e.type == IncomingEffectType::Interrupt)
-                                        col = IM_COL32(224, 112, 48, alpha);
-                                    else
-                                        col = IM_COL32(255, 80, 80, alpha);
-
-                                    float labelFs = fontSize;
-                                    ImVec2 tsz = font->CalcTextSizeA(labelFs, FLT_MAX, 0.f, e.label.c_str());
-                                    float totalW = 0.f;
-                                    if (hasIcon) totalW += iconW;
-                                    if (hasIcon && tsz.x > 0) totalW += GAP;
-                                    totalW += tsz.x;
-
-                                    float startX = fx - totalW * 0.5f;
-                                    float curX = startX;
-
-                                    if (hasIcon) {
-                                        ImTextureID tex = LoadSkillIcon(
-                                            const_cast<ReplayWindow*>(this), dev,
-                                            e.skillId, m_skillIconIndex, m_skillIconCache);
-                                        if (tex)
-                                            dl->AddImage(tex,
-                                                ImVec2(curX, fy - iconW * 0.5f),
-                                                ImVec2(curX + iconW, fy + iconW * 0.5f),
-                                                ImVec2(0, 0), ImVec2(1, 1),
-                                                IM_COL32(255, 255, 255, alpha));
-                                        curX += iconW + GAP;
-                                    }
-
-                                    if (!e.label.empty()) {
-                                        dl->AddText(font, labelFs,
-                                            ImVec2(curX + 1.f, fy - tsz.y * 0.5f + 1.f),
-                                            IM_COL32(0, 0, 0, alpha), e.label.c_str());
-                                        dl->AddText(font, labelFs,
-                                            ImVec2(curX, fy - tsz.y * 0.5f), col, e.label.c_str());
-                                    }
-                                }
-                            }
+                            const float view = imgH / std::max(1.f, ImGui::GetMainViewport()->Size.y);
+                            for (const IncomingEffect& e : m_pipIncomingEffects)
+                                DrawFloater(dl, e, now, anchorX, anchorY, view);
                         }
                     }
                 }

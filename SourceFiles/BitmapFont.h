@@ -4,6 +4,8 @@
 #include <wrl/client.h>
 #include <unordered_map>
 #include <string>
+#include <cmath>
+#include <cstring>
 #include <DirectXTex.h>
 
 struct GlyphInfo {
@@ -123,6 +125,27 @@ struct BitmapFont {
             dl->AddImage(texId, tl, br, ImVec2(g.u0, g.v0), ImVec2(g.u1, g.v1), col);
 
             curX += gw;
+        }
+    }
+
+    // The client's own layout: each character is its whole atlas cell (a quarter of the texture) drawn
+    // `cellPx` square, the next one half a cell further on, the row centred on cx. A character without
+    // a glyph (a space) still takes its advance.
+    void DrawCells(ImDrawList* dl, const char* str, float cx, float cy, float cellPx, uint8_t alpha) const
+    {
+        if (!srv.Get() || !dl || !str || !*str) return;
+        const float advance = cellPx * 0.5f;
+        const size_t n = strlen(str);
+        float x = cx - advance * static_cast<float>(n + 1) * 0.5f;
+        const ImU32 col = IM_COL32(255, 255, 255, alpha);
+        for (const char* p = str; *p; ++p, x += advance)
+        {
+            auto it = glyphs.find(*p);
+            if (it == glyphs.end()) continue;
+            const float u = std::floor(it->second.u0 * 4.f) * 0.25f;
+            const float v = std::floor(it->second.v0 * 4.f) * 0.25f;
+            dl->AddImage((ImTextureID)srv.Get(), ImVec2(x, cy - cellPx * 0.5f), ImVec2(x + cellPx, cy + cellPx * 0.5f),
+                         ImVec2(u, v), ImVec2(u + 0.25f, v + 0.25f), col);
         }
     }
 
