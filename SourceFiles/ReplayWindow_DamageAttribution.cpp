@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <tuple>
 
 // ---------------------------------------------------------------------------
 // Which skill each damage and heal packet came from. The rules live in DamageAttribution
@@ -101,6 +103,7 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
     if (cached != m_damagePops.end()) return cached->second;
 
     std::vector<DamagePop>& pops = m_damagePops[agentId];
+    std::vector<int> damageTypes;   // per pop, -1 for a heal
     const auto& combat = m_replayCtx.stocData.combat;
     for (size_t i = 0; i < combat.size(); ++i)
     {
@@ -113,9 +116,34 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
         p.skillId  = r.skillId;
         p.heal     = ce.type == "HEAL";
         // A weapon's vampiric part is life stolen, not an attack: its number has no attack icon.
-        p.weaponHit = r.weaponHit && !(ce.damage_type == 55 && !p.heal);
+        // Nor is the attacker's own heal from a steal (Avatar of Grenth, Grenth's Aura, a vampiric
+        // weapon): it lands in the hit's tick and the attribution calls it a weapon hit, which drew
+        // it in the damage digits.
+        p.weaponHit = r.weaponHit && !p.heal && ce.damage_type != 55;
         p.value    = ce.value;
         pops.push_back(p);
+        damageTypes.push_back(p.heal ? -1 : (int)ce.damage_type);
+    }
+    // One icon per hit. An attack skill under a steal (Avatar of Grenth, Grenth's Aura, a vampiric
+    // weapon) arrives as several damage packets in one tick - the hit and its stolen parts - and the
+    // attribution names the skill on each. When a stolen part (type 55) is among them, the skill
+    // shows once, beside the hit; the stolen numbers come alone.
+    struct Group { size_t holder = SIZE_MAX; bool steal = false; };
+    std::map<std::tuple<int, long, int>, Group> groups;   // (cause, tick ms, skill)
+    auto keyOf = [&](size_t k) { return std::make_tuple(pops[k].casterId, std::lround(pops[k].time * 1000.f), pops[k].skillId); };
+    for (size_t k = 0; k < pops.size(); ++k)
+    {
+        if (pops[k].heal || pops[k].skillId <= 0) continue;
+        Group& g = groups[keyOf(k)];
+        const bool stolen = damageTypes[k] == 55;
+        if (stolen) g.steal = true;
+        if (g.holder == SIZE_MAX || (damageTypes[g.holder] == 55 && !stolen)) g.holder = k;
+    }
+    for (size_t k = 0; k < pops.size(); ++k)
+    {
+        if (pops[k].heal || pops[k].skillId <= 0) continue;
+        const Group& g = groups[keyOf(k)];
+        if (g.steal && g.holder != k) pops[k].skillId = 0;
     }
     std::stable_sort(pops.begin(), pops.end(), [](const DamagePop& a, const DamagePop& b) { return a.time < b.time; });
     return pops;
