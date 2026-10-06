@@ -1068,6 +1068,14 @@ static void ParseEnergyEvents(const std::string& content, StoCData& data)
                         ev.delta   = ToInt(tok[4].begin, tok[4].end);
                         data.energySamples.push_back(std::move(ev));
                     }
+                    else if (typeName == "ENERGY_NOPAY" && n >= 3)
+                    {
+                        EnergyNoPay ev;
+                        ev.time     = li.time;
+                        ev.skillId  = ToInt(tok[1].begin, tok[1].end);
+                        ev.casterId = ToInt(tok[2].begin, tok[2].end);
+                        data.energyNoPay.push_back(std::move(ev));
+                    }
                     else if (typeName == "ENERGY_COVERAGE" && n >= 5)
                     {
                         EnergyCoverage ev;

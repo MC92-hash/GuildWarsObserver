@@ -1772,6 +1772,17 @@ struct EnergySample
 // Recordings made before the spread was added carry only samples and mode; the parser leaves
 // min and max equal to mode there, which reads as "constant" - the honest default, since those
 // recordings say nothing either way.
+// A conditional payout the recorder watched through its window and never saw: the Elementalist
+// "Glow" spells pay 5 + Energy Storage/2 only when the target carries a condition no recording can
+// see, so the recorder writes down each cast's answer -- an ENERGY_SAMPLE when it paid, this line
+// when it did not. Recordings from 2026-10-06 on.
+struct EnergyNoPay
+{
+    float time     = 0.f;
+    int   skillId  = 0;
+    int   casterId = 0;
+};
+
 struct EnergyCoverage
 {
     int skillId  = 0;
@@ -1975,6 +1986,7 @@ struct StoCData
     std::vector<ModelChangeEvent>       modelEvents;
     std::vector<EnergySample>           energySamples;
     std::vector<EnergyCoverage>         energyCoverage;
+    std::vector<EnergyNoPay>            energyNoPay;
     Equipment::Data                     equipment;
 };
 

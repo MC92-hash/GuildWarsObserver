@@ -153,6 +153,26 @@ void ReplayWindow::UpdateIncomingEffects()
         m_incomingEffects.push_back(std::move(eff));
     };
 
+    // Energy gains and drains, in the client's purple: the energy model's discrete changes (a
+    // skill's payout, a critical hit, Soul Reaping, a foe's denial), not regeneration and not
+    // weapon swaps.
+    if (const EnergyModel::Track* track = EnergyTrackFor(focused))
+    {
+        auto g = std::upper_bound(track->gains.begin(), track->gains.end(), scanFrom,
+                                  [](float v, const EnergyModel::Gain& x) { return v < x.time; });
+        for (; g != track->gains.end() && g->time <= scanTo; ++g)
+        {
+            const int amount = static_cast<int>(std::lround(g->amount));
+            if (amount == 0) continue;
+            IncomingEffect eff;
+            eff.spawnTime = g->time;
+            eff.skillId = g->skillId;
+            eff.type = IncomingEffectType::Energy;
+            eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
+            pushEffect(std::move(eff));
+        }
+    }
+
     // Skills that target a foe but only deal damage to the caster (self-damage).
     // These must never consume combat damage events on the target.
     auto isCasterDamageOnly = [](int skillId) -> bool {
@@ -678,7 +698,7 @@ void ReplayWindow::UpdateIncomingEffects()
 
 void ReplayWindow::EnsureBitmapFontsLoaded()
 {
-    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded) return;
+    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded && m_energyBitmapFont.loaded) return;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     auto ddsDir = FindTexturesDDSDir();
@@ -688,6 +708,8 @@ void ReplayWindow::EnsureBitmapFontsLoaded()
         m_damageBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0x753F0FB5.dds").c_str());
     if (!m_healBitmapFont.loaded)
         m_healBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0xA0629E7F.dds").c_str());
+    if (!m_energyBitmapFont.loaded)
+        m_energyBitmapFont.Load(dev, (ddsDir / L"texture_265569.dds").c_str());
 }
 
 
@@ -788,14 +810,15 @@ void ReplayWindow::RenderIncomingEffects()
         bool useBitmapFont = !e.label.empty()
             && (e.type == IncomingEffectType::Damage
                 || e.type == IncomingEffectType::Heal
-                || e.type == IncomingEffectType::BasicAttack);
+                || e.type == IncomingEffectType::BasicAttack
+                || e.type == IncomingEffectType::Energy);
 
         const BitmapFont* bmFont = nullptr;
         if (useBitmapFont)
         {
-            bmFont = (e.type == IncomingEffectType::Heal)
-                         ? &m_healBitmapFont
-                         : &m_damageBitmapFont;
+            bmFont = (e.type == IncomingEffectType::Heal)   ? &m_healBitmapFont
+                   : (e.type == IncomingEffectType::Energy) ? &m_energyBitmapFont
+                                                            : &m_damageBitmapFont;
             if (!bmFont->srv.Get()) bmFont = nullptr;
         }
 
@@ -842,6 +865,7 @@ void ReplayWindow::RenderIncomingEffects()
             case IncomingEffectType::Interrupt:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
             case IncomingEffectType::Condition:    labelCol = IM_COL32(0xE0, 0x70, 0x30, alpha); break;
             case IncomingEffectType::Hex:         labelCol = IM_COL32(0x90, 0x40, 0xC0, alpha); break;
+            case IncomingEffectType::Energy:      labelCol = IM_COL32(0xE0, 0x60, 0xF0, alpha); break;
             default:                              labelCol = IM_COL32(0xFF, 0xFF, 0xFF, alpha); break;
             }
 

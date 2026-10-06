@@ -1991,7 +1991,7 @@ private:
     void DrawSkillAnalyticsPlayerPopups();
 
     // --- Incoming effect display ---
-    enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex, BasicAttack };
+    enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex, BasicAttack, Energy };
     struct IncomingEffect {
         int             skillId     = 0;
         std::string     label;
@@ -2007,6 +2007,7 @@ private:
     // Bitmap font textures for GW-style floating numbers
     BitmapFont m_damageBitmapFont;
     BitmapFont m_healBitmapFont;
+    BitmapFont m_energyBitmapFont;   // the client's purple digits (texture 265569), energy gains
     void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();
