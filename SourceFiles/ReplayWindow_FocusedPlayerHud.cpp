@@ -801,7 +801,22 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
         return std::string(b);
     };
     if (si->upkeep < 0)     costs.push_back({ std::to_string(si->upkeep), "upkeep.png" });
-    if (si->energy > 0)     costs.push_back({ std::to_string(si->energy), "energy.png" });
+    if (si->energy > 0) {
+        // What the energy model charged this player the last time they used it (Expertise,
+        // Mysticism, Quickening Zephyr, a glyph), then the listed cost in brackets - "5 (10)", as
+        // the wiki writes it. Only the listed cost until the skill has been used.
+        std::string energy = std::to_string(si->energy);
+        if (const EnergyModel::Track* track = EnergyTrackFor(agentId)) {
+            const int wanted = m_skillView.ResolvePvpSkillId(skillId);
+            for (auto c = track->castLog.rbegin(); c != track->castLog.rend(); ++c) {
+                if (c->time > m_debugTimeline || m_skillView.ResolvePvpSkillId(c->skillId) != wanted) continue;
+                const int paid = static_cast<int>(std::lround(c->charged));
+                if (paid != si->energy) energy = std::to_string(paid) + " (" + std::to_string(si->energy) + ")";
+                break;
+            }
+        }
+        costs.push_back({ energy, "energy.png" });
+    }
     if (si->adrenaline > 0) costs.push_back({ std::to_string(si->adrenaline), "adrenaline.png" });
     if (si->sacrifice > 0)  costs.push_back({ std::to_string(si->sacrifice) + "%", "sacrifice.png" });
     if (si->overcast > 0)   costs.push_back({ std::to_string(si->overcast), "overcast.png" });
