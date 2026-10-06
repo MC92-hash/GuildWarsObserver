@@ -8,6 +8,7 @@
 #include "AgentSnapshotParser.h"
 #include "StoCParser.h"
 #include "SkillDatabase.h"
+#include "MaxHpSolver.h"
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
@@ -100,58 +101,24 @@ void ReplayWindow::UpdatePiPIncomingEffects()
         m_pipIncomingEffects.push_back(std::move(eff));
     };
 
-    // Attribute damage/heal events to skills by matching caster's skill history
-    auto findSkillForCombat = [&](int casterId, int targetId, float hitTime) -> int {
-        auto cIt = m_replayCtx.agents.find(casterId);
-        if (cIt == m_replayCtx.agents.end()) return 0;
-        int bestSkill = 0;
-        float bestDt = 1e9f;
-        for (const auto& su : cIt->second.skillUseHistory) {
-            if (su.wasCancelled) continue;
-            if (su.targetId != targetId && su.targetId > 0) continue;
-            float dt = hitTime - su.endTime;
-            if (dt < -0.1f || dt > 3.0f) continue;
-            float absDt = std::abs(dt);
-            if (absDt < bestDt) { bestDt = absDt; bestSkill = su.skillId; }
+    // The same numbers and icons as over the followed player: one attribution table for both.
+    {
+        const auto& pops = DamagePopsOn(pipTarget);
+        auto it = std::upper_bound(pops.begin(), pops.end(), scanFrom,
+                                   [](float v, const DamagePop& p) { return v < p.time; });
+        for (; it != pops.end() && it->time <= scanTo; ++it) {
+            const DamagePop& pop = *it;
+            if (pop.casterId == pipTarget && !pop.heal) continue;
+            IncomingEffect eff;
+            eff.spawnTime = pop.time;
+            eff.skillId = pop.skillId;
+            eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
+                     : pop.heal      ? IncomingEffectType::Heal
+                                     : IncomingEffectType::Damage;
+            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(pipTarget, pop.time), pop.firstValue);
+            eff.label = DamagePopLabel(pop, mhp);
+            pushPipEffect(std::move(eff));
         }
-        return bestSkill;
-    };
-
-    const auto& combatVec = m_replayCtx.stocData.combat;
-    std::unordered_set<size_t> consumed;
-
-    for (size_t i = 0; i < combatVec.size(); ++i) {
-        const auto& ce = combatVec[i];
-        if (!ce.IsDamageOrHeal()) continue;
-        if (ce.target_id != pipTarget) continue;
-        if (ce.time <= scanFrom || ce.time > scanTo) continue;
-        if (consumed.count(i)) continue;
-
-        float totalValue = ce.value;
-        consumed.insert(i);
-
-        for (size_t j = i + 1; j < combatVec.size(); ++j) {
-            const auto& ce2 = combatVec[j];
-            if (ce2.type != "DAMAGE") continue;
-            if (ce2.caster_id != ce.caster_id || ce2.target_id != pipTarget) continue;
-            if (ce2.time - ce.time > 0.15f) break;
-            if (consumed.count(j)) continue;
-            totalValue += ce2.value;
-            consumed.insert(j);
-        }
-
-        bool isHeal = (totalValue > 0.f);
-        IncomingEffect eff;
-        eff.spawnTime = ce.time;
-        eff.skillId = findSkillForCombat(ce.caster_id, pipTarget, ce.time);
-        eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
-        uint32_t mhp = findAgentMaxHp(pipTarget, ce.time);
-        int rawVal = (mhp > 0) ? (int)std::round(std::abs(totalValue) * mhp) : 0;
-        if (rawVal > 0)
-            eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
-        else
-            eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(totalValue) * 100.f);
-        pushPipEffect(std::move(eff));
     }
 
     for (const auto& ce : m_replayCtx.stocData.combat) {

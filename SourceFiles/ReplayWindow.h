@@ -36,6 +36,7 @@
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "EnergyModel.h"
+#include "DamageAttribution.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -410,6 +411,35 @@ private:
     mutable std::unordered_map<int, EnergyModel::Track> m_energyTracks;
     mutable bool m_energyBuilt = false;
     mutable bool m_energyUsedAttributes = false;
+
+    // Which skill each damage and heal packet came from (DamageAttribution, private): one table
+    // over the whole match, built once the skill-use timeline exists. The pops over the followed
+    // player and over the PiP target both read it, so a hit shows the same icon in either.
+    void BuildDamageAttribution() const;
+    const DamageAttribution::Table* DamageAttributionTable() const;
+    mutable DamageAttribution::Table m_damageAttribution;
+    mutable bool m_damageAttributionBuilt = false;
+
+    // One floating number: the packets of one cause in one burst (0.15 s) under one attribution. A
+    // weapon hit keeps its vampiric part apart ("-35 -5"); a vampiric part riding on a skill hit
+    // joins that skill's number.
+    struct DamagePop
+    {
+        float time        = 0.f;     // the first packet's
+        int   casterId    = 0;
+        int   skillId     = 0;       // the icon, 0 for none
+        bool  weaponHit   = false;   // shown with the attack icon
+        bool  heal        = false;
+        float value       = 0.f;     // summed fraction of maximum health, negative for damage
+        float firstValue  = 0.f;     // the first packet's, for the max-HP correction
+        float weaponValue = 0.f;     // a weapon hit's two parts
+        float vampValue   = 0.f;
+        bool  vampOnly    = false;   // so far nothing but a vampiric part (its hit may follow)
+    };
+    // The agent's pops in time order, built on first use per agent.
+    const std::vector<DamagePop>& DamagePopsOn(int agentId) const;
+    static std::string DamagePopLabel(const DamagePop& pop, uint32_t maxHp);
+    mutable std::unordered_map<int, std::vector<DamagePop>> m_damagePops;
 
     // Morale as a step function per player, folded once over the match. Both the health model and
     // the morale panel read it, so the rules exist in exactly one place; the panel used to carry
@@ -1218,6 +1248,9 @@ private:
         // Pinned bank only: the playable ref of each bank segment index (= the recorded
         // animation_id), externals redirected; {-1,-1} where nothing plays.
         std::vector<SegmentRef> bankSegmentRefs;
+        // Index in allClips of the bank bankSegmentRefs was built from (-1 = none). The chosen
+        // clip itself, unless that clip is only an idle file of the bank (AnimationIdBankFileId).
+        int bankClipIndex = -1;
         std::shared_ptr<GW::Animation::AnimationClip> clip;
         std::shared_ptr<GW::Animation::Skeleton> skeleton;
         std::vector<AnimationPanelState::SubmeshBoneData> submeshBoneData;
@@ -1488,6 +1521,9 @@ private:
     // keeps the first match exactly as before, so this is additive. Called from the model load
     // worker, so it must stay a pure table lookup with no state.
     static uint32_t PreferredAnimationFileId(int profession, int sex, uint32_t hash0, uint32_t hash1);
+    // The bank the recorded animation_id indexes. The file above for most characters; a character
+    // whose preferred file is an idle clip of its bank gets the bank here. 0 = no better answer.
+    static uint32_t AnimationIdBankFileId(int profession, int sex, uint32_t hash0, uint32_t hash1);
 
     // Whether this submesh of a composed character is a SURFACE. A submesh that composites by
     // adding light is a two-sided card with no back: it cannot occlude and it cannot cast, so the

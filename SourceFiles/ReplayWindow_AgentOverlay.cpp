@@ -1470,6 +1470,16 @@ void ReplayWindow::EnsureSkillIconIndex()
         }
         if (!dir.has_parent_path() || dir == dir.parent_path()) break;
     }
+
+    // The two map hazards are no player skill; their pictures sit beside the NPC icons.
+    const auto npcFolder = folder.parent_path() / "NPC";
+    const std::pair<int, const char*> hazards[] = {
+        { DamageAttribution::kSpikedCoral, "Spiked_Coral.jpg" },
+        { DamageAttribution::kAcidTrap,    "Acid_Trap.jpg" },
+    };
+    for (const auto& [skillId, file] : hazards)
+        if (m_skillIconIndex.find(skillId) == m_skillIconIndex.end() && std::filesystem::exists(npcFolder / file))
+            m_skillIconIndex[skillId] = (npcFolder / file).string();
 }
 
 

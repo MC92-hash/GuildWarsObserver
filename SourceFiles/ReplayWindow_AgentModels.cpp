@@ -1125,8 +1125,11 @@ void ReplayWindow::LoadAgentModelsIO()
             // index 0 exactly as before.
             size_t chosen = 0;
             bool bankPinned = false;
+            uint32_t idBankWanted = 0;
             int pool_prof = 0, pool_sex = 0;
             if (PlayerModelPoolIdentity(wi.fileHash, pool_prof, pool_sex)) {
+                idBankWanted = ReplayWindow::AnimationIdBankFileId(
+                    pool_prof, pool_sex, wi.tmpl.modelHash0, wi.tmpl.modelHash1);
                 const uint32_t wanted = ReplayWindow::PreferredAnimationFileId(
                     pool_prof, pool_sex, wi.tmpl.modelHash0, wi.tmpl.modelHash1);
                 if (wanted != 0) {
@@ -1150,6 +1153,55 @@ void ReplayWindow::LoadAgentModelsIO()
             wi.tmpl.clip = wi.tmpl.allClips[chosen].clip;
             wi.tmpl.skeleton = wi.tmpl.allClips[chosen].skeleton;
 
+            // The index in allClips of a file, loading it when discovery did not bring it (-1 = none).
+            auto findOrLoadClip = [&](uint32_t fileId) -> int {
+                for (size_t ci = 0; ci < wi.tmpl.allClips.size(); ci++)
+                    if (wi.tmpl.allClips[ci].sourceFileHash == fileId) return static_cast<int>(ci);
+                auto refIt = m_hashIndex->find(static_cast<int>(fileId));
+                if (refIt == m_hashIndex->end() || refIt->second.empty()) return -1;
+                const int refMft = refIt->second.at(0);
+                std::optional<GW::Animation::AnimationClip> refClip;
+                if (auto* cached = m_clipCache.Get(refMft, fileId)) {
+                    refClip = *cached;
+                } else {
+                    try {
+                        uint8_t* refData = m_datManager->read_file(refMft, datHandle);
+                        if (refData) {
+                            refClip = GW::Parsers::ParseAnimationFromFile(refData, mft[refMft].uncompressedSize);
+                            delete[] refData;
+                            if (refClip && refClip->IsValid())
+                                m_clipCache.Put(refMft, fileId, *refClip);
+                        }
+                    } catch (...) {}
+                }
+                if (!refClip || !refClip->IsValid()) return -1;
+                AnimClipEntry entry;
+                entry.clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*refClip));
+                entry.clip->BuildAnimationGroups();
+                entry.skeleton = std::make_shared<GW::Animation::Skeleton>(
+                    GW::Parsers::BB9AnimationParser::CreateSkeleton(*entry.clip));
+                entry.sourceFileHash = fileId;
+                wi.tmpl.allClips.push_back(std::move(entry));
+                return static_cast<int>(wi.tmpl.allClips.size()) - 1;
+            };
+
+            // THE BANK THE RECORDED animation_id INDEXES is the chosen file for every pinned
+            // character but the Assassins: their chosen file is an FA8 idle clip of the bank (15 /
+            // 12 segments), so every id they record - attacks included - fell outside it and
+            // nothing played. The chosen file stays the rig, the idle and the weapon links' source;
+            // only the id table and the external redirects below are read from the bank.
+            size_t bankIdx = chosen;
+            if (bankPinned && idBankWanted != 0 &&
+                idBankWanted != wi.tmpl.allClips[chosen].sourceFileHash) {
+                const int bi = findOrLoadClip(idBankWanted);
+                const bool usable = bi >= 0 &&
+                    wi.tmpl.allClips[bi].clip->boneTracks.size() == wi.tmpl.clip->boneTracks.size();
+                if (usable) bankIdx = static_cast<size_t>(bi);
+                RunLog::Line("anim bank: model 0x%08X indexes animation ids against 0x%08X -> %s",
+                             wi.fileHash, idBankWanted,
+                             usable ? "loaded" : "NOT USABLE, keeping the chosen file");
+            }
+
             // A player bank is mostly a TABLE OF CONTENTS. Most of its segments are EXTERNAL: a
             // non-zero source type k names entry #k of the bank's own FA8 table, and that file
             // carries the same hash as a LOCAL segment over the same time window (measured: every
@@ -1161,12 +1213,12 @@ void ReplayWindow::LoadAgentModelsIO()
             // here if discovery did not already bring them in.
             std::vector<SegmentRef> externalRedirect;
             if (bankPinned) {
-                const auto& bankClip = *wi.tmpl.allClips[chosen].clip;
+                const auto& bankClip = *wi.tmpl.allClips[bankIdx].clip;
                 const size_t segCount = bankClip.animationSegments.size();
                 externalRedirect.assign(segCount, SegmentRef{ -1, -1 });
 
                 std::vector<uint32_t> fa8;
-                const uint32_t bankId = wi.tmpl.allClips[chosen].sourceFileHash;
+                const uint32_t bankId = wi.tmpl.allClips[bankIdx].sourceFileHash;
                 auto bankIt = m_hashIndex->find(static_cast<int>(bankId));
                 if (bankIt != m_hashIndex->end() && !bankIt->second.empty()) {
                     const int bankMft = bankIt->second.at(0);
@@ -1200,41 +1252,11 @@ void ReplayWindow::LoadAgentModelsIO()
 
                 // FA8 entry -> index in allClips, loading the ones discovery did not bring.
                 std::vector<int> fa8Clip(fa8.size(), -1);
-                for (size_t e = 0; e < fa8.size(); e++) {
-                    for (size_t ci = 0; ci < wi.tmpl.allClips.size(); ci++) {
-                        if (wi.tmpl.allClips[ci].sourceFileHash == fa8[e]) { fa8Clip[e] = static_cast<int>(ci); break; }
-                    }
-                    if (fa8Clip[e] >= 0) continue;
-                    auto refIt = m_hashIndex->find(static_cast<int>(fa8[e]));
-                    if (refIt == m_hashIndex->end() || refIt->second.empty()) continue;
-                    const int refMft = refIt->second.at(0);
-                    std::optional<GW::Animation::AnimationClip> refClip;
-                    if (auto* cached = m_clipCache.Get(refMft, fa8[e])) {
-                        refClip = *cached;
-                    } else {
-                        try {
-                            uint8_t* refData = m_datManager->read_file(refMft, datHandle);
-                            if (refData) {
-                                refClip = GW::Parsers::ParseAnimationFromFile(refData, mft[refMft].uncompressedSize);
-                                delete[] refData;
-                                if (refClip && refClip->IsValid())
-                                    m_clipCache.Put(refMft, fa8[e], *refClip);
-                            }
-                        } catch (...) {}
-                    }
-                    if (!refClip || !refClip->IsValid()) continue;
-                    AnimClipEntry entry;
-                    entry.clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*refClip));
-                    entry.clip->BuildAnimationGroups();
-                    entry.skeleton = std::make_shared<GW::Animation::Skeleton>(
-                        GW::Parsers::BB9AnimationParser::CreateSkeleton(*entry.clip));
-                    entry.sourceFileHash = fa8[e];
-                    wi.tmpl.allClips.push_back(std::move(entry));
-                    fa8Clip[e] = static_cast<int>(wi.tmpl.allClips.size()) - 1;
-                }
+                for (size_t e = 0; e < fa8.size(); e++)
+                    fa8Clip[e] = findOrLoadClip(fa8[e]);
 
                 // allClips may have grown: re-take the bank by index, never by the old reference.
-                const auto& bank = *wi.tmpl.allClips[chosen].clip;
+                const auto& bank = *wi.tmpl.allClips[bankIdx].clip;
                 int external = 0, redirected = 0;
                 for (size_t si = 0; si < segCount; si++) {
                     const uint8_t k = bank.GetSegmentSourceType(si);
@@ -1256,10 +1278,11 @@ void ReplayWindow::LoadAgentModelsIO()
                     redirected++;
                 }
                 wi.tmpl.localSegmentsOnly = true;
+                wi.tmpl.bankClipIndex = static_cast<int>(bankIdx);
                 wi.tmpl.bankSegmentRefs.assign(segCount, SegmentRef{ -1, -1 });
                 for (size_t si = 0; si < segCount; si++)
                     wi.tmpl.bankSegmentRefs[si] = bank.GetSegmentSourceType(si) == 0
-                        ? SegmentRef{ static_cast<int>(chosen), static_cast<int>(si) }
+                        ? SegmentRef{ static_cast<int>(bankIdx), static_cast<int>(si) }
                         : externalRedirect[si];
                 RunLog::Line("anim bank: model 0x%08X bank 0x%08X - FA8 %zu file(s), %d external"
                              " segment(s), %d redirected", wi.fileHash, bankId, fa8.size(),
@@ -1307,13 +1330,16 @@ void ReplayWindow::LoadAgentModelsIO()
             // discovery order handed each code to whichever bank on the rig came first - and the
             // first code played re-initialises the controller onto that clip. Choosing `clip`
             // alone was not enough: male Mesmers still played the male Monk's bank and male
-            // Paragons the male Ritualist's. The other candidates still fill codes it lacks.
+            // Paragons the male Ritualist's. The other candidates still fill codes it lacks. Where
+            // the id bank is another file (the Assassins), it comes second, so a code the idle
+            // file lacks resolves through the character's own bank before any other rig's.
             auto& clipOrder = wi.tmpl.clipOrder;
             clipOrder.clear();
             clipOrder.reserve(wi.tmpl.allClips.size());
             clipOrder.push_back(static_cast<int>(chosen));
+            if (bankIdx != chosen) clipOrder.push_back(static_cast<int>(bankIdx));
             for (int ci = 0; ci < static_cast<int>(wi.tmpl.allClips.size()); ci++)
-                if (ci != static_cast<int>(chosen)) clipOrder.push_back(ci);
+                if (ci != static_cast<int>(chosen) && ci != static_cast<int>(bankIdx)) clipOrder.push_back(ci);
 
             std::unordered_map<uint32_t, SegmentRef> segHashToRef;
             for (int ci : clipOrder) {
@@ -1324,7 +1350,7 @@ void ReplayWindow::LoadAgentModelsIO()
                     // An external segment has no keys of its own (see externalRedirect above):
                     // for a pinned bank it plays from the file it names, or not at all.
                     if (wi.tmpl.localSegmentsOnly && clipEntry.clip->GetSegmentSourceType(si) != 0) {
-                        if (ci != static_cast<int>(chosen) || si >= externalRedirect.size() ||
+                        if (ci != static_cast<int>(bankIdx) || si >= externalRedirect.size() ||
                             externalRedirect[si].clipIndex < 0)
                             continue;
                         ref = externalRedirect[si];
@@ -1898,9 +1924,10 @@ void ReplayWindow::DrawAgentModels()
                     {
                         const auto& bankRefs = tmplIt->second.bankSegmentRefs;
                         const uint32_t id = snap.animation_id;
-                        if (id < bankRefs.size() && bankRefs[id].clipIndex >= 0) {
+                        if (id < bankRefs.size() && bankRefs[id].clipIndex >= 0 &&
+                            tmplIt->second.bankClipIndex >= 0) {
                             const auto& bankSegs =
-                                tmplIt->second.allClips[tmplIt->second.clipOrder[0]].clip->animationSegments;
+                                tmplIt->second.allClips[tmplIt->second.bankClipIndex].clip->animationSegments;
                             const bool hashAgrees = id < bankSegs.size() && bankSegs[id].hash == animCode;
                             const bool codeInBank = std::any_of(bankSegs.begin(), bankSegs.end(),
                                 [animCode](const auto& s) { return s.hash == animCode; });

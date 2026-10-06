@@ -96,40 +96,6 @@ void ReplayWindow::UpdateIncomingEffects()
         return it->second.solvedMaxHpAtTime(t);
     };
 
-    const auto& combatVec = m_replayCtx.stocData.combat;
-    std::unordered_set<size_t> consumedCombat;
-    std::unordered_map<size_t, int> consumedSkillMap;
-
-    struct CombatMatch { bool found; float value; float time; size_t index; };
-    auto findCombatValue = [&](int casterId, int targetId, float skillEndTime) -> CombatMatch {
-        for (size_t i = 0; i < combatVec.size(); ++i)
-        {
-            const auto& ce = combatVec[i];
-            if (!ce.IsDamageOrHeal()) continue;
-            if (ce.caster_id != casterId) continue;
-            if (ce.target_id != targetId) continue;
-            if (consumedCombat.count(i)) continue;
-            float dt = ce.time - skillEndTime;
-            if (dt < -0.1f) continue;
-            if (dt > 1.5f) break;
-
-            CombatMatch result = { true, ce.value, ce.time, i };
-            consumedCombat.insert(i);
-            for (size_t j = i + 1; j < combatVec.size(); ++j)
-            {
-                const auto& ce2 = combatVec[j];
-                if (ce2.type != "DAMAGE") continue;
-                if (ce2.caster_id != casterId || ce2.target_id != targetId) continue;
-                if (ce2.time - ce.time > 0.15f) break;
-                if (consumedCombat.count(j)) continue;
-                result.value += ce2.value;
-                consumedCombat.insert(j);
-            }
-            return result;
-        }
-        return { false, 0.f, 0.f, 0 };
-    };
-
     const auto& db = m_skillView;
 
     auto pushEffect = [&](IncomingEffect eff) {
@@ -173,8 +139,31 @@ void ReplayWindow::UpdateIncomingEffects()
         }
     }
 
+    // Damage and heal numbers, each with the skill the attribution table names for it (a weapon
+    // hit shows the attack icon). The followed player's own damage on himself is left out, as
+    // before; his own heals are not.
+    const DamageAttribution::Table* attribution = DamageAttributionTable();
+    {
+        const auto& pops = DamagePopsOn(focused);
+        auto it = std::upper_bound(pops.begin(), pops.end(), scanFrom,
+                                   [](float v, const DamagePop& p) { return v < p.time; });
+        for (; it != pops.end() && it->time <= scanTo; ++it)
+        {
+            const DamagePop& pop = *it;
+            if (pop.casterId == focused && !pop.heal) continue;
+            IncomingEffect eff;
+            eff.spawnTime = pop.time;
+            eff.skillId = pop.skillId;
+            eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
+                     : pop.heal      ? IncomingEffectType::Heal
+                                     : IncomingEffectType::Damage;
+            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, pop.time), pop.firstValue);
+            eff.label = DamagePopLabel(pop, mhp);
+            pushEffect(std::move(eff));
+        }
+    }
+
     // Skills that target a foe but only deal damage to the caster (self-damage).
-    // These must never consume combat damage events on the target.
     auto isCasterDamageOnly = [](int skillId) -> bool {
         switch (skillId) {
         case 141:   // Rend Enchantments — "you lose 55..25 Health" per monk enchantment removed
@@ -185,317 +174,40 @@ void ReplayWindow::UpdateIncomingEffects()
         }
     };
 
-    // Delayed damage pass (runs FIRST to prevent the primary scan's
-    // findCombatValue from stealing delayed hits). For each unconsumed damage
-    // event, finds the skill whose endTime is closest to exactly 3.0s before
-    // the damage (±0.5s). The [2.5, 3.5] window doesn't overlap with
-    // findCombatValue's [−0.1, 1.5] window, so ordering is safe.
-    constexpr float kDelayCenter = 3.0f;
-    constexpr float kDelayHalf   = 0.5f;
-    auto castKey = [](int casterId, float endTime) -> uint64_t {
-        uint32_t a = (uint32_t)casterId;
-        uint32_t b; std::memcpy(&b, &endTime, sizeof(b));
-        return ((uint64_t)a << 32) | b;
-    };
-    std::unordered_set<uint64_t> delayConsumedCasts;
-    for (size_t ci = 0; ci < combatVec.size(); ++ci)
-    {
-        if (consumedCombat.count(ci)) continue;
-        const auto& dce = combatVec[ci];
-        if (!dce.IsDamageOrHeal()) continue;
-        if (dce.target_id != focused) continue;
-        if (dce.caster_id == focused) continue;
-        if (dce.time <= scanFrom || dce.time > scanTo) continue;
-
-        auto casterIt = m_replayCtx.agents.find(dce.caster_id);
-        if (casterIt == m_replayCtx.agents.end()) continue;
-
-        int bestSkillId = 0;
-        float bestDist2 = 1e9f;
-        float bestEndTime = 0.f;
-        for (const auto& su : casterIt->second.skillUseHistory)
-        {
-            if (su.wasCancelled) continue;
-            if (su.targetId != focused) continue;
-            if (isCasterDamageOnly(su.skillId)) continue;
-            if (delayConsumedCasts.count(castKey(dce.caster_id, su.endTime))) continue;
-            {
-                const SkillInfo* dsi = db.Get(su.skillId);
-                if (dsi && !dsi->description.empty() &&
-                    dsi->description.find("damage") == std::string::npos)
-                    continue;
-            }
-            float ddt = dce.time - su.endTime;
-            if (ddt < kDelayCenter - kDelayHalf || ddt > kDelayCenter + kDelayHalf) continue;
-            float dist = std::abs(ddt - kDelayCenter);
-            if (dist < bestDist2)
-            {
-                bestDist2 = dist;
-                bestSkillId = su.skillId;
-                bestEndTime = su.endTime;
-            }
-        }
-        if (bestSkillId == 0) continue;
-
-        delayConsumedCasts.insert(castKey(dce.caster_id, bestEndTime));
-        float totalValue = dce.value;
-        consumedCombat.insert(ci);
-        consumedSkillMap[ci] = bestSkillId;
-        for (size_t cj = ci + 1; cj < combatVec.size(); ++cj)
-        {
-            const auto& ce2 = combatVec[cj];
-            if (ce2.time - dce.time > 0.15f) break;
-            if (ce2.type != "DAMAGE") continue;
-            if (ce2.caster_id != dce.caster_id || ce2.target_id != focused) continue;
-            if (consumedCombat.count(cj)) continue;
-            totalValue += ce2.value;
-            consumedCombat.insert(cj);
-            consumedSkillMap[cj] = bestSkillId;
-        }
-
-        bool dHeal = (totalValue > 0.f);
-        IncomingEffect deff;
-        deff.spawnTime = dce.time;
-        deff.skillId = bestSkillId;
-        deff.type = dHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
-        uint32_t dmhp = findAgentMaxHp(focused, dce.time);
-        int dRaw = (dmhp > 0) ? (int)std::round(std::abs(totalValue) * dmhp) : 0;
-        if (dRaw > 0)
-            deff.label = std::format("{}{}", dHeal ? "+" : "-", dRaw);
-        else
-            deff.label = std::format("{}{:.0f}%", dHeal ? "+" : "-", std::abs(totalValue) * 100.f);
-        pushEffect(std::move(deff));
-    }
-
-    // Primary source: two-pass approach that collects all skill→damage candidates
-    // then resolves conflicts so each damage event is attributed to the skill
-    // whose cast end time is closest to the damage impact time.
-    constexpr float kProjectileWindow = 1.5f;
-
-    struct PrimaryCandidate {
-        int agentId = 0;
-        int skillId = 0;
-        float endTime = 0.f;
-        int skillType = 0;
-        const SkillInfo* si = nullptr;
-        size_t primaryHitIdx = SIZE_MAX;
-        float hitTime = 0.f;
-        float timeDelta = 0.f;
-    };
-    std::vector<PrimaryCandidate> primCandidates;
-
-    // Pass 1: collect candidates, peek combat matches without consuming.
-    // Hexes and caster-damage-only skills are emitted immediately.
-    for (auto& [agentId, ard] : m_replayCtx.agents)
+    // A skill that landed on the followed player without a number in its own tick shows its icon
+    // alone: a hex, a skill that deals no damage, an enchantment by name. A cast that explained a
+    // packet in its tick has its icon beside that number already, and a damage skill with nothing
+    // to show was blocked, dodged or absorbed.
+    for (const auto& [agentId, ard] : m_replayCtx.agents)
     {
         if (agentId == focused) continue;
         for (const auto& su : ard.skillUseHistory)
         {
-            if (su.wasCancelled) continue;
-            if (su.targetId != focused) continue;
-            float endT = su.endTime;
-            if (endT > scanTo || endT < scanFrom - kProjectileWindow) continue;
+            if (su.wasCancelled || su.targetId != focused) continue;
+            if (su.endTime <= scanFrom || su.endTime > scanTo) continue;
+            if (attribution && attribution->Explained(agentId, su.endTime)) continue;
 
             const SkillInfo* si = db.Get(su.skillId);
-            int skillType = si ? si->type : 0;
-
+            const int skillType = si ? si->type : 0;
+            // A bow, spear or other ranged attack is released here and lands later, when its
+            // projectile hits: its icon comes with that hit's number, not at the release.
+            if (skillType == 2 || skillType == 12 || skillType == 31) continue;
+            IncomingEffect eff;
+            eff.spawnTime = su.endTime;
+            eff.skillId = su.skillId;
             if (skillType == 24)
+                eff.type = IncomingEffectType::Hex;
+            else if (isCasterDamageOnly(su.skillId) ||
+                     (si && !si->description.empty() && si->description.find("damage") == std::string::npos))
+                eff.type = IncomingEffectType::Condition;
+            else if (skillType == 23 || skillType == 33 || skillType == 34)
             {
-                if (endT > scanFrom && endT <= scanTo)
-                {
-                    IncomingEffect hexEff;
-                    hexEff.spawnTime = endT;
-                    hexEff.skillId = su.skillId;
-                    hexEff.type = IncomingEffectType::Hex;
-                    pushEffect(std::move(hexEff));
-                }
-                continue;
-            }
-
-            if (isCasterDamageOnly(su.skillId))
-            {
-                if (endT > scanFrom && endT <= scanTo)
-                {
-                    IncomingEffect eff;
-                    eff.spawnTime = endT;
-                    eff.skillId = su.skillId;
-                    eff.type = IncomingEffectType::Condition;
-                    pushEffect(std::move(eff));
-                }
-                continue;
-            }
-
-            // Skills whose description never mentions "damage" cannot produce
-            // DAMAGE combat events on the target (e.g. Gale = pure knockdown).
-            // Show icon only so they don't steal damage events from real damage skills.
-            if (si && !si->description.empty() &&
-                si->description.find("damage") == std::string::npos)
-            {
-                if (endT > scanFrom && endT <= scanTo)
-                {
-                    IncomingEffect eff;
-                    eff.spawnTime = endT;
-                    eff.skillId = su.skillId;
-                    eff.type = IncomingEffectType::Condition;
-                    pushEffect(std::move(eff));
-                }
-                continue;
-            }
-
-            PrimaryCandidate cand;
-            cand.agentId = agentId;
-            cand.skillId = su.skillId;
-            cand.endTime = endT;
-            cand.skillType = skillType;
-            cand.si = si;
-
-            for (size_t i = 0; i < combatVec.size(); ++i)
-            {
-                const auto& ce = combatVec[i];
-                if (!ce.IsDamageOrHeal()) continue;
-                if (ce.caster_id != agentId) continue;
-                if (ce.target_id != focused) continue;
-                if (consumedCombat.count(i)) continue;
-                float dt = ce.time - endT;
-                if (dt < -0.1f) continue;
-                if (dt > 1.5f) break;
-                cand.primaryHitIdx = i;
-                cand.hitTime = ce.time;
-                cand.timeDelta = std::abs(dt);
-                break;
-            }
-
-            primCandidates.push_back(cand);
-        }
-    }
-
-    // Pass 2: resolve conflicts — when multiple skills claim the same damage
-    // event, the one with the smallest timeDelta (closest cast end to impact)
-    // wins; losers fall through to name-only display.
-    {
-        std::unordered_map<size_t, size_t> bestForHit;
-        for (size_t ci = 0; ci < primCandidates.size(); ++ci)
-        {
-            auto& c = primCandidates[ci];
-            if (c.primaryHitIdx == SIZE_MAX) continue;
-            auto it = bestForHit.find(c.primaryHitIdx);
-            if (it == bestForHit.end())
-            {
-                bestForHit[c.primaryHitIdx] = ci;
-            }
-            else
-            {
-                if (c.timeDelta < primCandidates[it->second].timeDelta)
-                {
-                    primCandidates[it->second].primaryHitIdx = SIZE_MAX;
-                    it->second = ci;
-                }
-                else
-                {
-                    c.primaryHitIdx = SIZE_MAX;
-                }
-            }
-        }
-    }
-
-    // Pass 3: emit effects — winners consume their damage event, losers show name only.
-    for (auto& cand : primCandidates)
-    {
-        if (cand.primaryHitIdx != SIZE_MAX)
-        {
-            const auto& primaryHit = combatVec[cand.primaryHitIdx];
-            float totalValue = primaryHit.value;
-            consumedCombat.insert(cand.primaryHitIdx);
-            consumedSkillMap[cand.primaryHitIdx] = cand.skillId;
-
-            for (size_t j = cand.primaryHitIdx + 1; j < combatVec.size(); ++j)
-            {
-                const auto& ce2 = combatVec[j];
-                if (ce2.type != "DAMAGE") continue;
-                if (ce2.caster_id != cand.agentId || ce2.target_id != focused) continue;
-                if (ce2.time - primaryHit.time > 0.15f) break;
-                if (consumedCombat.count(j)) continue;
-                totalValue += ce2.value;
-                consumedCombat.insert(j);
-                consumedSkillMap[j] = cand.skillId;
-            }
-
-            float showTime = primaryHit.time;
-            if (showTime <= scanFrom || showTime > scanTo) continue;
-
-            bool isHeal = (totalValue > 0.f);
-            IncomingEffect eff;
-            eff.spawnTime = showTime;
-            eff.skillId = cand.skillId;
-            eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
-            uint32_t mhp = findAgentMaxHp(focused, primaryHit.time);
-            int rawVal = (mhp > 0) ? (int)std::round(std::abs(totalValue) * mhp) : 0;
-            if (rawVal > 0)
-                eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
-            else
-                eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(totalValue) * 100.f);
-
-            pushEffect(std::move(eff));
-        }
-        else
-        {
-            // Damage-dealing skills that reached the candidate pool but had no
-            // matching DAMAGE event were blocked, dodged, or absorbed — hide them.
-            // Only enchantments (friendly buffs applied without a combat value)
-            // are still worth showing.
-            if (cand.skillType != 23 && cand.skillType != 33 && cand.skillType != 34)
-                continue;
-
-            float showTime = cand.endTime;
-            if (showTime <= scanFrom || showTime > scanTo) continue;
-
-            IncomingEffect eff;
-            eff.spawnTime = showTime;
-            eff.skillId = cand.skillId;
-            eff.type = IncomingEffectType::Heal;
-            eff.label = cand.si ? cand.si->name : "Enchantment";
-
-            pushEffect(std::move(eff));
-        }
-    }
-
-    // Also scan self-cast skills that target self (heals, enchantments on self)
-    {
-        auto it = m_replayCtx.agents.find(focused);
-        if (it != m_replayCtx.agents.end())
-        {
-            for (const auto& su : it->second.skillUseHistory)
-            {
-                if (su.wasCancelled) continue;
-                if (su.targetId != focused && su.targetId > 0) continue;
-                float endT = su.endTime;
-                if (endT <= scanFrom || endT > scanTo) continue;
-
-                auto cm = findCombatValue(focused, focused, endT);
-                if (!cm.found) continue;
-                if (cm.value <= 0.f) continue;  // only show self-heals
-
-                float showTime = cm.time;
-                if (showTime > scanTo) continue;
-
-                consumedCombat.insert(cm.index);
-                consumedSkillMap[cm.index] = su.skillId;
-
-                IncomingEffect eff;
-                eff.spawnTime = showTime;
-                eff.skillId = su.skillId;
                 eff.type = IncomingEffectType::Heal;
-
-                uint32_t mhp = CorrectMaxHpForPacket(
-                    findAgentMaxHp(focused, cm.time), cm.value);
-                int rawVal = (mhp > 0) ? (int)std::round(std::abs(cm.value) * mhp) : 0;
-                if (rawVal > 0)
-                    eff.label = std::format("+{}", rawVal);
-                else
-                    eff.label = std::format("+{:.0f}%", cm.value * 100.f);
-
-                pushEffect(std::move(eff));
+                eff.label = si ? si->name : "Enchantment";
             }
+            else
+                continue;
+            pushEffect(std::move(eff));
         }
     }
 
@@ -511,186 +223,6 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.skillId = (int)ce.value;
         eff.type = IncomingEffectType::Interrupt;
         eff.label = "INTERRUPT";
-        pushEffect(std::move(eff));
-    }
-
-    // GenericValueID constants from the GW StoC protocol
-    constexpr int kDmgType_Normal        = 16;
-    constexpr int kDmgType_Critical      = 17;
-    constexpr int kDmgType_ArmorIgnoring = 55;
-
-    // Basic attack (auto-attack) damage on the focused agent.
-    // Collects both weapon damage and vampiric (ARMORIGNORING) in a tight
-    // sub-window, then displays them together (e.g. "-35 -5").
-    struct AutoAttackMatch {
-        bool               found       = false;
-        float              weaponValue = 0.f;
-        float              vampValue   = 0.f;
-        float              time        = 0.f;
-        std::vector<size_t> indices;
-    };
-
-    auto findAutoAttackDamage = [&](int casterId, int targetId, float attackTime) -> AutoAttackMatch {
-        AutoAttackMatch m;
-        for (size_t i = 0; i < combatVec.size(); ++i)
-        {
-            const auto& ce = combatVec[i];
-            if (ce.type != "DAMAGE") continue;
-            if (ce.caster_id != casterId) continue;
-            if (ce.target_id != targetId) continue;
-            float dt = ce.time - attackTime;
-            if (dt < -0.1f) continue;
-            if (dt > 3.0f) break;
-            if (consumedCombat.count(i)) continue;
-
-            if (!m.found) m.time = ce.time;
-            if (m.found && (ce.time - m.time) > 0.15f) break;
-
-            m.found = true;
-            m.indices.push_back(i);
-            if (ce.damage_type == kDmgType_ArmorIgnoring)
-                m.vampValue += ce.value;
-            else
-                m.weaponValue += ce.value;
-        }
-        return m;
-    };
-
-    constexpr float kProjectileTravelMax = 3.0f;
-    for (const auto& ev : m_replayCtx.stocData.basicAttack)
-    {
-        if (ev.type != "ATTACK_FINISHED") continue;
-        if (ev.target_id != focused) continue;
-        if (ev.time < scanTo - kProjectileTravelMax || ev.time > scanTo) continue;
-
-        auto am = findAutoAttackDamage(ev.caster_id, focused, ev.time);
-        if (!am.found) continue;
-        if (am.weaponValue > 0.f && am.vampValue > 0.f) continue;
-        if (am.time <= scanFrom || am.time > scanTo) continue;
-
-        for (size_t idx : am.indices)
-            consumedCombat.insert(idx);
-
-        IncomingEffect eff;
-        eff.spawnTime = am.time;
-        eff.skillId = 0;
-        eff.type = IncomingEffectType::BasicAttack;
-
-        float primary = (am.weaponValue != 0.f) ? am.weaponValue : am.vampValue;
-        uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, am.time), primary);
-        int rawPrimary = (mhp > 0) ? (int)std::round(std::abs(primary) * mhp) : 0;
-
-        std::string label;
-        if (rawPrimary > 0)
-            label = std::format("-{}", rawPrimary);
-        else
-            label = std::format("-{:.0f}%", std::abs(primary) * 100.f);
-
-        if (am.weaponValue != 0.f && am.vampValue != 0.f)
-        {
-            int rawVamp = (mhp > 0) ? (int)std::round(std::abs(am.vampValue) * mhp) : 0;
-            if (rawVamp > 0)
-                label += std::format(" -{}", rawVamp);
-            else
-                label += std::format(" -{:.0f}%", std::abs(am.vampValue) * 100.f);
-        }
-
-        eff.label = std::move(label);
-        pushEffect(std::move(eff));
-    }
-
-    // Final pass: unattributed damage and heals.
-    // Short-delay triggers (~3s) are already handled in the delayed damage pass above.
-    // This pass catches truly long-delayed triggers (Mind Wrack at +6-40s) by
-    // searching the caster's skillUseHistory for a hex (type 24) or unknown skill.
-    //
-    // Two-tier attribution: if damage coincides with the focused agent attacking,
-    // prefer hexes whose description mentions "attack" (e.g. Empathy) over other
-    // hexes (e.g. Mind Wrack).  Fallback prefers the earliest active hex.
-    constexpr int   kSkillType_Hex    = 24;
-    constexpr float kDelayedHexWindow = 60.f;
-
-    std::vector<float> focusedAttackTimes;
-    for (const auto& ev : m_replayCtx.stocData.basicAttack) {
-        if (ev.type != "ATTACK_FINISHED") continue;
-        if (ev.caster_id != focused) continue;
-        focusedAttackTimes.push_back(ev.time);
-    }
-
-    auto coincideWithAttack = [&](float dmgTime) -> bool {
-        auto it = std::lower_bound(focusedAttackTimes.begin(),
-                                   focusedAttackTimes.end(), dmgTime - 0.3f);
-        return it != focusedAttackTimes.end() && (*it - dmgTime) < 0.3f;
-    };
-
-    for (size_t i = 0; i < combatVec.size(); ++i)
-    {
-        const auto& ce = combatVec[i];
-        if (!ce.IsDamageOrHeal()) continue;
-        if (ce.target_id != focused) continue;
-        if (ce.time <= scanFrom || ce.time > scanTo) continue;
-        if (ce.caster_id == focused) continue;
-        if (consumedCombat.count(i)) continue;
-
-        int attrSkillId = 0;
-
-        auto casterIt = m_replayCtx.agents.find(ce.caster_id);
-        if (casterIt != m_replayCtx.agents.end())
-        {
-            bool attackCorrelated = coincideWithAttack(ce.time);
-
-            int   bestAttackHex   = 0;
-            float bestAttackDt    = 1e9f;
-            int   bestFallbackHex = 0;
-            float bestFallbackDt  = -1.f;
-
-            for (const auto& su : casterIt->second.skillUseHistory)
-            {
-                if (su.wasCancelled) continue;
-                if (su.targetId != focused) continue;
-                if (su.endTime > ce.time) continue;
-                if (ce.time - su.endTime > kDelayedHexWindow) continue;
-
-                const SkillInfo* si_db = db.Get(su.skillId);
-                if (si_db && si_db->type != kSkillType_Hex) continue;
-
-                float dt = ce.time - su.endTime;
-
-                if (attackCorrelated && si_db &&
-                    si_db->description.find("attack") != std::string::npos)
-                {
-                    if (dt < bestAttackDt)
-                    {
-                        bestAttackDt  = dt;
-                        bestAttackHex = su.skillId;
-                    }
-                }
-
-                if (dt > bestFallbackDt)
-                {
-                    bestFallbackDt  = dt;
-                    bestFallbackHex = su.skillId;
-                }
-            }
-
-            attrSkillId = (bestAttackHex != 0) ? bestAttackHex : bestFallbackHex;
-        }
-
-        bool isHeal = (ce.value > 0.f);
-        IncomingEffect eff;
-        eff.spawnTime = ce.time;
-        eff.skillId = attrSkillId;
-        eff.type = isHeal ? IncomingEffectType::Heal : IncomingEffectType::Damage;
-
-        uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, ce.time), ce.value);
-        int rawVal = (mhp > 0) ? (int)std::round(std::abs(ce.value) * mhp) : 0;
-        if (rawVal > 0)
-            eff.label = std::format("{}{}", isHeal ? "+" : "-", rawVal);
-        else
-            eff.label = std::format("{}{:.0f}%", isHeal ? "+" : "-", std::abs(ce.value) * 100.f);
-
-        consumedCombat.insert(i);
-        consumedSkillMap[i] = attrSkillId;
         pushEffect(std::move(eff));
     }
 }

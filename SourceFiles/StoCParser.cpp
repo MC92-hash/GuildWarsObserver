@@ -1095,6 +1095,43 @@ static void ParseEnergyEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Skill damage: SKILL_DAMAGE;victim;skill - the skill behind the damage packet the victim just took
+// ---------------------------------------------------------------------------
+
+static void ParseSkillDamageEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[4];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 4);
+                if (n >= 3 && std::string_view(tok[0].begin, tok[0].end - tok[0].begin) == "SKILL_DAMAGE")
+                {
+                    SkillDamageEvent ev;
+                    ev.time     = li.time;
+                    ev.victimId = ToInt(tok[1].begin, tok[1].end);
+                    ev.skillId  = ToInt(tok[2].begin, tok[2].end);
+                    data.skillDamage.push_back(ev);
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Equipment (weapon/armour skins, dyes and raw mod words)
 // ---------------------------------------------------------------------------
 
@@ -1131,6 +1168,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "equipment_events",              ParseEquipmentEvents },
     { "model_events",                  ParseModelEvents },
     { "energy_events",                 ParseEnergyEvents },
+    { "skill_damage_events",           ParseSkillDamageEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

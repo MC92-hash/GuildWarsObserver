@@ -1785,6 +1785,16 @@ struct EnergyNoPay
     int   casterId = 0;
 };
 
+// A SKILL_DAMAGE line: the server naming the skill behind the damage packet an agent just took. It
+// shares that packet's millisecond, and the server only sends it for the agent the recording camera
+// follows.
+struct SkillDamageEvent
+{
+    float time     = 0.f;
+    int   victimId = 0;
+    int   skillId  = 0;
+};
+
 struct EnergyCoverage
 {
     int skillId  = 0;
@@ -1989,6 +1999,7 @@ struct StoCData
     std::vector<EnergySample>           energySamples;
     std::vector<EnergyCoverage>         energyCoverage;
     std::vector<EnergyNoPay>            energyNoPay;
+    std::vector<SkillDamageEvent>       skillDamage;
     Equipment::Data                     equipment;
 };
 

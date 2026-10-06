@@ -353,6 +353,7 @@
     <ClInclude Include="SourceFiles\ArmourNames.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HealthModel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.h" />
     <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
@@ -641,6 +642,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Morale.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_SkillCooldowns.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Energy.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_DamageAttribution.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_PianoRoll.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_SkillAnalytics.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_DebugWindows.cpp" />
@@ -678,6 +680,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HealthModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Summons.cpp" />
