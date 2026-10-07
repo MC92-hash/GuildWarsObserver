@@ -1132,6 +1132,57 @@ static void ParseSkillDamageEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Visual effects: VISUAL_ADD|VISUAL_REMOVE|VISUAL_ON_AGENT|VISUAL_ON_TARGET;agent;value;other and
+// AGENT_STATE;agent;state
+// ---------------------------------------------------------------------------
+
+static void ParseVisualEffectEvents(const std::string& content, StoCData& data)
+{
+    using Kind = VisualEffectEvent::Kind;
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[5];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 5);
+                if (n >= 3)
+                {
+                    const std::string_view type(tok[0].begin, tok[0].end - tok[0].begin);
+                    VisualEffectEvent ev;
+                    bool known = true;
+                    if (type == "VISUAL_ADD")            ev.kind = Kind::Add;
+                    else if (type == "VISUAL_REMOVE")    ev.kind = Kind::Remove;
+                    else if (type == "VISUAL_ON_AGENT")  ev.kind = Kind::OnAgent;
+                    else if (type == "VISUAL_ON_TARGET") ev.kind = Kind::OnTarget;
+                    else if (type == "AGENT_STATE")      ev.kind = Kind::State;
+                    else known = false;
+                    if (known)
+                    {
+                        ev.time    = li.time;
+                        ev.agentId = ToInt(tok[1].begin, tok[1].end);
+                        ev.value   = ToInt(tok[2].begin, tok[2].end);
+                        ev.otherId = n >= 4 ? ToInt(tok[3].begin, tok[3].end) : 0;
+                        data.visualEffects.push_back(ev);
+                    }
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Projectiles: PROJECTILE;source;dest_x;dest_y;... - only the shooter and the moment are kept
 // ---------------------------------------------------------------------------
 
@@ -1205,6 +1256,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "model_events",                  ParseModelEvents },
     { "energy_events",                 ParseEnergyEvents },
     { "skill_damage_events",           ParseSkillDamageEvents },
+    { "visual_effect_events",          ParseVisualEffectEvents },
     { "projectile_events",             ParseProjectileEvents },
 };
 

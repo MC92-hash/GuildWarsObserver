@@ -37,6 +37,7 @@
 #include "HealthModel.h"
 #include "EnergyModel.h"
 #include "DamageAttribution.h"
+#include "EffectTimeline.h"
 #include "OverheadFloaters.h"
 #include "SkillDatabase.h"
 #include <string>
@@ -420,6 +421,15 @@ private:
     const DamageAttribution::Table* DamageAttributionTable() const;
     mutable DamageAttribution::Table m_damageAttribution;
     mutable bool m_damageAttributionBuilt = false;
+
+    // The skill effects on each player and when each ends (EffectTimeline, private), from the
+    // recording's visual effects, the casts, the combat packets and the attack-speed snapshots.
+    // Rebuilt once when the attribute ranks arrive, like the energy tracks.
+    void BuildEffectTimeline() const;
+    const EffectTimeline::Table* EffectTimelineTable() const;
+    mutable EffectTimeline::Table m_effectTimeline;
+    mutable bool m_effectTimelineBuilt = false;
+    mutable bool m_effectTimelineUsedAttributes = false;
 
     // One floating number per damage or heal packet, as the client shows them: Mind Burn's second
     // packet, a weapon hit's vampiric part or an attack skill's armour-ignoring bonus is a number of
@@ -1969,6 +1979,7 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
+    void DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side);
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     void DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);

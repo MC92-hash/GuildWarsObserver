@@ -375,6 +375,8 @@ namespace
     constexpr float kRefSlot       = 70.f;     // owner's client at 1440 px tall
     constexpr float kRefHeight     = 1440.f;
     constexpr float kUnitSlot      = 56.f;     // a slot at UI scale 1x
+    constexpr float kEffectIcon    = 52.f;     // an effect monitor icon at UI scale 1x
+    constexpr float kPopPeak       = 3.0f;     // arrival peak, in icons: 2.8 skill slots in the client
 
     // Frame atlas 265556: 56x56 cells, 4 per row, sampled 1/512 inside their edges.
     void FrameCellUV(int cell, ImVec2& uv0, ImVec2& uv1)
@@ -465,7 +467,10 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     // The energy bar stands above the health bar, same height, its own frame clear of the health
     // bar's: each frame reaches 2 UI units past its bar, so the gap is 4.
     const float enGap  = std::round(4.f * scale);
-    const float frameY = std::round(hpArtT + hpH + enGap + hpH);
+    // The effect monitor's row stands above the energy bar's frame: icons of 52 UI units.
+    const float effSide = std::round(kEffectIcon * scale);
+    const float effRowH = effSide + std::round(4.f * scale);
+    const float frameY = std::round(effRowH + hpArtT + hpH + enGap + hpH);
     const float winH   = frameY + artT + slot + artB;
 
     const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
@@ -513,6 +518,7 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
                           ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y), scale);
     DrawFocusHudEnergyBar(ard, ImVec2(origin.x + artL - 7.f * scale, frameTL.y - hpH - enGap - hpH),
                           ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y - hpH - enGap), scale);
+    DrawFocusHudEffectBar(agentId, ImVec2(origin.x + artL - 7.f * scale, origin.y), effSide);
 
     for (int i = 0; i < kBarSlots; ++i)
     {
@@ -581,6 +587,236 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
 
     ImGui::End();
     ImGui::PopStyleVar(2);
+}
+
+
+// ---------------------------------------------------------------------------
+// Effect monitor over the energy bar: the effects on the followed player, drawn as the client
+// draws its own (GmEffect / GmEffectFloater / GmCtlSkImageEffect, decoded from Gw.exe 2026-10-07;
+// gwobserver-private/docs/research/gw_effect_bar.md). Which effects, and when each ends, come from
+// EffectTimeline (private).
+//
+//   order    by kind - conditions, hexes, stances, enchantments, then the rest - a new effect at
+//            the end of its group; one icon per skill, timed by its longest instance, and a
+//            refresh that lengthens it moves it to the end of its group
+//   icon     52 UI units, icons touching; frame cell of 265556 by kind (orange condition, magenta
+//            hex, yellow-green enchantment, teal Dervish enchantment, dark green other), elite odd
+//   bar      3 px black, 85% of the icon wide, 2 px above its bottom; a 1 px line in the kind's
+//            colour drains left; none for an effect without a duration
+//   arrival  a 0.5 s pop in place: alpha 0 -> 1 in 0.2 s, size 0.25 -> peak (f^1/3) then -> 1 (f^3);
+//            the client's table says a peak of 4, the owner's screenshot measures 2.8 skill slots
+//   removal  the icon goes at once and the ones after it close the gap, no slide (ours: when the
+//            skill that removed it is known, it stays 0.7 s, dimmed, under that skill's icon)
+//   blink    from clamp(0.2 x duration, 2, 4) s before the end it was given: opacity 1 <-> 0.25,
+//            each phase clamp(time left / 8, 0.0625, 0.333) s; the bar too runs against that
+//            duration, so a removed effect goes with part of its bar left
+// ---------------------------------------------------------------------------
+namespace
+{
+    int EffectSortKey(EffectTimeline::Kind k)
+    {
+        using K = EffectTimeline::Kind;
+        switch (k) {
+        case K::Condition:   return 4;
+        case K::Hex:         return 5;
+        case K::Stance:      return 9;
+        case K::Enchantment: return 12;
+        default:             return 13;
+        }
+    }
+
+    int EffectFrameCell(EffectTimeline::Kind k, const SkillInfo* si)
+    {
+        using K = EffectTimeline::Kind;
+        const int elite = si && si->is_elite ? 1 : 0;
+        switch (k) {
+        case K::Condition:   return 4 + elite;
+        case K::Hex:         return 8 + elite;
+        case K::Enchantment: return (si && si->profession == 10 ? 10 : 6) + elite;
+        default:             return 2 + elite;
+        }
+    }
+
+    ImU32 EffectBarColour(EffectTimeline::Kind k, const SkillInfo* si, float opacity)
+    {
+        using K = EffectTimeline::Kind;
+        const int a = static_cast<int>(255.f * opacity);
+        switch (k) {
+        case K::Condition:   return IM_COL32(0xDF, 0xB1, 0x3E, a);
+        case K::Hex:         return IM_COL32(0xE9, 0x3D, 0xB5, a);
+        case K::Enchantment: return si && si->profession == 10 ? IM_COL32(0xBE, 0x9F, 0x49, a) : IM_COL32(0xA8, 0xD4, 0x38, a);
+        default:             return IM_COL32(0x4E, 0x9C, 0x49, a);
+        }
+    }
+
+    // The client toggles opacity at fixed times from the effect's start, so the state at any
+    // moment is a replay of those toggles - which keeps it right when the timeline is scrubbed.
+    float EffectBlinkOpacity(float elapsed, float duration)
+    {
+        const float lead = std::clamp(0.2f * duration, 2.f, 4.f);
+        float next = std::max(duration - lead, 0.f);
+        bool dim = false;
+        for (int guard = 0; next <= elapsed && guard < 256; ++guard) {
+            dim = !dim;
+            next += std::clamp((duration - next) / 8.f, 0.0625f, 0.333f);
+        }
+        return dim ? 0.25f : 1.f;
+    }
+
+    const char* ConditionName(int skillId)
+    {
+        switch (skillId) {
+        case EffectTimeline::kBleeding:     return "Bleeding";
+        case EffectTimeline::kBlind:        return "Blind";
+        case EffectTimeline::kBurning:      return "Burning";
+        case EffectTimeline::kCrippled:     return "Crippled";
+        case EffectTimeline::kDeepWound:    return "Deep Wound";
+        case EffectTimeline::kDisease:      return "Disease";
+        case EffectTimeline::kPoison:       return "Poison";
+        case EffectTimeline::kDazed:        return "Dazed";
+        case EffectTimeline::kWeakness:     return "Weakness";
+        case EffectTimeline::kCrackedArmor: return "Cracked Armor";
+        default:                            return nullptr;
+        }
+    }
+}
+
+
+void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side)
+{
+    const EffectTimeline::Table* table = EffectTimelineTable();
+    if (!table) return;
+    const auto all = table->byAgent.find(agentId);
+    if (all == table->byAgent.end()) return;
+    const float t = m_debugTimeline;
+
+    // An effect a known skill removed stays this long after it went, dimmed under that skill's
+    // icon, so the viewer sees what took it. The client drops it at once; this is ours.
+    constexpr float kRemovedLinger = 0.7f;
+
+    struct Icon
+    {
+        const EffectTimeline::Effect* longest;
+        float placed;
+        int   key;
+        bool  removed;
+    };
+    std::vector<Icon> icons;
+    for (const EffectTimeline::Effect& e : all->second) {
+        if (e.start > t) break;
+        const bool active  = t < e.end;
+        const bool removed = !active && e.removedBy && t < e.end + kRemovedLinger;
+        if (!active && !removed) continue;
+        auto it = std::find_if(icons.begin(), icons.end(), [&](const Icon& i) { return i.longest->skillId == e.skillId; });
+        if (it == icons.end()) {
+            icons.push_back({ &e, e.start, EffectSortKey(e.kind), removed });
+            continue;
+        }
+        // An effect still on the player wins over one just removed; among those still on, the one
+        // that runs longest, and a refresh that lengthens it moves it to the end of its group.
+        if (it->removed && active) *it = { &e, e.start, EffectSortKey(e.kind), false };
+        else if (!removed && e.end > it->longest->end) { it->longest = &e; it->placed = e.start; }
+    }
+    if (icons.empty()) return;
+    std::stable_sort(icons.begin(), icons.end(), [](const Icon& a, const Icon& b) {
+        return a.key != b.key ? a.key < b.key : a.placed < b.placed;
+    });
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+    ImTextureID texSlots = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png");
+    const bool windowHovered = ImGui::IsWindowHovered();
+    const ImVec2 iconUV0(0.0625f, 0.0625f), iconUV1(0.9375f, 0.9375f);
+
+    for (size_t i = 0; i < icons.size(); ++i) {
+        const EffectTimeline::Effect& e = *icons[i].longest;
+        const SkillInfo* si = m_skillView.Get(e.skillId);
+        const ImVec2 tl(rowTopLeft.x + static_cast<float>(i) * side, rowTopLeft.y);
+        const ImVec2 br(tl.x + side, tl.y + side);
+        ImTextureID tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
+        ImVec2 fuv0, fuv1;
+        FrameCellUV(EffectFrameCell(e.kind, si), fuv0, fuv1);
+
+        // The duration bar runs against the time the effect was given, so a removed one goes with
+        // part of its bar still left - as in the client.
+        const float given = e.expectedEnd > e.end ? e.expectedEnd : e.end;
+        auto drawBar = [&](float at, float opacity) {
+            if (!e.hasDuration || given <= e.start) return;
+            const float w  = std::round(0.85f * side);
+            const float x0 = tl.x + std::round(0.075f * side);
+            const float y1 = br.y - std::floor(0.04f * side);
+            const float y0 = y1 - 3.f;
+            const float frac = std::clamp((given - at) / (given - e.start), 0.f, 1.f);
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y1), IM_COL32(0, 0, 0, static_cast<int>(255.f * opacity)));
+            const float fw = std::round((w - 2.f) * frac);
+            if (fw > 0.f)
+                dl->AddRectFilled(ImVec2(x0 + 1.f, y0 + 1.f), ImVec2(x0 + 1.f + fw, y1 - 1.f), EffectBarColour(e.kind, si, opacity));
+        };
+
+        const float age = t - icons[i].placed;
+        if (icons[i].removed) {
+            const float since = t - e.end;
+            const float fade = std::clamp((kRemovedLinger - since) / 0.2f, 0.f, 1.f);
+            const ImU32 dim = IM_COL32(150, 150, 150, static_cast<int>(200.f * fade));
+            if (tex) dl->AddImage(tex, tl, br, iconUV0, iconUV1, dim);
+            if (texSlots) dl->AddImage(texSlots, tl, br, fuv0, fuv1, dim);
+            drawBar(e.end, 0.8f * fade);
+            // The remover pops in over the centre: up to 1.25 in 0.12 s, settling at 1 by 0.24 s.
+            const float pop = since < 0.12f ? 1.25f * since / 0.12f
+                            : since < 0.24f ? 1.25f - 0.25f * (since - 0.12f) / 0.12f : 1.f;
+            const float h = side * 0.62f * pop * 0.5f;
+            const ImVec2 c(tl.x + side * 0.5f, tl.y + side * 0.5f);
+            if (ImTextureID by = LoadSkillIcon(this, dev, e.removedBy, m_skillIconIndex, m_skillIconCache); by && h > 0.5f) {
+                const ImVec2 b0(c.x - h, c.y - h), b1(c.x + h, c.y + h);
+                fg->AddRectFilled(ImVec2(b0.x - 1.f, b0.y - 1.f), ImVec2(b1.x + 1.f, b1.y + 1.f), IM_COL32(0, 0, 0, static_cast<int>(230.f * fade)));
+                fg->AddImage(by, b0, b1, iconUV0, iconUV1, IM_COL32(255, 255, 255, static_cast<int>(255.f * fade)));
+            }
+        } else if (age < 0.5f) {
+            const float f = std::min(age / 0.2f, 1.f);
+            const float alpha = std::cbrt(f);
+            const float size = age < 0.2f ? 0.25f + (kPopPeak - 0.25f) * std::cbrt(f)
+                                          : kPopPeak - (kPopPeak - 1.f) * std::pow((age - 0.2f) / 0.3f, 3.f);
+            const ImVec2 c(tl.x + side * 0.5f, tl.y + side * 0.5f);
+            const float h = side * size * 0.5f;
+            const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(255.f * alpha));
+            if (tex) fg->AddImage(tex, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), iconUV0, iconUV1, tint);
+            if (texSlots) fg->AddImage(texSlots, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), fuv0, fuv1, tint);
+        } else {
+            // The client blinks against the time it gave the effect: through a natural end, and
+            // through a removal only when that falls inside the blink.
+            const bool blinks = e.hasDuration && (e.natural || given > e.end + 0.01f);
+            const float opacity = blinks ? EffectBlinkOpacity(t - e.start, given - e.start) : 1.f;
+            const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(255.f * opacity));
+            if (tex) dl->AddImage(tex, tl, br, iconUV0, iconUV1, tint);
+            else dl->AddRectFilled(tl, br, IM_COL32(0x40, 0x40, 0x40, static_cast<int>(0xC0 * opacity)));
+            if (texSlots) dl->AddImage(texSlots, tl, br, fuv0, fuv1, tint);
+            drawBar(t, opacity);
+        }
+
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
+            if (si) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr);
+            ImGui::BeginTooltip();
+            if (!si) {
+                const char* cond = ConditionName(e.skillId);
+                ImGui::TextUnformatted(cond ? cond : "Effect");
+            }
+            auto nameOf = [&](int id) -> std::string {
+                auto a = m_replayCtx.agents.find(id);
+                return a == m_replayCtx.agents.end() || a->second.playerName.empty() ? std::string("?") : a->second.playerName;
+            };
+            if (e.causeSkill)
+                ImGui::Text("From %s, %s", GetSkillDisplayName(e.causeSkill).c_str(), nameOf(e.caster).c_str());
+            else if (e.caster && e.caster != agentId)
+                ImGui::Text("Cast by %s", nameOf(e.caster).c_str());
+            if (icons[i].removed)
+                ImGui::Text("Removed by %s, %s", GetSkillDisplayName(e.removedBy).c_str(), nameOf(e.removedByCaster).c_str());
+            else if (e.hasDuration)
+                ImGui::Text("%.1f s left%s", std::max(0.f, e.end - t), e.endExact ? "" : " (estimated)");
+            ImGui::EndTooltip();
+        }
+    }
 }
 
 

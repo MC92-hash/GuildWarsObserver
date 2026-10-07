@@ -1795,6 +1795,19 @@ struct SkillDamageEvent
     int   skillId  = 0;
 };
 
+// A visual_effect_events line (recorder 2026-10-07): a visual attached to or removed from an agent
+// (VISUAL_ADD / VISUAL_REMOVE), a one-shot skill visual (VISUAL_ON_AGENT / VISUAL_ON_TARGET), or
+// the agent's state bitmap (AGENT_STATE) at the packet's exact time.
+struct VisualEffectEvent
+{
+    enum class Kind : uint8_t { Add, Remove, OnAgent, OnTarget, State };
+    float time    = 0.f;
+    Kind  kind    = Kind::Add;
+    int   agentId = 0;
+    int   value   = 0;   // the visual id, or the state bitmap
+    int   otherId = 0;   // the second agent the packet names, 0 when none
+};
+
 // A PROJECTILE line: something the agent shot left its hands. The only record of when a ranged
 // attack skill fires -- the server never sends ATTACK_SKILL_FINISHED for one.
 struct ProjectileEvent
@@ -2008,6 +2021,7 @@ struct StoCData
     std::vector<EnergyCoverage>         energyCoverage;
     std::vector<EnergyNoPay>            energyNoPay;
     std::vector<SkillDamageEvent>       skillDamage;
+    std::vector<VisualEffectEvent>      visualEffects;
     std::vector<ProjectileEvent>        projectiles;
     Equipment::Data                     equipment;
 };
