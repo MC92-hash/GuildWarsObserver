@@ -376,7 +376,7 @@ namespace
     constexpr float kRefHeight     = 1440.f;
     constexpr float kUnitSlot      = 56.f;     // a slot at UI scale 1x
     constexpr float kEffectIcon    = 52.f;     // an effect monitor icon at UI scale 1x
-    constexpr float kPopPeak       = 3.0f;     // arrival peak, in icons: 2.8 skill slots in the client
+    constexpr float kPopPeak       = 1.6f;     // arrival peak, in icons: the client's other pop table
 
     // Frame atlas 265556: 56x56 cells, 4 per row, sampled 1/512 inside their edges.
     void FrameCellUV(int cell, ImVec2& uv0, ImVec2& uv1)
@@ -604,7 +604,7 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
 //   bar      3 px black, 85% of the icon wide, 2 px above its bottom; a 1 px line in the kind's
 //            colour drains left; none for an effect without a duration
 //   arrival  a 0.5 s pop in place: alpha 0 -> 1 in 0.2 s, size 0.25 -> peak (f^1/3) then -> 1 (f^3);
-//            the client's table says a peak of 4, the owner's screenshot measures 2.8 skill slots
+//            peak 1.6: the client has a 4.0 and a 1.6 table, and the owner judged 4 and 3 far too big
 //   removal  the icon goes at once and the ones after it close the gap, no slide (ours: when the
 //            skill that removed it is known, it stays 0.7 s, dimmed, under that skill's icon)
 //   blink    from clamp(0.2 x duration, 2, 4) s before the end it was given: opacity 1 <-> 0.25,
