@@ -40,6 +40,15 @@ void ReplayWindow::BuildEffectTimeline() const
     {
         for (const SkillUseEvent& su : ard.skillUseHistory)
             in.uses.push_back({ agentId, su.targetId > 0 ? su.targetId : agentId, su.skillId, su.startTime, su.endTime, su.wasCancelled });
+        // Avatar forms: from one change into an avatar model to the next change.
+        for (size_t i = 0; i < ard.modelChanges.size(); ++i)
+        {
+            const ModelChangeEvent& mc = ard.modelChanges[i];
+            if (LookupAvatarFileHash(mc.modelId) == 0) continue;
+            const bool ended = i + 1 < ard.modelChanges.size();
+            in.forms.push_back({ agentId, static_cast<int>(mc.modelId), mc.time,
+                                 ended ? ard.modelChanges[i + 1].time : m_replayCtx.maxReplayTime, ended });
+        }
         float last = -1.f;
         for (const AgentSnapshot& s : ard.snapshots)
         {
@@ -62,6 +71,23 @@ void ReplayWindow::BuildEffectTimeline() const
                                            : PacketKind::Other;
         in.packets.push_back(p);
     }
+    in.position = [this](int agentId, float t, float& x, float& y) -> bool {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return false;
+        const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
+        if (!s || s->is_dead) return false;
+        x = s->x;
+        y = s->y;
+        return true;
+    };
+    in.partyOf = [this](int agentId) -> std::vector<int> {
+        std::vector<int> party;
+        auto self = m_replayCtx.agents.find(agentId);
+        if (self == m_replayCtx.agents.end()) return party;
+        for (const auto& [id, ard] : m_replayCtx.agents)
+            if (ard.type == AgentType::Player && ard.teamId == self->second.teamId) party.push_back(id);
+        return party;
+    };
     in.team = [this](int agentId) -> int {
         auto it = m_replayCtx.agents.find(agentId);
         return it == m_replayCtx.agents.end() ? 0 : it->second.teamId;
@@ -99,7 +125,7 @@ void ReplayWindow::BuildEffectTimeline() const
     FILE* f = nullptr;
     if (fopen_s(&f, (std::string(tempDir) + "gwo_effects_" + folder + ".txt").c_str(), "w") != 0 || !f) return;
     fprintf(f, "# agent\tkind\tskill\tname\tcause\tcaster\tstart\tend\texact\tnatural\tsource\texpected_end\tremoved_by\n");
-    static const char* kKind[] = { "enchantment", "hex", "condition", "stance", "weapon spell" };
+    static const char* kKind[] = { "enchantment", "hex", "condition", "stance", "weapon spell", "form" };
     std::vector<int> agents;
     for (const auto& [agentId, list] : m_effectTimeline.byAgent) agents.push_back(agentId);
     std::sort(agents.begin(), agents.end());
