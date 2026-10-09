@@ -1040,7 +1040,7 @@ static const FluxTableEntry kFluxTable[] = {
     { "Parting Gift",           "If you die, you drop a bundle on the ground that grants bonuses to whoever picks it up." },
 };
 
-static const char* GetFluxDescription(const std::string& fluxName)
+const char* GetFluxDescription(const std::string& fluxName)
 {
     for (const auto& entry : kFluxTable)
         if (fluxName == entry.name)

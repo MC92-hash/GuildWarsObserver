@@ -1004,6 +1004,9 @@ void ReplayWindow::InitImGui()
                 m_latoBold    = io.Fonts->AddFontFromFileTTF(latoBoldPath.c_str(), 18.f);
                 m_latoBoldBig = io.Fonts->AddFontFromFileTTF(latoBoldPath.c_str(), 40.f);
             }
+            std::string frizPath = base + "\\friz-quadrata-std-medium-5870338ec7ef8.otf";
+            if (std::filesystem::exists(frizPath))
+                m_frizHud = io.Fonts->AddFontFromFileTTF(frizPath.c_str(), 32.f);
         }
     }
 

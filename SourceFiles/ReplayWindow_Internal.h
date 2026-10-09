@@ -179,6 +179,7 @@ std::string GetSvgIconBasePath();
 const char* GetShieldTexture(int primaryProf);
 const char* GetSpearTexture(int primaryProf);
 const char* WeaponTypeName(uint8_t t);
+const char* GetFluxDescription(const std::string& fluxName);   // draw_replay_browser.cpp; nullptr if unknown
 const char* ProfIconFileName(int profId);
 ImTextureID LoadProfIconTimeline(ID3D11Device* device, int profId);
 ImTextureID LoadSkillIconFile(ID3D11Device* device, const char* filename);

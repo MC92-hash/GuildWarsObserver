@@ -804,6 +804,7 @@ private:
     ImFont* m_latoRegular = nullptr;
     ImFont* m_latoBold    = nullptr;
     ImFont* m_latoBoldBig = nullptr;
+    ImFont* m_frizHud     = nullptr;   // Friz Quadrata, the game's UI face, for text on HUD icons
 
     // UI layout (positions stored as viewport fractions 0..1)
     struct UILayoutConfig
@@ -1988,6 +1989,7 @@ private:
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
     void DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side);
+    float DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side);   // returns the width used
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     void DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);

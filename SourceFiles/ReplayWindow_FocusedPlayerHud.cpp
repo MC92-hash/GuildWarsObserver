@@ -682,8 +682,132 @@ namespace
 }
 
 
+// ---------------------------------------------------------------------------
+// The fixed icons at the head of the effect monitor, shown alive or dead: the flux, then morale.
+//
+//   flux     ours (the client has no flux icon): the match's PvP flux, PvP_Flair art under the
+//            plain effect frame (cell 2); the tooltip gives its name and description
+//   morale   the client's fixed icon code 3, sort key 1 - before every effect (GmEffect.cpp:
+//            create 0x5241c0, update 0x524d50; decoded from Gw.exe 2026-10-09). Shown while
+//            morale != 0, no bar: DAT 32745 (teal arrow up) for a boost, 32746 (red arrow down) for
+//            death penalty - 52x52 of premultiplied art, composited over black - under the grey
+//            slot frame (cell 0), and the text L"%+i%%" in a CtlText of style 0x94080 (centred,
+//            bottom-aligned), Friz Quadrata in 0xFFEEBB, matched on the owner's screenshot
+// ---------------------------------------------------------------------------
+float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side)
+{
+    auto agentIt = m_replayCtx.agents.find(agentId);
+    if (agentIt == m_replayCtx.agents.end()) return 0.f;
+    const AgentReplayData& ard = agentIt->second;
+    const float t = m_debugTimeline;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    const bool windowHovered = ImGui::IsWindowHovered();
+    float x = rowTopLeft.x;
+
+    // The recording names the flux when the recorder saw it; the month decides otherwise.
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+    if (flux != AttributeModel::Flux::None) {
+        const ImVec2 tl(x, rowTopLeft.y), br(x + side, rowTopLeft.y + side);
+        ImVec2 fuv0, fuv1;
+        FrameCellUV(2, fuv0, fuv1);
+        if (ImTextureID tex = LoadSkillIconFile(dev, "PvP_Flair.png"))
+            dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+        if (ImTextureID texSlots = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png"))
+            dl->AddImage(texSlots, tl, br, fuv0, fuv1);
+
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
+            const char* name = AttributeModel::FluxName(flux);
+            const char* desc = GetFluxDescription(name);
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(340.f);
+            // The client's tooltip: the title in pale yellow, the text, then the grey footer.
+            ImGui::TextColored(ImVec4(1.f, 238.f / 255.f, 187.f / 255.f, 1.f), "%s", name);
+            if (desc) ImGui::TextUnformatted(desc);
+            if (flux == AttributeModel::Flux::LikeABoss)
+                if (const BossTenure* boss = FindBossTenure(agentId, t)) {
+                    const int held = static_cast<int>(std::max(0.f, t - boss->start));
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "The Boss, held for %d:%02d", held / 60, held % 60);
+                }
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "PvP flux");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+        x += side;
+    }
+
+    int deaths = 0, boosts = 0;
+    const int morale = ComputeAgentMorale(ard, t, &deaths, &boosts);
+    if (morale != 0) {
+        const ImVec2 tl(x, rowTopLeft.y), br(x + side, rowTopLeft.y + side);
+        if (ImTextureID tex = LoadGameUITexture(dev, morale > 0 ? "Effectbar\\ui_effect_morale_boost.png"
+                                                                : "Effectbar\\ui_effect_morale_penalty.png"))
+            dl->AddImage(tex, tl, br);
+        // The grey slot frame over it, as the owner's screenshot shows (2026-10-09).
+        if (ImTextureID texSlots = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png")) {
+            ImVec2 fuv0, fuv1;
+            FrameCellUV(0, fuv0, fuv1);
+            dl->AddImage(texSlots, tl, br, fuv0, fuv1);
+        }
+
+        // The number in the game's face and pale yellow, placed by its ink (not its advance box):
+        // "-15%" inks 0.66 of the icon wide, centred under the arrow's tip, the digits' bottom 0.09
+        // of the icon above the bottom edge, inside the frame (tuned on the owner's screenshots).
+        char num[16];
+        snprintf(num, sizeof(num), "%+d%%", morale);
+        ImFont* font = m_frizHud ? m_frizHud : ImGui::GetFont();
+        // Ink extent of a string at the font's own size: left of the first glyph to right of the last.
+        auto inkSpan = [&](const char* s, float& x0, float& x1) {
+            float pen = 0.f;
+            x0 = FLT_MAX; x1 = 0.f;
+            for (const char* c = s; *c; ++c) {
+                const ImFontGlyph* g = font->FindGlyph(static_cast<ImWchar>(*c));
+                if (!g) continue;
+                x0 = std::min(x0, pen + g->X0);
+                x1 = std::max(x1, pen + g->X1);
+                pen += g->AdvanceX;
+            }
+            if (x0 > x1) x0 = x1 = 0.f;
+        };
+        float r0, r1, n0, n1;
+        inkSpan("-15%", r0, r1);
+        inkSpan(num, n0, n1);
+        const float k  = r1 > r0 ? 0.66f * side / (r1 - r0) : side * 0.3f / font->FontSize;   // px per font unit
+        const float fs = font->FontSize * k;
+        const ImFontGlyph* digit = font->FindGlyph('0');
+        const float inkBottom = digit ? digit->Y1 : font->Ascent;
+        const ImVec2 tp(std::round(tl.x + side * 0.5f - (n0 + n1) * 0.5f * k),
+                        std::round(br.y - 0.09f * side - inkBottom * k));
+        dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, 0xB0), num);
+        dl->AddText(font, fs, tp, IM_COL32(255, 238, 187, 255), num);
+
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
+            ImGui::BeginTooltip();
+            if (morale > 0) {
+                ImGui::TextUnformatted("Morale Boost");
+                ImGui::Text("Maximum Health and Energy +%d%%.", morale);
+            } else {
+                ImGui::TextUnformatted("Death Penalty");
+                ImGui::Text("Maximum Health and Energy %d%%.", morale);
+            }
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "%d death%s, %d team morale boost%s (calculated)",
+                               deaths, deaths == 1 ? "" : "s", boosts, boosts == 1 ? "" : "s");
+            ImGui::EndTooltip();
+        }
+        x += side;
+    }
+    return x - rowTopLeft.x;
+}
+
+
 void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side)
 {
+    rowTopLeft.x += DrawFocusHudFixedEffects(agentId, rowTopLeft, side);
+
     const EffectTimeline::Table* table = EffectTimelineTable();
     if (!table) return;
     const auto all = table->byAgent.find(agentId);
