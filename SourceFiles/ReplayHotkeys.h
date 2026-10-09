@@ -7,6 +7,8 @@ struct ReplayHotkeys
     int rewind5s    = ImGuiKey_LeftArrow;
     int forward5s   = ImGuiKey_RightArrow;
     int playPause   = ImGuiKey_Space;
+    int speedUp     = ImGuiKey_KeypadAdd;       // next step of the playback speed menu
+    int speedDown   = ImGuiKey_KeypadSubtract;  // previous step
 
     // Overlay toggles
     int toggleRangeRings    = ImGuiKey_R;

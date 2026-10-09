@@ -422,6 +422,8 @@ void ReplayWindow::DrawShortcutPreferences()
         HotkeyInput("Rewind 5 seconds",  &editing.rewind5s, true);
         HotkeyInput("Forward 5 seconds", &editing.forward5s, true);
         HotkeyInput("Play / Pause",      &editing.playPause, true);
+        HotkeyInput("Speed Up",          &editing.speedUp, true);
+        HotkeyInput("Slow Down",         &editing.speedDown, true);
 
         ImGui::Dummy(ImVec2(0, 8.f));
         DrawPrefsSectionHeader("OVERLAY TOGGLES");

@@ -76,6 +76,8 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
         return 'A' + (imguiKey - ImGuiKey_A);
     if (imguiKey >= ImGuiKey_0 && imguiKey <= ImGuiKey_9)
         return '0' + (imguiKey - ImGuiKey_0);
+    if (imguiKey >= ImGuiKey_Keypad0 && imguiKey <= ImGuiKey_Keypad9)
+        return VK_NUMPAD0 + (imguiKey - ImGuiKey_Keypad0);
     switch (imguiKey)
     {
     case ImGuiKey_Space:       return VK_SPACE;
@@ -93,6 +95,11 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
     case ImGuiKey_End:         return VK_END;
     case ImGuiKey_PageUp:      return VK_PRIOR;
     case ImGuiKey_PageDown:    return VK_NEXT;
+    case ImGuiKey_KeypadAdd:      return VK_ADD;
+    case ImGuiKey_KeypadSubtract: return VK_SUBTRACT;
+    case ImGuiKey_KeypadMultiply: return VK_MULTIPLY;
+    case ImGuiKey_KeypadDivide:   return VK_DIVIDE;
+    case ImGuiKey_KeypadDecimal:  return VK_DECIMAL;
     case ImGuiKey_MouseRight:  return VK_RBUTTON;
     case ImGuiKey_MouseMiddle: return VK_MBUTTON;
     case ImGuiKey_MouseX1:     return VK_XBUTTON1;
@@ -122,6 +129,8 @@ void ReplayHotkeys::Save() const
       << "  \"rewind5s\": "            << rewind5s            << ",\n"
       << "  \"forward5s\": "           << forward5s           << ",\n"
       << "  \"playPause\": "           << playPause           << ",\n"
+      << "  \"speedUp\": "             << speedUp             << ",\n"
+      << "  \"speedDown\": "           << speedDown           << ",\n"
       << "  \"toggleRangeRings\": "    << toggleRangeRings    << ",\n"
       << "  \"toggleSkillLasers\": "   << toggleSkillLasers   << ",\n"
       << "  \"toggleDrawingBar\": "    << toggleDrawingBar    << ",\n"
@@ -165,6 +174,8 @@ void ReplayHotkeys::Load()
         readKey("rewind5s",            rewind5s);
         readKey("forward5s",           forward5s);
         readKey("playPause",           playPause);
+        readKey("speedUp",             speedUp);
+        readKey("speedDown",           speedDown);
         readKey("toggleRangeRings",    toggleRangeRings);
         readKey("toggleSkillLasers",   toggleSkillLasers);
         readKey("toggleDrawingBar",    toggleDrawingBar);
@@ -7292,6 +7303,14 @@ void ReplayWindow::DrawImGuiOverlay()
 
             if (HotkeyFired(hk.playPause))
                 m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
+
+            // Step through the same speeds as the speed menu on the play bar.
+            int speedStep = (HotkeyFired(hk.speedUp) ? 1 : 0) - (HotkeyFired(hk.speedDown) ? 1 : 0);
+            if (speedStep != 0)
+            {
+                m_replayCtx.speedIndex    = std::clamp(m_replayCtx.speedIndex + speedStep, 0, kReplaySpeedCount - 1);
+                m_replayCtx.playbackSpeed = kReplaySpeeds[m_replayCtx.speedIndex];
+            }
 
             if (HotkeyFired(hk.toggleRangeRings))
             {

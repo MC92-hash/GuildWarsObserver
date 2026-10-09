@@ -656,6 +656,8 @@ static void draw_settings_window()
 	HotkeyInput("Rewind 5 seconds",    &editingKeys.rewind5s);
 	HotkeyInput("Forward 5 seconds",   &editingKeys.forward5s);
 	HotkeyInput("Play / Pause",        &editingKeys.playPause);
+	HotkeyInput("Speed Up",            &editingKeys.speedUp);
+	HotkeyInput("Slow Down",           &editingKeys.speedDown);
 
 	ImGui::Spacing();
 	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Overlay Toggles");
@@ -712,6 +714,7 @@ static void draw_settings_window()
 	{
 		int allKeys[] = {
 			editingKeys.rewind5s, editingKeys.forward5s, editingKeys.playPause,
+			editingKeys.speedUp, editingKeys.speedDown,
 			editingKeys.toggleRangeRings, editingKeys.toggleSkillLasers,
 			editingKeys.toggleDrawingBar, editingKeys.toggleMoralePanel,
 			editingKeys.toggleEventTimeline, editingKeys.toggleLordDamage,

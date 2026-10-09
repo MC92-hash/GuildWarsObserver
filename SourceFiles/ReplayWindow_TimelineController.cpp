@@ -126,9 +126,9 @@ void ReplayWindow::DrawTimelineController()
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     auto& ctx  = m_replayCtx;
 
-    static const float  speeds[]      = { 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f, 8.0f };
-    static const char*  speedLabels[] = { "0.25x","0.5x","0.75x","1x","1.5x","2x","4x","8x" };
-    constexpr int       speedCount    = 8;
+    const auto&   speeds      = kReplaySpeeds;
+    const auto&   speedLabels = kReplaySpeedLabels;
+    constexpr int speedCount  = kReplaySpeedCount;
 
     const float x0 = px + PAD;
     const float y0 = py + PADY;

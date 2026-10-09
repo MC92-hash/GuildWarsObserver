@@ -2100,5 +2100,10 @@ struct ReplayContext
     bool  isPlaying      = false;
     bool  loopPlayback   = false;
     float playbackSpeed  = 1.0f;
-    int   speedIndex     = 3;        // index into {0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8}
+    int   speedIndex     = 3;        // index into kReplaySpeeds
 };
+
+// The playback speed steps, shared by the speed menu and the speed hotkeys.
+inline constexpr float       kReplaySpeeds[]      = { 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 4.0f, 8.0f };
+inline constexpr const char* kReplaySpeedLabels[] = { "0.25x","0.5x","0.75x","1x","1.5x","2x","4x","8x" };
+inline constexpr int         kReplaySpeedCount    = 8;
