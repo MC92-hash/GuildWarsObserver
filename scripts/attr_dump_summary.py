@@ -30,7 +30,9 @@ import sys
 import tempfile
 
 HEADER_RE   = re.compile(r"^(?P<name>.+?)\s+\(agent (?P<agent>\d+), prof (?P<p>\d+)/(?P<s>\d+)\)$")
-ATTR_RE     = re.compile(r"^\s{4}(?P<attr>[^:]+): (?P<range>\S+)\s+best=(?P<best>\d+)"
+# A budget-only bound is printed as a ceiling, "<= 12  best=0  (budget only)", whose range has a
+# space in it.
+ATTR_RE     = re.compile(r"^\s{4}(?P<attr>[^:]+): (?P<range><= \d+|\S+)\s+best=(?P<best>\d+)"
                          r"(?P<budget>\s+\(budget only\))?\s+confidence=(?P<conf>[\d.]+)")
 # Evidence lines carry the attribute they speak for in their own "-> Attribute ranks" tail, which
 # is what they are keyed by: dumps written before the per-attribute layout list them under the

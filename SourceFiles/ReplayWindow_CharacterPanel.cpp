@@ -2031,6 +2031,27 @@ void ReplayWindow::DrawCharacterPanels()
 
                 auto builds = HealthModel::ArmourCandidates(ard->solvedArmourHealth, 6, runes);
 
+                // The set to show first is the one the attribute solve settled on: every paid rune
+                // the health proves sits on a rank beside it, and what it could not place - and the
+                // Survivor it needed - is counted on the build. Several sets can host the same
+                // named runes; leading with another one would print "A major rune" next to ranks
+                // that already account for it.
+                if (build && build->armourKnown && !runes.tiers.empty())
+                {
+                    int namedMajors = 0, namedSuperiors = 0;
+                    for (const auto& [attrId, tier] : runes.tiers)
+                    {
+                        if (tier == 2) ++namedMajors;
+                        else if (tier >= 3) ++namedSuperiors;
+                    }
+                    std::stable_partition(builds.begin(), builds.end(),
+                        [&](const HealthModel::ArmourBuild& b) {
+                            return b.majorRunes - namedMajors == build->unplacedMajorRunes &&
+                                   b.superiorRunes - namedSuperiors == build->unplacedSuperiorRunes &&
+                                   b.survivor == build->survivorHealth;
+                        });
+                }
+
                 // The ranks ask for runes this armour cannot host. Both halves are worth showing:
                 // the sets that do reach the measured health, and the sentence saying why they
                 // disagree with the ranks beside them.

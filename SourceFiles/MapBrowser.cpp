@@ -622,6 +622,8 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     // Start background update check
     m_updateChecker.Check(GWO_VERSION);
 
+    StartAttrBatchFromEnv();
+
     RunLog::Line("Initialize: done");
 }
 
@@ -640,6 +642,7 @@ void MapBrowser::Tick()
     // Always tick replay windows regardless of main window focus
     ProcessPendingReplayRequest();
     ProcessCloudDownloadResult();
+    ProcessAttrBatch();
     TickReplayWindows();
 
     // Busy latch for the hourglass. Set here rather than during render so it
@@ -701,6 +704,20 @@ void MapBrowser::Tick()
     {
         g_debugFullUpdateTest = false;
         m_updateChecker.DebugFullTest();
+    }
+
+    // DEV TOOL (attribute batch): the user may be playing in another window, so this one is
+    // rarely in front. Update() is what opens gw.dat and builds the hash index the batch's
+    // replay windows need, so keep it running without drawing.
+    if (m_attrBatch.active && !is_extracting &&
+        (IsIconic(m_deviceResources->GetWindow()) ||
+         GetForegroundWindow() != m_deviceResources->GetWindow()))
+    {
+        auto bgNow = high_resolution_clock::now();
+        duration<double, std::milli> bgElapsed = bgNow - last_frame_time;
+        last_frame_time = bgNow;
+        Update(bgElapsed);
+        return;
     }
 
     if (!is_extracting) {
@@ -2406,6 +2423,111 @@ void MapBrowser::ProcessCloudDownloadResult()
     RunLog::Line("replay: a window opened - %zu replay window(s) now open, each with its own"
                  " graphics device",
                  m_replay_windows.size());
+}
+
+// ---------------------------------------------------------------------------
+// DEV TOOL - attribute-solver batch.
+//
+// GWO_ATTR_BATCH=<file> lists match folders, one per line. Each is opened (minimised, without
+// focus), left to load until its attribute solve has run - which writes the GWO_ATTR_DEBUG dump -
+// then closed; after the last one the app exits. No input is ever sent. Not a user feature.
+// ---------------------------------------------------------------------------
+
+void MapBrowser::StartAttrBatchFromEnv()
+{
+    char listPath[MAX_PATH] = {};
+    if (GetEnvironmentVariableA("GWO_ATTR_BATCH", listPath, (DWORD)sizeof(listPath)) == 0)
+        return;
+
+    std::ifstream in(listPath);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        while (!line.empty() && (line.back() == '' || line.back() == ' ' || line.back() == '	'))
+            line.pop_back();
+        if (!line.empty())
+            m_attrBatch.folders.push_back(line);
+    }
+    m_attrBatch.active = !m_attrBatch.folders.empty();
+    ReplayWindow::s_openWithoutFocus = m_attrBatch.active;
+    RunLog::Line("attr-batch: %zu match folder(s) listed in '%s'", m_attrBatch.folders.size(), listPath);
+}
+
+void MapBrowser::ProcessAttrBatch()
+{
+    if (!m_attrBatch.active) return;
+
+    // Same preconditions as opening a replay by hand.
+    if (m_dat_managers.count(0) == 0 ||
+        m_dat_managers[0]->m_initialization_state < InitializationState::IndexReady ||
+        !m_hash_index_initialized)
+        return;
+
+    if (m_attrBatch.current)
+    {
+        ReplayWindow* rw = m_attrBatch.current;
+        bool alive = false;
+        for (auto& w : m_replay_windows)
+            if (w.get() == rw && w->IsAlive()) alive = true;
+
+        if (alive)
+        {
+            const auto secs = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - m_attrBatch.openedAt).count();
+            const bool done = rw->AttributesDeduced();
+            if (!done && !rw->LoadFailed() && secs < 600.0)
+                return;
+            RunLog::Line("attr-batch: closing '%s' - %s after %.0f s",
+                         m_attrBatch.folders[m_attrBatch.next - 1].c_str(),
+                         done ? "attributes solved" : (rw->LoadFailed() ? "LOAD FAILED" : "TIMED OUT"),
+                         secs);
+            DestroyWindow(rw->GetHWND());   // WM_DESTROY -> not alive -> TickReplayWindows frees it
+            return;
+        }
+        m_attrBatch.current = nullptr;
+    }
+
+    if (m_attrBatch.next >= m_attrBatch.folders.size())
+    {
+        RunLog::Line("attr-batch: all %zu match(es) done, exiting", m_attrBatch.folders.size());
+        m_attrBatch.active = false;
+        PostQuitMessage(0);
+        return;
+    }
+
+    const std::string folder = m_attrBatch.folders[m_attrBatch.next++];
+    const std::filesystem::path folderPath(folder);
+    const std::string folderName = folderPath.filename().string();
+
+    // Prefer the library's scanned entry (full metadata), as the browser does.
+    MatchMeta match;
+    bool found = false;
+    for (const auto& scanned : m_replay_library.GetMatches())
+        if (scanned.folder_name == folderName) { match = scanned; found = true; break; }
+    if (!found)
+    {
+        if (!LocalReplayProvider::ParseInfosJson(folderPath / "infos.json", match))
+        {
+            RunLog::Line("attr-batch: SKIPPED '%s' - no readable infos.json", folder.c_str());
+            return;
+        }
+        match.folder_name = folderName;
+        match.folder_path = folder;
+        match.is_cloud_only = false;
+    }
+
+    RunLog::Line("attr-batch: opening %zu/%zu '%s'", m_attrBatch.next, m_attrBatch.folders.size(),
+                 folder.c_str());
+    HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
+    ReplayWindow* rw = ReplayWindow::Create(hInst, match, m_dat_managers[0].get(), m_hash_index);
+    if (!rw)
+    {
+        RunLog::Line("attr-batch: FAILED to create a window for '%s'", folder.c_str());
+        return;
+    }
+    m_replay_windows.emplace_back(rw);
+    m_attrBatch.current = rw;
+    m_attrBatch.openedAt = std::chrono::steady_clock::now();
 }
 
 void MapBrowser::TickReplayWindows()

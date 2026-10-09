@@ -165,6 +165,20 @@ private:
 
     std::vector<std::unique_ptr<ReplayWindow>> m_replay_windows;
     void ProcessPendingReplayRequest();
+
+    // DEV TOOL - attribute-solver batch. GWO_ATTR_BATCH names a text file of match folders;
+    // each is opened in turn, closed once its attribute solve has run, then the app exits.
+    struct AttrBatch
+    {
+        bool active = false;
+        std::vector<std::string> folders;
+        size_t next = 0;
+        ReplayWindow* current = nullptr;
+        std::chrono::steady_clock::time_point openedAt;
+    };
+    AttrBatch m_attrBatch;
+    void StartAttrBatchFromEnv();
+    void ProcessAttrBatch();
     void TickReplayWindows();
 
     static MapBrowser* s_activeInstance;

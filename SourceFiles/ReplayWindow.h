@@ -123,6 +123,14 @@ public:
             && m_loadingPhase != LoadingPhase::Error;
     }
 
+    // DEV TOOL (GWO_ATTR_BATCH, see MapBrowser::ProcessAttrBatch): the batch closes a window
+    // once its attribute solve has run, or once loading has failed.
+    bool AttributesDeduced() const { return m_attributesDeduced; }
+    bool LoadFailed() const { return m_loadingPhase == LoadingPhase::Error; }
+
+    // DEV TOOL: set by the attribute batch so its windows open minimised without taking focus.
+    static inline bool s_openWithoutFocus = false;
+
     // IDeviceNotify
     void OnDeviceLost() override;
     void OnDeviceRestored() override;

@@ -716,7 +716,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
         MatchBookmarks::Get().SetBookmarks(folderName, entries);
     };
 
-    ShowWindow(rw->m_hwnd, SW_SHOWMAXIMIZED);
+    ShowWindow(rw->m_hwnd, s_openWithoutFocus ? SW_SHOWMINNOACTIVE : SW_SHOWMAXIMIZED);
     UpdateWindow(rw->m_hwnd);
     return rw;
 }
