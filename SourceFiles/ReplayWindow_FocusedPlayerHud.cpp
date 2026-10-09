@@ -763,11 +763,12 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
             if (tex) dl->AddImage(tex, tl, br, iconUV0, iconUV1, dim);
             if (texSlots) dl->AddImage(texSlots, tl, br, fuv0, fuv1, dim);
             drawBar(e.end, 0.8f * fade);
-            // The remover pops in over the centre: up to 1.25 in 0.12 s, settling at 1 by 0.24 s.
+            // The remover pops in over the top-left corner: up to 1.25 in 0.12 s, settling at 1 by 0.24 s.
             const float pop = since < 0.12f ? 1.25f * since / 0.12f
                             : since < 0.24f ? 1.25f - 0.25f * (since - 0.12f) / 0.12f : 1.f;
             const float h = side * 0.62f * pop * 0.5f;
-            const ImVec2 c(tl.x + side * 0.5f, tl.y + side * 0.5f);
+            // Anchored in the top-left corner, border flush with the edge, so the pop grows from there.
+            const ImVec2 c(tl.x + 1.f + h, tl.y + 1.f + h);
             if (ImTextureID by = LoadSkillIcon(this, dev, e.removedBy, m_skillIconIndex, m_skillIconCache); by && h > 0.5f) {
                 const ImVec2 b0(c.x - h, c.y - h), b1(c.x + h, c.y + h);
                 fg->AddRectFilled(ImVec2(b0.x - 1.f, b0.y - 1.f), ImVec2(b1.x + 1.f, b1.y + 1.f), IM_COL32(0, 0, 0, static_cast<int>(230.f * fade)));
