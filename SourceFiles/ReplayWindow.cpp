@@ -6371,6 +6371,7 @@ void ReplayWindow::Tick()
         attrInputs.matchYear  = m_matchMeta.year;
         attrInputs.matchMonth = m_matchMeta.month;
         attrInputs.matchDay   = m_matchMeta.day;
+        attrInputs.mapId      = m_replayCtx.mapId;
 
         m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;

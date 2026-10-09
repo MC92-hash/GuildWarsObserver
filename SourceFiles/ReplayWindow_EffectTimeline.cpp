@@ -88,6 +88,47 @@ void ReplayWindow::BuildEffectTimeline() const
             if (ard.type == AgentType::Player && ard.teamId == self->second.teamId) party.push_back(id);
         return party;
     };
+    in.state = [this](int agentId, float t, AgentState& out) -> bool {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return false;
+        const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
+        if (!s) return false;
+        out.x       = s->x;
+        out.y       = s->y;
+        out.health  = s->health_pct;
+        out.hpSlope = s->hp_pips;
+        out.maxHp   = it->second.effectiveMaxHpAtTime(t);
+        if (out.maxHp == 0) out.maxHp = s->max_hp;
+        out.alive   = s->is_alive && !s->is_dead;
+        return true;
+    };
+    in.mapId = m_replayCtx.mapId;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.type == AgentType::Player) { in.players.push_back(id); continue; }
+        if (ard.type != AgentType::Spirit || ard.spiritSkillId <= 0) continue;
+        // One entry per life: an agent id is reused, by another spirit as often as not. A spirit
+        // is written seconds apart, so it lives until the sample that says otherwise.
+        Spirit sp;
+        sp.agent   = id;
+        sp.skillId = ard.spiritSkillId;
+        sp.range   = GetSpiritRange(ard.modelId);
+        bool any = false;
+        for (const AgentSnapshot& s : ard.snapshots)
+        {
+            if (!s.is_alive || s.is_dead || s.model_id != ard.modelId)
+            {
+                if (any) { sp.died = s.time; in.spirits.push_back(sp); }
+                any = false;
+                continue;
+            }
+            if (!any) { sp.born = s.time; sp.team = ard.teamId; any = true; }
+            sp.died = s.time;
+            if (s.team_id != 0) sp.team = s.team_id;
+        }
+        if (any) in.spirits.push_back(sp);
+    }
+    std::sort(in.players.begin(), in.players.end());
     in.team = [this](int agentId) -> int {
         auto it = m_replayCtx.agents.find(agentId);
         return it == m_replayCtx.agents.end() ? 0 : it->second.teamId;
@@ -125,7 +166,8 @@ void ReplayWindow::BuildEffectTimeline() const
     FILE* f = nullptr;
     if (fopen_s(&f, (std::string(tempDir) + "gwo_effects_" + folder + ".txt").c_str(), "w") != 0 || !f) return;
     fprintf(f, "# agent\tkind\tskill\tname\tcause\tcaster\tstart\tend\texact\tnatural\tsource\texpected_end\tremoved_by\n");
-    static const char* kKind[] = { "enchantment", "hex", "condition", "stance", "weapon spell", "form" };
+    static const char* kKind[] = { "enchantment", "hex", "condition", "stance", "weapon spell", "form",
+                                   "ritual", "other", "terrain" };
     std::vector<int> agents;
     for (const auto& [agentId, list] : m_effectTimeline.byAgent) agents.push_back(agentId);
     std::sort(agents.begin(), agents.end());
@@ -134,7 +176,7 @@ void ReplayWindow::BuildEffectTimeline() const
         {
             const SkillInfo* si = m_skillView.Get(e.skillId);
             fprintf(f, "%d\t%s\t%d\t%s\t%d\t%d\t%.3f\t%.3f\t%d\t%d\t%s\t%.3f\t%d\n", e.agent, kKind[(int)e.kind], e.skillId,
-                    si ? si->name.c_str() : "?", e.causeSkill, e.caster, e.start, e.end, e.endExact ? 1 : 0,
+                    e.label ? e.label : si ? si->name.c_str() : "?", e.causeSkill, e.caster, e.start, e.end, e.endExact ? 1 : 0,
                     e.natural ? 1 : 0, EndSourceName(e.endSource), e.expectedEnd, e.removedBy);
         }
     fclose(f);

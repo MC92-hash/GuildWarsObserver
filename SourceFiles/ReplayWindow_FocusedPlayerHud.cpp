@@ -596,9 +596,10 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
 // gwobserver-private/docs/research/gw_effect_bar.md). Which effects, and when each ends, come from
 // EffectTimeline (private).
 //
-//   order    by kind - conditions, hexes, stances, enchantments, then the rest - a new effect at
-//            the end of its group; one icon per skill, timed by its longest instance, and a
-//            refresh that lengthens it moves it to the end of its group
+//   order    by kind - conditions, hexes, rituals (a spirit's range), stances, enchantments, then
+//            the rest - a new effect at the end of its group; one icon per skill, timed by its
+//            longest instance, and a refresh that lengthens it moves it to the end of its group.
+//            Ours: what the map itself pays (Terrain) stands before all of them
 //   icon     52 UI units, icons touching; frame cell of 265556 by kind (orange condition, magenta
 //            hex, yellow-green enchantment, teal Dervish enchantment, dark green other), elite odd
 //   bar      3 px black, 85% of the icon wide, 2 px above its bottom; a 1 px line in the kind's
@@ -618,7 +619,9 @@ namespace
         using K = EffectTimeline::Kind;
         switch (k) {
         case K::Condition:   return 4;
+        case K::Terrain:     return -1;
         case K::Hex:         return 5;
+        case K::Ritual:      return 6;
         case K::Stance:      return 9;
         case K::Enchantment: return 12;
         default:             return 13;
@@ -921,9 +924,11 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
         }
 
         if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
-            if (si) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr);
+            if (si && !e.label) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr);
             ImGui::BeginTooltip();
-            if (!si) {
+            if (e.label) {
+                ImGui::TextUnformatted(e.label);
+            } else if (!si) {
                 const char* cond = ConditionName(e.skillId);
                 ImGui::TextUnformatted(cond ? cond : "Effect");
             }
