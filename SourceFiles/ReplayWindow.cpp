@@ -6293,7 +6293,8 @@ void ReplayWindow::Tick()
     // both afterwards.
     if (m_combatLogBuilt && !m_maxHpBreakpointSolved)
     {
-        SolveMaxHpFromSkillBreakpoints(m_replayCtx.agents, m_combatLog, m_skillView);
+        SolveMaxHpFromSkillBreakpoints(m_replayCtx.agents, m_combatLog,
+                                       m_replayCtx.stocData.combat, m_skillView);
 
         for (CombatLogRow& row : m_combatLog)
         {
@@ -6361,6 +6362,11 @@ void ReplayWindow::Tick()
         m_attributesDeduced = true;
 
         WriteAttributeDebugDump();
+        // The effect dump (GWO_EFFECT_DEBUG) is written when the table is built, which a window
+        // opened by the attribute batch never asks for: build it here, after the solve it reads.
+        char effectFlag[16] = {};
+        if (GetEnvironmentVariableA("GWO_EFFECT_DEBUG", effectFlag, (DWORD)sizeof(effectFlag)) != 0)
+            (void)EffectTimelineTable();
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
