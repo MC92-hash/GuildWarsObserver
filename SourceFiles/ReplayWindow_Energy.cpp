@@ -27,6 +27,14 @@ void ReplayWindow::BuildEnergyTracks() const
         if (a == it->second.attributes.end() || a->second.budgetOnly) return -1;
         return a->second.best;
     };
+    in.attributeRange = [this](int agentId, int attribute, int& lo, int& hi) -> bool {
+        auto it = m_attrProfiles.find(agentId);
+        if (it == m_attrProfiles.end()) return false;
+        auto a = it->second.attributes.find(attribute);
+        if (a == it->second.attributes.end()) return false;
+        lo = a->second.lo; hi = a->second.hi;
+        return true;
+    };
     in.moralePercent = [this](const AgentReplayData& ard, float t) { return MoralePercentAtTime(ard, t); };
     in.moraleBoosts = [this](int teamId) -> std::vector<float> {
         auto it = m_moraleBoosts.find(teamId);
@@ -85,6 +93,111 @@ float EnergyBarFraction(const EnergyModel::Sample& s)
 {
     const float full = s.maxEnergy + s.overcast;
     return full > 0.f ? std::clamp(std::max(0.f, s.energy) / full, 0.f, 1.f) : 0.f;
+}
+
+// Where the real energy may be: a light band over the bar from the lowest to the highest value the
+// model cannot rule out, its ends marked.
+void DrawEnergyBand(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s)
+{
+    const float full = s.maxEnergy + s.overcast;
+    if (s.dead || full <= 0.f) return;
+    const float lo = std::clamp(s.energy - s.down, 0.f, s.maxEnergy);
+    const float hi = std::clamp(s.energy + s.up, 0.f, s.maxEnergy);
+    if (hi - lo < 0.5f) return;
+    const float w = b1.x - b0.x;
+    const float x0 = std::round(b0.x + w * lo / full), x1 = std::round(b0.x + w * hi / full);
+    dl->AddRectFilled(ImVec2(x0, b0.y), ImVec2(x1, b1.y), IM_COL32(0xFF, 0xFF, 0xFF, 0x38));
+    dl->AddLine(ImVec2(x0 + 0.5f, b0.y), ImVec2(x0 + 0.5f, b1.y), IM_COL32(0xFF, 0xFF, 0xFF, 0xA0));
+    dl->AddLine(ImVec2(x1 - 0.5f, b0.y), ImVec2(x1 - 0.5f, b1.y), IM_COL32(0xFF, 0xFF, 0xFF, 0xA0));
+}
+
+// The confidence lamp: the game's three lamps (texture 277147, green / orange / red, 16 px each side
+// by side) on a dark disc, since the glass is half transparent.
+void DrawEnergyConfidenceLamp(ImDrawList* dl, ImTextureID lamps, ImVec2 c, float d, EnergyModel::Confidence level)
+{
+    const float r = std::round(d * 0.5f);
+    dl->AddCircleFilled(c, r * 0.8f, IM_COL32(0, 0, 0, 0xC0));
+    const int i = static_cast<int>(level);
+    if (!lamps)
+    {
+        static const ImU32 kCol[] = { IM_COL32(0x30, 0xC8, 0x30, 0xFF), IM_COL32(0xFF, 0xA0, 0x32, 0xFF),
+                                      IM_COL32(0xFF, 0x4A, 0x3C, 0xFF) };
+        dl->AddCircleFilled(c, r * 0.7f, kCol[i]);
+        return;
+    }
+    const float u0 = static_cast<float>(i) * 0.25f;
+    dl->AddImage(lamps, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(u0, 0.f), ImVec2(u0 + 0.25f, 1.f));
+}
+
+// The lamp's tooltip: how sure the bar is, the range, and why - the doubts since the band was last
+// closed, newest first, repeats of one skill folded into a count.
+std::string EnergyConfidenceText(const EnergyModel::Track& track, float t, const SkillDatabaseView& skills,
+                                 const std::unordered_map<int, AgentReplayData>& agents, bool legend)
+{
+    using EnergyModel::DoubtKind;
+    const EnergyModel::Sample s = track.At(t);
+    static const char* kLevel[] = { "high (green)", "medium (orange)", "low (red)" };
+    std::string out = std::string("Energy confidence: ") + kLevel[static_cast<int>(track.ConfidenceAt(t))];
+    if (legend)
+        out += "\n\nNo recording states another player's energy: the bar is calculated."
+               "\n  Green   the real energy is within 3 points of the bar"
+               "\n  Orange  it may be off by up to 10"
+               "\n  Red     it may be off by more than 10, or the player just cast a skill"
+               "\n          the bar said they could not afford"
+               "\nThe lamp turns green again as the player regenerates to full, or when"
+               "\nthe recording proves the value (shrine, morale boost, Mind Wrack ending).";
+    if (legend && !s.dead) out += "\n";
+    if (s.dead) return out;
+    char line[256];
+    const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
+    const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
+    if (hi > lo) { snprintf(line, sizeof(line), "\nReal energy between %d and %d", lo, hi); out += line; }
+
+    struct Row { DoubtKind kind; int skillId; int other; float last; int n; };
+    std::vector<Row> rows;
+    for (const EnergyModel::Doubt* d : track.DoubtsAt(t))
+    {
+        auto it = std::find_if(rows.begin(), rows.end(), [&](const Row& r) {
+            return r.kind == d->kind && r.skillId == d->skillId && r.other == d->other; });
+        if (it != rows.end()) ++it->n;
+        else rows.push_back({ d->kind, d->skillId, d->other, d->time, 1 });
+    }
+    int shown = 0;
+    for (const Row& r : rows)
+    {
+        if (++shown > 6) { out += "\n..."; break; }
+        const SkillInfo* si = skills.Get(r.skillId);
+        const char* skill = si ? si->name.c_str() : "?";
+        std::string who;
+        if (auto a = agents.find(r.other); r.other > 0 && a != agents.end()) who = a->second.playerName;
+        const int mm = static_cast<int>(r.last) / 60, ss = static_cast<int>(r.last) % 60;
+        switch (r.kind)
+        {
+        case DoubtKind::Resurrection:
+            snprintf(line, sizeof(line), "\n%02d:%02d  Resurrected by %s%s%s: energy on return depends on a rank not known",
+                     mm, ss, skill, who.empty() ? "" : " from ", who.c_str());
+            break;
+        case DoubtKind::Expertise:
+            snprintf(line, sizeof(line), "\n%02d:%02d  %s (x%d): cost cut by Expertise, rank not solved", mm, ss, skill, r.n);
+            break;
+        case DoubtKind::Mysticism:
+            snprintf(line, sizeof(line), "\n%02d:%02d  %s (x%d): cost cut by Mysticism, rank not solved", mm, ss, skill, r.n);
+            break;
+        case DoubtKind::AvatarOfLyssa:
+            snprintf(line, sizeof(line), "\n%02d:%02d  Avatar of Lyssa%s%s (x%d): may have run out, Mysticism not solved",
+                     mm, ss, who.empty() ? "" : " of ", who.c_str(), r.n);
+            break;
+        case DoubtKind::Contradiction:
+            snprintf(line, sizeof(line), "\n%02d:%02d  Cast %s, which the model said they could not afford", mm, ss, skill);
+            break;
+        case DoubtKind::Aneurysm:
+            snprintf(line, sizeof(line), "\n%02d:%02d  Aneurysm%s%s next to them: loss capped by a rank not known",
+                     mm, ss, who.empty() ? "" : " from ", who.c_str());
+            break;
+        }
+        out += line;
+    }
+    return out;
 }
 
 // The thin energy strip under a party row's health bar.
@@ -146,16 +259,28 @@ void ReplayWindow::DrawPartyEnergyBar(ImDrawList* dl, const AgentReplayData& ard
     if (xSet < b1.x)
         dl->AddLine(ImVec2(xSet + 0.5f, b0.y - 1.f), ImVec2(xSet + 0.5f, b1.y + 1.f), IM_COL32(0xE6, 0xEB, 0xF5, 0xFF), 1.f);
 
+    // The confidence lamp at the strip's right end, only when the model is unsure: eight green
+    // lamps would say nothing.
+    const EnergyModel::Confidence level = track->ConfidenceAt(m_debugTimeline);
+    if (level != EnergyModel::Confidence::High && !s.dead)
+    {
+        const float d = 11.f;
+        DrawEnergyConfidenceLamp(dl, LoadGameUITexture(m_deviceResources->GetD3DDevice(), "Progressbar\ui_confidence_lamps.png"),
+                                 ImVec2(b1.x - d * 0.5f, std::round((b0.y + b1.y) * 0.5f)), d, level);
+    }
+
     if (ImGui::IsMouseHoveringRect(b0, b1))
     {
         const int e = s.dead ? 0 : std::max(0, static_cast<int>(std::floor(s.energy)));
         const int m = static_cast<int>(std::floor(s.maxEnergy));
+        const std::string why = EnergyConfidenceText(*track, m_debugTimeline, m_skillView, m_replayCtx.agents,
+                                                     level != EnergyModel::Confidence::High);
         if (lift > 0.f)
-            ImGui::SetTooltip("Energy %d / %d on the best weapon set (calculated)\nOn the set in hand: %d / %d%s",
+            ImGui::SetTooltip("Energy %d / %d on the best weapon set (calculated)\nOn the set in hand: %d / %d%s\n\n%s",
                               s.dead ? 0 : std::max(0, static_cast<int>(std::floor(best))),
                               static_cast<int>(std::floor(s.maxEnergy + lift)), e, m,
-                              s.energy < 0.f ? " (hiding energy)" : "");
+                              s.energy < 0.f ? " (hiding energy)" : "", why.c_str());
         else
-            ImGui::SetTooltip("Energy %d / %d (calculated)", e, m);
+            ImGui::SetTooltip("Energy %d / %d (calculated)\n\n%s", e, m, why.c_str());
     }
 }

@@ -1132,6 +1132,7 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
     dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, 0xA0));
     if (!s.dead) DrawGameStatBarFill(dl, tex("ui_progress_energy.png"), b0, b1, EnergyBarFraction(s));
     DrawEnergyOvercast(dl, b0, b1, s, tex("texture_0x32274.png"));
+    DrawEnergyBand(dl, b0, b1, s);
     if (ImTextureID frame = tex("ui_hud_bar_frame.png"))
         DrawHudBarFrame(dl, frame, ImVec2(b0.x - 7.f * scale, b0.y - 2.f * scale),
                         ImVec2(b1.x + 7.f * scale, b1.y + 2.f * scale), scale);
@@ -1148,10 +1149,30 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
     dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, 0xCC), num);
     dl->AddText(font, fs, tp, IM_COL32(0xF0, 0xF0, 0xF0, 0xFF), num);
 
+    // How sure the model is: the lamp just right of the bar's frame, past the HUD window's own
+    // edge (so drawn unclipped). Hovering it says what the colours mean and why it shows this one.
+    const float lampD = std::round(b1.y - b0.y + 4.f * scale);
+    const ImVec2 lampC(std::round(b1.x + 10.f * scale + lampD * 0.5f), std::round(cy));
+    dl->PushClipRectFullScreen();
+    DrawEnergyConfidenceLamp(dl, tex("ui_confidence_lamps.png"), lampC, lampD, track->ConfidenceAt(m_debugTimeline));
+    dl->PopClipRect();
+    const float lampR = lampD * 0.5f;
+    if (ImGui::IsMouseHoveringRect(ImVec2(lampC.x - lampR, lampC.y - lampR), ImVec2(lampC.x + lampR, lampC.y + lampR), false))
+    {
+        const std::string why = EnergyConfidenceText(*track, m_debugTimeline, m_skillView, m_replayCtx.agents, true);
+        ImGui::SetTooltip("%s", why.c_str());
+    }
+
     if (ImGui::IsMouseHoveringRect(b0, b1))
-        ImGui::SetTooltip("Energy %d / %d (calculated)\nRegeneration %+d pips%s", value,
-                          static_cast<int>(std::floor(s.maxEnergy)), static_cast<int>(s.pips),
+    {
+        const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
+        const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
+        char range[64] = "";
+        if (!s.dead && hi > lo) snprintf(range, sizeof(range), "\nReal energy between %d and %d", lo, hi);
+        ImGui::SetTooltip("Energy %d / %d (calculated)%s\nRegeneration %+d pips%s", value,
+                          static_cast<int>(std::floor(s.maxEnergy)), range, static_cast<int>(s.pips),
                           s.overcast >= 1.f ? "\nOvercast shown in grey" : "");
+    }
 
     ImTextureID arrows = tex("ui_health_arrows.png");
     const int pips = s.dead ? 0 : static_cast<int>(s.pips);
