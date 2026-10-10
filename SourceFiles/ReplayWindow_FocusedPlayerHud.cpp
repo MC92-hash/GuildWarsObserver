@@ -686,10 +686,13 @@ namespace
 
 
 // ---------------------------------------------------------------------------
-// The fixed icons at the head of the effect monitor, shown alive or dead: the flux, then morale.
+// The fixed icons at the head of the effect monitor, shown alive or dead: the flux, the Isle of
+// Wurms shrine bonus, then morale.
 //
 //   flux     ours (the client has no flux icon): the match's PvP flux, PvP_Flair art under the
 //            plain effect frame (cell 2); the tooltip gives its name and description
+//   shrine   the Southern Health Shrine Bonus (skill 1669, DAT 384519) while the agent's team holds
+//            the shrine - the client lists it as an ordinary effect; the owner wants it fixed here
 //   morale   the client's fixed icon code 3, sort key 1 - before every effect (GmEffect.cpp:
 //            create 0x5241c0, update 0x524d50; decoded from Gw.exe 2026-10-09). Shown while
 //            morale != 0, no bar: DAT 32745 (teal arrow up) for a boost, 32746 (red arrow down) for
@@ -741,6 +744,44 @@ float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, flo
             ImGui::EndTooltip();
         }
         x += side;
+    }
+
+    // Isle of Wurms: the Southern Health Shrine Bonus while this agent's team holds the shrine, from
+    // the same timeline the max-HP model reads, so the icon and the +120 come and go together.
+    if (!m_wurmsShrineSamples.empty() && (ard.teamId == 1 || ard.teamId == 2) &&
+        !(ard.type == AgentType::NPC && IsGuildNpcModelId(ard.modelId))) {
+        const int idx = std::clamp(static_cast<int>(t / m_wurmsShrineSampleDt), 0,
+                                   static_cast<int>(m_wurmsShrineSamples.size()) - 1);
+        if (m_wurmsShrineSamples[idx].ownerTeam == ard.teamId) {
+            const ImVec2 tl(x, rowTopLeft.y), br(x + side, rowTopLeft.y + side);
+            EnsureSkillIconIndex();
+            if (ImTextureID tex = LoadSkillIcon(this, dev, kSouthernHealthShrineBonusSkillId, m_skillIconIndex, m_skillIconCache))
+                dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+            if (ImTextureID texSlots = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png")) {
+                ImVec2 fuv0, fuv1;
+                FrameCellUV(2, fuv0, fuv1);
+                dl->AddImage(texSlots, tl, br, fuv0, fuv1);
+            }
+
+            if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
+                float since = -1.f;
+                for (auto it = m_wurmsShrineCaptureEvents.rbegin(); it != m_wurmsShrineCaptureEvents.rend(); ++it)
+                    if (it->first <= t && it->second == ard.teamId) { since = it->first; break; }
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(340.f);
+                ImGui::TextColored(ImVec4(1.f, 238.f / 255.f, 187.f / 255.f, 1.f), "Southern Health Shrine Bonus");
+                ImGui::Text("+%d maximum Health for every member of the team holding the Southern Health Shrine.",
+                            kWurmsShrineHealthBonus);
+                if (since >= 0.f) {
+                    const int held = static_cast<int>(std::max(0.f, t - since));
+                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "Held for %d:%02d", held / 60, held % 60);
+                }
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "Isle of Wurms shrine");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            x += side;
+        }
     }
 
     int deaths = 0, boosts = 0;

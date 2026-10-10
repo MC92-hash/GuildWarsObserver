@@ -19,6 +19,10 @@ inline constexpr float kWurmsShrineCaptureRadius = 1010.f;
 // members are standing. Isle of Wurms only.
 inline constexpr int kWurmsShrineHealthBonus = 120;
 
+// The client's skill for that bonus (GWCA Southern_Health_Shrine_Bonus; Gw.exe skill table: type 5,
+// icons DAT 232061 64x64 / 384519 128x128). Its icon is Textures/Skill_Icons/[1669] - ..., from 384519.
+inline constexpr int kSouthernHealthShrineBonusSkillId = 1669;
+
 inline bool IsIsleOfWurmsMap(int metadataMapId)
 {
     return metadataMapId == 532 || metadataMapId == 534;
