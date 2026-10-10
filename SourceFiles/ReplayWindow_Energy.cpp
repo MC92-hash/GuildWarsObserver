@@ -32,6 +32,10 @@ void ReplayWindow::BuildEnergyTracks() const
         auto it = m_moraleBoosts.find(teamId);
         return it == m_moraleBoosts.end() ? std::vector<float>{} : it->second;
     };
+    // The effect bar's timeline: some effects on a player change what his own skills do to his
+    // energy, and the model reads them from here rather than finding them again. Null until the
+    // skill-use timeline is in; the rebuild after the attribute solve has it.
+    in.effects = EffectTimelineTable();
 
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyBuilt = true;

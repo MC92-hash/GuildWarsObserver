@@ -6440,6 +6440,10 @@ void ReplayWindow::Tick()
         char effectFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_EFFECT_DEBUG", effectFlag, (DWORD)sizeof(effectFlag)) != 0)
             (void)EffectTimelineTable();
+        // Likewise the energy dump (GWO_ENERGY_DEBUG), written when the tracks are built.
+        char energyFlag[16] = {};
+        if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
+            (void)EnergyTrackFor(0);
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
