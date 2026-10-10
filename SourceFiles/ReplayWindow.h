@@ -504,6 +504,7 @@ private:
         // was doing at this point of the match, and the panel wants him standing still.
         std::unique_ptr<GW::Animation::AnimationController> controller;
         uint32_t controllerModelHash = 0;   // the rig the controller was set up for
+        uint32_t controllerHeldTypes = 0;   // the item types (main << 16 | off) its stance is for
         std::chrono::steady_clock::time_point lastTick{};
 
         // His first weapon set, held when the recording has nothing in his hands at this moment.
@@ -1569,6 +1570,11 @@ private:
     // the nameplates and the shadows anchor on. `hostScale` is this window's own multiplier.
     bool PlayerVisualsTopY(int agentId, float hostScale, float& topOut) const;
     bool PlayerVisualsRadius(int agentId, float hostScale, float& radiusOut) const;
+
+    // The idle a character holding these items (GWCA item types, 0 = empty hand) stands in, out
+    // of the rig's pinned bank. False when there is none; the caller keeps its own idle.
+    bool StanceIdleRef(const AgentModelInstance& tmpl, uint32_t rightItemType,
+                       uint32_t leftItemType, SegmentRef& out) const;
 
     // Top of the model an agent is wearing at `time`, for overlays that anchor above the head.
     float AgentModelTopY(int agentId, const AgentReplayData& ard, float groundY, float time) const;

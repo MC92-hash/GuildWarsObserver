@@ -233,8 +233,24 @@ void ReplayWindow::RenderCharacterPortraits()
             !tmpl.clip)
             continue;
 
+        // ---- what he holds: at this moment, else his first set (as DrawHeldWeapons does) ---
+        const int snapIdx = FindSnapshotIndex(ard.snapshots, m_debugTimeline);
+        EquippedWeapon heldMain = ResolveEquippedWeapon(ard, snapIdx, Equipment::Slot_Weapon);
+        EquippedWeapon heldOff = ResolveEquippedWeapon(ard, snapIdx, Equipment::Slot_Offhand);
+        if (!heldMain.Valid() && !heldOff.Valid())
+        {
+            const Equipment::Data& equipment = m_replayCtx.stocData.equipment;
+            const Equipment::ItemDef* firstMain =
+                p.fallbackMainId ? equipment.FindByAgentItemId(p.fallbackMainId) : nullptr;
+            const Equipment::ItemDef* firstOff =
+                p.fallbackOffId ? equipment.FindByAgentItemId(p.fallbackOffId) : nullptr;
+            heldMain.itemType = firstMain ? firstMain->itemType : 0u;
+            heldOff.itemType = firstOff ? firstOff->itemType : 0u;
+        }
+        const uint32_t heldTypes = ((heldMain.itemType & 0xFFFFu) << 16) | (heldOff.itemType & 0xFFFFu);
+
         // ---- the pose: idle, on a controller of the portrait's own ------------------------
-        if (!p.controller || p.controllerModelHash != hashIt->second)
+        if (!p.controller || p.controllerModelHash != hashIt->second || p.controllerHeldTypes != heldTypes)
         {
             // The idle the Wardrobe plays for this profession and sex: the pinned bank's own
             // idle segment, looked for in the pinned bank first, then in the bank the rig chose,
@@ -276,6 +292,13 @@ void ReplayWindow::RenderCharacterPortraits()
                     segment = seg->second.segmentIndex;
                 }
             }
+            // Holding a weapon, he stands in that weapon's idle: the hands close on the grip and
+            // the arms carry it where the weapon link expects them. Empty hands keep the idle above.
+            if (SegmentRef stance; StanceIdleRef(tmpl, heldMain.itemType, heldOff.itemType, stance))
+            {
+                clip = tmpl.allClips[stance.clipIndex].clip;
+                segment = stance.segmentIndex;
+            }
 
             p.controller = std::make_unique<GW::Animation::AnimationController>();
             p.controller->Initialize(clip);
@@ -290,6 +313,7 @@ void ReplayWindow::RenderCharacterPortraits()
             p.controller->Play();
             p.controller->Update(0.f);
             p.controllerModelHash = hashIt->second;
+            p.controllerHeldTypes = heldTypes;
             p.lastTick = now;
         }
         // Wall-clock time: he keeps breathing while the replay is paused.
@@ -441,8 +465,7 @@ void ReplayWindow::RenderCharacterPortraits()
 
             bool shadersBound = false;
             int boundPixelShader = -1;
-            DrawHeldWeapons(agentId, ard, FindSnapshotIndex(ard.snapshots, m_debugTimeline),
-                            tmpl.weaponSocket, *p.controller, agentCB, shadersBound,
+            DrawHeldWeapons(agentId, ard, snapIdx, tmpl.weaponSocket, *p.controller, agentCB, shadersBound,
                             boundPixelShader, firstMain, firstOff, /*portrait=*/true);
         }
 
