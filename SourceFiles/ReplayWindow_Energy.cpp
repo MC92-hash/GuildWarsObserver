@@ -67,13 +67,18 @@ const EnergyModel::Track* ReplayWindow::EnergyTrackFor(int agentId) const
 }
 
 // The bar spans the full maximum; the part overcast took is greyed at its right end, as the client
-// does.
-void DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s)
+// does, with the game's grey fill (texture 0x32274, laid out like the energy fill: its filled column
+// stretched over the overcast span).
+void DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s, ImTextureID greyFill)
 {
     const float full = s.maxEnergy + s.overcast;
     if (s.overcast <= 0.f || full <= 0.f) return;
-    const float x = b0.x + (b1.x - b0.x) * std::clamp(s.maxEnergy / full, 0.f, 1.f);
-    dl->AddRectFilled(ImVec2(x, b0.y), b1, IM_COL32(0x80, 0x80, 0x80, 0xB0));
+    const float x = std::round(b0.x + (b1.x - b0.x) * std::clamp(s.maxEnergy / full, 0.f, 1.f));
+    if (x >= b1.x) return;
+    if (greyFill)
+        dl->AddImage(greyFill, ImVec2(x, b0.y), b1, ImVec2(0.5f / 16.f, 0.f), ImVec2(0.5f / 16.f, 1.f));
+    else
+        dl->AddRectFilled(ImVec2(x, b0.y), b1, IM_COL32(0x6C, 0x6C, 0x6C, 0xFF));
 }
 
 float EnergyBarFraction(const EnergyModel::Sample& s)

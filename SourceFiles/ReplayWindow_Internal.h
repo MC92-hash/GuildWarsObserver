@@ -132,7 +132,8 @@ void DrawGameStatBarFill(ImDrawList* dl, ImTextureID tex, ImVec2 c0, ImVec2 c1, 
 // Energy bar helpers (ReplayWindow_Energy.cpp): the filled share of the full maximum, and the
 // overcast part greyed at the right end.
 float EnergyBarFraction(const EnergyModel::Sample& s);
-void  DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s);
+void  DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s,
+                         ImTextureID greyFill);
 void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const AgentSnapshot* snap, uint8_t teamId, bool isDead,
                         const char* name, const PartyIcons& icons,

@@ -1131,7 +1131,7 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
 
     dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, 0xA0));
     if (!s.dead) DrawGameStatBarFill(dl, tex("ui_progress_energy.png"), b0, b1, EnergyBarFraction(s));
-    DrawEnergyOvercast(dl, b0, b1, s);
+    DrawEnergyOvercast(dl, b0, b1, s, tex("texture_0x32274.png"));
     if (ImTextureID frame = tex("ui_hud_bar_frame.png"))
         DrawHudBarFrame(dl, frame, ImVec2(b0.x - 7.f * scale, b0.y - 2.f * scale),
                         ImVec2(b1.x + 7.f * scale, b1.y + 2.f * scale), scale);
