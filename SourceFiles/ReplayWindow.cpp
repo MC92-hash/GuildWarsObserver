@@ -634,7 +634,13 @@ static std::wstring BuildWindowTitle(const MatchMeta& match)
         match.year, match.month, match.day,
         name1, tag1, name2, tag2);
 
-    return std::wstring(title.begin(), title.end());
+    // The names are UTF-8: widening byte by byte turned Korean/Japanese/Chinese guild names into
+    // mojibake in the title bar.
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, title.data(), (int)title.size(), nullptr, 0);
+    std::wstring wtitle(wlen > 0 ? wlen : 0, L'\0');
+    if (wlen > 0)
+        MultiByteToWideChar(CP_UTF8, 0, title.data(), (int)title.size(), wtitle.data(), wlen);
+    return wtitle;
 }
 
 // ---------------------------------------------------------------------------
@@ -987,6 +993,38 @@ void ReplayWindow::InitImGui()
                 io.Fonts->AddFontFromFileTTF(path, fontSize, &mergeConfig, symbolRanges);
                 break;
             }
+        }
+
+        // Extended Latin, Greek, Cyrillic, CJK - guild names and tags can be Korean, Japanese or
+        // Chinese. Same ranges and fallbacks as the main window (MapBrowser.cpp MergeUnicodeFallback),
+        // which is why the library showed them and the replay drew '?'.
+        static const ImWchar cjkRanges[] = {
+            0x0100, 0x024F,   // Latin Extended-A + B
+            0x0250, 0x02AF,   // IPA Extensions
+            0x1E00, 0x1EFF,   // Latin Extended Additional
+            0x0370, 0x03FF,   // Greek and Coptic
+            0x0400, 0x04FF,   // Cyrillic
+            0x0500, 0x052F,   // Cyrillic Supplement
+            0x3000, 0x30FF,   // CJK Symbols, Hiragana, Katakana
+            0x3100, 0x312F,   // Bopomofo
+            0x31F0, 0x31FF,   // Katakana Phonetic Extensions
+            0xAC00, 0xD7A3,   // Hangul Syllables
+            0x3131, 0x318E,   // Hangul Compatibility Jamo
+            0x4E00, 0x9FFF,   // CJK Unified Ideographs
+            0xFF00, 0xFFEF,   // Halfwidth and Fullwidth Forms
+            0, 0
+        };
+        const char* cjkFallbacks[] = {
+            "C:\\Windows\\Fonts\\malgun.ttf",
+            "C:\\Windows\\Fonts\\meiryo.ttc",
+            "C:\\Windows\\Fonts\\msgothic.ttc",
+            "C:\\Windows\\Fonts\\YuGothR.ttc",
+        };
+        for (const char* path : cjkFallbacks)
+        {
+            if (std::filesystem::exists(path) &&
+                io.Fonts->AddFontFromFileTTF(path, fontSize, &mergeConfig, cjkRanges))
+                break;
         }
     }
 
