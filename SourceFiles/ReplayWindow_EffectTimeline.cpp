@@ -71,6 +71,14 @@ void ReplayWindow::BuildEffectTimeline() const
                                            : PacketKind::Other;
         in.packets.push_back(p);
     }
+    for (const BasicAttackEvent& a : stoc.basicAttack)
+    {
+        const bool finished = a.type == "ATTACK_FINISHED";
+        if (!finished && a.type != "ATTACK_STARTED") continue;
+        in.attacks.push_back({ a.time, a.caster_id, a.target_id, finished });
+    }
+    std::stable_sort(in.attacks.begin(), in.attacks.end(),
+                     [](const Attack& a, const Attack& b) { return a.time < b.time; });
     in.position = [this](int agentId, float t, float& x, float& y) -> bool {
         auto it = m_replayCtx.agents.find(agentId);
         if (it == m_replayCtx.agents.end()) return false;
