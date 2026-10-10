@@ -413,6 +413,11 @@ private:
     HealthModel::Inputs m_healthInputs;
     bool m_healthInputsBuilt = false;
 
+    // The spans a "+X maximum Health" skill with no duration held a player's pool up (private
+    // HealthModel), found once with the armour solve. The armour solve writes its readings into
+    // them and the attribute solve reads them back.
+    HealthModel::SkillHealthSpans m_skillHealthSpans;
+
     // Each player's energy, calculated forward from the match start (EnergyModel, private). Built
     // lazily on first use and rebuilt once the attribute solve lands, the way the skill disables
     // are, because Expertise, Energy Storage and the skill ranks all feed it.
@@ -532,7 +537,10 @@ private:
     mutable bool m_skillDisablesUsedAttributes = false;  // rebuilt once the attribute ranks are solved
     void  BuildSkillDisables() const;
     int   AttributeRankFor(int agentId, int attribute) const;
-    float SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed) const;
+    float SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed, float usedAt) const;
+    const AttributeModel::AttributeRange* SkillRankAt(int skillId, int userAgentId, float usedAt,
+                                                      int* attribute = nullptr) const;
+    void  WriteSkillRankDebug(const std::string& path) const;   // GWO_ATTR_DEBUG
     std::vector<SkillCooldownState> ComputeSkillCooldowns(const AgentReplayData& ard,
                                                           const std::vector<int>& skillIds, float t) const;
     void BuildMoraleTimelines() const;
@@ -1990,7 +1998,9 @@ private:
     void DrawFocusHudSkillBar(int agentId);
     void DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side);
     float DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side);   // returns the width used
-    void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd);
+    // `usedAt`: the instant whose rank the green numbers read (a signet can scale on another
+    // attribute for a while); negative = the replay's current time.
+    void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd, float usedAt = -1.f);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     void DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     // The energy strip under a party row's health bar. Players only.

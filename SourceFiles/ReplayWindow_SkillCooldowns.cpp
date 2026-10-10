@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <format>
+#include <fstream>
 
 // ---------------------------------------------------------------------------
 // Skill cooldowns and disables -- one model for every skill bar in the app.
@@ -220,14 +222,80 @@ int ReplayWindow::AttributeRankFor(int agentId, int attribute) const
 }
 
 // The duration a skill grants at its user's rank: the index-th "A...B second" range of its
-// description, or `fixed` when the rule names one.
-float ReplayWindow::SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed) const
+// description, or `fixed` when the rule names one. `usedAt` is the instant the skill landed: which
+// attribute's rank it reads can depend on what else its user had up then, and the attribute model
+// says which (AttributeModel::SkillAttributeAt).
+float ReplayWindow::SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed,
+                                       float usedAt) const
 {
     if (rangeIndex < 0) return fixed;
     const SkillInfo* si = m_skillView.Get(skillId);
     float v0 = 0.f, v15 = 0.f;
     if (!si || !DescRange(si->description, rangeIndex, v0, v15)) return fixed;
-    return AtRank(v0, v15, AttributeRankFor(userAgentId, si->attribute));
+    auto bit = m_attrProfiles.find(userAgentId);
+    const int attribute = AttributeModel::SkillAttributeAt(
+        bit != m_attrProfiles.end() ? &bit->second : nullptr, *si, usedAt);
+    return AtRank(v0, v15, AttributeRankFor(userAgentId, attribute));
+}
+
+// The solved range a skill's description reads for its user at `usedAt`, and which attribute that
+// is: the skill's own, or the one the attribute model says it scaled on then (SkillAttributeAt).
+// nullptr when the tool never solved that attribute for this player.
+const AttributeModel::AttributeRange* ReplayWindow::SkillRankAt(int skillId, int userAgentId, float usedAt,
+                                                                int* attribute) const
+{
+    const SkillInfo* si = m_skillView.Get(skillId);
+    if (attribute) *attribute = si ? si->attribute : -1;
+    auto bit = m_attrProfiles.find(userAgentId);
+    if (!si || bit == m_attrProfiles.end()) return nullptr;
+    const int used = AttributeModel::SkillAttributeAt(&bit->second, *si, usedAt);
+    if (attribute) *attribute = used;
+    auto it = bit->second.attributes.find(used);
+    return it != bit->second.attributes.end() && !it->second.budgetOnly ? &it->second : nullptr;
+}
+
+// Developer dump (GWO_ATTR_DEBUG): for every player whose skills change attribute over the match,
+// the rank and the tooltip's green numbers of each such skill around every span the model gives.
+void ReplayWindow::WriteSkillRankDebug(const std::string& path) const
+{
+    std::ofstream out(path);
+    if (!out) return;
+    for (const auto& [agentId, build] : m_attrProfiles) {
+        if (build.symbolicCelerity.empty()) continue;
+        std::vector<float> times;
+        for (const auto& s : build.symbolicCelerity) {
+            out << std::format("agent {} span {:.2f} .. {:.2f} (sure {:.2f}, maybe {:.2f})\n",
+                               agentId, s.start, s.estimate, s.sure, s.maybe);
+            for (float t : { s.start - 5.f, s.start + 0.5f, 0.5f * (s.start + s.estimate),
+                             s.estimate - 0.5f, s.estimate + 5.f })
+                times.push_back(t);
+        }
+        for (int skillId : SkillBarForAgent(agentId)) {
+            const SkillInfo* si = m_skillView.Get(skillId);
+            if (!si) continue;
+            bool moves = false;
+            for (float t : times) {
+                int a = si->attribute;
+                (void)SkillRankAt(skillId, agentId, t, &a);
+                moves |= a != si->attribute;
+            }
+            if (!moves) continue;
+            out << "  " << si->name << "\n";
+            for (float t : times) {
+                int a = si->attribute;
+                const AttributeModel::AttributeRange* r = SkillRankAt(skillId, agentId, t, &a);
+                const char* name = SkillDatabase::GetAttributeName(a);
+                std::string text;
+                for (const auto& run : BuildSkillTextRuns(*si, r, 0u, 1u))
+                    text += run.colour == 1u ? "[" + run.text + "]" : run.text;
+                for (char& c : text) if (c == '\n') c = ' ';
+                out << std::format("    t {:8.2f}  {} {}  {}\n", t, name ? name : "?",
+                                   r ? (r->lo == r->hi ? std::to_string(r->lo)
+                                                       : std::format("{}-{}", r->lo, r->hi)) : "unsolved",
+                                   text);
+            }
+        }
+    }
 }
 
 void ReplayWindow::BuildSkillDisables() const
@@ -291,7 +359,7 @@ void ReplayWindow::BuildSkillDisables() const
                 if (rule.needs == Needs::Spell && !(cutInfo && SkillDatabase::IsSpellType(cutInfo->type))) continue;
                 if (rule.needs == Needs::Attack && !IsAttack(cutInfo)) continue;
 
-                float secs = SkillSecondsAtRank(rule.skillId, casterId, rule.rangeIndex, rule.fixed);
+                float secs = SkillSecondsAtRank(rule.skillId, casterId, rule.rangeIndex, rule.fixed, t0);
                 if (rule.perSignet) {
                     int signets = 0;
                     for (int s : SkillBarForAgent(casterId))
@@ -336,10 +404,10 @@ void ReplayWindow::BuildSkillDisables() const
                 }
                 float start = t0;
                 if (rule.delayIndex >= 0)
-                    start += SkillSecondsAtRank(rule.skillId, casterId, rule.delayIndex, 0.f);
+                    start += SkillSecondsAtRank(rule.skillId, casterId, rule.delayIndex, 0.f, t0);
                 SkillDisable d;
                 d.start = start;
-                d.end   = start + SkillSecondsAtRank(rule.skillId, casterId, rule.rangeIndex, rule.fixed);
+                d.end   = start + SkillSecondsAtRank(rule.skillId, casterId, rule.rangeIndex, rule.fixed, t0);
                 d.scope = rule.scope;
                 d.skillId = rid;
                 d.param = rule.param;
@@ -351,7 +419,7 @@ void ReplayWindow::BuildSkillDisables() const
             // known if the thief casts it: a spell that is not on the thief's own bar, and is on
             // the victim's, used inside the window.
             if (rid == resolve(kArcaneThievery) || rid == resolve(kArcaneLarceny)) {
-                const float dur = SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f);
+                const float dur = SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0);
                 if (ev.targetId > 0 && dur > 0.f) {
                     for (size_t j = ei + 1; j < caster.skillUseHistory.size(); ++j) {
                         const auto& nev = caster.skillUseHistory[j];
@@ -371,7 +439,7 @@ void ReplayWindow::BuildSkillDisables() const
             // Auspicious Incantation: the next spell its user casts within 20 seconds is disabled
             // for an additional X seconds.
             if (rid == resolve(kAuspiciousIncantation)) {
-                const float secs = SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f);
+                const float secs = SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0);
                 for (size_t j = ei + 1; j < caster.skillUseHistory.size(); ++j) {
                     const auto& nev = caster.skillUseHistory[j];
                     if (nev.startTime > t0 + 20.f) break;
@@ -475,7 +543,7 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
         if (t0 > t) continue;
         const int rid = resolve(ev.skillId);
         auto activeFor = [&](int rangeIndex, float fallback) {
-            return t < t0 + SkillSecondsAtRank(ev.skillId, ard.agent_id, rangeIndex, fallback);
+            return t < t0 + SkillSecondsAtRank(ev.skillId, ard.agent_id, rangeIndex, fallback, t0);
         };
         if (rid == resolve(kSerpentsQuickness) && activeFor(0, 20.f) && ard.healthPctAtTime(t) >= 0.5f)
             addMod(0.67f, "SQ", kAll);

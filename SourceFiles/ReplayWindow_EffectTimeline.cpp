@@ -149,6 +149,8 @@ void ReplayWindow::BuildEffectTimeline() const
         return a->second.best;
     };
 
+    in.skillHealth = &m_skillHealthSpans;
+
     m_effectTimeline = Build(in);
     m_effectTimelineBuilt = true;
     m_effectTimelineUsedAttributes = m_attributesDeduced;

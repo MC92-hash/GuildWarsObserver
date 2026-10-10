@@ -965,7 +965,7 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
         }
 
         if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
-            if (si && !e.label) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr);
+            if (si && !e.label) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr, e.start);
             ImGui::BeginTooltip();
             if (e.label) {
                 ImGui::TextUnformatted(e.label);
@@ -1183,7 +1183,7 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
 // with every "A...B" answered at this player's solved rank, in green, + "(Attrib: <attribute>)".
 // The replay state (what disabled it, how long it is still out) follows under a rule, muted.
 // ---------------------------------------------------------------------------
-void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd)
+void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd, float usedAt)
 {
     const SkillInfo* si = m_skillView.Get(skillId);
     if (!si) return;
@@ -1237,18 +1237,24 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
     const float nameW = ImGui::CalcTextSize(si->name.c_str()).x;
     const float width = std::max(kWrap, nameW + 16.f + costsW);
 
-    // One paragraph: type, description at this player's rank, attribute.
-    const AttributeModel::AttributeRange* rank = nullptr;
-    if (auto bit = m_attrProfiles.find(agentId); bit != m_attrProfiles.end())
-        if (auto it = bit->second.attributes.find(si->attribute); it != bit->second.attributes.end())
-            if (!it->second.budgetOnly) rank = &it->second;
+    // One paragraph: type, description at this player's rank, attribute. The rank is the one the
+    // skill read at `usedAt` (now, unless the caller names when it landed), which for a signet can
+    // be another attribute's.
+    int rankAttr = si->attribute;
+    const AttributeModel::AttributeRange* rank =
+        SkillRankAt(skillId, agentId, usedAt < 0.f ? m_debugTimeline : usedAt, &rankAttr);
 
     std::vector<SkillTextRun> runs;
     std::string lead = std::string(si->is_elite ? "Elite " : "") + SkillDatabase::GetTypeName(si->type) + ". ";
     runs.push_back({ lead, kPlain });
     for (auto& r : BuildSkillTextRuns(*si, rank, kPlain, kGreen)) runs.push_back(std::move(r));
     const char* attrName = SkillDatabase::GetAttributeName(si->attribute);
-    if (si->attribute < 101 && attrName && attrName[0])
+    const char* rankName = SkillDatabase::GetAttributeName(rankAttr);
+    if (rankAttr != si->attribute && rank && rankName && rankName[0])
+        runs.push_back({ std::string(" (Attrib: ") + (attrName ? attrName : "") + "; read at " + rankName + " " +
+                         (rank->lo == rank->hi ? std::to_string(rank->lo)
+                                               : std::to_string(rank->lo) + "-" + std::to_string(rank->hi)) + ")", kPlain });
+    else if (si->attribute < 101 && attrName && attrName[0])
         runs.push_back({ std::string(" (Attrib: ") + attrName + ")", kPlain });
 
     ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.11f, 0.105f, 0.085f, 0.96f));
@@ -1306,7 +1312,7 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
         }
         if (rank) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(kMuted));
-            ImGui::Text("Green: this player's %s, read off the match.", attrName);
+            ImGui::Text("Green: this player's %s, read off the match.", rankName);
             ImGui::PopStyleColor();
         }
     }

@@ -6340,6 +6340,14 @@ void ReplayWindow::Tick()
     {
         if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
         m_healthInputs = BuildHealthModelInputs();
+        m_skillHealthSpans = HealthModel::FindSkillHealthSpans(m_replayCtx.agents,
+                                                               m_replayCtx.stocData, m_skillView);
+        m_healthInputs.skillHealth = &m_skillHealthSpans;
+        // The span's health is a rank the attribute solve has not reached yet; until it has, the
+        // model answers Fallback inside a span and the recorded value stands.
+        m_healthInputs.skillHealthBonus = [this](int agentId, const HealthModel::SkillHealthSpan& span) {
+            return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView);
+        };
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
         m_armourSolved = true;
@@ -6372,9 +6380,21 @@ void ReplayWindow::Tick()
         attrInputs.matchMonth = m_matchMeta.month;
         attrInputs.matchDay   = m_matchMeta.day;
         attrInputs.mapId      = m_replayCtx.mapId;
+        attrInputs.skillHealth = &m_skillHealthSpans;
 
         m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;
+
+        // An armour the attribute solve read back for a player the health model could not solve
+        // (see PlayerBuild::armourFromSkillHealth) belongs to the agent from now on.
+        for (const auto& [agentId, build] : m_attrProfiles)
+        {
+            if (!build.armourFromSkillHealth || !build.armourKnown) continue;
+            auto it = m_replayCtx.agents.find(agentId);
+            if (it == m_replayCtx.agents.end() || it->second.armourSolved) continue;
+            it->second.solvedArmourHealth = build.armourHealth;
+            it->second.armourSolved = true;
+        }
 
         WriteAttributeDebugDump();
         // The effect dump (GWO_EFFECT_DEBUG) is written when the table is built, which a window
@@ -6597,6 +6617,7 @@ void ReplayWindow::WriteAttributeDebugDump() const
     if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
         flux = AttributeModel::FluxForMonth(m_matchMeta.month);
     AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView, flux);
+    WriteSkillRankDebug(std::string(tempDir) + "gwo_tooltip_ranks_" + folder + ".txt");
 }
 
 void ReplayWindow::Update(double elapsedMs)
