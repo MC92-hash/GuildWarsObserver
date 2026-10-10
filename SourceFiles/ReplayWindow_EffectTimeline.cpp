@@ -150,6 +150,11 @@ void ReplayWindow::BuildEffectTimeline() const
     };
 
     in.skillHealth = &m_skillHealthSpans;
+    in.stoc = &stoc;
+    in.agentData = [this](int agentId) -> const AgentReplayData* {
+        auto it = m_replayCtx.agents.find(agentId);
+        return it == m_replayCtx.agents.end() ? nullptr : &it->second;
+    };
 
     m_effectTimeline = Build(in);
     m_effectTimelineBuilt = true;
