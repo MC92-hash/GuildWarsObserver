@@ -903,6 +903,7 @@ private:
     bool m_showLaserPanel  = false;
     bool m_laserShowRed    = true;
     bool m_laserShowBlue   = true;
+    bool m_laserTeamColors = false;  // colour by caster team instead of ally/enemy target
     bool m_laserProf[kLaserProfCount] = { true, true, true, true, true, true,
                                           true, true, true, true, true };
     std::unordered_set<int> m_laserHiddenAgents;  // casters whose lasers are hidden

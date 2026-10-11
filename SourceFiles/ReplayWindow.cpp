@@ -249,6 +249,7 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     for (int i = 0; i < kLaserProfCount; i++) hashBool(m_laserProf[i]);
     hashBool(m_laserShowBlue);
     hashBool(m_laserShowRed);
+    hashBool(m_laserTeamColors);
     hashBool(m_clFilterDamage);
     hashBool(m_clFilterHeals);
     hashBool(m_clFilterSkills);
@@ -343,6 +344,7 @@ void ReplayWindow::SaveUILayout()
     }
     ps["laserShowBlue"]    = m_laserShowBlue;
     ps["laserShowRed"]     = m_laserShowRed;
+    ps["laserTeamColors"]  = m_laserTeamColors;
 
     // Combat Log filters
     ps["clFilterDamage"]    = m_clFilterDamage;
@@ -468,6 +470,7 @@ void ReplayWindow::LoadUILayout()
             }
             bv("laserShowBlue", m_laserShowBlue);
             bv("laserShowRed",  m_laserShowRed);
+            bv("laserTeamColors", m_laserTeamColors);
 
             // Combat Log filters
             bv("clFilterDamage",    m_clFilterDamage);

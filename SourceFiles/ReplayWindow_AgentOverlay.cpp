@@ -951,22 +951,24 @@ void ReplayWindow::DrawSkillLasers()
             if (dist > m_uiLayout.lodDotDist * 1.5f) continue;
         }
 
-        // Determine ally vs enemy
-        bool isEnemy = (ard.teamId != targ.teamId);
-        ImU32 laserCol, glowCol;
+        // Colour by the caster's team, or by ally (green) / enemy (red) target
         int lR, lG, lB;
-        if (isEnemy)
+        if (m_laserTeamColors)
+        {
+            const ImU32 tc = GetAgentTeamColor(ard.teamId);
+            lR = (tc >> IM_COL32_R_SHIFT) & 0xFF;
+            lG = (tc >> IM_COL32_G_SHIFT) & 0xFF;
+            lB = (tc >> IM_COL32_B_SHIFT) & 0xFF;
+        }
+        else if (ard.teamId != targ.teamId)
         {
             lR = 255; lG = 60; lB = 60;
-            laserCol = IM_COL32(255, 60, 60, (ImU8)(255 * laser.alpha));
-            glowCol  = IM_COL32(255, 60, 60, (ImU8)(120 * laser.alpha));
         }
         else
         {
             lR = 60; lG = 255; lB = 120;
-            laserCol = IM_COL32(60, 255, 120, (ImU8)(255 * laser.alpha));
-            glowCol  = IM_COL32(60, 255, 120, (ImU8)(120 * laser.alpha));
         }
+        const ImU32 laserCol = IM_COL32(lR, lG, lB, (ImU8)(255 * laser.alpha));
 
         ImVec2 A(cScrX, cScrY), B(tScrX, tScrY);
         float lineLen = sqrtf((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
@@ -1274,6 +1276,17 @@ void ReplayWindow::DrawSkillLaserPanel()
         ImGui::SameLine();
         if (TeamPill("Blue##Laser", m_laserShowBlue, Team::Blue))
             m_laserShowBlue = !m_laserShowBlue;
+
+        ImGui::TextDisabled("Colours");
+        if (LaserPill("Ally / Enemy##LaserCol", !m_laserTeamColors))
+            m_laserTeamColors = false;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Green = skill on an ally, red = skill on an enemy");
+        ImGui::SameLine();
+        if (LaserPill("Team##LaserCol", m_laserTeamColors))
+            m_laserTeamColors = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Each laser takes its caster's team colour (red / blue)");
 
         ImGui::Separator();
 
