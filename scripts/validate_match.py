@@ -141,6 +141,32 @@ def check_match_completion(match_dir: Path) -> tuple[bool, str]:
     if winner != 0:
         return True, ""
 
+    # Nothing was observed at all -- a phantom observe rather than a match that
+    # broke. match_id is an ephemeral handle into the client's observer list,
+    # and a stale one sends the CtoS packet without moving the client anywhere,
+    # yet the recorder still latches on and writes an infos.json with no
+    # rosters, no kills and no damage (observed 2026-09-02: 249:36 of nothing,
+    # the duration being the observer district's own clock).
+    #
+    # This has to be its own reason, and it has to be tested BEFORE the
+    # duration gate below -- Watchtower keys "permanent, never requeue" off the
+    # "Incomplete match" prefix in five places, so reporting it as incomplete
+    # blacklists a match that was never watched. Deliberately strictly zero
+    # rather than the DRAW_MIN_PLAYERS_PER_TEAM test further down: a PARTIAL
+    # roster means we really were in the match and it really was cut short, and
+    # re-observing a finished match cannot help, so that stays permanent.
+    parties_seen = data.get("parties", {})
+    if isinstance(parties_seen, dict):
+        observed_players = sum(
+            len(party.get("PLAYER", []))
+            for party in parties_seen.values()
+            if isinstance(party, dict)
+        )
+    else:
+        observed_players = 0
+    if observed_players == 0:
+        return False, "Empty recording: no players observed (observe never landed)"
+
     # winner_party_id == 0: decide draw vs. incomplete based on completeness.
     duration_seconds = get_match_duration_seconds(data)
     if duration_seconds < DRAW_MIN_DURATION_SECONDS:

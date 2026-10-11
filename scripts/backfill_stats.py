@@ -29,6 +29,15 @@ another.
     python backfill_stats.py --apply
     python backfill_stats.py --apply --month 2026-08
     python backfill_stats.py --apply --from-r2     # finish the stragglers
+
+The compute half is hours and the upload half is seconds, so the two are
+separable: `--out DIR` persists each month's shard as it is serialised, and
+`--upload-from DIR` ships what a previous run left there without recomputing
+anything. Without it the only restart granularity is `--month`, because the
+prepared rows live in memory until the whole pass finishes.
+
+    python backfill_stats.py --apply --month 2026-08 --out shards/
+    python backfill_stats.py --apply --upload-from shards/
 """
 
 from __future__ import annotations
@@ -137,6 +146,91 @@ def infos_from_archive(s3, bucket: str, folder: str) -> dict | None:
         return None
 
 
+def shard_name(month: str, skip: int, limit: int) -> str:
+    """File name for one shard, disambiguated when it holds only a slice.
+
+    A sliced run must not overwrite the whole-month file a previous run wrote,
+    and two slices of the same month must not overwrite each other -- so the
+    offset goes in the name. `read_shards` merges them back by the month inside.
+    """
+    if not skip and not limit:
+        return f"{month}.json"
+    return f"{month}+{skip:05d}.json"
+
+
+def write_shard(out_dir: Path, month: str, body: str, name: str | None = None) -> None:
+    """Persist one month's shard as it is serialised, so a crash costs no CPU.
+
+    `build_stats_entry` is the whole cost of a backfill -- measured at ~6.85 s a
+    match -- and the upload that follows is seconds. Writing the body here, where
+    it has already been serialised for the size line, is what makes the two
+    halves separable.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / (name or f"{month}.json")
+    path.write_text(body, encoding="utf-8")
+    print(f"    wrote {path}")
+
+
+def read_shards(out_dir: Path) -> dict[str, dict]:
+    """Read back what `write_shard` left, keyed by the month inside the file.
+
+    Trusts the payload's own `month` over the filename: the file is the record of
+    what was computed, and a renamed file must not silently retarget a shard.
+    """
+    shards: dict[str, dict] = {}
+    for path in sorted(out_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"  skipping {path.name}: {type(e).__name__}: {e}")
+            continue
+        matches = payload.get("matches")
+        if not isinstance(matches, dict) or not matches:
+            print(f"  skipping {path.name}: no matches")
+            continue
+        month = payload.get("month") or path.stem.split("+")[0]
+        # Merge rather than assign: a month computed in slices arrives as several
+        # files, and the last one read must not be the only one uploaded.
+        before = len(shards.get(month, ()))
+        shards.setdefault(month, {}).update(matches)
+        grew = len(shards[month]) - before
+        note = "" if grew == len(matches) else f" ({len(matches) - grew} already seen)"
+        print(f"  {path.name}: {len(matches):,} match(es) for {month}{note}")
+    return shards
+
+
+def upload_shards(s3, bucket: str, shards: dict[str, dict], apply: bool) -> int:
+    """Merge each month into the published shard and write it back."""
+    if not apply:
+        print("\n[DRY RUN] Nothing was written. Re-run with --apply.")
+        return 0
+
+    print("\nMerging into the remote shards...")
+    for month in sorted(shards):
+        try:
+            # Read-modify-write, exactly as cmd_upload does, so a live upload
+            # landing mid-backfill is merged rather than lost.
+            existing = fetch_remote_stats(s3, bucket, month)
+            before = len(existing)
+            for folder, row in shards[month].items():
+                prior = existing.get(folder)
+                if isinstance(prior, dict) and "combat_analytics" in prior:
+                    from combat_analytics import merge_preserving_richer
+                    row["combat_analytics"] = merge_preserving_richer(
+                        prior["combat_analytics"], row.get("combat_analytics", {}),
+                    )
+                existing[folder] = row
+            upload_stats(s3, bucket, month, existing)
+            print(f"  {month}: {before} -> {len(existing)} match(es)")
+        except Exception as e:
+            print(f"  ERROR {month}: {type(e).__name__}: {e}")
+            return 1
+
+    print("\nDone.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -146,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="restrict to this month; repeatable")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N matches (smoke test)")
+    parser.add_argument("--skip", type=int, default=0, metavar="N",
+                        help="drop the first N matches of the work list, so a "
+                             "month can be computed in slices that each upload "
+                             "on their own. The list is sorted, so --skip 250 "
+                             "--limit 250 is the second hundred-and-fifty and "
+                             "resumes exactly where that slice stopped.")
     parser.add_argument("--from-r2", action="store_true",
                         help="also fetch archives for matches with no local copy")
     parser.add_argument("--only-missing", action="store_true",
@@ -153,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
                              "(implies --from-r2). Worth having because --limit "
                              "takes local hits first, so it can never reach the "
                              "R2 entries on its own.")
+    parser.add_argument("--out", default=None, metavar="DIR",
+                        help="also write each month's shard to DIR/<month>.json, "
+                             "so an interrupted pass can be finished with "
+                             "--upload-from instead of recomputed")
+    parser.add_argument("--upload-from", default=None, metavar="DIR",
+                        help="skip the compute pass entirely and upload the "
+                             "shards a previous --out run left in DIR")
     parser.add_argument("--config", default=None,
                         help=f"path to r2_config.env (default: {default_env_file()})")
     args = parser.parse_args(argv)
@@ -166,6 +273,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     bucket = config["R2_BUCKET"]
     s3 = create_s3_client(config)
+
+    if args.upload_from:
+        # Nothing below this is needed: the index scan and the local walk only
+        # exist to decide what to compute, and that decision was made already.
+        print(f"Reading shards from {args.upload_from}...")
+        shards = read_shards(Path(args.upload_from))
+        if not shards:
+            print("No usable shard files; nothing to upload.")
+            return 1
+        return upload_shards(s3, bucket, shards, apply=args.apply)
 
     print("Fetching remote index.json...")
     entries = fetch_remote_index(s3, bucket)
@@ -201,6 +318,12 @@ def main(argv: list[str] | None = None) -> int:
                                    else [(f, "local") for f in hits])
     if from_r2:
         work += [(f, "r2") for f in missing]
+    # Skip first, so `--skip N --limit M` is the half-open slice [N, N+M) of a
+    # list that is `sorted()` and therefore stable between runs -- which is what
+    # makes the slices tile a month exactly once instead of overlapping.
+    if args.skip:
+        dropped, work = len(work), work[args.skip:]
+        print(f"--skip: dropped {dropped - len(work)}, {len(work)} left")
     if args.limit:
         work = work[:args.limit]
         print(f"--limit: {len(work)} match(es)")
@@ -248,6 +371,9 @@ def main(argv: list[str] | None = None) -> int:
                           ensure_ascii=False, separators=(",", ":"))
         print(f"  {month}: {len(shards[month]):5} match(es)  "
               f"{len(body) / 1e6:5.2f} MB")
+        if args.out:
+            write_shard(Path(args.out), month, body,
+                        shard_name(month, args.skip, args.limit))
     if skipped_no_stats:
         print(f"  {skipped_no_stats} recording(s) carry no stat block "
               f"(older capture software)")
@@ -258,33 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     if downloaded:
         print(f"  {downloaded} archive(s) downloaded")
 
-    if not args.apply:
-        print("\n[DRY RUN] Nothing was written. Re-run with --apply.")
-        return 0
-
-    print("\nMerging into the remote shards...")
-    for month in sorted(shards):
-        try:
-            # Read-modify-write, exactly as cmd_upload does, so a live upload
-            # landing mid-backfill is merged rather than lost.
-            existing = fetch_remote_stats(s3, bucket, month)
-            before = len(existing)
-            for folder, row in shards[month].items():
-                prior = existing.get(folder)
-                if isinstance(prior, dict) and "combat_analytics" in prior:
-                    from combat_analytics import merge_preserving_richer
-                    row["combat_analytics"] = merge_preserving_richer(
-                        prior["combat_analytics"], row.get("combat_analytics", {}),
-                    )
-                existing[folder] = row
-            upload_stats(s3, bucket, month, existing)
-            print(f"  {month}: {before} -> {len(existing)} match(es)")
-        except Exception as e:
-            print(f"  ERROR {month}: {type(e).__name__}: {e}")
-            return 1
-
-    print("\nDone.")
-    return 0
+    return upload_shards(s3, bucket, shards, apply=args.apply)
 
 
 if __name__ == "__main__":
