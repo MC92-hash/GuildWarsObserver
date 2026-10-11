@@ -6389,7 +6389,10 @@ void ReplayWindow::Tick()
         // The span's health is a rank the attribute solve has not reached yet; until it has, the
         // model answers Fallback inside a span and the recorded value stands.
         m_healthInputs.skillHealthBonus = [this](int agentId, const HealthModel::SkillHealthSpan& span) {
-            return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView);
+            if (m_attrProfiles.find(agentId) == m_attrProfiles.end()) return -1;
+            const EffectTimeline::Table* fx = EffectTimelineTable();
+            return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView,
+                                                    fx && fx->WeaknessAt(agentId, span.start) == 1);
         };
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);

@@ -1260,8 +1260,18 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
     // skill read at `usedAt` (now, unless the caller names when it landed), which for a signet can
     // be another attribute's.
     int rankAttr = si->attribute;
-    const AttributeModel::AttributeRange* rank =
-        SkillRankAt(skillId, agentId, usedAt < 0.f ? m_debugTimeline : usedAt, &rankAttr);
+    const float rankTime = usedAt < 0.f ? m_debugTimeline : usedAt;
+    const AttributeModel::AttributeRange* rank = SkillRankAt(skillId, agentId, rankTime, &rankAttr);
+    // A rank lower while the effect timeline reads the player Weakened then.
+    AttributeModel::AttributeRange lowered;
+    if (const EffectTimeline::Table* fx = rank ? EffectTimelineTable() : nullptr; fx && fx->WeaknessAt(agentId, rankTime) == 1) {
+        lowered.lo = std::max(0, rank->lo - 1);
+        lowered.hi = std::max(0, rank->hi - 1);
+        lowered.best = std::max(0, rank->best - 1);
+        lowered.confidence = rank->confidence;
+        lowered.budgetOnly = rank->budgetOnly;
+        rank = &lowered;
+    }
 
     std::vector<SkillTextRun> runs;
     std::string lead = std::string(si->is_elite ? "Elite " : "") + SkillDatabase::GetTypeName(si->type) + ". ";
