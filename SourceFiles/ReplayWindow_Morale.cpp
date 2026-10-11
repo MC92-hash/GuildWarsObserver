@@ -413,7 +413,7 @@ int ReplayWindow::ComputeAgentMorale(const AgentReplayData& ard, float curTime, 
 
 void ReplayWindow::DrawMoralePanel()
 {
-    if (!m_showMoralePanel) return;
+    if (!m_showMoralePanel) { m_moraleHighlightAgent = -1; return; }
 
     const float curTime = m_debugTimeline;
     const auto* vp = ImGui::GetMainViewport();
@@ -719,6 +719,12 @@ void ReplayWindow::DrawMoralePanel()
 
         auto drawPlayerRow = [&](const PlayerMorale& pm, float x, float y) {
             float cx = x;
+
+            // The player picked from a party row's context menu (Morale...).
+            if (pm.agentId == m_moraleHighlightAgent) {
+                dl->AddRectFilled(ImVec2(x, y), ImVec2(x + colW, y + kRowH), IM_COL32(0xFF, 0xD7, 0x64, 0x1C), 3.f);
+                dl->AddRect(ImVec2(x, y), ImVec2(x + colW, y + kRowH), IM_COL32(0xFF, 0xD7, 0x64, 0xB0), 3.f);
+            }
 
             // Primary profession icon
             if (dev && pm.primaryProf >= 1) {

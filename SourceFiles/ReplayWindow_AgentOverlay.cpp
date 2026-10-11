@@ -892,7 +892,10 @@ void ReplayWindow::DrawAgentOverlay()
 
 void ReplayWindow::DrawSkillLasers()
 {
-    if (!m_showSkillLasers) return;
+    // The party menu can show one player's lasers while the overlay is off for everyone else;
+    // top view turns the overlay off on purpose, so nothing is forced on there.
+    const bool anyForced = !m_laserForcedAgents.empty() || m_laserSoloActive;
+    if (!m_showSkillLasers && (!anyForced || m_topViewActive)) return;
     if (!m_skillUseTimelineBuilt) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
 
@@ -1096,6 +1099,12 @@ namespace
 
 bool ReplayWindow::LaserCasterVisible(int agentId, const AgentReplayData& ard) const
 {
+    // Party-menu overrides first: "Show only" hides every other caster, a forced caster
+    // ignores the toolbar's master, team and profession filters.
+    if (m_laserSoloActive) return m_laserSoloAgents.count(agentId) > 0;
+    if (m_laserForcedAgents.count(agentId)) return true;
+    if (!m_showSkillLasers) return false;
+
     if (m_laserHiddenAgents.count(agentId)) return false;
 
     if (Team::IsRed(ard.teamId)  && !m_laserShowRed)  return false;
@@ -1200,6 +1209,39 @@ void ReplayWindow::DrawSkillLaserPanel()
         // while it is off so a setup can be prepared before switching on.
         ImGui::Checkbox("Show Skill Lasers", &m_showSkillLasers);
 
+        // Player overrides set from the party windows' context menu. They win over everything
+        // below, so say so where the filters are edited.
+        if (m_laserSoloActive)
+        {
+            std::string who;
+            for (int id : m_laserSoloAgents)
+            {
+                auto sit = m_replayCtx.agents.find(id);
+                if (sit == m_replayCtx.agents.end()) continue;
+                who += std::string(who.empty() ? "" : ", ") +
+                       (sit->second.playerName.empty() ? sit->second.categoryName : sit->second.playerName);
+            }
+            ImGui::TextColored(ImVec4(1.f, 0.84f, 0.39f, 1.f), "Showing only: %s",
+                               who.empty() ? "nobody" : who.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Restore##LaserSolo"))
+            {
+                m_laserSoloActive = false;
+                m_laserSoloAgents.clear();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Back to the selection below (set from the party menu's \"Show only\")");
+        }
+        if (!m_laserForcedAgents.empty())
+        {
+            ImGui::TextDisabled("%d player(s) forced on from the party menu", (int)m_laserForcedAgents.size());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear##LaserForced"))
+                m_laserForcedAgents.clear();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Those players follow the filters below again");
+        }
+
         ImGui::Separator();
 
         // --- Professions ---
@@ -1298,6 +1340,7 @@ void ReplayWindow::DrawSkillLaserPanel()
         {
             for (int id : m_playerIds)
                 m_laserHiddenAgents.insert(id);
+            m_laserForcedAgents.clear();
         }
 
         auto DrawTeamLasers = [&](const char* header, const std::vector<int>& ids,
@@ -1312,7 +1355,8 @@ void ReplayWindow::DrawSkillLaserPanel()
                     if (it == m_replayCtx.agents.end()) continue;
                     const auto& ard = it->second;
 
-                    bool visible = !m_laserHiddenAgents.count(id);
+                    const bool forced = m_laserForcedAgents.count(id) > 0;
+                    bool visible = forced || !m_laserHiddenAgents.count(id);
 
                     ImTextureID profTex = (ard.primaryProf > 0)
                         ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
@@ -1324,11 +1368,14 @@ void ReplayWindow::DrawSkillLaserPanel()
 
                     if (ImGui::Checkbox(("##laser_" + std::to_string(id)).c_str(), &visible))
                     {
+                        m_laserForcedAgents.erase(id);
                         if (visible)
                             m_laserHiddenAgents.erase(id);
                         else
                             m_laserHiddenAgents.insert(id);
                     }
+                    if (forced && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Forced on from the party menu: shown whatever the filters above say");
                     ImGui::SameLine(0, 4);
 
                     // Greyed out when the profession filter already hides this

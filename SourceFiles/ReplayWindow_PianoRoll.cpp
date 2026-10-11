@@ -38,7 +38,7 @@
 
 void ReplayWindow::DrawPianoRollPanel()
 {
-    if (!m_showPianoRoll) return;
+    if (!m_showPianoRoll) { m_pianoRollHighlightAgent = -1; return; }
     if (m_team1PlayerIds.empty() && m_team2PlayerIds.empty()) return;
 
     auto* dev = m_deviceResources->GetD3DDevice();
@@ -276,6 +276,14 @@ void ReplayWindow::DrawPianoRollPanel()
             if (rowHovered)
                 dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot),
                                   IM_COL32(255, 255, 255, 10));
+            // The player picked from a party row's context menu (Cast timeline...).
+            if (m_pianoRollHighlightAgent == agentId)
+            {
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot),
+                                  IM_COL32(0xFF, 0xD7, 0x64, 0x18));
+                dl->AddRect(ImVec2(cp.x + 1.f, rowTop + 1.f), ImVec2(cp.x + panelW - 1.f, rowBot - 1.f),
+                            IM_COL32(0xFF, 0xD7, 0x64, 0xC0), 0.f, 0, 1.5f);
+            }
 
             // Player label
             {

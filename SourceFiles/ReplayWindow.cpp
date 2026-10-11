@@ -6674,7 +6674,8 @@ void ReplayWindow::Update(double elapsedMs)
 {
     float dt = static_cast<float>(elapsedMs / 1000.0);
     if (m_inputManager)
-        m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused);
+        m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused
+                                              || m_playerMenuBlocksHotkeys);
     UpdateTopViewTransition(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
@@ -7197,6 +7198,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawInterfacePreferences();
 
     DrawPartyWindows();
+    DrawPlayerContextMenu();
     DrawCombatLog();
     DrawSkillAnalyticsPanel();
     DrawSkillAnalyticsPlayerPopups();
@@ -7349,9 +7351,12 @@ void ReplayWindow::DrawImGuiOverlay()
             // Everything else stays live, so the replay can still be scrubbed
             // and paused mid-annotation. HotkeyPressed() must be called either
             // way — it is what advances the rising-edge state.
+            // The player context menu owns the keyboard while open (arrows, Enter/Space, Escape);
+            // HotkeyPressed() still runs so a key held through the menu does not fire afterwards.
+            const bool menuOwnsKeys = m_playerMenuBlocksHotkeys;
             auto HotkeyFired = [&](int key) {
                 bool fired = HotkeyPressed(key);
-                return fired && !m_annotationMgr.ClaimsKey(key);
+                return fired && !m_annotationMgr.ClaimsKey(key) && !menuOwnsKeys;
             };
 
             // Escape doubles as "disarm the drawing tool"; if it was used for
@@ -7371,9 +7376,9 @@ void ReplayWindow::DrawImGuiOverlay()
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
 
             // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
-            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
                 m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
-            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
 
             if (HotkeyFired(hk.playPause))
@@ -10299,7 +10304,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
     switch (message)
     {
     case WM_KEYDOWN:
-        if (keyAllowed && rw->m_inputManager)
+        if (keyAllowed && !rw->m_playerMenuBlocksHotkeys && rw->m_inputManager)
             rw->m_inputManager->OnKeyDown(wParam, hWnd);
         break;
 

@@ -210,7 +210,7 @@ void ReplayWindow::DrawCombatLog()
         {
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.85f, 0.f, 1.f));
-            std::string filterLabel = std::format("Filtering: {} [x]",
+            std::string filterLabel = std::format("Filtering: {} (as source or target) [x]",
                 agentNameStr(m_clFilterPlayerId));
             if (ImGui::SmallButton(filterLabel.c_str()))
                 m_clFilterPlayerId = -1;

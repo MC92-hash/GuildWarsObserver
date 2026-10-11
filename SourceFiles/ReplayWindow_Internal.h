@@ -44,6 +44,7 @@ std::string GetAgentLabel(const AgentReplayData& ard);
 // --- Icon / texture loaders (shared: CombatLog, LordDamage, PartyWindows,
 //     PlayerInfo, SkillAnalytics, EventTimeline, ...) ---
 ImTextureID LoadProfIcon(ID3D11Device* device, int profId);
+const ReplayWindow::RingDef& GetRangeRingDef(int type);   // ReplayWindow_RangeRings.cpp
 // Ribbon art loader (mip-chained, cached). Path is relative to Textures/.
 // Shared with AnnotationManager's drawing strip so both use the same art
 // pipeline; outW/outH receive the source size for atlas sub-rects.

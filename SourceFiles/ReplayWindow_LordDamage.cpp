@@ -41,6 +41,7 @@
 // ---------------------------------------------------------------------------
 void ReplayWindow::DrawLordDamagePanel()
 {
+    if (!m_showLordDamagePanel) m_lordDmgHighlightAgent = -1;
     if (!m_showLordDamagePanel || !m_lordDamageBuilt) return;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
@@ -359,6 +360,15 @@ void ReplayWindow::DrawLordDamagePanel()
             ImVec2 rowP = ImGui::GetCursorScreenPos();
             ImDrawList* dl = ImGui::GetWindowDrawList();
 
+            // The player picked from a party row's context menu (Lord damage...).
+            if (atk.agentId == m_lordDmgHighlightAgent)
+            {
+                dl->AddRectFilled(ImVec2(rowP.x - 2.f, rowP.y), ImVec2(rowP.x + colW, rowP.y + rowH),
+                                  IM_COL32(0xFF, 0xD7, 0x64, 0x1C), 3.f);
+                dl->AddRect(ImVec2(rowP.x - 2.f, rowP.y), ImVec2(rowP.x + colW, rowP.y + rowH),
+                            IM_COL32(0xFF, 0xD7, 0x64, 0xB0), 3.f);
+            }
+
             float iconY = rowP.y + (rowH - iconSz) * 0.5f;
             ImTextureID profTex = LoadProfIcon(dev, atk.professionId);
             if (profTex)
@@ -404,6 +414,22 @@ void ReplayWindow::DrawLordDamagePanel()
             dl->AddText(font, atkFontSz, ImVec2(absTextX, absTextY), cWhite, absLabel.c_str());
 
             ImGui::Dummy(ImVec2(colW, rowH));
+        }
+
+        // A highlighted attacker the top-8 list cut off still gets his line.
+        if (m_lordDmgHighlightAgent >= 0)
+        {
+            const bool listed = std::any_of(liveRows.begin(), liveRows.end(),
+                [&](const LordAttackerRow& r) { return r.agentId == m_lordDmgHighlightAgent; });
+            auto hit = liveAttackerDmg.find(m_lordDmgHighlightAgent);
+            if (!listed && hit != liveAttackerDmg.end())
+            {
+                ImGui::SetCursorPosX(startX);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.84f, 0.39f, 1.f));
+                ImGui::Text("Highlighted player: %s (%d%%, outside the top 8)",
+                            formatDmg(hit->second).c_str(), (int)(100.f * hit->second / liveTotalDmg));
+                ImGui::PopStyleColor();
+            }
         }
     };
 

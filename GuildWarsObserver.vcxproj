@@ -667,6 +667,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Minimap.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Effects.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_PlayerInfo.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PlayerContextMenu.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_AgentOverlay.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_LoadingScreen.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_AgentModels.cpp" />

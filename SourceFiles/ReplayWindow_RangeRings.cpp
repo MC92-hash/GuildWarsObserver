@@ -47,6 +47,29 @@ static const ReplayWindow::RingDef kRingDefs[ReplayWindow::kRingTypeCount] = {
     { "Compass",   5020.f,  IM_COL32(128,128,128, 255),  0.5f, false, 8,4,       0.02f },
 };
 
+const ReplayWindow::RingDef& GetRangeRingDef(int type)
+{
+    return kRingDefs[std::clamp(type, 0, ReplayWindow::kRingTypeCount - 1)];
+}
+
+// The ranges actually drawn around one player right now: the player's own (party menu) or the
+// toolbar's, through the same filters DrawRangeRings applies (life and fog aside).
+void ReplayWindow::EffectiveRingTypes(int agentId, const AgentReplayData& ard, bool out[kRingTypeCount]) const
+{
+    if (auto it = m_ringOverrides.find(agentId); it != m_ringOverrides.end())
+    {
+        for (int ri = 0; ri < kRingTypeCount; ++ri) out[ri] = it->second[ri];
+        return;
+    }
+    bool on = m_showRangeRings && !m_ringHiddenAgents.count(agentId);
+    if (on && m_ringAgentFilter != agentId)
+    {
+        if (Team::IsRed(ard.teamId)  && !m_ringShowRed)  on = false;
+        if (Team::IsBlue(ard.teamId) && !m_ringShowBlue) on = false;
+    }
+    for (int ri = 0; ri < kRingTypeCount; ++ri) out[ri] = on && m_ringType[ri];
+}
+
 static constexpr float kRingFillAlpha    = 0.15f;
 static constexpr float kRingSelectFill   = 0.22f;
 static constexpr float kRingDimFactor    = 0.50f;
@@ -61,7 +84,8 @@ static ImU32 ScaleAlpha(ImU32 col, float factor)
 
 void ReplayWindow::DrawRangeRings()
 {
-    if (!m_showRangeRings) return;
+    // A player's party-menu ranges draw even while the overlay is off for everyone else.
+    if (!m_showRangeRings && m_ringOverrides.empty()) return;
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
 
     Camera* cam = m_mapRenderer->GetCamera();
@@ -92,11 +116,18 @@ void ReplayWindow::DrawRangeRings()
         if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
             continue;
 
-        if (m_ringHiddenAgents.count(agentId)) continue;
+        // A player override replaces the toolbar's types for this player and skips its
+        // master, hidden and team filters.
+        auto ovIt = m_ringOverrides.find(agentId);
+        const bool hasOverride = (ovIt != m_ringOverrides.end());
+        const bool* ringTypes = hasOverride ? ovIt->second.data() : m_ringType;
+
+        if (!hasOverride && !m_showRangeRings) continue;
+        if (!hasOverride && m_ringHiddenAgents.count(agentId)) continue;
 
         bool isSelected = (m_ringAgentFilter == agentId);
 
-        if (!isSelected)
+        if (!isSelected && !hasOverride)
         {
             if (hasSelection)
             {
@@ -118,14 +149,14 @@ void ReplayWindow::DrawRangeRings()
 
         for (int ri = 0; ri < kRingTypeCount; ++ri)
         {
-            bool showRing = m_ringType[ri];
-            bool isHoverPreview = (!showRing && m_ringHoveredType == ri);
+            bool showRing = ringTypes[ri];
+            bool isHoverPreview = (!hasOverride && !showRing && m_ringHoveredType == ri);
             if (!showRing && !isHoverPreview) continue;
 
             const auto& def = kRingDefs[ri];
             float radius = def.radius;
 
-            float dimFactor = (!isSelected && hasSelection) ? 0.25f : 1.f;
+            float dimFactor = (!isSelected && hasSelection && !hasOverride) ? 0.25f : 1.f;
             float thickMul  = (isSelected && hasSelection) ? 1.6f : 1.f;
             ImU32 edgeCol = teamCol;
             if (dimFactor < 1.f) edgeCol = ScaleAlpha(edgeCol, dimFactor);
@@ -487,6 +518,16 @@ void ReplayWindow::DrawRangeRingToolbar()
         // Per-character ring visibility
         ImGui::Separator();
 
+        if (!m_ringOverrides.empty())
+        {
+            ImGui::TextDisabled("%d player(s) use their own ranges (party menu)", (int)m_ringOverrides.size());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##RingOverrides"))
+                m_ringOverrides.clear();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Those players use the toolbar's ranges again");
+        }
+
         if (ImGui::SmallButton("Show All##Rings"))
             m_ringHiddenAgents.clear();
         ImGui::SameLine();
@@ -520,7 +561,21 @@ void ReplayWindow::DrawRangeRingToolbar()
                         ImGui::SameLine(0, 4);
                     }
 
-                    if (ImGui::Checkbox(("##ring_" + std::to_string(id)).c_str(), &visible))
+                    auto ovIt = m_ringOverrides.find(id);
+                    if (ovIt != m_ringOverrides.end())
+                    {
+                        // Own ranges from the party menu: the checkbox would do nothing, so the
+                        // row offers the reset instead.
+                        std::string own;
+                        for (int ri = 0; ri < kRingTypeCount; ++ri)
+                            if (ovIt->second[ri]) own += std::string(own.empty() ? "" : ", ") + kRingDefs[ri].name;
+                        if (ImGui::SmallButton(("custom##ringov_" + std::to_string(id)).c_str()))
+                            m_ringOverrides.erase(ovIt);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Own ranges from the party menu: %s\nClick to use the toolbar's ranges",
+                                              own.empty() ? "hidden" : own.c_str());
+                    }
+                    else if (ImGui::Checkbox(("##ring_" + std::to_string(id)).c_str(), &visible))
                     {
                         if (visible)
                             m_ringHiddenAgents.erase(id);

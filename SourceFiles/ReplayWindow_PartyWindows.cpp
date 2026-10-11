@@ -303,17 +303,41 @@ void ReplayWindow::DrawPartyWindows()
             withEnergy = withEnergy && m_showPartyEnergy;
             const float energyRowH = withEnergy ? kEnergyH + kEnergyGap : 0.f;
 
+            // Left-click follows; right-click, the "..." button or Shift+F10 / Menu on the focused
+            // row opens the player's context menu (ReplayWindow_PlayerContextMenu.cpp). Neither
+            // opens player info or touches the ring and fog filters: the menu does that on request.
+            const bool isPlayerRow = (ard.type == AgentType::Player);
+            const bool drawMode = m_annotationMgr.IsDrawModeActive();
             char btnId[32];
             snprintf(btnId, sizeof(btnId), "##PB%d", agentId);
-            ImGui::InvisibleButton(btnId, ImVec2(availW, barH + energyRowH));
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !m_annotationMgr.IsDrawModeActive())
-            {
+            if (isPlayerRow) ImGui::SetNextItemAllowOverlap();
+            const bool rowPressed = ImGui::InvisibleButton(btnId, ImVec2(availW, barH + energyRowH));
+            const bool rowHovered = ImGui::IsItemHovered();
+            const bool rowFocused = ImGui::IsItemFocused();
+            const ImGuiID rowId   = ImGui::GetItemID();
+            const ImVec2 afterRow = ImGui::GetCursorScreenPos();
+            // Enter/Space on the focused row follows too (a mouse press is already handled above).
+            const bool navActivated = rowPressed && !ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+            if ((ImGui::IsItemClicked(ImGuiMouseButton_Left) || navActivated) && !drawMode)
                 EnterFollowMode(agentId);
-                OpenPlayerInfoPanel(agentId);
-                if (m_showRangeRings)
-                    m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
-                if (m_fogPerspective > 0)
-                    m_fogPlayerAgent = (m_fogPlayerAgent == agentId) ? -1 : agentId;
+            if (isPlayerRow && !drawMode)
+            {
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+                    RequestPlayerContextMenu(agentId, false);
+                else if (rowFocused && (ImGui::IsKeyPressed(ImGuiKey_Menu, false) ||
+                         (ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F10, false))))
+                    RequestPlayerContextMenu(agentId, true);
+            }
+            if (m_playerMenuReturnFocusAgent == agentId)
+            {
+                ImGui::SetFocusID(rowId, ImGui::GetCurrentWindow());
+                ImGui::FocusWindow(ImGui::GetCurrentWindow());
+                if (m_playerMenuReturnFocusNav)
+                {
+                    GImGui->NavDisableHighlight  = false;
+                    GImGui->NavDisableMouseHover = true;
+                }
+                m_playerMenuReturnFocusAgent = -1;
             }
 
             bool isFogHidden = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
@@ -357,6 +381,46 @@ void ReplayWindow::DrawPartyWindows()
             {
                 const float ey = cursor.y + barH + kEnergyGap;
                 DrawPartyEnergyBar(dl, ard, ImVec2(cursor.x, ey), ImVec2(cursor.x + availW, ey + kEnergyH));
+            }
+
+            // The "..." menu button over the bar's right end. Always submitted, so Tab reaches it;
+            // painted only while the row, the button or the menu for this player has attention.
+            if (isPlayerRow)
+            {
+                constexpr float kDotsW = 18.f;
+                const ImVec2 b0(cursor.x + availW - kDotsW - 2.f, cursor.y + 2.f);
+                const ImVec2 b1(b0.x + kDotsW, cursor.y + barH - 2.f);
+                ImGui::SetCursorScreenPos(b0);
+                char dotsId[32];
+                snprintf(dotsId, sizeof(dotsId), "##PBmenu%d", agentId);
+                const bool dotsPressed = ImGui::InvisibleButton(dotsId, ImVec2(b1.x - b0.x, b1.y - b0.y));
+                const bool dotsHovered = ImGui::IsItemHovered();
+                const bool dotsFocused = ImGui::IsItemFocused();
+                if (dotsPressed && !drawMode)
+                    RequestPlayerContextMenu(agentId, !ImGui::IsMouseReleased(ImGuiMouseButton_Left));
+                else if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && !drawMode)
+                    RequestPlayerContextMenu(agentId, false);
+                else if (dotsFocused && !drawMode && (ImGui::IsKeyPressed(ImGuiKey_Menu, false) ||
+                         (ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_F10, false))))
+                    RequestPlayerContextMenu(agentId, true);
+                if (dotsHovered)
+                {
+                    g_CurrentCursor = CursorMode::Clickable;
+                    ImGui::SetTooltip("Player actions (right-click the row, or Shift+F10)");
+                }
+                const bool menuForThis = m_playerMenuWasOpen && m_playerMenuAgentId == agentId;
+                if (rowHovered || rowFocused || dotsHovered || dotsFocused || menuForThis)
+                {
+                    ImDrawList* odl = ImGui::GetWindowDrawList();
+                    odl->AddRectFilled(b0, b1, dotsHovered || menuForThis ? IM_COL32(0, 0, 0, 0xD0)
+                                                                          : IM_COL32(0, 0, 0, 0x90), 3.f);
+                    if (dotsHovered || dotsFocused || menuForThis)
+                        odl->AddRect(b0, b1, IM_COL32(0xCB, 0xAA, 0x09, 0xFF), 3.f);
+                    const float cy = (b0.y + b1.y) * 0.5f, cx = (b0.x + b1.x) * 0.5f;
+                    for (int d = -1; d <= 1; ++d)
+                        odl->AddCircleFilled(ImVec2(cx + d * 4.5f, cy), 1.6f, IM_COL32(0xF0, 0xE6, 0xC8, 0xFF));
+                }
+                ImGui::SetCursorScreenPos(afterRow);
             }
 
             if (m_showDamageMeter || m_showHealMeter)

@@ -1996,6 +1996,38 @@ private:
     void DrawWeaponSetTooltip(const WeaponSetEntry& ws);
     std::vector<PipSkillStat> BuildSkillStats(int agentId, float currentTime) const;
 
+    // --- Party-row player context menu (ReplayWindow_PlayerContextMenu.cpp) ---
+    // Right-click, the row's "..." button or Shift+F10 / Menu on a focused row. The overrides it
+    // writes are per player and explicit; a ReplayWindow is one match, so they never reach another
+    // replay even when it reuses the agent ids.
+    std::unordered_map<int, std::array<bool, kRingTypeCount>> m_ringOverrides; // drawn instead of the toolbar's types (all false = hidden), whatever the toolbar's master/team/hidden state
+    std::unordered_set<int> m_laserForcedAgents;   // casters shown whatever the toolbar's master/team/profession filters
+    bool  m_laserSoloActive         = false;       // "Show only": only m_laserSoloAgents cast lasers; the toolbar selection
+    std::unordered_set<int> m_laserSoloAgents;     // underneath is left untouched, so "Restore" is just switching this off
+    int   m_playerMenuAgentId       = -1;          // the target captured when the menu opened
+    int   m_playerMenuRequestAgent  = -1;          // open the menu for this agent this frame
+    bool  m_playerMenuRequestByKey  = false;
+    bool  m_playerMenuOpenedByKey   = false;
+    bool  m_playerMenuWasOpen       = false;
+    bool  m_playerMenuActionTookFocus = false;     // an action brought a panel forward: focus stays there
+    bool  m_playerMenuBlocksHotkeys = false;       // open this frame or last: the replay hotkeys stand down
+    int   m_playerMenuReturnFocusAgent = -1;       // party row to give keyboard focus back to
+    bool  m_playerMenuReturnFocusNav   = false;    // ...with the nav highlight (the menu was keyboard-driven)
+    std::string m_pendingWindowFocus;              // bring this panel forward (retried a few frames: it may not exist yet)
+    int   m_pendingWindowFocusTries = 0;
+    ImVec2 m_playerMenuAnchor       = ImVec2(0, 0); // where a keyboard-opened menu appears (under the row)
+    int   m_pianoRollHighlightAgent = -1;          // highlights cleared when their panel closes
+    int   m_moraleHighlightAgent    = -1;
+    int   m_lordDmgHighlightAgent   = -1;
+    void  RequestPlayerContextMenu(int agentId, bool byKeyboard);
+    void  DrawPlayerContextMenu();
+    void  EffectiveRingTypes(int agentId, const AgentReplayData& ard, bool out[kRingTypeCount]) const;
+    void  SetPlayerLasersShown(int agentId, bool show);
+    bool  PlayerHeatmapLayerShown(int agentId) const;
+    void  ShowPlayerHeatmapLayer(int agentId);
+    void  OpenPlayerCombatLog(int agentId, bool damage);
+    void  OpenPlayerSkillAnalytics(int agentId);
+
     // --- Focused-player HUD (ReplayWindow_FocusedPlayerHud.cpp) ---
     // Screen-space overlay shown only while the camera follows a player, alongside
     // DrawFollowedAgentHUD's health/cast bars. Weapon sets are the first element.
