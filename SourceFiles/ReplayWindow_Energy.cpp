@@ -129,30 +129,104 @@ void DrawEnergyConfidenceLamp(ImDrawList* dl, ImTextureID lamps, ImVec2 c, float
     dl->AddImage(lamps, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ImVec2(u0, 0.f), ImVec2(u0 + 0.25f, 1.f));
 }
 
-// The lamp's tooltip: how sure the bar is, the range, and why - the doubts since the band was last
-// closed, newest first, repeats of one skill folded into a count.
-std::string EnergyConfidenceText(const EnergyModel::Track& track, float t, const SkillDatabaseView& skills,
-                                 const std::unordered_map<int, AgentReplayData>& agents, bool legend)
+// ---------------------------------------------------------------------------
+// The energy tooltips, in the skill tooltip's look (DrawGameSkillTooltip): dark parchment, gold rim,
+// cream title, the game's cost icons inline where the text would say "energy", "overcast" or
+// "regeneration".
+//
+//   bar      the value, the regeneration with every source behind it, overcast and its rules, the
+//            range the real value lies in; the party strip adds why the lamp is not green
+//   lamp     what each of the three lamps means (the one showing now lit), the range, and why
+// ---------------------------------------------------------------------------
+namespace
+{
+    constexpr ImU32 kTipName  = IM_COL32(0xF2, 0xEC, 0xD6, 0xFF);
+    constexpr ImU32 kTipPlain = IM_COL32(0xE6, 0xE6, 0xE6, 0xFF);
+    constexpr ImU32 kTipMuted = IM_COL32(0xA8, 0xA8, 0xA0, 0xFF);
+    constexpr ImU32 kTipGain  = IM_COL32(0x5C, 0xE6, 0x3C, 0xFF);
+    constexpr ImU32 kTipLoss  = IM_COL32(0xFF, 0x6A, 0x5C, 0xFF);
+    constexpr ImU32 kLampText[] = { IM_COL32(0x5C, 0xE6, 0x3C, 0xFF), IM_COL32(0xFF, 0xA0, 0x32, 0xFF),
+                                    IM_COL32(0xFF, 0x5A, 0x4A, 0xFF) };
+    constexpr float kTipW      = 330.f;
+    constexpr float kTipIndent = 22.f;   // a breakdown row's value column
+
+    const char* ProfName(int prof)
+    {
+        static const char* kNames[] = { "", "Warrior", "Ranger", "Monk", "Necromancer", "Mesmer",
+                                        "Elementalist", "Assassin", "Ritualist", "Paragon", "Dervish" };
+        return prof >= 0 && prof <= 10 ? kNames[prof] : "";
+    }
+
+    void BeginEnergyTip()
+    {
+        ImGui::PushStyleColor(ImGuiCol_PopupBg,   ImVec4(0.11f, 0.105f, 0.085f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_Border,    ImVec4(0.62f, 0.58f, 0.46f, 0.85f));
+        ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.62f, 0.58f, 0.46f, 0.40f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 2.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(7.f, 5.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+        ImGui::BeginTooltip();
+        ImGui::Dummy(ImVec2(kTipW, 0.f));
+    }
+
+    void EndEnergyTip()
+    {
+        ImGui::EndTooltip();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(3);
+    }
+
+    // The pieces of one line: each leaves the cursor right after itself; Br() ends the line.
+    void Txt(ImU32 col, const char* s)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col));
+        ImGui::TextUnformatted(s);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.f, 0.f);
+    }
+
+    void Icon(ImTextureID tex)
+    {
+        const float h = ImGui::GetTextLineHeight();
+        if (tex) ImGui::Image(tex, ImVec2(h, h));
+        else     ImGui::Dummy(ImVec2(h, h));
+        ImGui::SameLine(0.f, 0.f);
+    }
+
+    void Lamp(ImTextureID lamps, EnergyModel::Confidence level)
+    {
+        const float h = ImGui::GetTextLineHeight();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(h, h));
+        DrawEnergyConfidenceLamp(ImGui::GetWindowDrawList(), lamps, ImVec2(p.x + h * 0.5f, p.y + h * 0.5f), h, level);
+        ImGui::SameLine(0.f, 0.f);
+    }
+
+    void Br() { ImGui::NewLine(); }
+
+    void Rule()
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
+    // Text placed so it ends at the tooltip's right edge, on the current line.
+    void TxtRight(ImU32 col, const char* s)
+    {
+        ImGui::SameLine(ImGui::GetStyle().WindowPadding.x + kTipW - ImGui::CalcTextSize(s).x);
+        Txt(col, s);
+    }
+
+    // A pip count's colour: green for a gain, red for a loss.
+    ImU32 PipColour(int pips) { return pips > 0 ? kTipGain : pips < 0 ? kTipLoss : kTipPlain; }
+}
+
+// Why the band is open: the doubts since it was last closed, newest first, repeats of one skill
+// folded into a count. Each: time, the skill, who, then the reason under it.
+void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
 {
     using EnergyModel::DoubtKind;
-    const EnergyModel::Sample s = track.At(t);
-    static const char* kLevel[] = { "high (green)", "medium (orange)", "low (red)" };
-    std::string out = std::string("Energy confidence: ") + kLevel[static_cast<int>(track.ConfidenceAt(t))];
-    if (legend)
-        out += "\n\nNo recording states another player's energy: the bar is calculated."
-               "\n  Green   the real energy is within 3 points of the bar"
-               "\n  Orange  it may be off by up to 10"
-               "\n  Red     it may be off by more than 10, or the player just cast a skill"
-               "\n          the bar said they could not afford"
-               "\nThe lamp turns green again as the player regenerates to full, or when"
-               "\nthe recording proves the value (shrine, morale boost, Mind Wrack ending).";
-    if (legend && !s.dead) out += "\n";
-    if (s.dead) return out;
-    char line[256];
-    const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
-    const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
-    if (hi > lo) { snprintf(line, sizeof(line), "\nReal energy between %d and %d", lo, hi); out += line; }
-
     struct Row { DoubtKind kind; int skillId; int other; float last; int n; };
     std::vector<Row> rows;
     for (const EnergyModel::Doubt* d : track.DoubtsAt(t))
@@ -162,42 +236,285 @@ std::string EnergyConfidenceText(const EnergyModel::Track& track, float t, const
         if (it != rows.end()) ++it->n;
         else rows.push_back({ d->kind, d->skillId, d->other, d->time, 1 });
     }
+    if (rows.empty()) return;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texEnergy = LoadGameUITexture(dev, "Skill Description\\energy.png");
+    EnsureSkillIconIndex();
+
+    Rule();
+    Txt(kTipName, "Why");
+    Br();
+    char buf[96];
     int shown = 0;
     for (const Row& r : rows)
     {
-        if (++shown > 6) { out += "\n..."; break; }
-        const SkillInfo* si = skills.Get(r.skillId);
-        const char* skill = si ? si->name.c_str() : "?";
-        std::string who;
-        if (auto a = agents.find(r.other); r.other > 0 && a != agents.end()) who = a->second.playerName;
-        const int mm = static_cast<int>(r.last) / 60, ss = static_cast<int>(r.last) % 60;
+        if (++shown > 6)
+        {
+            snprintf(buf, sizeof(buf), "and %d more", static_cast<int>(rows.size()) - 6);
+            Txt(kTipMuted, buf);
+            Br();
+            break;
+        }
+        snprintf(buf, sizeof(buf), "%02d:%02d  ", static_cast<int>(r.last) / 60, static_cast<int>(r.last) % 60);
+        Txt(kTipMuted, buf);
+        Icon(LoadSkillIcon(this, dev, r.skillId, m_skillIconIndex, m_skillIconCache));
+        const SkillInfo* si = m_skillView.Get(r.skillId);
+        Txt(kTipName, (std::string(" ") + (si ? si->name : std::string("?"))).c_str());
+        if (r.n > 1) { snprintf(buf, sizeof(buf), "  x%d", r.n); Txt(kTipMuted, buf); }
+        if (auto a = m_replayCtx.agents.find(r.other);
+            r.other > 0 && a != m_replayCtx.agents.end() && !a->second.playerName.empty())
+            Txt(kTipMuted, (std::string("  ") + a->second.playerName).c_str());
+        Br();
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + kTipIndent);
         switch (r.kind)
         {
         case DoubtKind::Resurrection:
-            snprintf(line, sizeof(line), "\n%02d:%02d  Resurrected by %s%s%s: energy on return depends on a rank not known",
-                     mm, ss, skill, who.empty() ? "" : " from ", who.c_str());
+            Txt(kTipPlain, "Resurrected: the ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " given back depends on a rank not known");
             break;
         case DoubtKind::Expertise:
-            snprintf(line, sizeof(line), "\n%02d:%02d  %s (x%d): cost cut by Expertise, rank not solved", mm, ss, skill, r.n);
+            Txt(kTipPlain, "Cost cut by Expertise, rank not solved");
             break;
         case DoubtKind::Mysticism:
-            snprintf(line, sizeof(line), "\n%02d:%02d  %s (x%d): cost cut by Mysticism, rank not solved", mm, ss, skill, r.n);
+            Txt(kTipPlain, "Cost cut by Mysticism, rank not solved");
             break;
         case DoubtKind::AvatarOfLyssa:
-            snprintf(line, sizeof(line), "\n%02d:%02d  Avatar of Lyssa%s%s (x%d): may have run out, Mysticism not solved",
-                     mm, ss, who.empty() ? "" : " of ", who.c_str(), r.n);
+            Txt(kTipPlain, "Avatar of Lyssa may have run out: Mysticism not solved");
             break;
         case DoubtKind::Contradiction:
-            snprintf(line, sizeof(line), "\n%02d:%02d  Cast %s, which the model said they could not afford", mm, ss, skill);
+            Txt(kTipPlain, "Cast while the bar held less ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " than it costs");
             break;
         case DoubtKind::Aneurysm:
-            snprintf(line, sizeof(line), "\n%02d:%02d  Aneurysm%s%s next to them: loss capped by a rank not known",
-                     mm, ss, who.empty() ? "" : " from ", who.c_str());
+            Txt(kTipPlain, "Aneurysm next to them: loss capped by a rank not known");
             break;
         }
-        out += line;
+        Br();
     }
-    return out;
+}
+
+// The lamp's tooltip: the three lamps and what each means, the one showing now lit; the range; why.
+void ReplayWindow::DrawEnergyConfidenceTooltip(const EnergyModel::Track& track)
+{
+    const float t = m_debugTimeline;
+    const EnergyModel::Sample s = track.At(t);
+    const EnergyModel::Confidence level = track.ConfidenceAt(t);
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texEnergy = LoadGameUITexture(dev, "Skill Description\\energy.png");
+    ImTextureID texLamps  = LoadGameUITexture(dev, "Progressbar\\ui_confidence_lamps.png");
+
+    BeginEnergyTip();
+    static const char* kLevelName[] = { "High", "Medium", "Low" };
+    Icon(texEnergy);
+    Txt(kTipName, " Confidence level");
+    TxtRight(kLampText[static_cast<int>(level)], kLevelName[static_cast<int>(level)]);
+    Br();
+    Rule();
+
+    // The legend; the lamp showing now on a light band.
+    const float h = ImGui::GetTextLineHeight();
+    const float descX = ImGui::GetStyle().WindowPadding.x + h + 8.f;
+    for (int i = 0; i < 3; ++i)
+    {
+        const bool now = i == static_cast<int>(level);
+        const int lines = i == 2 ? 2 : 1;
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (now)
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(p.x - 3.f, p.y - 1.f),
+                ImVec2(p.x + kTipW + 3.f, p.y + lines * ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().ItemSpacing.y + 1.f),
+                IM_COL32(0xFF, 0xEE, 0xBB, 0x1C), 2.f);
+        const ImU32 col = now ? kTipPlain : kTipMuted;
+        Lamp(texLamps, static_cast<EnergyModel::Confidence>(i));
+        ImGui::SameLine(descX);
+        Txt(now ? kLampText[i] : kTipMuted, kLevelName[i]);
+        Txt(col, " - ");
+        switch (i)
+        {
+        case 0: Txt(col, "within 3 "); Icon(texEnergy); Txt(col, " of the real value"); break;
+        case 1: Txt(col, "may be off by up to 10 "); Icon(texEnergy); break;
+        case 2:
+            Txt(col, "off by more than 10 ");
+            Icon(texEnergy);
+            Br();
+            ImGui::SetCursorPosX(descX);
+            Txt(col, "or a skill cast the bar said they could not afford");
+            break;
+        }
+        Br();
+    }
+
+    if (!s.dead)
+    {
+        const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
+        const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
+        if (hi > lo)
+        {
+            Rule();
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Real value between %d and %d ", lo, hi);
+            Txt(kTipPlain, buf);
+            Icon(texEnergy);
+            Br();
+        }
+        DrawEnergyDoubts(track, t);
+    }
+
+    Rule();
+    Icon(texEnergy);
+    Txt(kTipMuted, " is calculated from the match events, not recorded.");
+    Br();
+    EndEnergyTip();
+}
+
+// The bar's tooltip. `lift`: energy the best weapon set adds over the set in hand (the party strip
+// reads the best set); `reasons`: list why the lamp is not green (the party strip has no lamp to hover).
+void ReplayWindow::DrawEnergyBarTooltip(const AgentReplayData& ard, const EnergyModel::Track& track,
+                                        float lift, bool reasons)
+{
+    using PS = EnergyModel::Track::PipSource;
+    const float t = m_debugTimeline;
+    const EnergyModel::Sample s = track.At(t);
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texEnergy   = LoadGameUITexture(dev, "Skill Description\\energy.png");
+    ImTextureID texOvercast = LoadGameUITexture(dev, "Skill Description\\overcast.png");
+    ImTextureID texPips     = LoadGameUITexture(dev, "Skill Description\\upkeep.png");
+    ImTextureID texLamps    = LoadGameUITexture(dev, "Progressbar\\ui_confidence_lamps.png");
+    char buf[128];
+
+    BeginEnergyTip();
+
+    // Header: the value (the client shows whole points, 0 below zero), "calculated" right.
+    const int inHand  = s.dead ? 0 : std::max(0, static_cast<int>(std::floor(s.energy)));
+    const int maxHand = static_cast<int>(std::floor(s.maxEnergy));
+    Icon(texEnergy);
+    if (lift > 0.f)
+        snprintf(buf, sizeof(buf), " %d / %d", s.dead ? 0 : std::max(0, static_cast<int>(std::floor(s.energy + lift))),
+                 static_cast<int>(std::floor(s.maxEnergy + lift)));
+    else
+        snprintf(buf, sizeof(buf), " %d / %d", inHand, maxHand);
+    Txt(kTipName, buf);
+    TxtRight(kTipMuted, "calculated");
+    Br();
+    if (lift > 0.f)
+    {
+        snprintf(buf, sizeof(buf), "On the best weapon set. In hand: %d / %d%s", inHand, maxHand,
+                 s.energy < 0.f ? " (hiding)" : "");
+        Txt(kTipMuted, buf);
+        Br();
+    }
+    if (s.dead)
+    {
+        EndEnergyTip();
+        return;
+    }
+
+    // Regeneration: the net in pips and as a rate, then every source behind it.
+    Rule();
+    const int pips = s.pips;
+    Icon(texPips);
+    snprintf(buf, sizeof(buf), " %+d", pips);
+    Txt(PipColour(pips), buf);
+    if (pips == 0)
+        Txt(kTipPlain, "   no regeneration");
+    else
+    {
+        const float every = 3.f / static_cast<float>(std::abs(pips));
+        Txt(kTipPlain, pips > 0 ? "   gains 1 " : "   loses 1 ");
+        Icon(texEnergy);
+        if (std::fabs(every - 1.f) < 0.01f) snprintf(buf, sizeof(buf), " every second");
+        else                                 snprintf(buf, sizeof(buf), " every %.2g s", every);
+        Txt(kTipPlain, buf);
+    }
+    Br();
+
+    EnsureSkillIconIndex();
+    int sum = 0;
+    const float numW   = ImGui::CalcTextSize("+10").x;
+    const float valueX = ImGui::GetStyle().WindowPadding.x + kTipIndent;
+    const float labelX = valueX + numW + 10.f;
+    for (const EnergyModel::Track::PipTerm* p : track.PipsAt(t))
+    {
+        sum += p->pips;
+        snprintf(buf, sizeof(buf), "%+d", static_cast<int>(p->pips));
+        ImGui::SetCursorPosX(valueX + numW - ImGui::CalcTextSize(buf).x);
+        Txt(PipColour(p->pips), buf);
+        ImGui::SameLine(labelX);
+        switch (p->source)
+        {
+        case PS::Base:
+            snprintf(buf, sizeof(buf), "Base (%s)", ProfName(ard.primaryProf));
+            Txt(kTipPlain, buf);
+            break;
+        case PS::Weapon:
+            Txt(kTipPlain, p->zealous ? "Zealous weapon" : "Weapon mod");
+            break;
+        case PS::Upkeep:
+        case PS::Effect:
+        {
+            const SkillInfo* si = m_skillView.Get(p->skillId);
+            Icon(LoadSkillIcon(this, dev, p->skillId, m_skillIconIndex, m_skillIconCache));
+            Txt(kTipPlain, (std::string(" ") + (si ? si->name : std::string("?"))).c_str());
+            if (p->source == PS::Upkeep) Txt(kTipMuted, "  maintained");
+            break;
+        }
+        }
+        Br();
+    }
+    if (std::abs(sum) > 10)
+    {
+        ImGui::SetCursorPosX(labelX);
+        Txt(kTipMuted, "Capped at 10 either way");
+        Br();
+    }
+
+    // Overcast and its rules, while the player carries any.
+    if (s.overcast >= 1.f)
+    {
+        Rule();
+        Icon(texOvercast);
+        snprintf(buf, sizeof(buf), " %d", static_cast<int>(std::floor(s.overcast)));
+        Txt(kTipName, buf);
+        Txt(kTipPlain, "   maximum ");
+        Icon(texEnergy);
+        snprintf(buf, sizeof(buf), " lowered from %d to %d",
+                 static_cast<int>(std::floor(s.maxEnergy + s.overcast)), maxHand);
+        Txt(kTipPlain, buf);
+        Br();
+        ImGui::SetCursorPosX(valueX);
+        Txt(kTipMuted, "Each ");
+        Icon(texOvercast);
+        Txt(kTipMuted, " skill lowers the maximum by its overcast cost");
+        Br();
+        ImGui::SetCursorPosX(valueX);
+        Txt(kTipMuted, "1 point comes back every 3 s; it stays through death");
+        Br();
+        ImGui::SetCursorPosX(valueX);
+        Txt(kTipMuted, "Shown grey at the right end of the bar");
+        Br();
+    }
+
+    // Where the real value lies, while the model is not sure of it.
+    const EnergyModel::Confidence level = track.ConfidenceAt(t);
+    const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
+    const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
+    if (hi > lo)
+    {
+        Rule();
+        Lamp(texLamps, level);
+        snprintf(buf, sizeof(buf), "  Real value between %d and %d ", lo, hi);
+        Txt(kTipPlain, buf);
+        Icon(texEnergy);
+        Br();
+    }
+    if (reasons && level != EnergyModel::Confidence::High)
+        DrawEnergyDoubts(track, t);
+
+    EndEnergyTip();
 }
 
 // The thin energy strip under a party row's health bar.
@@ -265,22 +582,10 @@ void ReplayWindow::DrawPartyEnergyBar(ImDrawList* dl, const AgentReplayData& ard
     if (level != EnergyModel::Confidence::High && !s.dead)
     {
         const float d = 11.f;
-        DrawEnergyConfidenceLamp(dl, LoadGameUITexture(m_deviceResources->GetD3DDevice(), "Progressbar\ui_confidence_lamps.png"),
+        DrawEnergyConfidenceLamp(dl, LoadGameUITexture(m_deviceResources->GetD3DDevice(), "Progressbar\\ui_confidence_lamps.png"),
                                  ImVec2(b1.x - d * 0.5f, std::round((b0.y + b1.y) * 0.5f)), d, level);
     }
 
     if (ImGui::IsMouseHoveringRect(b0, b1))
-    {
-        const int e = s.dead ? 0 : std::max(0, static_cast<int>(std::floor(s.energy)));
-        const int m = static_cast<int>(std::floor(s.maxEnergy));
-        const std::string why = EnergyConfidenceText(*track, m_debugTimeline, m_skillView, m_replayCtx.agents,
-                                                     level != EnergyModel::Confidence::High);
-        if (lift > 0.f)
-            ImGui::SetTooltip("Energy %d / %d on the best weapon set (calculated)\nOn the set in hand: %d / %d%s\n\n%s",
-                              s.dead ? 0 : std::max(0, static_cast<int>(std::floor(best))),
-                              static_cast<int>(std::floor(s.maxEnergy + lift)), e, m,
-                              s.energy < 0.f ? " (hiding energy)" : "", why.c_str());
-        else
-            ImGui::SetTooltip("Energy %d / %d (calculated)\n\n%s", e, m, why.c_str());
-    }
+        const_cast<ReplayWindow*>(this)->DrawEnergyBarTooltip(ard, *track, lift, true);
 }

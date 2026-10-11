@@ -2002,13 +2002,20 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
-    void DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side);
+    // `rowTopLeft` is the bottom row's; full rows wrap upwards. Returns the rows used.
+    int  DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side, float rowWidth);
+    int  m_focusHudEffectRows = 1;   // last frame's effect rows: the skill bar window's height
     float DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side);   // returns the width used
     // `usedAt`: the instant whose rank the green numbers read (a signet can scale on another
     // attribute for a while); negative = the replay's current time.
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd, float usedAt = -1.f);
     void DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
     void DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, ImVec2 b1, float scale);
+    // Energy tooltips (ReplayWindow_Energy.cpp): the bar's, the confidence lamp's, and the
+    // "why" list both use.
+    void DrawEnergyBarTooltip(const AgentReplayData& ard, const EnergyModel::Track& track, float lift, bool reasons);
+    void DrawEnergyConfidenceTooltip(const EnergyModel::Track& track);
+    void DrawEnergyDoubts(const EnergyModel::Track& track, float t);
     // The energy strip under a party row's health bar. Players only.
     void DrawPartyEnergyBar(ImDrawList* dl, const AgentReplayData& ard, ImVec2 b0, ImVec2 b1) const;
     // The followed player's bar in display order: the recorded bar, then any skill seen used

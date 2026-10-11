@@ -137,8 +137,6 @@ void  DrawEnergyOvercast(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel
 // The confidence band over the bar, the lamp (centre, diameter) and the lamp's tooltip text.
 void  DrawEnergyBand(ImDrawList* dl, ImVec2 b0, ImVec2 b1, const EnergyModel::Sample& s);
 void  DrawEnergyConfidenceLamp(ImDrawList* dl, ImTextureID lamps, ImVec2 c, float d, EnergyModel::Confidence level);
-std::string EnergyConfidenceText(const EnergyModel::Track& track, float t, const SkillDatabaseView& skills,
-                                 const std::unordered_map<int, AgentReplayData>& agents, bool legend = false);
 void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const AgentSnapshot* snap, uint8_t teamId, bool isDead,
                         const char* name, const PartyIcons& icons,

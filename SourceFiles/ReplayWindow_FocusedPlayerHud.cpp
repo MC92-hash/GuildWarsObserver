@@ -469,7 +469,10 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     const float enGap  = std::round(4.f * scale);
     // The effect monitor's row stands above the energy bar's frame: icons of 52 UI units.
     const float effSide = std::round(kEffectIcon * scale);
-    const float effRowH = effSide + std::round(4.f * scale);
+    // More effects than a row holds wrap onto rows above it, so the window grows upwards by
+    // last frame's extra rows (the skill bar itself stays put).
+    const int   effRows = std::max(1, m_focusHudEffectRows);
+    const float effRowH = effRows * effSide + std::round(4.f * scale);
     const float frameY = std::round(effRowH + hpArtT + hpH + enGap + hpH);
     const float winH   = frameY + artT + slot + artB;
 
@@ -518,7 +521,9 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
                           ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y), scale);
     DrawFocusHudEnergyBar(ard, ImVec2(origin.x + artL - 7.f * scale, frameTL.y - hpH - enGap - hpH),
                           ImVec2(origin.x + winW - artR + 7.f * scale, frameTL.y - hpH - enGap), scale);
-    DrawFocusHudEffectBar(agentId, ImVec2(origin.x + artL - 7.f * scale, origin.y), effSide);
+    m_focusHudEffectRows = DrawFocusHudEffectBar(agentId,
+        ImVec2(origin.x + artL - 7.f * scale, origin.y + (effRows - 1) * effSide), effSide,
+        kBarSlots * slot + 14.f * scale);
 
     for (int i = 0; i < kBarSlots; ++i)
     {
@@ -848,14 +853,16 @@ float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, flo
 }
 
 
-void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side)
+int ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side, float rowWidth)
 {
-    rowTopLeft.x += DrawFocusHudFixedEffects(agentId, rowTopLeft, side);
+    // The fixed icons open the bottom row; the effects follow and wrap upwards, a row at a time.
+    const int fixedCount = static_cast<int>(std::round(DrawFocusHudFixedEffects(agentId, rowTopLeft, side) / side));
+    const int perRow = std::max(1, static_cast<int>(rowWidth / side));
 
     const EffectTimeline::Table* table = EffectTimelineTable();
-    if (!table) return;
+    if (!table) return 1;
     const auto all = table->byAgent.find(agentId);
-    if (all == table->byAgent.end()) return;
+    if (all == table->byAgent.end()) return 1;
     const float t = m_debugTimeline;
 
     // An effect a known skill removed stays this long after it went, dimmed under that skill's
@@ -885,7 +892,7 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
         if (it->removed && active) *it = { &e, e.start, EffectSortKey(e.kind), false };
         else if (!removed && e.end > it->longest->end) { it->longest = &e; it->placed = e.start; }
     }
-    if (icons.empty()) return;
+    if (icons.empty()) return 1;
     std::stable_sort(icons.begin(), icons.end(), [](const Icon& a, const Icon& b) {
         return a.key != b.key ? a.key < b.key : a.placed < b.placed;
     });
@@ -901,7 +908,9 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
     for (size_t i = 0; i < icons.size(); ++i) {
         const EffectTimeline::Effect& e = *icons[i].longest;
         const SkillInfo* si = m_skillView.Get(e.skillId);
-        const ImVec2 tl(rowTopLeft.x + static_cast<float>(i) * side, rowTopLeft.y);
+        const int slotIdx = fixedCount + static_cast<int>(i);
+        const ImVec2 tl(rowTopLeft.x + static_cast<float>(slotIdx % perRow) * side,
+                        rowTopLeft.y - static_cast<float>(slotIdx / perRow) * side);
         const ImVec2 br(tl.x + side, tl.y + side);
         ImTextureID tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
         ImVec2 fuv0, fuv1;
@@ -988,6 +997,7 @@ void ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float s
             ImGui::EndTooltip();
         }
     }
+    return (fixedCount + static_cast<int>(icons.size()) + perRow - 1) / perRow;
 }
 
 
@@ -1158,21 +1168,9 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
     dl->PopClipRect();
     const float lampR = lampD * 0.5f;
     if (ImGui::IsMouseHoveringRect(ImVec2(lampC.x - lampR, lampC.y - lampR), ImVec2(lampC.x + lampR, lampC.y + lampR), false))
-    {
-        const std::string why = EnergyConfidenceText(*track, m_debugTimeline, m_skillView, m_replayCtx.agents, true);
-        ImGui::SetTooltip("%s", why.c_str());
-    }
-
-    if (ImGui::IsMouseHoveringRect(b0, b1))
-    {
-        const int lo = std::max(0, static_cast<int>(std::floor(s.energy - s.down)));
-        const int hi = std::max(0, static_cast<int>(std::floor(s.energy + s.up)));
-        char range[64] = "";
-        if (!s.dead && hi > lo) snprintf(range, sizeof(range), "\nReal energy between %d and %d", lo, hi);
-        ImGui::SetTooltip("Energy %d / %d (calculated)%s\nRegeneration %+d pips%s", value,
-                          static_cast<int>(std::floor(s.maxEnergy)), range, static_cast<int>(s.pips),
-                          s.overcast >= 1.f ? "\nOvercast shown in grey" : "");
-    }
+        DrawEnergyConfidenceTooltip(*track);
+    else if (ImGui::IsMouseHoveringRect(b0, b1))
+        DrawEnergyBarTooltip(ard, *track, 0.f, false);
 
     ImTextureID arrows = tex("ui_health_arrows.png");
     const int pips = s.dead ? 0 : static_cast<int>(s.pips);
