@@ -4,6 +4,7 @@
 #include "SkillDatabase.h"
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -194,6 +195,74 @@ void ReplayWindow::BuildEffectTimeline() const
                     e.label ? e.label : si ? si->name.c_str() : "?", e.causeSkill, e.caster, e.start, e.end, e.endExact ? 1 : 0,
                     e.natural ? 1 : 0, EndSourceName(e.endSource), e.expectedEnd, e.removedBy);
         }
+    fclose(f);
+
+    // Removal-scaled disable audit: %TEMP%\gwo_removal_audit_<match>.txt. Shatter Storm is
+    // disabled 7 s per enchantment it removed, Withdraw Hexes recharges 2 s longer per hex; the
+    // caster's next use of the same skill can come no earlier than that.
+    struct Scaled { int skill; Kind kind; float perItem; };
+    static const Scaled kScaled[] = { { 933, Kind::Enchantment, 7.f }, { 942, Kind::Hex, 2.f } };
+    if (fopen_s(&f, (std::string(tempDir) + "gwo_removal_audit_" + folder + ".txt").c_str(), "w") != 0 || !f) return;
+    fprintf(f, "# skill\tcaster\ttarget\tstart\tcast_end\tresult\tremoved\tmaintained\tborderline\tbase_recharge"
+               "\tpredicted_ready\tnext_start\tslack\timplied_max\tboost\titems\n");
+    if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+    for (const auto& [casterId, ard] : m_replayCtx.agents)
+    {
+        const auto& hist = ard.skillUseHistory;
+        for (size_t i = 0; i < hist.size(); ++i)
+        {
+            const SkillUseEvent& ev = hist[i];
+            const int sid = m_skillView.ResolvePvpSkillId(ev.skillId);
+            const Scaled* sc = nullptr;
+            for (const Scaled& s : kScaled) if (s.skill == sid) sc = &s;
+            if (!sc) continue;
+            const float castEnd = ev.isInstant ? ev.startTime : ev.endTime;
+            const char* result = ev.wasInterrupted ? "interrupted" : ev.wasCancelled ? "cancelled" : "landed";
+            const SkillInfo* si = m_skillView.Get(sid);
+            const float base = si ? si->recharge : 0.f;
+
+            // What the timeline says this cast took: every effect of the kind removed by this skill
+            // from this caster, ending around the cast's end.
+            int removed = 0, maintained = 0, borderline = 0;
+            std::string items;
+            for (const auto& [agentId, list] : m_effectTimeline.byAgent)
+                for (const Effect& e : list)
+                {
+                    if (e.kind != sc->kind) continue;
+                    const bool mine = m_skillView.ResolvePvpSkillId(e.removedBy) == sid && e.removedByCaster == casterId
+                                   && e.end >= ev.startTime - 0.05f && e.end <= castEnd + 1.0f;
+                    // Ran out on its own just before or after the landing: the count hangs on its estimate.
+                    const bool closeCall = !mine && agentId == ev.targetId && e.end >= castEnd - 1.5f && e.end <= castEnd + 0.5f
+                                   && e.start < castEnd;
+                    if (!mine && !closeCall) continue;
+                    if (mine) { ++removed; if (!e.hasDuration) ++maintained; }
+                    else ++borderline;
+                    const SkillInfo* es = m_skillView.Get(e.skillId);
+                    char buf[200];
+                    snprintf(buf, sizeof(buf), "%s%s[%d %s c%d %.2f-%.2f %s exp%.2f]", items.empty() ? "" : " ",
+                             mine ? "" : "~", agentId, es ? es->name.c_str() : "?", e.caster, e.start, e.end,
+                             EndSourceName(e.endSource), e.expectedEnd);
+                    items += buf;
+                }
+
+            // The next attempt at the same skill: any start proves it was ready then.
+            float next = -1.f;
+            for (size_t j = i + 1; j < hist.size(); ++j)
+                if (m_skillView.ResolvePvpSkillId(hist[j].skillId) == sid && hist[j].startTime > castEnd)
+                { next = hist[j].startTime; break; }
+            const bool landed = !ev.wasInterrupted && !ev.wasCancelled;
+            const float predicted = castEnd + base + (landed ? sc->perItem * removed : 0.f);
+            const float slack = next >= 0.f ? next - predicted : 0.f;
+            const int impliedMax = next >= 0.f ? (int)std::floor((next - castEnd - base + 0.25f) / sc->perItem) : -1;
+            // A morale boost between the cast and the recast recharged everything: no bound then.
+            int boost = 0;
+            if (auto bit = m_moraleBoosts.find(static_cast<int>(ard.teamId)); bit != m_moraleBoosts.end())
+                for (float bt : bit->second) if (bt > castEnd && (next < 0.f || bt < next)) boost = 1;
+            fprintf(f, "%s\t%d\t%d\t%.3f\t%.3f\t%s\t%d\t%d\t%d\t%.1f\t%.3f\t%.3f\t%.3f\t%d\t%d\t%s\n",
+                    si ? si->name.c_str() : "?", casterId, ev.targetId, ev.startTime, castEnd, result, removed,
+                    maintained, borderline, base, predicted, next, next >= 0.f ? slack : 0.f, impliedMax, boost, items.c_str());
+        }
+    }
     fclose(f);
 }
 

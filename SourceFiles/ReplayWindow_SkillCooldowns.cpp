@@ -196,8 +196,42 @@ namespace
         { 1093, Who::User, DisableScope::Skill, 0, -1, 20.f, -1 },  // Teinai's Heat
     };
     // Not modelled: Recall (the disable starts when the upkeep is dropped, which is not recorded),
-    // Withdraw Hexes and Shatter Storm (they scale with hexes / enchantments removed), Echo,
-    // Arcane Echo and Arcane Mimicry (they swap the slot for another skill).
+    // Echo, Arcane Echo and Arcane Mimicry (they swap the slot for another skill).
+
+    // Skills that lock themselves longer for each effect they removed, counted on the effect bar's
+    // timeline. Shatter Storm is disabled 7 s per enchantment (a disable: no recharge modifier
+    // touches it); Withdraw Hexes recharges 2 s longer per hex. Audited 2026-10-11 on 125 Shatter
+    // Storms followed by a recast: six recasts came within 1 s of the predicted end (one at
+    // 0.07 s), and none came earlier once a morale boost (it clears disables, see below) and the
+    // effect timeline's Reversal of Fortune end were accounted for. The caster's next attempt at the skill proves it was ready, so the lock never outlasts it.
+    constexpr int kShatterStorm = 933, kWithdrawHexes = 942;
+    constexpr float kShatterStormPerEnchantment = 7.f, kWithdrawHexesPerHex = 2.f;
+
+    // The effects of `kind` this use of `skill` took: removed by it, from this caster, as it landed.
+    int RemovedByUse(const EffectTimeline::Table* fx, const SkillDatabaseView& sdb, int casterId,
+                     const SkillUseEvent& ev, int skill, EffectTimeline::Kind kind)
+    {
+        if (!fx) return 0;
+        const float landed = ev.isInstant ? ev.startTime : ev.endTime;
+        int n = 0;
+        for (const auto& [agentId, list] : fx->byAgent)
+            for (const EffectTimeline::Effect& e : list)
+                if (e.kind == kind && e.removedByCaster == casterId && sdb.ResolvePvpSkillId(e.removedBy) == skill &&
+                    e.end >= ev.startTime - 0.05f && e.end <= landed + 1.f)
+                    ++n;
+        return n;
+    }
+
+    // When the caster next tried the skill after this use, or -1.
+    float NextAttempt(const AgentReplayData& caster, size_t index, const SkillDatabaseView& sdb)
+    {
+        const auto& h = caster.skillUseHistory;
+        const int sid = sdb.ResolvePvpSkillId(h[index].skillId);
+        const float landed = h[index].isInstant ? h[index].startTime : h[index].endTime;
+        for (size_t j = index + 1; j < h.size(); ++j)
+            if (sdb.ResolvePvpSkillId(h[j].skillId) == sid && h[j].startTime > landed) return h[j].startTime;
+        return -1.f;
+    }
 
     constexpr int kArcaneThievery = 81, kArcaneLarceny = 1062;
     constexpr int kAuspiciousIncantation = 930;
@@ -215,6 +249,7 @@ namespace
 
     float CastEnd(const SkillUseEvent& ev) { return ev.isInstant ? ev.startTime : ev.endTime; }
     bool  Succeeded(const SkillUseEvent& ev) { return !ev.wasCancelled && !ev.wasInterrupted; }
+
     // Was a Diversion that landed at `landed` taken off before `until`? The snapshots carry one
     // "any hex" flag, so this can only tell when the target had no other hex: the flag rises with
     // Diversion and falls with it. A hex already up, or a flag that never rose, reads as not removed.
@@ -441,6 +476,19 @@ void ReplayWindow::BuildSkillDisables() const
                 add(victim, d);
             }
 
+            // Shatter Storm: disabled 7 s for each enchantment it removed.
+            if (rid == kShatterStorm) {
+                const int n = RemovedByUse(EffectTimelineTable(), sdb, casterId, ev, kShatterStorm,
+                                           EffectTimeline::Kind::Enchantment);
+                SkillDisable d;
+                d.start = t0;
+                d.end   = t0 + kShatterStormPerEnchantment * n;
+                if (const float next = NextAttempt(caster, ei, sdb); next >= 0.f) d.end = std::min(d.end, next);
+                d.scope = DisableScope::Skill; d.skillId = rid;
+                d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
+                add(casterId, d);
+            }
+
             // Arcane Thievery / Larceny take ONE random spell for the duration. Which one is only
             // known if the thief casts it: a spell that is not on the thief's own bar, and is on
             // the victim's, used inside the window.
@@ -638,6 +686,7 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
 
         // --- Recharge: the last use, cleared by a morale boost or a skill that recharges it ---
         float rechargeStart = -1.f, rechargeDur = 0.f;
+        float rechargeCap = -1.f;   // the caster's next try at the skill, where one bounds the recharge
         bool spent = false;
         const SkillUseEvent* last = nullptr;
         for (const auto& ev : ard.skillUseHistory) {
@@ -654,6 +703,13 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
                 auto tit = m_replayCtx.agents.find(last->targetId);
                 if (tit != m_replayCtx.agents.end() && tit->second.healthPctAtTime(rechargeStart) < 0.5f)
                     rechargeDur += 20.f;
+            }
+            // Withdraw Hexes: 2 s more for each hex it removed, never past the caster's next try.
+            if (sid == kWithdrawHexes && Succeeded(*last) && !last->wasFastRecast) {
+                const size_t index = static_cast<size_t>(last - ard.skillUseHistory.data());
+                rechargeDur += kWithdrawHexesPerHex * RemovedByUse(EffectTimelineTable(), sdb, ard.agent_id, *last,
+                                                                   kWithdrawHexes, EffectTimeline::Kind::Hex);
+                rechargeCap = NextAttempt(ard, index, sdb);
             }
         }
         if (rechargeStart >= 0.f && lastBoost > rechargeStart) { spent = false; rechargeDur = 0.f; }
@@ -677,6 +733,8 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
         cd.rechargeMult = mult;
         if (rechargeDur > 0.f) {
             cd.rechargeTotal = rechargeDur * mult;
+            if (rechargeCap > rechargeStart)
+                cd.rechargeTotal = std::min(cd.rechargeTotal, rechargeCap - rechargeStart);
             cd.rechargeRemaining = std::max(0.f, rechargeStart + cd.rechargeTotal - t);
         }
 
