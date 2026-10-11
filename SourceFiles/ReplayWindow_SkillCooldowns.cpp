@@ -201,6 +201,11 @@ namespace
 
     constexpr int kArcaneThievery = 81, kArcaneLarceny = 1062;
     constexpr int kAuspiciousIncantation = 930;
+    constexpr int kDiversion = 30;
+    constexpr float kDiversionSeconds = 6.f;
+    // They end Diversion yet come back at once: "recharges faster" rewrites the recharge (measured
+    // twice, back after 7.0 and 3.8 s).
+    constexpr int kPiousRestraint = 2014, kPiousRestraintPvp = 3273;
     constexpr int kOathShot = 405, kNeedlingShot = 1197, kWordOfCensure = 1129;
     constexpr float kXinraeSeconds = 3.f;
 
@@ -210,6 +215,22 @@ namespace
 
     float CastEnd(const SkillUseEvent& ev) { return ev.isInstant ? ev.startTime : ev.endTime; }
     bool  Succeeded(const SkillUseEvent& ev) { return !ev.wasCancelled && !ev.wasInterrupted; }
+    // Was a Diversion that landed at `landed` taken off before `until`? The snapshots carry one
+    // "any hex" flag, so this can only tell when the target had no other hex: the flag rises with
+    // Diversion and falls with it. A hex already up, or a flag that never rose, reads as not removed.
+    bool DiversionRemovedBefore(const AgentReplayData& victim, float landed, float until)
+    {
+        const AgentSnapshot* before = FindSnapshotAtTime(victim, landed - 0.05f);
+        if (!before || before->has_hex) return false;
+        bool up = false;
+        for (int i = std::max(0, FindSnapshotIndex(victim.snapshots, landed)); i < static_cast<int>(victim.snapshots.size()); ++i) {
+            const AgentSnapshot& s = victim.snapshots[i];
+            if (s.time >= until) break;
+            if (s.has_hex) up = true;
+            else if (up) return true;
+        }
+        return false;
+    }
 }
 
 int ReplayWindow::AttributeRankFor(int agentId, int attribute) const
@@ -458,6 +479,37 @@ void ReplayWindow::BuildSkillDisables() const
                     d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
                     add(casterId, d);
                     break;
+                }
+            }
+
+            // Diversion: for 6 seconds, the next skill its target uses takes an additional X seconds
+            // to recharge, X at the caster's Domination Magic. Measured over the archive
+            // (2026-10-11, 115 landings): the trigger is the first use the target COMPLETES after the
+            // hex lands -- a cast already running counts, a stopped one does not, attacks and
+            // instant skills do -- and the skill is back at R + X from that completion.
+            if (rid == resolve(kDiversion) && ev.targetId > 0 && ev.targetId != casterId) {
+                auto vit = m_replayCtx.agents.find(ev.targetId);
+                if (vit != m_replayCtx.agents.end()) {
+                    const AgentReplayData& victim = vit->second;
+                    const SkillUseEvent* trigger = nullptr;
+                    for (const auto& vev : victim.skillUseHistory) {
+                        const float done = CastEnd(vev);
+                        if (!Succeeded(vev) || done <= t0 || done > t0 + kDiversionSeconds) continue;
+                        if (!trigger || done < CastEnd(*trigger)) trigger = &vev;
+                    }
+                    const float done = trigger ? CastEnd(*trigger) : 0.f;
+                    const int   tid  = trigger ? resolve(trigger->skillId) : 0;
+                    if (trigger && !DiversionRemovedBefore(victim, t0, done) &&
+                        tid != resolve(kPiousRestraint) && tid != resolve(kPiousRestraintPvp)) {
+                        const SkillInfo* vi = sdb.Get(trigger->skillId);
+                        SkillDisable d;
+                        d.start = done;
+                        d.end   = done + SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0) +
+                                  (kAdditionalAddsToRecharge && vi ? vi->recharge : 0.f);
+                        d.scope = DisableScope::Skill; d.skillId = tid;
+                        d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
+                        add(vit->first, d);
+                    }
                 }
             }
 
