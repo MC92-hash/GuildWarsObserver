@@ -989,7 +989,30 @@ int ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float si
             if (e.causeSkill)
                 ImGui::Text("From %s, %s", GetSkillDisplayName(e.causeSkill).c_str(), nameOf(e.caster).c_str());
             else if (e.caster && e.caster != agentId)
-                ImGui::Text("Cast by %s", nameOf(e.caster).c_str());
+            {
+                // "Cast by [primary][secondary] Name", the name in the caster's team colour.
+                ImGui::TextUnformatted("Cast by");
+                auto a = m_replayCtx.agents.find(e.caster);
+                const float sz = ImGui::GetTextLineHeight();
+                if (a != m_replayCtx.agents.end())
+                {
+                    for (int prof : { a->second.primaryProf, a->second.secondaryProf })
+                        if (ImTextureID ico = LoadProfIcon(m_deviceResources->GetD3DDevice(), prof))
+                        {
+                            ImGui::SameLine(0.f, 4.f);
+                            ImGui::Image(ico, ImVec2(sz, sz));
+                        }
+                    ImGui::SameLine(0.f, 4.f);
+                    ImGui::PushStyleColor(ImGuiCol_Text, GetAgentTeamColor(a->second.teamId));
+                    ImGui::TextUnformatted(nameOf(e.caster).c_str());
+                    ImGui::PopStyleColor();
+                }
+                else
+                {
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted("?");
+                }
+            }
             if (icons[i].removed)
                 ImGui::Text("Removed by %s, %s", GetSkillDisplayName(e.removedBy).c_str(), nameOf(e.removedByCaster).c_str());
             else if (e.hasDuration)
