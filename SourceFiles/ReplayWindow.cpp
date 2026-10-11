@@ -6376,7 +6376,9 @@ void ReplayWindow::Tick()
     // be folded first: it is a term of the same equation.
     if (m_agentsClassified && m_replayCtx.stocLoaded && !m_armourSolved)
     {
-        if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+        // Folded again even if a panel already asked for it: morale reads the recorded maximum
+        // health against the weapon-set health, which needs the equipment stream complete.
+        BuildMoraleTimelines();
         m_healthInputs = BuildHealthModelInputs();
         m_skillHealthSpans = HealthModel::FindSkillHealthSpans(m_replayCtx.agents,
                                                                m_replayCtx.stocData, m_skillView);

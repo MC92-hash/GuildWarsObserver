@@ -19,6 +19,8 @@
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
+#include "HealthModel.h"
+#include "EquipmentHealth.h"
 #include "../ThirdParty/nanosvg/nanosvg.h"
 #include "../ThirdParty/nanosvg/nanosvgrast.h"
 #include <d3dcompiler.h>
@@ -27,6 +29,9 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include <array>
+#include <cctype>
+#include <limits>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -102,16 +107,31 @@ void ReplayWindow::BuildMoraleTimelines() const
 
     // Every death-penalty-carrying death, once, so each team can read the other team's as kills
     // and neither side counts a signet backfire. Pets are in here for their own penalty only.
+    //
+    // A death within kResurrectEchoSeconds of standing up carries no penalty (PvP), but it is still
+    // a death the other team scored: on 2026-10-10 (Isle of Jade 15.11) The Berlin Wall died 4.8 s
+    // after a resurrection, took no penalty by his own recorded health, and six of the other
+    // team's players read the +2 for it (Para 498 -> 517 needs four kills, not three). Such a death
+    // goes to the kill list only, and only when the player stays down a full second - shorter is
+    // the packet echo the constant was first written for.
+    std::unordered_map<int, std::vector<float>> killTimes;
     for (const auto& [aid, ard] : m_replayCtx.agents) {
         if (!CarriesMorale(ard)) continue;
         auto& times = m_moraleDeaths[aid];
+        auto& kills = killTimes[aid];
         float lastResTime = -999.f;
         for (size_t i = 1; i < ard.snapshots.size(); ++i) {
             if (!ard.snapshots[i].is_dead && ard.snapshots[i - 1].is_dead)
                 lastResTime = ard.snapshots[i].time;
             if (!ard.snapshots[i].is_dead || ard.snapshots[i - 1].is_dead) continue;
             const float dt = ard.snapshots[i].time;
-            if (dt - lastResTime < kResurrectEchoSeconds) continue;
+            const bool echo = dt - lastResTime < kResurrectEchoSeconds;
+            if (echo) {
+                float upAt = std::numeric_limits<float>::max();
+                for (size_t j = i + 1; j < ard.snapshots.size(); ++j)
+                    if (!ard.snapshots[j].is_dead) { upAt = ard.snapshots[j].time; break; }
+                if (upAt - dt < 1.f) continue;
+            }
 
             bool dpsLinked = false;
             for (const auto& link : dpsLinks) {
@@ -127,7 +147,9 @@ void ReplayWindow::BuildMoraleTimelines() const
                 }
                 if (dpsLinked) break;
             }
-            if (!dpsLinked) times.push_back(dt);
+            if (dpsLinked) continue;
+            if (!echo) times.push_back(dt);
+            kills.push_back(dt);
         }
     }
 
@@ -137,40 +159,182 @@ void ReplayWindow::BuildMoraleTimelines() const
         else if (ev.party_value == 1635021874) m_moraleBoosts[2].push_back(ev.time);
     }
 
+    // Developer dump of the readings below (GWO_ENERGY_DEBUG): %TEMP%\gwo_morale_<match>.txt.
+    std::vector<std::string> dump;
+    char dbgFlag[16] = {};
+    const bool debug = GetEnvironmentVariableA("GWO_ENERGY_DEBUG", dbgFlag, (DWORD)sizeof(dbgFlag)) != 0;
+    const HealthModel::Inputs healthIn = BuildHealthModelInputs();   // the shrine term only
+
     for (const auto& [aid, ard] : m_replayCtx.agents) {
         if (!CarriesMorale(ard)) continue;
         if (ard.teamId != 1 && ard.teamId != 2) continue;
 
         enum class MET : uint8_t { Death, Boost, EnemyKill };
-        struct ME { float time; MET type; };
+        struct ME { float time; MET type; bool alive; bool skip; };
         std::vector<ME> events;
 
-        for (float t : m_moraleDeaths[aid]) events.push_back({ t, MET::Death });
-        for (float t : m_moraleBoosts[ard.teamId]) events.push_back({ t, MET::Boost });
-        for (const auto& [otherId, times] : m_moraleDeaths) {
+        for (float t : m_moraleDeaths[aid]) events.push_back({ t, MET::Death, false, false });
+        for (float t : m_moraleBoosts[ard.teamId]) events.push_back({ t, MET::Boost, false, false });
+        for (const auto& [otherId, times] : killTimes) {
             auto oit = m_replayCtx.agents.find(otherId);
             if (oit == m_replayCtx.agents.end()) continue;
             if (oit->second.teamId == ard.teamId) continue;
             // Killing a pet is not a kill: only a player death pays the other side.
             if (oit->second.type != AgentType::Player) continue;
-            for (float t : times) events.push_back({ t, MET::EnemyKill });
+            for (float t : times) events.push_back({ t, MET::EnemyKill, ard.isAliveAtTime(t), false });
         }
-        std::sort(events.begin(), events.end(),
-                  [](const ME& a, const ME& b) { return a.time < b.time; });
+        std::stable_sort(events.begin(), events.end(),
+                         [](const ME& a, const ME& b) { return a.time < b.time; });
+
+        auto apply = [](const ME& ev, int morale) {
+            switch (ev.type) {
+            case MET::Death:     return std::max(morale - 15, -60);
+            case MET::Boost:     return std::min(morale + 10, 10);
+            case MET::EnemyKill: return (morale < 0 && ev.alive) ? std::min(morale + 2, 0) : morale;
+            }
+            return morale;
+        };
+        auto fold = [&](std::vector<std::pair<float, int>>& out) {
+            out.clear();
+            out.push_back({ 0.f, 0 });
+            int morale = 0;
+            for (const ME& ev : events) {
+                if (ev.skip) continue;
+                const int before = morale;
+                morale = apply(ev, morale);
+                if (morale != before) out.push_back({ ev.time, morale });
+            }
+        };
+        auto at = [](const std::vector<std::pair<float, int>>& s, float t) {
+            int m = 0;
+            for (const auto& [st, sm] : s) { if (st > t) break; m = sm; }
+            return m;
+        };
 
         auto& steps = m_moraleTimeline[aid];
-        steps.push_back({ 0.f, 0 });
-        int morale = 0;
-        for (const auto& ev : events) {
-            const int before = morale;
-            switch (ev.type) {
-            case MET::Death:     morale = std::max(morale - 15, -60); break;
-            case MET::Boost:     morale = std::min(morale + 10, 10);  break;
-            case MET::EnemyKill:
-                if (morale < 0 && ard.isAliveAtTime(ev.time)) morale = std::min(morale + 2, 0);
-                break;
+        fold(steps);
+
+        // The recorded maximum health reads morale directly (2026-10-11 audit). A point of morale
+        // is 4.8 health, 1% of the level-20 base of 480; armour, runes and weapons are not scaled.
+        // So two camera readings of one player differ by the weapon-set health that moved between
+        // them (none on one set) plus 4.8 per morale point - armour cancels. Where the fold says
+        // otherwise, one of its events did not happen as written: a death that carried no penalty
+        // (Crod Mandoon's, 5 s after his Death Pact caster died), a kill that paid no credit (Rev
+        // N's at 776.63) - each one a rule nobody has written down. The fewest such events are
+        // dropped to make the fold agree, the latest first when several would do.
+        //
+        // A reading counts only where the server just pushed it - the value changed - with the
+        // player alive and free of Deep Wound. (The recorder's max_hp_is_live flag, field 50, is
+        // past the snapshot parser's 50-field cap and always reads false; on the 33 audited matches
+        // 95% of change points carry it, and requiring it changed one correction.) Across sets,
+        // both sets' health must be known and not hang on a stance. The step must sit within 0.3 of a
+        // whole point (a +45 or +60 conditional mod does not), and the morale it asks for must be
+        // one the events in between can reach; a reading that fails either is left out.
+        if (ard.type == AgentType::Player && m_replayCtx.stocLoaded) {
+            struct Reading { float t; int hp; uint16_t w, o; int set; bool known; };
+            std::vector<Reading> readings;
+            uint32_t prevHp = 0;
+            for (const AgentSnapshot& s : ard.snapshots) {
+                const uint32_t hp = s.max_hp;
+                const bool changed = hp != prevHp;
+                prevHp = hp;
+                if (!changed || hp == 0 || s.is_dead || s.has_deep_wound) continue;
+                const Equipment::HealthMods mods = Equipment::HealthFromWeaponSet(
+                    m_replayCtx.stocData.equipment, s.weapon_item_id, s.offhand_item_id);
+                const int set = mods.At(s.has_enchantment, s.has_hex || s.has_degen_hex, false) +
+                                (healthIn.shrineBonus ? healthIn.shrineBonus(ard, s.time) : 0);
+                readings.push_back({ s.time, (int)hp, s.weapon_item_id, s.offhand_item_id, set,
+                                     mods.known && mods.whenInStance == 0 });
             }
-            if (morale != before) steps.push_back({ ev.time, morale });
+
+            for (size_t i = 1; i < readings.size(); ++i) {
+                const Reading& r2 = readings[i];
+                const Reading* r1 = nullptr;
+                for (size_t j = i; j-- > 0;) {
+                    const Reading& c = readings[j];
+                    if ((c.w == r2.w && c.o == r2.o) || (c.known && r2.known)) { r1 = &c; break; }
+                }
+                if (!r1) continue;
+                const bool sameSet = r1->w == r2.w && r1->o == r2.o;
+                const double points = ((double)(r2.hp - r2.set) - (double)(r1->hp - r1->set)) / 4.8;
+                const long step = std::lround(points);
+                char line[320];
+                if (std::fabs(points - (double)step) > 0.3) {
+                    if (debug) {
+                        snprintf(line, sizeof(line), "%-24s %7.2f-%7.2f %4d->%4d set %+d/%+d%s: %+.2f points, not whole - left out",
+                                 ard.playerName.c_str(), r1->t, r2.t, r1->hp, r2.hp, r1->set, r2.set, sameSet ? "" : " (swap)", points);
+                        dump.push_back(line);
+                    }
+                    continue;
+                }
+                const int m1 = at(steps, r1->t);
+                const int target = std::clamp(m1 + (int)step, -60, 10);
+                const int m2 = at(steps, r2.t);
+                if (target == m2) continue;
+
+                // Fewest events dropped from (r1, r2] to land on the target: a shortest path over the
+                // 71 morale values, one layer per event, dropping costing 1.
+                std::vector<size_t> win;
+                for (size_t k = 0; k < events.size(); ++k)
+                    if (!events[k].skip && events[k].time > r1->t && events[k].time <= r2.t) win.push_back(k);
+                constexpr int kBig = 1 << 20;
+                auto idx = [](int m) { return m + 60; };
+                std::vector<std::array<int, 71>> cost(win.size() + 1);
+                for (auto& c : cost) c.fill(kBig);
+                cost[0][idx(m1)] = 0;
+                for (size_t k = 0; k < win.size(); ++k)
+                    for (int m = -60; m <= 10; ++m) {
+                        const int c = cost[k][idx(m)];
+                        if (c >= kBig) continue;
+                        const int a = apply(events[win[k]], m);
+                        cost[k + 1][idx(a)] = std::min(cost[k + 1][idx(a)], c);
+                        cost[k + 1][idx(m)] = std::min(cost[k + 1][idx(m)], c + 1);
+                    }
+                if (cost[win.size()][idx(target)] >= kBig) {
+                    if (debug) {
+                        snprintf(line, sizeof(line), "%-24s %7.2f-%7.2f %4d->%4d set %+d/%+d%s: morale %d -> %d asked, model %d, %zu events between - unreachable, left out",
+                                 ard.playerName.c_str(), r1->t, r2.t, r1->hp, r2.hp, r1->set, r2.set, sameSet ? "" : " (swap)", m1, target, m2, win.size());
+                        dump.push_back(line);
+                    }
+                    continue;
+                }
+                // Walk back from the target, dropping the latest event whenever that costs no more.
+                std::string dropped;
+                int m = target;
+                for (size_t k = win.size(); k-- > 0;) {
+                    const int c = cost[k + 1][idx(m)];
+                    if (cost[k][idx(m)] + 1 == c) {
+                        ME& ev = events[win[k]];
+                        ev.skip = true;
+                        char d[48];
+                        snprintf(d, sizeof(d), " %s@%.2f",
+                                 ev.type == MET::Death ? "death" : ev.type == MET::Boost ? "boost" : "kill", ev.time);
+                        dropped += d;
+                        continue;
+                    }
+                    for (int p = -60; p <= 10; ++p)
+                        if (cost[k][idx(p)] == c && apply(events[win[k]], p) == m) { m = p; break; }
+                }
+                fold(steps);
+                if (debug) {
+                    snprintf(line, sizeof(line), "%-24s %7.2f-%7.2f %4d->%4d set %+d/%+d%s: morale %d -> %d, model had %d; dropped%s",
+                             ard.playerName.c_str(), r1->t, r2.t, r1->hp, r2.hp, r1->set, r2.set, sameSet ? "" : " (swap)", m1, target, m2, dropped.c_str());
+                    dump.push_back(line);
+                }
+            }
+        }
+    }
+
+    if (debug && !dump.empty()) {
+        char tempDir[MAX_PATH] = {};
+        if (GetTempPathA(MAX_PATH, tempDir) != 0) {
+            std::string folder = m_replayCtx.matchFolderPath.filename().string();
+            if (folder.empty()) folder = "replay";
+            for (char& c : folder)
+                if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
+            std::ofstream f(std::string(tempDir) + "gwo_morale_" + folder + ".txt");
+            f << "Morale read off the recorded maximum health: " << dump.size() << " corrections or rejections\n";
+            for (const std::string& l : dump) f << l << "\n";
         }
     }
 

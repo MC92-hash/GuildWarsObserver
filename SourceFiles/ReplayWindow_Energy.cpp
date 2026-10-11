@@ -44,6 +44,14 @@ void ReplayWindow::BuildEnergyTracks() const
     // energy, and the model reads them from here rather than finding them again. Null until the
     // skill-use timeline is in; the rebuild after the attribute solve has it.
     in.effects = EffectTimelineTable();
+    // Maximum health as the attribute solve reads it: Energy Surge's damage packet is a fraction
+    // of it, and 7 damage per point of energy the target lost.
+    in.resolveMaxHp = [this](int agentId, float t) -> std::pair<uint32_t, bool> {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return { 0, true };
+        const auto s = ResolveMaxHp(it->second, t);
+        return { s.value, s.estimated };
+    };
 
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyBuilt = true;

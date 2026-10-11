@@ -2,6 +2,7 @@
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "SkillDatabase.h"
+#include "EffectTimeline.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -235,7 +236,11 @@ float ReplayWindow::SkillSecondsAtRank(int skillId, int userAgentId, int rangeIn
     auto bit = m_attrProfiles.find(userAgentId);
     const int attribute = AttributeModel::SkillAttributeAt(
         bit != m_attrProfiles.end() ? &bit->second : nullptr, *si, usedAt);
-    return AtRank(v0, v15, AttributeRankFor(userAgentId, attribute));
+    int rank = AttributeRankFor(userAgentId, attribute);
+    // Weakness: -1 to every attribute while it lasts, read off the effect bar's timeline.
+    if (const EffectTimeline::Table* fx = EffectTimelineTable(); fx && fx->WeaknessAt(userAgentId, usedAt) == 1)
+        rank = std::max(0, rank - 1);
+    return AtRank(v0, v15, rank);
 }
 
 // The solved range a skill's description reads for its user at `usedAt`, and which attribute that
