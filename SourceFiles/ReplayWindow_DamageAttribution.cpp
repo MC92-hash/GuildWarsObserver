@@ -53,7 +53,7 @@ void ReplayWindow::BuildDamageAttribution() const
         if (it != facts.end()) return &it->second;
         const SkillInfo* si = m_skillView.Get(skillId);
         if (!si) return nullptr;
-        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->name, si->description }).first->second;
+        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->name, si->description, si->sacrifice }).first->second;
     };
 
     m_damageAttribution = Build(in);

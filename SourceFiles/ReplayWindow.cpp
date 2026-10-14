@@ -6570,6 +6570,10 @@ void ReplayWindow::Tick()
         char energyFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
             (void)EnergyTrackFor(0);
+        // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.
+        char damageFlag[16] = {};
+        if (GetEnvironmentVariableA("GWO_DAMAGE_DEBUG", damageFlag, (DWORD)sizeof(damageFlag)) != 0)
+            (void)DamageAttributionTable();
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData

@@ -124,8 +124,8 @@ void ReplayWindow::UpdateIncomingEffects()
     }
 
     // Damage and heal numbers, each with the skill the attribution table names for it (a weapon
-    // hit shows the attack icon). The followed player's own damage on himself is left out, as
-    // before; his own heals are not.
+    // hit shows the attack icon). His own losses on himself - a sacrifice, a skill's Health cost -
+    // show too, as the client shows them.
     const DamageAttribution::Table* attribution = DamageAttributionTable();
     {
         const auto& pops = DamagePopsOn(focused);
@@ -134,7 +134,6 @@ void ReplayWindow::UpdateIncomingEffects()
         for (; it != pops.end() && it->time <= scanTo; ++it)
         {
             const DamagePop& pop = *it;
-            if (pop.casterId == focused && !pop.heal) continue;
             IncomingEffect eff;
             eff.spawnTime = pop.time;
             eff.skillId = pop.skillId;

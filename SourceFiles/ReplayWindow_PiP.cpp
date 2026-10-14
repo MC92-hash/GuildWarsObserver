@@ -95,7 +95,6 @@ void ReplayWindow::UpdatePiPIncomingEffects()
                                    [](float v, const DamagePop& p) { return v < p.time; });
         for (; it != pops.end() && it->time <= scanTo; ++it) {
             const DamagePop& pop = *it;
-            if (pop.casterId == pipTarget && !pop.heal) continue;
             IncomingEffect eff;
             eff.spawnTime = pop.time;
             eff.skillId = pop.skillId;
