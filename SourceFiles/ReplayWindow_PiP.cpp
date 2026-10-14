@@ -101,7 +101,8 @@ void ReplayWindow::UpdatePiPIncomingEffects()
             eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
                      : pop.heal      ? IncomingEffectType::Heal
                                      : IncomingEffectType::Damage;
-            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(pipTarget, pop.time), pop.value);
+            const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix
+                               : CorrectMaxHpForPacket(findAgentMaxHp(pipTarget, pop.time), pop.value);
             eff.label = DamagePopLabel(pop, mhp);
             pushPipEffect(std::move(eff));
         }

@@ -49,6 +49,38 @@ int ReplayWindow::GetFocusedAgentId() const
 }
 
 
+uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
+{
+    auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return 0;
+    const auto& snaps = it->second.snapshots;
+    if (snaps.empty()) return 0;
+    const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
+    if (s && s->max_hp > 0) return s->max_hp;
+    auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
+        [](const AgentSnapshot& a, float b) { return a.time < b; });
+    for (; sit != snaps.end(); ++sit)
+        if (sit->max_hp > 0) return sit->max_hp;
+    // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
+    // never looked at it. Without this a Guild Lord fell through to the player-only solver,
+    // which returns 0 for an NPC, and his damage numbers were dropped for want of a
+    // denominator. Deep Wound is the only thing that moves it.
+    if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
+        return (s && s->has_deep_wound)
+                   ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
+    // Recorded value first (it is the effective max HP); solved per
+    // weapon set only when the recording carries none.
+    return it->second.solvedMaxHpAtTime(t);
+}
+
+std::string ReplayWindow::FloaterPopLabel(int agentId, const DamagePop& pop) const
+{
+    const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix
+                                      : CorrectMaxHpForPacket(FloaterMaxHp(agentId, pop.time), pop.value);
+    return DamagePopLabel(pop, mhp);
+}
+
+
 void ReplayWindow::UpdateIncomingEffects()
 {
     float now = m_debugTimeline;
@@ -73,29 +105,6 @@ void ReplayWindow::UpdateIncomingEffects()
     float scanTo   = now;
     m_lastEffectScanTime = now;
     if (scanTo <= scanFrom) return;
-
-    auto findAgentMaxHp = [&](int agentId, float t) -> uint32_t {
-        auto it = m_replayCtx.agents.find(agentId);
-        if (it == m_replayCtx.agents.end()) return 0;
-        const auto& snaps = it->second.snapshots;
-        if (snaps.empty()) return 0;
-        const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
-        if (s && s->max_hp > 0) return s->max_hp;
-        auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
-            [](const AgentSnapshot& a, float b) { return a.time < b; });
-        for (; sit != snaps.end(); ++sit)
-            if (sit->max_hp > 0) return sit->max_hp;
-        // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
-        // never looked at it. Without this a Guild Lord fell through to the player-only solver,
-        // which returns 0 for an NPC, and his damage numbers were dropped for want of a
-        // denominator. Deep Wound is the only thing that moves it.
-        if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
-            return (s && s->has_deep_wound)
-                       ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
-        // Recorded value first (it is the effective max HP); solved per
-        // weapon set only when the recording carries none.
-        return it->second.solvedMaxHpAtTime(t);
-    };
 
     const auto& db = m_skillView;
 
@@ -140,8 +149,7 @@ void ReplayWindow::UpdateIncomingEffects()
             eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
                      : pop.heal      ? IncomingEffectType::Heal
                                      : IncomingEffectType::Damage;
-            const uint32_t mhp = CorrectMaxHpForPacket(findAgentMaxHp(focused, pop.time), pop.value);
-            eff.label = DamagePopLabel(pop, mhp);
+            eff.label = FloaterPopLabel(focused, pop);
             pushEffect(std::move(eff));
         }
     }
@@ -928,8 +936,9 @@ void ReplayWindow::DrawFollowedAgentHUD()
 }
 
 // Energy gains and drains over every player but the followed one, in the client's purple digits and
-// with the client's floater layout. Only energy, which the energy model knows for everyone; damage
-// and heals stay on the followed player.
+// with the client's floater layout - the energy model knows them for everyone. With them, the heals
+// the followed player GAVE, over each player he healed, as the client shows a healer his heals (the
+// heals he receives stay over him, UpdateIncomingEffects). Damage stays on the followed player.
 void ReplayWindow::RenderEnergyPopsOverPlayers()
 {
     if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
@@ -946,14 +955,34 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     std::vector<IncomingEffect> live, batch;
 
+    // One player's pops in time order: his energy changes and the followed player's heals on him.
+    // `draw` is false for a pop that only links the run (a zero or followed-only energy change).
+    struct Pop { float time; bool draw; IncomingEffect eff; };
+    std::vector<Pop> run;
+    constexpr float kRunLookback = 60.f;   // how far back a run of overlapping pops is replayed
+    const int healer = m_focusedAgentId;
+
     for (int pid : m_playerIds)
     {
         if (pid == m_focusedAgentId) continue;
         const EnergyModel::Track* track = EnergyTrackFor(pid);
-        if (!track || track->gains.empty()) continue;
-        auto first = std::upper_bound(track->gains.begin(), track->gains.end(), now - kEffectLifetime,
-                                      [](float v, const EnergyModel::Gain& g) { return v < g.time; });
-        if (first == track->gains.end() || first->time > now) continue;
+        static const std::vector<DamagePop> kNoPops;
+        const std::vector<DamagePop>& pops = healer >= 0 ? DamagePopsOn(pid) : kNoPops;
+
+        // Anything spawned in the last lifetime?
+        bool any = false;
+        if (track)
+        {
+            auto g = std::upper_bound(track->gains.begin(), track->gains.end(), now - kEffectLifetime,
+                                      [](float v, const EnergyModel::Gain& x) { return v < x.time; });
+            any = g != track->gains.end() && g->time <= now;
+        }
+        if (!any)
+            for (auto h = std::upper_bound(pops.begin(), pops.end(), now - kEffectLifetime,
+                                           [](float v, const DamagePop& x) { return v < x.time; });
+                 h != pops.end() && h->time <= now; ++h)
+                if (h->heal && h->casterId == healer) { any = true; break; }
+        if (!any) continue;
 
         auto it = m_replayCtx.agents.find(pid);
         if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
@@ -969,26 +998,51 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
         if (!ProjectToScreen(viewProj, vpW, vpH, XMFLOAT3{ worldPos.x, topY, worldPos.z }, ax, ay)) continue;
         ay -= iconSz + 8.f;
 
+        run.clear();
+        if (track)
+            for (auto g = std::lower_bound(track->gains.begin(), track->gains.end(), now - kRunLookback,
+                                           [](const EnergyModel::Gain& x, float v) { return x.time < v; });
+                 g != track->gains.end() && g->time <= now; ++g)
+            {
+                const int amount = static_cast<int>(std::lround(g->amount));
+                Pop p{ g->time, amount != 0 && !g->focusOnly, {} };   // focusOnly: over the followed player only
+                p.eff.spawnTime = g->time;
+                p.eff.type = IncomingEffectType::Energy;
+                p.eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
+                run.push_back(std::move(p));
+            }
+        const size_t energyCount = run.size();
+        for (auto h = std::lower_bound(pops.begin(), pops.end(), now - kRunLookback,
+                                       [](const DamagePop& x, float v) { return x.time < v; });
+             h != pops.end() && h->time <= now; ++h)
+        {
+            if (!h->heal || h->casterId != healer) continue;
+            Pop p{ h->time, true, {} };
+            p.eff.spawnTime = h->time;
+            p.eff.skillId = h->skillId;
+            p.eff.type = IncomingEffectType::Heal;
+            p.eff.label = FloaterPopLabel(pid, *h);
+            run.push_back(std::move(p));
+        }
+        if (run.size() > energyCount)
+            std::stable_sort(run.begin(), run.end(), [](const Pop& a, const Pop& b) { return a.time < b.time; });
+
         // Nothing is kept between frames here, so the layout is replayed from the start of the
         // current run of overlapping pops: back to a pop that spawned when every earlier one had
         // expired. The side switch starts afresh there; the same frame always gives the same layout.
-        auto start = first;
-        while (start != track->gains.begin() && std::prev(start)->time > start->time - kEffectLifetime)
-            --start;
+        size_t start = 0;
+        while (start < run.size() && run[start].time <= now - kEffectLifetime) ++start;
+        if (start == run.size()) continue;
+        while (start > 0 && run[start - 1].time > run[start].time - kEffectLifetime) --start;
 
         live.clear();
         batch.clear();
         bool toggle = false;
         const float scale = FloaterBaseScale(pid, now);
-        for (auto g = start; g != track->gains.end() && g->time <= now; ++g)
+        for (size_t k = start; k < run.size(); ++k)
         {
-            const int amount = static_cast<int>(std::lround(g->amount));
-            if (amount == 0 || g->focusOnly) continue;   // focusOnly: over the followed player only
-            IncomingEffect eff;
-            eff.spawnTime = g->time;
-            eff.type = IncomingEffectType::Energy;
-            eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
-            batch.push_back(std::move(eff));
+            if (!run[k].draw) continue;
+            batch.push_back(std::move(run[k].eff));
             PlaceFloaters(live, batch, toggle, scale);
         }
         for (const IncomingEffect& e : live)

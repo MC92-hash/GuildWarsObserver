@@ -6512,6 +6512,14 @@ void ReplayWindow::Tick()
             return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView,
                                                     fx && fx->WeaknessAt(agentId, span.start) == 1);
         };
+        // The maxima the damage attribution confirmed from chant shares vote with the readings.
+        if (const DamageAttribution::Table* da = DamageAttributionTable())
+        {
+            const auto& combat = m_replayCtx.stocData.combat;
+            for (size_t i = 0; i < da->maxHpFix.size() && i < combat.size(); ++i)
+                if (da->maxHpFix[i])
+                    m_healthInputs.packetMaxHp.push_back({ combat[i].target_id, combat[i].time, da->maxHpFix[i] });
+        }
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
         m_armourSolved = true;

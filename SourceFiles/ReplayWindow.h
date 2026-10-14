@@ -489,10 +489,16 @@ private:
         bool  weaponHit = false;   // shown with the attack icon
         bool  heal      = false;
         float value     = 0.f;     // fraction of maximum health, negative for damage
+        uint32_t maxHpFix = 0;     // the maximum the attribution read the packet against, 0 none
     };
     // The agent's pops in time order, built on first use per agent.
     const std::vector<DamagePop>& DamagePopsOn(int agentId) const;
     static std::string DamagePopLabel(const DamagePop& pop, uint32_t maxHp);
+    // The maximum Health the followed player's numbers are read against (before the per-packet
+    // correction), shared with the attribution so it sees the numbers the floaters show.
+    uint32_t FloaterMaxHp(int agentId, float t) const;
+    // The pop's number over `agentId`, its victim: against FloaterMaxHp, or the attribution's fix.
+    std::string FloaterPopLabel(int agentId, const DamagePop& pop) const;
     mutable std::unordered_map<int, std::vector<DamagePop>> m_damagePops;
 
     // Morale as a step function per player, folded once over the match. Both the health model and
