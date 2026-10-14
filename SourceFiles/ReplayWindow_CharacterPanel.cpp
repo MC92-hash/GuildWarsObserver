@@ -2134,6 +2134,46 @@ void ReplayWindow::DrawCharacterPanels()
             // behind a rule for that reason, and it is drawn whether or not the armour health
             // solved, since the knockdowns say it on their own. Primary Warriors only: the
             // insignia is Warrior armour, and one character wears at most one of it.
+            // Runes with no attribute and no health cost that the solve proved another way (the
+            // conditions this player wore ran short of their casters' duration). Drawn like a major
+            // rune - common art, purple name - and marked as inferred; the tooltip quotes the
+            // evidence the solve wrote.
+            if (build && !build->inferredRunes.empty())
+            {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                for (const AttributeModel::PlayerBuild::InferredRune& r : build->inferredRunes)
+                {
+                    ImGui::BeginGroup();
+                    if (ImTextureID icon = RuneIcon(dev, "All", "Major")) ImGui::Image(icon, RuneIconSize(false));
+                    else                                                  ImGui::Dummy(RuneIconSize(false));
+                    ImGui::SameLine(0.f, 8.f);
+                    ImGui::BeginGroup();
+                    ImGui::TextColored(RarityVec(Equipment::Rarity::Purple), "%s", r.name.c_str());
+                    // The rune's own item text, as the game's tooltip words it.
+                    static const std::pair<const char*, const char*> kRuneLines[] = {
+                        { "Rune of Clarity",     "Reduces Blind duration on you by 20% (Non-stacking)" },
+                        { "Rune of Clarity",     "Reduces Weakness duration on you by 20% (Non-stacking)" },
+                        { "Rune of Restoration", "Reduces Bleeding duration on you by 20% (Non-stacking)" },
+                        { "Rune of Restoration", "Reduces Crippled duration on you by 20% (Non-stacking)" },
+                    };
+                    for (const auto& [rune, line] : kRuneLines)
+                        if (r.name == rune) ImGui::TextUnformatted(line);
+                    ImGui::TextDisabled("inferred");
+                    ImGui::EndGroup();
+                    ImGui::EndGroup();
+
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "Inferred, not seen: %s.\n\n"
+                            "The recording never shows armour runes. This one is read off how long\n"
+                            "conditions lasted on this player, against the rank their casters show\n"
+                            "everywhere else. It costs no health and takes one of the five rune slots.",
+                            r.evidence.c_str());
+                }
+            }
+
             if (build && ard->primaryProf == 1 && build->stonefist.detected)
             {
                 ImGui::Spacing();
