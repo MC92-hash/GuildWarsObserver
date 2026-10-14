@@ -3,6 +3,7 @@
 #include "ReplayWindow_Internal.h"
 #include "SkillDatabase.h"
 #include "EffectTimeline.h"
+#include "InterruptCauses.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -381,6 +382,9 @@ void ReplayWindow::BuildSkillDisables() const
         return false;
     };
 
+    // Which use caused each interrupt: only that one applies its "if it interrupts" effect.
+    const InterruptCauses::Table causes = InterruptCauses::Build(m_replayCtx.agents, m_replayCtx.stocData, sdb);
+
     for (const auto& [casterId, caster] : m_replayCtx.agents) {
         if (caster.type != AgentType::Player) continue;
 
@@ -390,29 +394,20 @@ void ReplayWindow::BuildSkillDisables() const
             const int   rid = resolve(ev.skillId);
             const float t0  = CastEnd(ev);
 
-            // A. Interrupts. The victim's cast that was cut short is the one that ended as this
-            // skill landed: at once for a spell, within the flight or swing for an attack.
+            // A. Interrupts. The victim's cast that was cut short is the one this use interrupted
+            // (InterruptCauses); a use that interrupted nothing disables nothing.
+            const InterruptCauses::Cause* cause = causes.ForUse(casterId, static_cast<int>(ei));
             for (const auto& rule : kInterruptRules) {
                 if (resolve(rule.skillId) != rid) continue;
+                if (!cause || cause->victimUse < 0) continue;
                 if (rule.casterEnchanted) {
                     const AgentSnapshot* snap = FindSnapshotAtTime(caster, t0);
                     if (!snap || !snap->has_enchantment) continue;
                 }
-                auto vit = m_replayCtx.agents.find(ev.targetId);
+                auto vit = m_replayCtx.agents.find(cause->victim);
                 if (vit == m_replayCtx.agents.end()) continue;
                 const AgentReplayData& victim = vit->second;
-
-                const SkillInfo* ruleInfo = sdb.Get(rule.skillId);
-                const bool slow = IsAttack(ruleInfo) || (ruleInfo && ruleInfo->type == 11);
-                const float lo = ev.startTime - 0.1f;
-                const float hi = std::max(ev.startTime, t0) + (slow ? 1.5f : 0.35f);
-
-                const SkillUseEvent* cut = nullptr;
-                for (const auto& vev : victim.skillUseHistory) {
-                    if (!vev.wasInterrupted || vev.endTime < lo || vev.endTime > hi) continue;
-                    if (!cut || std::abs(vev.endTime - t0) < std::abs(cut->endTime - t0)) cut = &vev;
-                }
-                if (!cut) continue;
+                const SkillUseEvent* cut = &victim.skillUseHistory[cause->victimUse];
 
                 const SkillInfo* cutInfo = sdb.Get(cut->skillId);
                 if (rule.needs == Needs::SpellOrChant &&
@@ -600,6 +595,53 @@ void ReplayWindow::BuildSkillDisables() const
     }
 
     m_skillDisablesBuilt = true;
+}
+
+// Developer dump (GWO_ATTR_DEBUG): every interrupt and the use that caused it, then every disable
+// an interrupt laid, with the victim's first use of the disabled skill inside it - a contradiction
+// unless a morale boost of his party came between.
+void ReplayWindow::WriteInterruptDebug(const std::string& path) const
+{
+    if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+    if (!m_skillDisablesBuilt || (!m_skillDisablesUsedAttributes && m_attributesDeduced))
+        BuildSkillDisables();
+    std::ofstream out(path);
+    if (!out) return;
+
+    const auto& sdb = m_skillView;
+    auto resolve = [&](int sid) { return sdb.ResolvePvpSkillId(sid); };
+    auto name = [&](int id) { const SkillInfo* si = sdb.Get(id); return si ? si->name : std::to_string(id); };
+    const InterruptCauses::Table causes = InterruptCauses::Build(m_replayCtx.agents, m_replayCtx.stocData, sdb);
+    for (const InterruptCauses::Cause& c : causes.causes) {
+        std::string cut = "-";
+        if (auto it = m_replayCtx.agents.find(c.victim); it != m_replayCtx.agents.end() && c.victimUse >= 0)
+            cut = name(it->second.skillUseHistory[c.victimUse].skillId);
+        out << std::format("cause\t{:.3f}\t{}\t{}\t{}\t{}\t{:+.3f}\n", c.time, c.victim, cut, c.caster,
+                           name(c.skillId), c.landed - c.time);
+    }
+
+    // The first use of the skill inside the lock, and whether a morale boost explains it.
+    auto check = [&](int victimId, const SkillDisable& d) -> std::string {
+        auto vit = m_replayCtx.agents.find(victimId);
+        if (vit == m_replayCtx.agents.end()) return "-";
+        for (const auto& u : vit->second.skillUseHistory) {
+            if (resolve(u.skillId) != d.skillId || u.startTime <= d.start + 0.05f) continue;
+            if (u.startTime >= d.end - 0.25f) return std::format("next +{:.2f}", u.startTime - d.start);
+            bool boost = false;
+            if (auto bit = m_moraleBoosts.find(static_cast<int>(vit->second.teamId)); bit != m_moraleBoosts.end())
+                for (float bt : bit->second) boost |= bt >= d.start && bt <= u.startTime;
+            return std::format("{} +{:.2f}", boost ? "used-after-boost" : "USED-INSIDE", u.startTime - d.start);
+        }
+        return "never";
+    };
+    for (const auto& [victimId, list] : m_skillDisables)
+        for (const SkillDisable& d : list) {
+            bool interrupt = false;
+            for (const auto& r : kInterruptRules) interrupt |= resolve(r.skillId) == resolve(d.sourceSkill);
+            if (!interrupt) continue;
+            out << std::format("disable\t{:.3f}\t{}\t{}\t{}\t{}\t{:.2f}\t{}\n", d.start, victimId, name(d.skillId),
+                               d.sourceAgent, name(d.sourceSkill), d.end - d.start, check(victimId, d));
+        }
 }
 
 std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(

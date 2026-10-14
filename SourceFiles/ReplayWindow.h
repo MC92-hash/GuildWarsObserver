@@ -582,6 +582,7 @@ private:
     const AttributeModel::AttributeRange* SkillRankAt(int skillId, int userAgentId, float usedAt,
                                                       int* attribute = nullptr) const;
     void  WriteSkillRankDebug(const std::string& path) const;   // GWO_ATTR_DEBUG
+    void  WriteInterruptDebug(const std::string& path) const;   // GWO_ATTR_DEBUG
     std::vector<SkillCooldownState> ComputeSkillCooldowns(const AgentReplayData& ard,
                                                           const std::vector<int>& skillIds, float t) const;
     void BuildMoraleTimelines() const;

@@ -1855,6 +1855,7 @@ struct ProjectileEvent
 {
     float time     = 0.f;
     int   sourceId = 0;
+    float flight   = 0.f;   // seconds in the air; 0 when not recorded
 };
 
 struct EnergyCoverage

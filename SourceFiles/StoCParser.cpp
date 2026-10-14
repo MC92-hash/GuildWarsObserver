@@ -3,6 +3,8 @@
 #include <fstream>
 #include <sstream>
 #include <charconv>
+#include <cmath>
+#include <cstring>
 #include <thread>
 #include <algorithm>
 
@@ -1212,7 +1214,8 @@ static void ParseVisualEffectEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
-// Projectiles: PROJECTILE;source;dest_x;dest_y;... - only the shooter and the moment are kept
+// Projectiles: PROJECTILE;source;dest_x;dest_y;unk1;flight;... - the shooter, the moment and the
+// seconds in the air (a float written as its dword) are kept
 // ---------------------------------------------------------------------------
 
 static void ParseProjectileEvents(const std::string& content, StoCData& data)
@@ -1232,13 +1235,21 @@ static void ParseProjectileEvents(const std::string& content, StoCData& data)
             LineInfo li;
             if (ParseLineHeader(ptr, effectiveEnd, li))
             {
-                Token tok[3];
-                int n = Tokenize(li.dataStart, li.lineEnd, tok, 3);
+                Token tok[7];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 7);
                 if (n >= 2 && std::string_view(tok[0].begin, tok[0].end - tok[0].begin) == "PROJECTILE")
                 {
                     ProjectileEvent ev;
                     ev.time     = li.time;
                     ev.sourceId = ToInt(tok[1].begin, tok[1].end);
+                    if (n >= 6)
+                    {
+                        uint32_t bits = 0;
+                        std::from_chars(tok[5].begin, tok[5].end, bits);
+                        float f = 0.f;
+                        std::memcpy(&f, &bits, sizeof(f));
+                        if (std::isfinite(f) && f > 0.f && f < 10.f) ev.flight = f;
+                    }
                     data.projectiles.push_back(ev);
                 }
             }

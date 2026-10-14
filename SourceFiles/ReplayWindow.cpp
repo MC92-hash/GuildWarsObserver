@@ -6815,6 +6815,7 @@ void ReplayWindow::WriteAttributeDebugDump() const
         flux = AttributeModel::FluxForMonth(m_matchMeta.month);
     AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView, flux);
     WriteSkillRankDebug(std::string(tempDir) + "gwo_tooltip_ranks_" + folder + ".txt");
+    WriteInterruptDebug(std::string(tempDir) + "gwo_interrupts_" + folder + ".txt");
 }
 
 void ReplayWindow::Update(double elapsedMs)
