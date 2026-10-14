@@ -1023,7 +1023,7 @@ static void ParseModelEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
-// Energy (ENERGY_SAMPLE / ENERGY_COVERAGE)
+// Energy (ENERGY_SAMPLE / ENERGY_COVERAGE / ENERGY_NOPAY / RES_SAMPLE)
 //
 // Two line shapes share the file:
 //
@@ -1053,12 +1053,41 @@ static void ParseEnergyEvents(const std::string& content, StoCData& data)
             LineInfo li;
             if (ParseLineHeader(ptr, effectiveEnd, li))
             {
-                Token tok[8];
-                int n = Tokenize(li.dataStart, li.lineEnd, tok, 8);
+                Token tok[16];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 16);
                 if (n >= 1)
                 {
                     std::string_view typeName(tok[0].begin, tok[0].end - tok[0].begin);
-                    if (typeName == "ENERGY_SAMPLE" && n >= 5)
+                    if (typeName == "RES_SAMPLE" && n >= 9)
+                    {
+                        // 9, 12 or 14 fields (ReplayMapData.h, ResurrectionSample).
+                        ResurrectionSample ev;
+                        ev.time      = li.time;
+                        ev.skillId   = ToInt(tok[1].begin, tok[1].end);
+                        ev.casterId  = ToInt(tok[2].begin, tok[2].end);
+                        ev.agentId   = ToInt(tok[3].begin, tok[3].end);
+                        ev.energy    = ToInt(tok[4].begin, tok[4].end);
+                        ev.maxEnergy = ToInt(tok[5].begin, tok[5].end);
+                        ev.health    = ToInt(tok[6].begin, tok[6].end);
+                        ev.maxHealth = ToInt(tok[7].begin, tok[7].end);
+                        ev.delayMs   = ToInt(tok[8].begin, tok[8].end);
+                        if (n >= 12)
+                        {
+                            ev.energyFrac = ToFloat(tok[9].begin, tok[9].end);
+                            ev.healthFrac = ToFloat(tok[10].begin, tok[10].end);
+                            const std::string_view src(tok[11].begin, tok[11].end - tok[11].begin);
+                            const size_t slash = src.find('/');
+                            ev.energySource = std::string(src.substr(0, slash));
+                            if (slash != std::string_view::npos) ev.healthSource = std::string(src.substr(slash + 1));
+                        }
+                        if (n >= 14)
+                        {
+                            ev.energyDelta = ToInt(tok[12].begin, tok[12].end);
+                            ev.deltaCount  = ToInt(tok[13].begin, tok[13].end);
+                        }
+                        data.resurrectionSamples.push_back(std::move(ev));
+                    }
+                    else if (typeName == "ENERGY_SAMPLE" && n >= 5)
                     {
                         EnergySample ev;
                         ev.time    = li.time;

@@ -63,6 +63,7 @@ HealthModel::Inputs ReplayWindow::BuildHealthModelInputs() const
 {
     HealthModel::Inputs in;
     in.equipment = &m_replayCtx.stocData.equipment;
+    in.stoc      = &m_replayCtx.stocData;
 
     in.moralePercent = [this](const AgentReplayData& ard, float t) {
         return MoralePercentAtTime(ard, t);

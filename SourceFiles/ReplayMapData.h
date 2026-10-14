@@ -1789,6 +1789,43 @@ struct EnergyNoPay
     int   casterId = 0;
 };
 
+// A RES_SAMPLE line (recorder 2026-10-14): the camera held a resurrected player and read his vitals.
+//   RES_SAMPLE;skill;caster;agent;energy;maxEnergy;health;maxHealth;delay_ms
+//              [;energyFrac;healthFrac;eSrc/hSrc[;energyDelta;deltaCount]]
+// `time` is the reading, `delay_ms` after the player was seen alive (landing = time - delay).
+// energy/maxEnergy are absolute only when `energySource` is "living" or "mapagent" with a maximum
+// of at least 2; health/maxHealth when `healthSource` is "living" or "mapagent". `energyDelta` is
+// the sum of the energy changes the server sent for the body while the camera held it, valid when
+// `deltaCount` >= 1. Older recordings carry 9 or 12 fields; what they lack stays at its default.
+struct ResurrectionSample
+{
+    float       time       = 0.f;
+    int         skillId    = 0;
+    int         casterId   = 0;
+    int         agentId    = 0;
+    int         energy     = -1;
+    int         maxEnergy  = 0;
+    int         health     = -1;
+    int         maxHealth  = 0;
+    int         delayMs    = 0;
+    float       energyFrac = -1.f;
+    float       healthFrac = -1.f;
+    std::string energySource;   // "living", "mapagent", "fraction"; empty in the 9-field lines
+    std::string healthSource;
+    int         energyDelta = 0;
+    int         deltaCount  = 0;   // 0: no delta seen (or a recording from before the field)
+
+    float LandingTime() const { return time - (float)delayMs / 1000.f; }
+    bool  EnergyAbsolute() const
+    {
+        return maxEnergy >= 2 && energy >= 0 && (energySource == "living" || energySource == "mapagent");
+    }
+    bool  HealthAbsolute() const
+    {
+        return maxHealth >= 1 && health >= 0 && (healthSource == "living" || healthSource == "mapagent");
+    }
+};
+
 // A SKILL_DAMAGE line: the server naming the skill behind the damage packet an agent just took. It
 // shares that packet's millisecond, and the server only sends it for the agent the recording camera
 // follows.
@@ -2024,6 +2061,7 @@ struct StoCData
     std::vector<EnergySample>           energySamples;
     std::vector<EnergyCoverage>         energyCoverage;
     std::vector<EnergyNoPay>            energyNoPay;
+    std::vector<ResurrectionSample>     resurrectionSamples;
     std::vector<SkillDamageEvent>       skillDamage;
     std::vector<VisualEffectEvent>      visualEffects;
     std::vector<ProjectileEvent>        projectiles;

@@ -983,7 +983,7 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
         for (auto g = start; g != track->gains.end() && g->time <= now; ++g)
         {
             const int amount = static_cast<int>(std::lround(g->amount));
-            if (amount == 0) continue;
+            if (amount == 0 || g->focusOnly) continue;   // focusOnly: over the followed player only
             IncomingEffect eff;
             eff.spawnTime = g->time;
             eff.type = IncomingEffectType::Energy;

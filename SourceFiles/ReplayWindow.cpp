@@ -6535,6 +6535,18 @@ void ReplayWindow::Tick()
             return { sample.value, sample.estimated };
         };
         attrInputs.skillBar = [this](int agentId) { return SkillBarForAgent(agentId); };
+        // A player's maximum energy at an instant, as the energy model counts it, before any
+        // attribute is solved (EnergyModel::MaxEnergyAt).
+        attrInputs.maxEnergy = [this](int agentId, float t, int& lo, int& hi, std::string* why) -> bool {
+            auto it = m_replayCtx.agents.find(agentId);
+            if (it == m_replayCtx.agents.end()) return false;
+            EnergyModel::Inputs e;
+            e.skills    = &m_skillView;
+            e.stoc      = &m_replayCtx.stocData;
+            e.equipment = &m_replayCtx.stocData.equipment;
+            e.moralePercent = [this](const AgentReplayData& ard, float at) { return MoralePercentAtTime(ard, at); };
+            return EnergyModel::MaxEnergyAt(it->second, e, t, lo, hi, why);
+        };
 
         // The Flux: the recording names it when the recorder saw it; the month decides otherwise.
         attrInputs.flux = AttributeModel::FluxFromName(m_matchMeta.flux);
