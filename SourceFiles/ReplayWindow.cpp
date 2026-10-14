@@ -7462,16 +7462,16 @@ void ReplayWindow::DrawImGuiOverlay()
         m_leftClickPending = false;
         m_leftMouseDown = true;
         ClosePlayerInfoPanel();
+        // Pin the cursor to the click point for the whole pan, as the right
+        // drag does. Moving it back on each WM_INPUT alone let it drift, so on
+        // release it could reappear where the drag ended.
+        SetCursorPos(m_mouseDragOrigin.x, m_mouseDragOrigin.y);
+        RECT clip = { m_mouseDragOrigin.x, m_mouseDragOrigin.y,
+                      m_mouseDragOrigin.x + 1, m_mouseDragOrigin.y + 1 };
+        ClipCursor(&clip);
+        ShowCursor(FALSE);
         if (!m_rightMouseDown)
-        {
-            ShowCursor(FALSE);
             SetCapture(m_hwnd);
-        }
-        else
-        {
-            ClipCursor(nullptr);
-            ShowCursor(FALSE);
-        }
     }
 
     // Keyboard shortcuts — uses GetAsyncKeyState directly so hotkeys work even
@@ -10528,16 +10528,15 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                 rw->m_leftMouseDown = false;
                 if (!rw->m_rightMouseDown)
                 {
+                    ClipCursor(nullptr);
                     SetCursorPos(rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y);
                     ShowCursor(TRUE);
                     ReleaseCapture();
                 }
                 else
                 {
+                    // Right drag continues: keep the cursor clipped.
                     ShowCursor(TRUE);
-                    RECT clip = { rw->m_mouseDragOrigin.x, rw->m_mouseDragOrigin.y,
-                                  rw->m_mouseDragOrigin.x + 1, rw->m_mouseDragOrigin.y + 1 };
-                    ClipCursor(&clip);
                 }
             }
         }
@@ -10562,9 +10561,11 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         if (rw && rw->m_rightMouseDown)
         {
             rw->m_rightMouseDown = false;
-            ClipCursor(nullptr);
             if (!rw->m_leftMouseDown)
+            {
+                ClipCursor(nullptr);
                 ReleaseCapture();
+            }
         }
         break;
 
@@ -10662,6 +10663,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             }
             else
             {
+                // Never leave the cursor pinned by a drag once we lose focus.
+                if (rw->m_leftMouseDown || rw->m_rightMouseDown)
+                    ClipCursor(nullptr);
                 rw->m_inputManager->OnFocusLost();
                 OutputDebugStringA("ReplayWindow: Deactivated (input detached)\n");
             }
