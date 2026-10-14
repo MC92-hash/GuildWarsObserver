@@ -40,7 +40,7 @@ void ReplayWindow::BuildEffectTimeline() const
     for (const auto& [agentId, ard] : m_replayCtx.agents)
     {
         for (const SkillUseEvent& su : ard.skillUseHistory)
-            in.uses.push_back({ agentId, su.targetId > 0 ? su.targetId : agentId, su.skillId, su.startTime, su.endTime, su.wasCancelled });
+            in.uses.push_back({ agentId, su.targetId > 0 ? su.targetId : agentId, su.skillId, su.startTime, su.endTime, su.wasCancelled || su.wasInterrupted });
         // Avatar forms: from one change into an avatar model to the next change.
         for (size_t i = 0; i < ard.modelChanges.size(); ++i)
         {
