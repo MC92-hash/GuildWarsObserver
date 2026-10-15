@@ -60,6 +60,8 @@ void ReplayWindow::BuildDamageAttribution() const
             in.attacks.push_back({ b.time, b.caster_id, b.target_id, b.type == "ATTACK_FINISHED" });
     for (const SkillDamageEvent& t : stoc.skillDamage)
         in.tags.push_back({ t.time, t.victimId, t.skillId });
+    for (const ProjectileEvent& s : stoc.projectiles)
+        in.shots.push_back({ s.time, s.sourceId, s.flight });
 
     std::unordered_map<int, SkillFacts> facts;
     in.skill = [&](int skillId) -> const SkillFacts* {
