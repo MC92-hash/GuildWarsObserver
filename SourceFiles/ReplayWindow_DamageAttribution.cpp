@@ -40,7 +40,7 @@ void ReplayWindow::BuildDamageAttribution() const
         // The number the floater shows for it, so the rules can read a skill's scale.
         if (p.kind == PacketKind::Damage || p.kind == PacketKind::Heal)
         {
-            if (const uint32_t mhp = CorrectMaxHpForPacket(FloaterMaxHp(ce.target_id, ce.time), ce.value))
+            if (const uint32_t mhp = PacketMaxHp(ce.target_id, ce.time, ce.value))
             {
                 p.amount = (int)std::lround(std::fabs(ce.value) * (double)mhp);
                 p.maxHp = (int)mhp;
@@ -95,17 +95,17 @@ void ReplayWindow::BuildDamageAttribution() const
         if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
     FILE* f = nullptr;
     if (fopen_s(&f, (std::string(tempDir) + "gwo_damage_" + folder + ".txt").c_str(), "w") != 0 || !f) return;
-    fprintf(f, "# index\ttime\ttype\tcause\tvictim\tvalue\tdamage_type\tskill\tname\trule\tweapon_hit\tamount\tmax_hp_fix\n");
+    fprintf(f, "# index\ttime\ttype\tcause\tvictim\tvalue\tdamage_type\tskill\tname\trule\tweapon_hit\tamount\tmax_hp_fix\tmax_hp\n");
     for (size_t i = 0; i < stoc.combat.size(); ++i)
     {
         const CombatEvent& ce = stoc.combat[i];
         if (!ce.IsDamageOrHeal()) continue;
         const Result& r = m_damageAttribution.packets[i];
         const SkillInfo* si = r.skillId ? m_skillView.Get(r.skillId) : nullptr;
-        fprintf(f, "%zu\t%.3f\t%s\t%d\t%d\t%.6f\t%d\t%d\t%s\t%s\t%d\t%d\t%u\n", i, ce.time, ce.type.c_str(),
+        fprintf(f, "%zu\t%.3f\t%s\t%d\t%d\t%.6f\t%d\t%d\t%s\t%s\t%d\t%d\t%u\t%d\n", i, ce.time, ce.type.c_str(),
                 ce.caster_id, ce.target_id, ce.value, ce.damage_type, r.skillId,
                 si ? si->name.c_str() : (r.skillId ? "?" : "-"), RuleName(r.rule), r.weaponHit ? 1 : 0,
-                in.packets[i].amount, m_damageAttribution.maxHpFix[i]);
+                in.packets[i].amount, m_damageAttribution.maxHpFix[i], in.packets[i].maxHp);
     }
     fclose(f);
 }

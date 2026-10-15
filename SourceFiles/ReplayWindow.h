@@ -497,6 +497,9 @@ private:
     // The maximum Health the followed player's numbers are read against (before the per-packet
     // correction), shared with the attribution so it sees the numbers the floaters show.
     uint32_t FloaterMaxHp(int agentId, float t) const;
+    // The maximum one packet on `agentId` reads against: FloaterMaxHp, corrected for this packet
+    // (MaxHpSolver CorrectMaxHpForWoundedPacket, with the effect timeline's Deep Wound).
+    uint32_t PacketMaxHp(int agentId, float t, float fraction) const;
     // The pop's number over `agentId`, its victim: against FloaterMaxHp, or the attribution's fix.
     std::string FloaterPopLabel(int agentId, const DamagePop& pop) const;
     mutable std::unordered_map<int, std::vector<DamagePop>> m_damagePops;

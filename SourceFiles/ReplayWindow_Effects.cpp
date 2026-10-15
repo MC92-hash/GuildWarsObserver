@@ -73,10 +73,31 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     return it->second.solvedMaxHpAtTime(t);
 }
 
+uint32_t ReplayWindow::PacketMaxHp(int agentId, float t, float fraction) const
+{
+    const uint32_t recorded = FloaterMaxHp(agentId, t);
+    // The effect timeline's Deep Wound on him at the packet (its end inclusive: a killing blow lands
+    // in the tick the wound ends with his death), or one that ended in the last 3 s or that the
+    // snapshot's bit still shows - the recorded maximum lags both ways.
+    bool woundOn = false, woundOver = false;
+    if (const EffectTimeline::Table* fx = EffectTimelineTable())
+        if (auto all = fx->byAgent.find(agentId); all != fx->byAgent.end())
+            for (const EffectTimeline::Effect& e : all->second)
+            {
+                if (e.start > t + 0.0005f) break;
+                if (e.kind != EffectTimeline::Kind::Condition || e.skillId != EffectTimeline::kDeepWound) continue;
+                if (t <= e.end + 0.0005f) woundOn = true;
+                else if (t - e.end <= 3.f) woundOver = true;
+            }
+    if (!woundOn && !woundOver)
+        if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end())
+            if (const AgentSnapshot* s = FindSnapshotAtTime(it->second, t)) woundOver = s->has_deep_wound;
+    return CorrectMaxHpForWoundedPacket(recorded, fraction, woundOn, woundOn ? false : woundOver);
+}
+
 std::string ReplayWindow::FloaterPopLabel(int agentId, const DamagePop& pop) const
 {
-    const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix
-                                      : CorrectMaxHpForPacket(FloaterMaxHp(agentId, pop.time), pop.value);
+    const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix : PacketMaxHp(agentId, pop.time, pop.value);
     return DamagePopLabel(pop, mhp);
 }
 
