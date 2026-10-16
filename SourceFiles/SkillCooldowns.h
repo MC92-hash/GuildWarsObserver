@@ -39,6 +39,10 @@ struct SkillCooldownState
     float disableTotal       = 0.f;
     int   disableSourceSkill = 0;      // the skill that imposed it
     int   disableSourceAgent = -1;     // who used that skill (may be the slot's owner)
+    // Where the longest disable's length rests on a rank the solve did not pin (Diversion at the
+    // caster's Domination Magic): the remaining time at the band's two ends. Equal when exact.
+    float disableRemainingLo = 0.f;
+    float disableRemainingHi = 0.f;
 };
 
 // What a disable covers on the victim's bar. Every scope but Skill is a filter over the bar.
@@ -72,13 +76,22 @@ struct SkillDisable
     int   param   = 0;
     int   sourceSkill = 0;
     int   sourceAgent = -1;
+    // A length read off a rank band (see SkillCooldownState): the ends at its two edges, `end`
+    // being the one shown. 0 when the length is exact.
+    float endLo = 0.f;
+    float endHi = 0.f;
+    // The end the rule itself gives, before any later evidence shortened the one shown (the
+    // victim's next use proves the skill ready). The cooldown dump checks the rule against it.
+    float ruleEnd = 0.f;
 };
 
 // A skill that recharges others: Oath Shot recharges every skill but itself, Needling Shot
-// recharges itself. Exactly one of the two ids is set.
+// recharges itself, Keystone Signet every signet but itself. Exactly one of the two ids is set.
 struct RechargeReset
 {
     float time = 0.f;
     int   exceptSkill = 0;   // every skill but this one (PvP-resolved)
     int   onlySkill   = 0;   // only this one (PvP-resolved)
+    bool  signetsOnly = false;     // of those, only the signets
+    bool  clearsDisables = false;  // it also ends the disables running on them then
 };

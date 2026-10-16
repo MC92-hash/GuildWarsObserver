@@ -636,10 +636,19 @@ private:
     void  BuildSkillDisables() const;
     int   AttributeRankFor(int agentId, int attribute) const;
     float SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed, float usedAt) const;
+    // The ranks a skill read for its user at `usedAt` (Weakness and attribute boosts applied):
+    // `best` is the one shown (SkillSecondsAtRank), [lo, hi] what the solve allows - the budget's
+    // bounds, or 0..16, where it observed nothing.
+    struct RankBand { int lo = 0, hi = 16, best = 12; bool solved = false; };
+    RankBand SkillRankBandAt(int skillId, int userAgentId, float usedAt) const;
+    // The index-th "A...B second" range of the skill read at the band's two ends.
+    bool  SkillSecondsBand(int skillId, int userAgentId, int rangeIndex, float usedAt, float& lo, float& hi) const;
+    std::shared_ptr<const AttributeModel::AttributeBoosts> m_attrBoosts;   // built with the solve
     const AttributeModel::AttributeRange* SkillRankAt(int skillId, int userAgentId, float usedAt,
                                                       int* attribute = nullptr) const;
     void  WriteSkillRankDebug(const std::string& path) const;   // GWO_ATTR_DEBUG
     void  WriteInterruptDebug(const std::string& path) const;   // GWO_ATTR_DEBUG
+    void  WriteCooldownDebug(const std::string& path) const;    // GWO_ATTR_DEBUG
     std::vector<SkillCooldownState> ComputeSkillCooldowns(const AgentReplayData& ard,
                                                           const std::vector<int>& skillIds, float t) const;
     void BuildMoraleTimelines() const;

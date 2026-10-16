@@ -6613,6 +6613,8 @@ void ReplayWindow::Tick()
         attrInputs.skillHealth = &m_skillHealthSpans;
 
         m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
+        // The attribute boosts again, for the rank a skill on the bar reads (SkillRankBandAt).
+        m_attrBoosts = AttributeModel::BuildAttributeBoosts(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;
 
         // An armour the attribute solve read back for a player the health model could not solve
@@ -6873,6 +6875,7 @@ void ReplayWindow::WriteAttributeDebugDump() const
     AttributeModel::WriteDebugDump(path, m_replayCtx.agents, m_attrProfiles, m_skillView, flux);
     WriteSkillRankDebug(std::string(tempDir) + "gwo_tooltip_ranks_" + folder + ".txt");
     WriteInterruptDebug(std::string(tempDir) + "gwo_interrupts_" + folder + ".txt");
+    WriteCooldownDebug(std::string(tempDir) + "gwo_cooldowns_" + folder + ".txt");
 }
 
 void ReplayWindow::Update(double elapsedMs)

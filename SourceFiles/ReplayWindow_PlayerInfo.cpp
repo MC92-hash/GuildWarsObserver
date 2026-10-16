@@ -1153,10 +1153,14 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 if (cd.disableSourceAgent == m_playerInfoAgentId) who = "own skill";
                 else if (auto ait = m_replayCtx.agents.find(cd.disableSourceAgent); ait != m_replayCtx.agents.end())
                     who = ait->second.playerName;
-                ImGui::SetTooltip("Disabled by %s%s%s%s (%.0fs)",
+                char band[48] = "";
+                if (ceilf(cd.disableRemainingHi) > ceilf(cd.disableRemainingLo))
+                    snprintf(band, sizeof(band), ", %.0f-%.0fs by rank", ceilf(cd.disableRemainingLo),
+                             ceilf(cd.disableRemainingHi));
+                ImGui::SetTooltip("Disabled by %s%s%s%s (%.0fs%s)",
                     src ? src->name.c_str() : "?",
                     who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")",
-                    ceilf(cd.remaining));
+                    ceilf(cd.remaining), band);
             }
             else if (iconHovered)
             {

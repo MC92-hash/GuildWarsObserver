@@ -302,6 +302,11 @@ void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
         case DoubtKind::Aneurysm:
             Txt(kTipPlain, "Aneurysm next to them: loss capped by a rank not known");
             break;
+        case DoubtKind::ConditionalGain:
+            Txt(kTipPlain, "Paid only under a threshold of ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " the range straddled");
+            break;
         }
         Br();
     }

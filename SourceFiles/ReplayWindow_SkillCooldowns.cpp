@@ -4,6 +4,7 @@
 #include "SkillDatabase.h"
 #include "EffectTimeline.h"
 #include "InterruptCauses.h"
+#include "DiversionTrigger.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -236,12 +237,12 @@ namespace
 
     constexpr int kArcaneThievery = 81, kArcaneLarceny = 1062;
     constexpr int kAuspiciousIncantation = 930;
-    constexpr int kDiversion = 30;
-    constexpr float kDiversionSeconds = 6.f;
-    // They end Diversion yet come back at once: "recharges faster" rewrites the recharge (measured
-    // twice, back after 7.0 and 3.8 s).
-    constexpr int kPiousRestraint = 2014, kPiousRestraintPvp = 3273;
     constexpr int kOathShot = 405, kNeedlingShot = 1197, kWordOfCensure = 1129;
+    // Keystone Signet: "All of your signets except Keystone Signet are recharged." Measured
+    // 2026-10-16 over the library (5 casters): 151 signets came back before their recharge, every
+    // one with a Keystone landing in between. The wiki adds that it brings back a Resurrection
+    // Signet only when something else disabled it, never after its use.
+    constexpr int kKeystoneSignet = 63;
     constexpr float kXinraeSeconds = 3.f;
 
     // Recharge modifiers, all "for A...B seconds" at the user's rank.
@@ -250,23 +251,6 @@ namespace
 
     float CastEnd(const SkillUseEvent& ev) { return ev.isInstant ? ev.startTime : ev.endTime; }
     bool  Succeeded(const SkillUseEvent& ev) { return !ev.wasCancelled && !ev.wasInterrupted; }
-
-    // Was a Diversion that landed at `landed` taken off before `until`? The snapshots carry one
-    // "any hex" flag, so this can only tell when the target had no other hex: the flag rises with
-    // Diversion and falls with it. A hex already up, or a flag that never rose, reads as not removed.
-    bool DiversionRemovedBefore(const AgentReplayData& victim, float landed, float until)
-    {
-        const AgentSnapshot* before = FindSnapshotAtTime(victim, landed - 0.05f);
-        if (!before || before->has_hex) return false;
-        bool up = false;
-        for (int i = std::max(0, FindSnapshotIndex(victim.snapshots, landed)); i < static_cast<int>(victim.snapshots.size()); ++i) {
-            const AgentSnapshot& s = victim.snapshots[i];
-            if (s.time >= until) break;
-            if (s.has_hex) up = true;
-            else if (up) return true;
-        }
-        return false;
-    }
 }
 
 int ReplayWindow::AttributeRankFor(int agentId, int attribute) const
@@ -279,10 +263,51 @@ int ReplayWindow::AttributeRankFor(int agentId, int attribute) const
     return kFallbackRank;
 }
 
+// The ranks a skill read for its user at `usedAt`. `usedAt` is the instant the skill landed: which
+// attribute it reads can depend on what else its user had up then, and the attribute model says
+// which (AttributeModel::SkillAttributeAt). The solved range where the solve observed the attribute
+// (`best` its answer); elsewhere the budget's bounds, or 0..16, with `best` the fallback rank.
+// Weakness takes 1 off every rank while it lasts (the effect bar's timeline); an attribute boost
+// (Glyph of Elemental Power's +2 to the elemental attributes) adds its amount, the larger one to
+// `hi` where the recording cannot tell whether it was still up.
+ReplayWindow::RankBand ReplayWindow::SkillRankBandAt(int skillId, int userAgentId, float usedAt) const
+{
+    RankBand band;
+    const SkillInfo* si = m_skillView.Get(skillId);
+    if (!si) return band;
+    auto bit = m_attrProfiles.find(userAgentId);
+    const int attribute = AttributeModel::SkillAttributeAt(
+        bit != m_attrProfiles.end() ? &bit->second : nullptr, *si, usedAt);
+    band.best = AttributeRankFor(userAgentId, attribute);
+    if (bit != m_attrProfiles.end()) {
+        if (auto a = bit->second.attributes.find(attribute); a != bit->second.attributes.end()) {
+            band.lo = a->second.lo;
+            band.hi = a->second.hi;
+            band.solved = !a->second.budgetOnly;
+        }
+    }
+    band.lo = std::min(band.lo, band.best);
+    band.hi = std::max(band.hi, band.best);
+    if (const EffectTimeline::Table* fx = EffectTimelineTable(); fx && fx->WeaknessAt(userAgentId, usedAt) == 1) {
+        band.lo = std::max(0, band.lo - 1);
+        band.hi = std::max(0, band.hi - 1);
+        band.best = std::max(0, band.best - 1);
+    }
+    if (m_attrBoosts) {
+        static thread_local AttributeModel::Inputs in;
+        in.boosts = m_attrBoosts.get();
+        int boostLo = 0, boostHi = 0;
+        if (AttributeModel::AttributeBoostAt(in, userAgentId, attribute, usedAt, boostLo, boostHi)) {
+            band.lo += boostLo;
+            band.best += boostLo;
+            band.hi += boostHi;
+        }
+    }
+    return band;
+}
+
 // The duration a skill grants at its user's rank: the index-th "A...B second" range of its
-// description, or `fixed` when the rule names one. `usedAt` is the instant the skill landed: which
-// attribute's rank it reads can depend on what else its user had up then, and the attribute model
-// says which (AttributeModel::SkillAttributeAt).
+// description, or `fixed` when the rule names one.
 float ReplayWindow::SkillSecondsAtRank(int skillId, int userAgentId, int rangeIndex, float fixed,
                                        float usedAt) const
 {
@@ -290,14 +315,21 @@ float ReplayWindow::SkillSecondsAtRank(int skillId, int userAgentId, int rangeIn
     const SkillInfo* si = m_skillView.Get(skillId);
     float v0 = 0.f, v15 = 0.f;
     if (!si || !DescRange(si->description, rangeIndex, v0, v15)) return fixed;
-    auto bit = m_attrProfiles.find(userAgentId);
-    const int attribute = AttributeModel::SkillAttributeAt(
-        bit != m_attrProfiles.end() ? &bit->second : nullptr, *si, usedAt);
-    int rank = AttributeRankFor(userAgentId, attribute);
-    // Weakness: -1 to every attribute while it lasts, read off the effect bar's timeline.
-    if (const EffectTimeline::Table* fx = EffectTimelineTable(); fx && fx->WeaknessAt(userAgentId, usedAt) == 1)
-        rank = std::max(0, rank - 1);
-    return AtRank(v0, v15, rank);
+    return AtRank(v0, v15, SkillRankBandAt(skillId, userAgentId, usedAt).best);
+}
+
+// The same range read at the two ends of the rank band. False when the description has no such range.
+bool ReplayWindow::SkillSecondsBand(int skillId, int userAgentId, int rangeIndex, float usedAt,
+                                    float& lo, float& hi) const
+{
+    const SkillInfo* si = m_skillView.Get(skillId);
+    float v0 = 0.f, v15 = 0.f;
+    if (rangeIndex < 0 || !si || !DescRange(si->description, rangeIndex, v0, v15)) return false;
+    const RankBand band = SkillRankBandAt(skillId, userAgentId, usedAt);
+    lo = AtRank(v0, v15, band.lo);
+    hi = AtRank(v0, v15, band.hi);
+    if (lo > hi) std::swap(lo, hi);
+    return true;
 }
 
 // The solved range a skill's description reads for its user at `usedAt`, and which attribute that
@@ -526,33 +558,29 @@ void ReplayWindow::BuildSkillDisables() const
             }
 
             // Diversion: for 6 seconds, the next skill its target uses takes an additional X seconds
-            // to recharge, X at the caster's Domination Magic. Measured over the archive
-            // (2026-10-11, 115 landings): the trigger is the first use the target COMPLETES after the
-            // hex lands -- a cast already running counts, a stopped one does not, attacks and
-            // instant skills do -- and the skill is back at R + X from that completion.
-            if (rid == resolve(kDiversion) && ev.targetId > 0 && ev.targetId != casterId) {
-                auto vit = m_replayCtx.agents.find(ev.targetId);
-                if (vit != m_replayCtx.agents.end()) {
-                    const AgentReplayData& victim = vit->second;
-                    const SkillUseEvent* trigger = nullptr;
-                    for (const auto& vev : victim.skillUseHistory) {
-                        const float done = CastEnd(vev);
-                        if (!Succeeded(vev) || done <= t0 || done > t0 + kDiversionSeconds) continue;
-                        if (!trigger || done < CastEnd(*trigger)) trigger = &vev;
+            // to recharge, X at the caster's Domination Magic. Which use it lands on, and when it was
+            // taken off first, is DiversionTrigger's (private); the lock is R + X from that use's
+            // completion. X is read at the caster's rank as it landed (Weakness, boosts); where the
+            // solve left a band, its two ends ride along for the tooltip. The victim's next try at
+            // the skill proves it was ready, so the lock shown never outlasts it.
+            if (rid == resolve(DiversionTrigger::kDiversion) && ev.targetId > 0 && ev.targetId != casterId) {
+                const DiversionTrigger::Result dv = DiversionTrigger::Find(m_replayCtx.agents, sdb, ev.targetId, t0);
+                if (dv.Locks()) {
+                    const SkillInfo* vi = sdb.Get(dv.trigger->skillId);
+                    const float recharge = kAdditionalAddsToRecharge && vi ? vi->recharge : 0.f;
+                    float lo = 0.f, hi = 0.f;
+                    SkillDisable d;
+                    d.start = dv.done;
+                    d.end   = dv.done + SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0) + recharge;
+                    d.ruleEnd = d.end;
+                    if (SkillSecondsBand(ev.skillId, casterId, 0, t0, lo, hi) && hi > lo) {
+                        d.endLo = dv.done + lo + recharge;
+                        d.endHi = dv.done + hi + recharge;
                     }
-                    const float done = trigger ? CastEnd(*trigger) : 0.f;
-                    const int   tid  = trigger ? resolve(trigger->skillId) : 0;
-                    if (trigger && !DiversionRemovedBefore(victim, t0, done) &&
-                        tid != resolve(kPiousRestraint) && tid != resolve(kPiousRestraintPvp)) {
-                        const SkillInfo* vi = sdb.Get(trigger->skillId);
-                        SkillDisable d;
-                        d.start = done;
-                        d.end   = done + SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0) +
-                                  (kAdditionalAddsToRecharge && vi ? vi->recharge : 0.f);
-                        d.scope = DisableScope::Skill; d.skillId = tid;
-                        d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
-                        add(vit->first, d);
-                    }
+                    if (dv.next > 0.f) d.end = std::min(d.end, dv.next);
+                    d.scope = DisableScope::Skill; d.skillId = dv.skill;
+                    d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
+                    add(ev.targetId, d);
                 }
             }
 
@@ -561,6 +589,8 @@ void ReplayWindow::BuildSkillDisables() const
             // recharges itself when it strikes a foe below half health, which the recording shows.
             if (rid == resolve(kOathShot))
                 m_rechargeResets[casterId].push_back({ t0, resolve(kOathShot), 0 });
+            if (rid == resolve(kKeystoneSignet))
+                m_rechargeResets[casterId].push_back({ t0, rid, 0, true, true });
             if (rid == resolve(kNeedlingShot)) {
                 auto tit = m_replayCtx.agents.find(ev.targetId);
                 if (tit != m_replayCtx.agents.end() && tit->second.healthPctAtTime(t0) < 0.5f)
@@ -642,6 +672,98 @@ void ReplayWindow::WriteInterruptDebug(const std::string& path) const
             out << std::format("disable\t{:.3f}\t{}\t{}\t{}\t{}\t{:.2f}\t{}\n", d.start, victimId, name(d.skillId),
                                d.sourceAgent, name(d.sourceSkill), d.end - d.start, check(victimId, d));
         }
+}
+
+// Developer dump (GWO_ATTR_DEBUG): %TEMP%\gwo_cooldowns_<match>.txt. The cooldown model against
+// what the players did:
+//   used  a use (a cast started, stopped ones too) while the model showed the slot disabled,
+//         recharging or spent by more than 0.25 s - a contradiction;
+//   fast  a skill back before its recharge (the replay fits that recharge to the next use, so the
+//         bar shows it) and what explains it: a morale boost, a recharge reset (Keystone Signet,
+//         Oath Shot, Needling Shot), a recharge modifier - or UNEXPLAINED;
+//   lock  a disable whose rule end was later shortened by the victim's next use (Diversion): the
+//         rule's length, its rank band, that next use, and EARLY when it came before the rule's end.
+void ReplayWindow::WriteCooldownDebug(const std::string& path) const
+{
+    if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
+    if (!m_skillDisablesBuilt || (!m_skillDisablesUsedAttributes && m_attributesDeduced))
+        BuildSkillDisables();
+    std::ofstream out(path);
+    if (!out) return;
+
+    const auto& sdb = m_skillView;
+    auto resolve = [&](int sid) { return sdb.ResolvePvpSkillId(sid); };
+    auto name = [&](int id) { const SkillInfo* si = sdb.Get(id); return si ? si->name : std::to_string(id); };
+    auto boostBetween = [&](const AgentReplayData& ard, float a, float b) {
+        if (auto bit = m_moraleBoosts.find(static_cast<int>(ard.teamId)); bit != m_moraleBoosts.end())
+            for (float bt : bit->second) if (bt > a && bt <= b) return true;
+        return false;
+    };
+
+    std::vector<int> ids;
+    for (const auto& [id, ard] : m_replayCtx.agents) if (ard.type == AgentType::Player) ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+    for (int id : ids) {
+        const AgentReplayData& ard = m_replayCtx.agents.at(id);
+        const auto& h = ard.skillUseHistory;
+        for (size_t i = 0; i < h.size(); ++i) {
+            const SkillUseEvent& u = h[i];
+            const SkillCooldownState cd = ComputeSkillCooldowns(ard, { u.skillId }, u.startTime - 0.02f).front();
+            const char* state = cd.state == SkillCooldownState::State::Disabled   ? "DISABLED"
+                              : cd.state == SkillCooldownState::State::Recharging ? "RECHARGING"
+                              : cd.state == SkillCooldownState::State::Spent      ? "SPENT" : nullptr;
+            if (state && (cd.remaining > 0.25f || cd.state == SkillCooldownState::State::Spent))
+                out << std::format("used\t{:.3f}\t{}\t{}\t{}\t{:.2f}\t{}\t{}\n", u.startTime, id, name(u.skillId), state,
+                                   cd.remaining, cd.disableSourceSkill ? name(cd.disableSourceSkill) : "-",
+                                   cd.disableSourceAgent);
+
+            if (!u.wasFastRecast) continue;
+            const SkillInfo* si = sdb.Get(u.skillId);
+            const float end = CastEnd(u), normal = si ? si->recharge : 0.f;
+            const float next = end + u.rechargeDuration;
+            std::string why;
+            if (boostBetween(ard, end, next + 0.05f)) why = "boost";
+            if (why.empty()) {
+                if (auto rit = m_rechargeResets.find(id); rit != m_rechargeResets.end())
+                    for (const RechargeReset& r : rit->second) {
+                        if (r.time <= end || r.time > next + 0.05f) continue;
+                        const int sid = resolve(u.skillId);
+                        if (r.signetsOnly && !(si && si->type == kTypeSignet)) continue;
+                        if (r.onlySkill ? r.onlySkill == sid : r.exceptSkill != sid) { why = "reset"; break; }
+                    }
+            }
+            if (why.empty()) {
+                float mult = 1.f;
+                std::string text;
+                for (float at : { end + 0.01f, 0.5f * (end + next), next - 0.02f }) {
+                    const SkillCooldownState m = ComputeSkillCooldowns(ard, { u.skillId }, at).front();
+                    if (m.rechargeMult < mult) { mult = m.rechargeMult; text = m.modifierText; }
+                }
+                if (mult < 1.f && u.rechargeDuration >= normal * mult - 0.5f) why = "mod " + text;
+            }
+            out << std::format("fast\t{:.3f}\t{}\t{}\t{:.2f}\t{:.0f}\t{}\n", end, id, name(u.skillId),
+                               u.rechargeDuration, normal, why.empty() ? "UNEXPLAINED" : why);
+        }
+    }
+
+    for (int id : ids) {
+        auto dit = m_skillDisables.find(id);
+        if (dit == m_skillDisables.end()) continue;
+        const AgentReplayData& victim = m_replayCtx.agents.at(id);
+        for (const SkillDisable& d : dit->second) {
+            if (d.ruleEnd <= 0.f) continue;
+            float next = -1.f;
+            for (const auto& v : victim.skillUseHistory)
+                if (resolve(v.skillId) == d.skillId && v.startTime > d.start + 0.05f) { next = v.startTime; break; }
+            const bool boost = next > 0.f && boostBetween(victim, d.start, next);
+            const char* verdict = next < 0.f ? "never" : next >= d.ruleEnd - 0.25f ? "ok" : boost ? "after-boost" : "EARLY";
+            out << std::format("lock\t{:.3f}\t{}\t{}\t{}\t{}\t{:.2f}\t{:.2f}\t{:.2f}\t{}\t{}\n", d.start, id, name(d.skillId),
+                               name(d.sourceSkill), d.sourceAgent, d.ruleEnd - d.start,
+                               d.endHi > 0.f ? d.endLo - d.start : d.ruleEnd - d.start,
+                               d.endHi > 0.f ? d.endHi - d.start : d.ruleEnd - d.start,
+                               next > 0.f ? std::format("{:.2f}", next - d.start) : "-", verdict);
+        }
+    }
 }
 
 std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
@@ -755,11 +877,16 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
             }
         }
         if (rechargeStart >= 0.f && lastBoost > rechargeStart) { spent = false; rechargeDur = 0.f; }
+        auto resetHits = [&](const RechargeReset& r) {
+            if (r.signetsOnly && !(si && si->type == kTypeSignet)) return false;
+            return r.onlySkill ? r.onlySkill == sid : r.exceptSkill != sid;
+        };
         if (resets && rechargeStart >= 0.f) {
             for (const auto& r : *resets) {
-                if (r.time <= rechargeStart || r.time > t) continue;
-                const bool hits = r.onlySkill ? r.onlySkill == sid : r.exceptSkill != sid;
-                if (hits) { spent = false; rechargeDur = 0.f; }
+                if (r.time <= rechargeStart || r.time > t || !resetHits(r)) continue;
+                // A used Resurrection Signet comes back on a morale boost only (Keystone: wiki).
+                if (r.signetsOnly && spent) continue;
+                spent = false; rechargeDur = 0.f;
             }
         }
 
@@ -785,12 +912,21 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
             for (const auto& d : *disables) {
                 if (d.start > t || d.end <= t || d.start < lastBoost) continue;
                 if (!Covers(d, sid, si)) continue;
+                // Recharged since by a skill that also ends disables (Keystone Signet).
+                bool cleared = false;
+                if (resets)
+                    for (const auto& r : *resets)
+                        cleared |= r.clearsDisables && r.time > d.start && r.time <= t && resetHits(r);
+                if (cleared) continue;
                 const float rem = d.end - t;
                 if (rem > cd.disableRemaining) {
                     cd.disableRemaining   = rem;
                     cd.disableTotal       = d.end - d.start;
                     cd.disableSourceSkill = d.sourceSkill;
                     cd.disableSourceAgent = d.sourceAgent;
+                    // The band never runs past the end shown (the victim's next use proved it over).
+                    cd.disableRemainingLo = d.endHi > 0.f ? std::max(0.f, std::min(d.endLo, d.end) - t) : rem;
+                    cd.disableRemainingHi = d.endHi > 0.f ? std::max(0.f, std::min(d.endHi, d.end) - t) : rem;
                 }
             }
         }

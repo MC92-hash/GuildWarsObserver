@@ -1348,6 +1348,12 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
             snprintf(buf, sizeof(buf), "Disabled by %s%s%s%s: %.0fs", src ? src->name.c_str() : "?",
                      who.empty() ? "" : " (", who.c_str(), who.empty() ? "" : ")", std::ceil(cd->remaining));
             state = buf;
+            // A length read off a rank the solve did not pin: say how far it may run.
+            if (std::ceil(cd->disableRemainingHi) > std::ceil(cd->disableRemainingLo)) {
+                snprintf(buf, sizeof(buf), " (%.0f-%.0fs by rank)", std::ceil(cd->disableRemainingLo),
+                         std::ceil(cd->disableRemainingHi));
+                state += buf;
+            }
         } else if (cd->state == CdState::Recharging) {
             snprintf(buf, sizeof(buf), "Recharging: %.0fs", std::ceil(cd->remaining));
             state = buf;
