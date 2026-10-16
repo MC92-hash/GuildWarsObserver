@@ -160,7 +160,8 @@ void ReplayWindow::InitAudioEngine()
 
 void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
 {
-    if (!m_audioInitialized || !m_audioEngine || !m_audioEnabled) return;
+    // A clip renders faster than real time and the GIF has no sound: stay quiet meanwhile.
+    if (!m_audioInitialized || !m_audioEngine || !m_audioEnabled || IsClipRendering()) return;
 
     // Update listener from camera
     Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;

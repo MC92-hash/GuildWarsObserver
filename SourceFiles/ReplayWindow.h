@@ -63,6 +63,7 @@ namespace AgentEffects { class Player; }
 enum class SoundLogCategory : uint8_t;
 
 #include "ReplayHotkeys.h"
+#include "ClipExport.h"
 
 // ---------------------------------------------------------------------------
 // Agent model slots
@@ -160,6 +161,13 @@ public:
     // DEV TOOL: set by the attribute batch so its windows open minimised without taking focus.
     static inline bool s_openWithoutFocus = false;
 
+    // DEV TOOL (GWO_CLIP_SELFTEST, with GWO_ATTR_BATCH): each window the batch opens renders one
+    // GIF clip through the real export path, without a dialog, and the batch waits for it. The
+    // window opens off-screen at 1280x720 instead of minimised, so it has a view to capture.
+    static inline std::wstring s_clipSelfTestPath;
+    static inline float s_clipSelfTestAt = -1.f;   // clip start in replay seconds; < 0 = 40 % in
+    bool ClipSelfTestDone() const { return s_clipSelfTestPath.empty() || m_clipSelfTestStage >= 4; }
+
     // IDeviceNotify
     void OnDeviceLost() override;
     void OnDeviceRestored() override;
@@ -222,6 +230,48 @@ private:
     void DrawMapCalibrationWindow();
     void DrawInterpolationWindow();
     void DrawTimelineController();
+
+    // ---- Clip export: a looping GIF of a part of the screen over a time range (ReplayWindow_Clip.cpp)
+    ClipExportState m_clip;
+    int m_clipSelfTestStage = 0;
+    double m_clipSelfTestReadyAt = 0.0;
+    bool m_clipSelfTestShotPending = false;
+    void ProcessClipSelfTest();
+    void SaveClipSelfTestShot();
+    bool IsClipEditorOpen() const { return m_clip.phase != ClipExportState::Phase::Closed; }
+    bool IsClipRendering() const { return m_clip.phase == ClipExportState::Phase::Rendering; }
+    void ToggleClipEditor();
+    void OpenClipEditor();
+    void CloseClipEditor();
+    void UpdateClipHotkeys(bool processActive);
+    void UpdateClipPlayback();
+    void DrawClipEditor();
+    void DrawClipTimelineRange(float trackX, float trackW, float trackY, float trackH, float maxT);
+    void DrawClipMiniTimeline();
+    void RenderImGuiWithClipCapture(ImDrawData* drawData);
+    void LoadClipSettings();
+    void SaveClipSettings() const;
+    bool ClipAgentScreenPos(int agentId, ImVec2& out) const;
+    void UpdateClipFollow(float dt);
+    void ClipBoxRect(ImVec2& mn, ImVec2& mx) const;
+    void ClipOutputSize(int& boxW, int& boxH, int& outW, int& outH) const;
+    double EstimateClipBytes(int fps, int scalePct, float seconds) const;
+    std::pair<std::string, std::string> ClipGuildNameAndTag(int side) const;
+    void DrawClipMatchTag(ImDrawList* dl, ImVec2 mn, ImVec2 mx) const;
+    std::string ClipSuggestedFileName() const;
+    void DrawClipBoxFrame(ImVec2 mn, ImVec2 mx);
+    void DrawClipPanel();
+    void DrawClipProgress();
+    void DrawClipToast();
+    void BeginClipSaveDialog();
+    void PollClipSaveDialog();
+    void StartClipExport(const std::wstring& path);
+    void RestoreAfterClipRender();
+    void AbortClipRender();
+    void CaptureClipFrame();
+    void FinishClipRender();
+    void PollClipEncoder();
+
     void DrawShortcutPreferences();
     void DrawPartyWindows();
     void DrawMatchTimer();

@@ -437,6 +437,10 @@ void ReplayWindow::DrawShortcutPreferences()
         HotkeyInput("Piano Roll",          &editing.togglePianoRoll, true);
         HotkeyInput("Minimap",             &editing.toggleMinimap, true);
         HotkeyInput("Add Bookmark",        &editing.addBookmark, true);
+        // Fixed, like the Wardrobe's keys below: an Alt chord, which the pickers cannot record.
+        ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.90f, 1.f), "Alt + X");
+        ImGui::SameLine(190.f);
+        ImGui::TextColored(ImVec4(0.63f, 0.63f, 0.67f, 1.f), "Create a GIF clip (play bar's Clip button)");
 
         ImGui::Dummy(ImVec2(0, 8.f));
         DrawPrefsSectionHeader("CAMERA & VIEW");

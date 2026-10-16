@@ -854,7 +854,16 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
         MatchBookmarks::Get().SetBookmarks(folderName, entries);
     };
 
-    ShowWindow(rw->m_hwnd, s_openWithoutFocus ? SW_SHOWMINNOACTIVE : SW_SHOWMAXIMIZED);
+    if (!s_clipSelfTestPath.empty())
+    {
+        // Off every monitor, visible and unfocused: the clip self-test needs a real view.
+        RECT r = {0, 0, 1280, 720};
+        AdjustWindowRect(&r, GetWindowLong(rw->m_hwnd, GWL_STYLE), FALSE);
+        SetWindowPos(rw->m_hwnd, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+        ShowWindow(rw->m_hwnd, SW_SHOWNOACTIVATE);
+    }
+    else
+        ShowWindow(rw->m_hwnd, s_openWithoutFocus ? SW_SHOWMINNOACTIVE : SW_SHOWMAXIMIZED);
     UpdateWindow(rw->m_hwnd);
     return rw;
 }
@@ -6745,6 +6754,13 @@ void ReplayWindow::Tick()
         }
     }
 
+    // The clip export's exact frame time, or the clip preview's loop.
+    if (m_loadingPhase == LoadingPhase::Ready)
+    {
+        ProcessClipSelfTest();
+        UpdateClipPlayback();
+    }
+
     switch (m_loadingPhase)
     {
     case LoadingPhase::Validate:
@@ -6831,7 +6847,7 @@ void ReplayWindow::Update(double elapsedMs)
     float dt = static_cast<float>(elapsedMs / 1000.0);
     if (m_inputManager)
         m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused
-                                              || m_playerMenuBlocksHotkeys);
+                                              || m_playerMenuBlocksHotkeys || IsClipRendering());
     RemoveCameraShake();   // before any camera places itself (normally already off after Render)
     UpdateTopViewTransition(dt);
     if (!m_topViewActive)
@@ -7106,6 +7122,15 @@ void ReplayWindow::DrawImGuiOverlay()
 
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+
+    // While a clip renders, the interface runs on the export's clock and sees no mouse, so no
+    // pulse runs at the wrong speed and no hover or tooltip lands in a frame of the GIF.
+    if (IsClipRendering())
+    {
+        ImGuiIO& clipIo = ImGui::GetIO();
+        clipIo.DeltaTime = 1.f / static_cast<float>(m_clip.fps);
+        clipIo.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    }
 
     ImGui::NewFrame();
 
@@ -7504,7 +7529,11 @@ void ReplayWindow::DrawImGuiOverlay()
         GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
         bool processActive = (fgPid == GetCurrentProcessId());
 
-        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused)
+        // Alt+X and the clip's Escape come first: an Escape that closed the clip editor or
+        // cancelled its export must not also drop follow mode.
+        UpdateClipHotkeys(processActive);
+
+        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused && !IsClipRendering() && !m_clip.dialogOpen)
         {
             const auto& hk = ReplayHotkeys::Get();
 
@@ -7523,7 +7552,7 @@ void ReplayWindow::DrawImGuiOverlay()
             // Escape doubles as "disarm the drawing tool"; if it was used for
             // that this frame it must not also drop follow mode.
             if (HotkeyFired(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent
-                && !m_annotationMgr.EscapeConsumedThisFrame())
+                && !m_annotationMgr.EscapeConsumedThisFrame() && !m_clip.escConsumed)
                 ExitFollowMode();
 
             float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
@@ -7636,6 +7665,10 @@ void ReplayWindow::DrawImGuiOverlay()
 
     // Determine cursor mode, then apply drag overrides before committing.
     UpdateCursorMode();
+    // The clip box's resize arrows, asked for while it was drawn last frame. Set here, at the
+    // frame's one cursor decision, so the cursor is not switched twice a frame (it flickered).
+    if (m_clip.cursorWanted >= 0)
+        g_CurrentCursor = static_cast<CursorMode>(m_clip.cursorWanted);
     if (m_annotationMgr.toolbar_visible)
     {
         // Annotation cursor set — only while the drawing toolbar is open, so
@@ -7702,8 +7735,11 @@ void ReplayWindow::DrawImGuiOverlay()
         }
     }
 
+    // Last, so the clip's box sits over every panel and its tag over the whole interface.
+    DrawClipEditor();
+
     ImGui::Render();
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    RenderImGuiWithClipCapture(ImGui::GetDrawData());
 
     ImGui::SetCurrentContext(prevCtx);
 }
@@ -10459,8 +10495,10 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
     }
 
     bool isReady = rw && rw->m_loadingPhase == LoadingPhase::Ready;
-    bool keyAllowed   = isReady && !imguiCaptureKeys;
-    bool mouseAllowed = isReady && !imguiCaptureMouse;
+    // A clip being rendered keeps the camera exactly where the user framed it.
+    bool clipRendering = rw && rw->IsClipRendering();
+    bool keyAllowed   = isReady && !imguiCaptureKeys && !clipRendering;
+    bool mouseAllowed = isReady && !imguiCaptureMouse && !clipRendering;
 
     switch (message)
     {
@@ -10674,6 +10712,10 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         if (rw && rw->m_inputManager)
             rw->m_inputManager->OnMouseLeave(hWnd);
         break;
+
+    case WM_MENUCHAR:
+        // Alt+X (the clip editor) and other Alt chords: no menu owns them, so no error beep.
+        return MAKELRESULT(0, MNC_CLOSE);
 
     case WM_ACTIVATE:
         if (rw && rw->m_inputManager)

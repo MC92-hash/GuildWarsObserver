@@ -426,6 +426,8 @@
     <ClInclude Include="SourceFiles\Sphere.h" />
     <ClInclude Include="SourceFiles\stb_image_write.h" />
     <ClInclude Include="SourceFiles\StepTimer.h" />
+    <ClInclude Include="SourceFiles\ClipExport.h" />
+    <ClInclude Include="SourceFiles\ClipGifEncoder.h" />
     <ClInclude Include="SourceFiles\Terrain.h" />
     <ClInclude Include="SourceFiles\TerrainReflectionTexturedWithShadowsPixelShader.h" />
     <ClInclude Include="SourceFiles\TerrainRevPixelShader.h" />
@@ -661,6 +663,8 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Flags.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_AssetInspector.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_TimelineController.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Clip.cpp" />
+    <ClCompile Include="SourceFiles\ClipGifEncoder.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_AutoCamera.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Heatmap.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Audio.cpp" />

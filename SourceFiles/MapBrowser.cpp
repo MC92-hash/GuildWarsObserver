@@ -2450,6 +2450,22 @@ void MapBrowser::StartAttrBatchFromEnv()
     }
     m_attrBatch.active = !m_attrBatch.folders.empty();
     ReplayWindow::s_openWithoutFocus = m_attrBatch.active;
+
+    // GWO_CLIP_SELFTEST=<file.gif>[|<start seconds>]: each window also renders one GIF clip.
+    char clipTest[MAX_PATH * 2] = {};
+    if (m_attrBatch.active &&
+        GetEnvironmentVariableA("GWO_CLIP_SELFTEST", clipTest, (DWORD)sizeof(clipTest)) > 0)
+    {
+        std::string spec = clipTest;
+        const size_t bar = spec.find('|');
+        if (bar != std::string::npos)
+        {
+            ReplayWindow::s_clipSelfTestAt = std::strtof(spec.c_str() + bar + 1, nullptr);
+            spec.resize(bar);
+        }
+        ReplayWindow::s_clipSelfTestPath = std::filesystem::path(spec).wstring();
+        RunLog::Line("clip-selftest: each match renders a clip to '%s'", spec.c_str());
+    }
     RunLog::Line("attr-batch: %zu match folder(s) listed in '%s'", m_attrBatch.folders.size(), listPath);
 }
 
@@ -2474,7 +2490,7 @@ void MapBrowser::ProcessAttrBatch()
         {
             const auto secs = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - m_attrBatch.openedAt).count();
-            const bool done = rw->AttributesDeduced();
+            const bool done = rw->AttributesDeduced() && rw->ClipSelfTestDone();
             if (!done && !rw->LoadFailed() && secs < 600.0)
                 return;
             RunLog::Line("attr-batch: closing '%s' - %s after %.0f s",

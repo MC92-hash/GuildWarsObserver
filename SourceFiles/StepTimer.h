@@ -61,6 +61,12 @@ namespace DX
         void SetTargetElapsedTicks(uint64_t targetElapsed) noexcept { m_targetElapsedTicks = targetElapsed; }
         void SetTargetElapsedSeconds(double targetElapsed) noexcept { m_targetElapsedTicks = SecondsToTicks(targetElapsed); }
 
+        // Manual step: every Tick advances by exactly this much, whatever the wall clock did.
+        // Zero (the default) returns to the wall clock. Used by the clip export, which renders a
+        // replay frame by frame at a fixed rate however long each frame takes.
+        void SetManualStepSeconds(double seconds) noexcept { m_manualStepTicks = seconds > 0.0 ? SecondsToTicks(seconds) : 0; }
+        bool IsManualStep() const noexcept { return m_manualStepTicks != 0; }
+
         // Integer format represents time using 10,000,000 ticks per second.
         static constexpr uint64_t TicksPerSecond = 10000000;
 
@@ -110,6 +116,11 @@ namespace DX
             // Convert QPC units into a canonical tick format. This cannot overflow due to the previous clamp.
             timeDelta *= TicksPerSecond;
             timeDelta /= static_cast<uint64_t>(m_qpcFrequency.QuadPart);
+
+            if (m_manualStepTicks != 0)
+            {
+                timeDelta = m_manualStepTicks;
+            }
 
             const uint32_t lastFrameCount = m_frameCount;
 
@@ -186,5 +197,7 @@ namespace DX
         // Members for configuring fixed timestep mode.
         bool m_isFixedTimeStep;
         uint64_t m_targetElapsedTicks;
+
+        uint64_t m_manualStepTicks = 0;
     };
 }

@@ -192,6 +192,10 @@ void ReplayWindow::DrawTimelineController()
                                            maxT, m_debugTimeline,
                                            m_displayTimeOffset);
 
+    // The clip editor's range and its two handles, before the scrub button so a handle wins
+    // the mouse over the track under it.
+    DrawClipTimelineRange(trackX, trackW, trackBarY, TRKH, maxT);
+
     ImGui::SetCursorScreenPos(ImVec2(trackX, y0));
     ImGui::InvisibleButton("##Scrub", ImVec2(trackW, 20.f * sf));
     if (ImGui::IsItemActive())
@@ -529,13 +533,54 @@ void ReplayWindow::DrawTimelineController()
     // Auto Camera and Top View live in the ribbon toolbar; the play bar
     // keeps only transport and speed.
 
+    // ── Clip (left of the speed control) ─────────────────────────────────
+    // Twitch's Clip button: a clapperboard and the word, on a pill. Opens the GIF clip editor.
+    {
+        // Left of the SPEED label, measured: a wider font must not run it into the speed box.
+        const float speedLabelW = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x;
+        const float speedLabelX = px + pw - PAD - 54.f * sf - 8.f * sf - speedLabelW;
+        const float clipW = 66.f * sf;
+        const float clipX = speedLabelX - 14.f * sf - clipW;
+
+        ImGui::SetCursorScreenPos(ImVec2(clipX, cy));
+        ImGui::InvisibleButton("##Clip", ImVec2(clipW, BTN_H));
+        const bool hov = ImGui::IsItemHovered();
+        const bool active = IsClipEditorOpen();
+        if (ImGui::IsItemClicked() && !IsClipRendering())
+            ToggleClipEditor();
+
+        const ImU32 bg  = active ? IM_COL32(200, 168, 75, 70) : hov ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
+        const ImU32 bdr = (active || hov) ? cBorderGlow : cBorderHi;
+        dl->AddRectFilled(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + BTN_H), bg, BTN_H * 0.5f);
+        dl->AddRect(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + BTN_H), bdr, BTN_H * 0.5f);
+
+        const ImU32 fg = (active || hov) ? cGoldBright : cTextMid;
+        // Clapperboard: the board, and the striped clapper tilted open above it.
+        const float ix = clipX + 11.f * sf, iy = cy + BTN_H * 0.5f - 6.f * sf;
+        dl->AddRect(ImVec2(ix, iy + 4.f * sf), ImVec2(ix + 14.f * sf, iy + 13.f * sf), fg, 1.5f * sf, 0, 1.4f * sf);
+        const ImVec2 c0(ix, iy + 3.f * sf), c1(ix + 13.5f * sf, iy - 0.5f * sf);
+        const ImVec2 c2(ix + 14.3f * sf, iy + 2.1f * sf), c3(ix + 0.8f * sf, iy + 5.6f * sf);
+        dl->AddQuadFilled(c0, c1, c2, c3, fg);
+        for (int k = 1; k <= 3; k++)
+        {
+            const float t = k / 4.f;
+            const ImVec2 a(c0.x + (c1.x - c0.x) * t, c0.y + (c1.y - c0.y) * t);
+            const ImVec2 b(c3.x + (c2.x - c3.x) * (t - 0.08f), c3.y + (c2.y - c3.y) * (t - 0.08f));
+            dl->AddLine(a, b, IM_COL32(18, 16, 10, 255), 1.2f * sf);
+        }
+        dl->AddText(font, fs, ImVec2(ix + 20.f * sf, cy + (BTN_H - fs) * 0.5f), fg, "Clip");
+
+        if (hov) ImGui::SetTooltip("Create a GIF clip (Alt+X)");
+    }
+
     // ── Speed (right-aligned) ────────────────────────────────────────────
     {
         float speedW = 54.f * sf;
         float speedX = px + pw - PAD - speedW;
 
         dl->AddText(font, fsSm,
-            ImVec2(speedX - 34.f*sf, cy + (BTN_H - fsSm)*0.5f + 1.f), cTextDim, "SPEED");
+            ImVec2(speedX - 8.f*sf - font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x,
+                   cy + (BTN_H - fsSm)*0.5f + 1.f), cTextDim, "SPEED");
 
         ImGui::SetCursorScreenPos(ImVec2(speedX, cy));
         ImGui::InvisibleButton("##Speed", ImVec2(speedW, BTN_H));
