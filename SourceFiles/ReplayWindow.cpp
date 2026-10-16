@@ -5584,12 +5584,16 @@ void ReplayWindow::Tick()
             return 6; // Spirits, other NPCs
         };
 
+        m_team1PartyIds = m_team1PlayerIds;
+        m_team2PartyIds = m_team2PlayerIds;
         for (int id : m_npcIds)
         {
             auto& ard = m_replayCtx.agents[id];
             ard.partyBarLabel = ard.categoryName;
-            if (ard.teamId == 1)      m_team1NpcIds.push_back(id);
-            else if (ard.teamId == 2) m_team2NpcIds.push_back(id);
+            const bool henchman = IsHenchmanAgent(ard);
+            auto& list = ard.teamId == 1 ? (henchman ? m_team1PartyIds : m_team1NpcIds)
+                                         : (henchman ? m_team2PartyIds : m_team2NpcIds);
+            if (ard.teamId == 1 || ard.teamId == 2) list.push_back(id);
         }
         for (int id : m_spiritIds)
         {
@@ -6791,8 +6795,12 @@ std::vector<int> ReplayWindow::SkillBarForAgent(int agentId) const
         for (const auto& pm : party.players)
             if (pm.id == agentId) return pm.used_skills;
         for (const auto& pm : party.others)
-            if (pm.id == agentId) return pm.used_skills;
+            if (pm.id == agentId && !pm.used_skills.empty()) return pm.used_skills;
     }
+    // A henchman the recorder never saw a bar for still has the one it always carries.
+    if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end() && IsHenchmanAgent(it->second))
+        if (const HenchmanInfo* h = LookupHenchman(it->second.modelId))
+            return std::vector<int>(std::begin(h->skills), std::end(h->skills));
     return {};
 }
 

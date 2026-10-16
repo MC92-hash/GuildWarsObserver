@@ -89,9 +89,11 @@ void ReplayWindow::BuildMoraleTimelines() const
     // A pet takes death penalty on the same terms its owner does, so it needs a timeline too.
     // Its own death pays the enemy nothing though -- only a player kill claws penalty back --
     // which is why the enemy-kill events below are filtered back down to players.
+    // A henchman holds a party slot like a player, so it carries morale like one.
     auto CarriesMorale = [](const AgentReplayData& a) {
         return a.type == AgentType::Player
-            || (a.type == AgentType::NPC && IsPetModelId(a.modelId));
+            || (a.type == AgentType::NPC && IsPetModelId(a.modelId))
+            || IsHenchmanAgent(a);
     };
 
     struct DPSLink { int casterId; int targetId; float linkStart; float linkEnd; };

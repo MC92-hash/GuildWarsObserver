@@ -920,6 +920,10 @@ private:
     std::vector<int> m_team2PlayerIds;
     std::vector<int> m_team1NpcIds;
     std::vector<int> m_team2NpcIds;
+    // The party window's main rows: the players, then the henchmen filling the party's empty
+    // slots. Everything else that walks "the players" keeps m_team*PlayerIds.
+    std::vector<int> m_team1PartyIds;
+    std::vector<int> m_team2PartyIds;
     std::string m_team1GuildHeader;
     std::string m_team2GuildHeader;
     std::string m_folderTag1;

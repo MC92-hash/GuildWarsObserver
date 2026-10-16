@@ -127,7 +127,7 @@ void ReplayWindow::DrawFocusedPlayerHud()
 
     auto it = m_replayCtx.agents.find(focused);
     if (it == m_replayCtx.agents.end()) return;
-    if (it->second.type != AgentType::Player) return;
+    if (it->second.type != AgentType::Player && !IsHenchmanAgent(it->second)) return;
 
     DrawFocusHudWeaponSets(focused);
     DrawFocusHudSkillBar(focused);

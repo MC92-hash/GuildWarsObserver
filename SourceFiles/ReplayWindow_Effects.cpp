@@ -68,6 +68,9 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
         return (s && s->has_deep_wound)
                    ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
+    // A henchman's maximum is modelled (level health, morale, Deep Wound) and never recorded.
+    if (IsHenchmanAgent(it->second))
+        return ResolveMaxHp(it->second, t).value;
     // Recorded value first (it is the effective max HP); solved per
     // weapon set only when the recording carries none.
     return it->second.solvedMaxHpAtTime(t);

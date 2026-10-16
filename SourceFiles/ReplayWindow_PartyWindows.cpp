@@ -780,13 +780,13 @@ void ReplayWindow::DrawPartyWindows()
         ImGui::PopStyleColor(3);
     };
 
-    DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PlayerIds,
+    DrawTeamPanel(m_team1GuildHeader.c_str(), &m_showTeam1Party, m_team1PartyIds,
                   m_team1NpcIds,
                   ImVec4(44.f/255.f, 8.f/255.f, 5.f/255.f, 0.10f), true,
                   &s_alliesOpenTeam1, "team1_party",
                   m_meterTotalDmgTeam1, m_meterTotalHealTeam1);
 
-    DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PlayerIds,
+    DrawTeamPanel(m_team2GuildHeader.c_str(), &m_showTeam2Party, m_team2PartyIds,
                   m_team2NpcIds,
                   ImVec4(11.f/255.f, 8.f/255.f, 38.f/255.f, 0.10f), false,
                   &s_alliesOpenTeam2, "team2_party",

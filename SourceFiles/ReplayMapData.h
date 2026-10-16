@@ -564,6 +564,61 @@ inline uint32_t LookupMinionFileHash(uint32_t modelId)
 
 inline bool IsMinionModelId(uint32_t modelId) { return LookupMinion(modelId) != nullptr; }
 
+// ---------------------------------------------------------------------------
+// Guild hall henchmen (Battle Isles guild hall, the ones a GvG party can fill its slots with)
+//
+// Captured in the guild hall with the toolbox NpcCapture plugin (2026-10-16, map 276): model id is
+// the agent's player_number, the same id every recording carries. fileHash is the NPC's first
+// model file (NPC::model_files[0]), the renderable mesh; NPC::model_file_id is kept as
+// npcModelFileId for reference only - it is shared by unrelated henchmen (0x1C601 by nine of them)
+// and some are ~1 MB, so it is the skeleton/animation side, not the mesh.
+//
+// Skill bars are the wiki's (List of Guild Halls henchmen); a recording's own bar wins when it has
+// one. Errol Hyl is the wiki's "Etron" bar (same skills as his own page).
+// ---------------------------------------------------------------------------
+
+struct HenchmanInfo
+{
+    uint32_t    modelId;
+    const char* name;            // what the party window shows
+    uint32_t    fileHash;        // .dat mesh (NPC::model_files[0])
+    uint32_t    npcModelFileId;  // NPC::model_file_id, reference only
+    int         profession;      // primary; henchmen have no secondary
+    int         skills[8];
+};
+
+inline constexpr HenchmanInfo kHenchmen[] = {
+    { 31, "Pudash [Swordsman Henchman]",          0x1C828, 0x1C604, 1,  { 2, 182, 319, 332, 346, 384, 851, 1415 } },
+    { 32, "Dahlia [Magehunter Henchman]",         0x32C1F, 0x1C601, 1,  { 2, 331, 332, 352, 952, 1404, 1414, 1697 } },
+    { 33, "Disenmaedel [Raging Henchman]",        0x2D260, 0x1C601, 1,  { 2, 231, 319, 332, 337, 340, 831, 2197 } },
+    { 34, "Errol Hyl [Crippling Henchman]",       0x1C825, 0x1C603, 2,  { 2, 393, 399, 402, 426, 435, 456, 1727 } },
+    { 36, "Lulu Xan [Magebane Henchman]",         0x1C801, 0x3212,  2,  { 2, 392, 399, 406, 435, 453, 1726, 1727 } },
+    { 38, "Tannaros [Punishing Henchman]",        0x1C7CC, 0x1C604, 5,  { 2, 1542, 25, 26, 28, 62, 878, 1995 } },
+    { 39, "Cassie Santi [Inspired Henchman]",     0x32C33, 0x31D00, 5,  { 2, 44, 813, 859, 879, 1059, 1343, 1347 } },
+    { 40, "Redemptor Frohs [Healer Henchman]",    0x2D283, 0x1C603, 3,  { 258, 282, 292, 887, 1515, 1540, 2003, 2061 } },
+    { 41, "Julyia [Protection Henchman]",         0x1C805, 0x1C601, 3,  { 258, 276, 299, 301, 307, 371, 1114, 2063 } },
+    { 42, "Bellicus [Corruptor Henchman]",        0x1FC0D, 0x2288E, 4,  { 2, 117, 135, 149, 955, 1362, 2057, 2188 } },
+    { 43, "Dirk Shadowrise [Curses Henchman]",    0x1C7A7, 0x227D3, 4,  { 2, 101, 108, 123, 135, 142, 955, 1365 } },
+    { 44, "Vincent Evan [Air Henchman]",          0x560D3, 0x3AAA,  6,  { 162, 200, 225, 791, 793, 1219, 1367, 1369 } },
+    { 45, "Luzy Fiera [Fire Henchman]",           0x1C835, 0x1C601, 6,  { 2, 11, 180, 184, 187, 189, 191, 1662 } },
+    { 46, "Motoko Kai [Shattering Henchman]",     0x2D31A, 0x1C601, 6,  { 180, 208, 235, 791, 809, 1382, 1999, 2192 } },
+    { 47, "Hinata [Icy Henchman]",                0x2D339, 0x1C601, 6,  { 2, 180, 204, 208, 211, 235, 1098, 1382 } },
+    { 48, "Kah Xan [Assassin Henchman]",          0x528FC, 0x528F7, 7,  { 2, 344, 776, 777, 778, 1043, 1644, 1990 } },
+    { 49, "Narcissia [Spirit Henchman]",          0x2D1A3, 0x1C601, 8,  { 787, 793, 981, 1219, 1228, 1234, 1265, 1750 } },
+    { 50, "Zen Siert [Wounding Henchman]",        0x29975, 0x1C601, 10, { 2, 321, 1484, 1509, 1536, 1762, 1764, 2200 } },
+    { 53, "Blenkeh [Motivation Henchman]",        0x3BDD5, 0x1C601, 9,  { 2, 1551, 1557, 1577, 1578, 1605, 1774, 1782 } },
+    { 54, "Aurora Allesandra [Cruel Henchman]",   0x4C515, 0x3F8F,  9,  { 2, 1548, 1551, 1558, 1589, 1601, 1774, 2017 } },
+};
+
+inline const HenchmanInfo* LookupHenchman(uint32_t modelId)
+{
+    for (const HenchmanInfo& h : kHenchmen)
+        if (h.modelId == modelId) return &h;
+    return nullptr;
+}
+
+inline bool IsHenchmanModelId(uint32_t modelId) { return LookupHenchman(modelId) != nullptr; }
+
 inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
                                      int primaryProf = 0, bool isFemale = false)
 {
@@ -585,6 +640,7 @@ inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
         }
         if (uint32_t minion = LookupMinionFileHash(modelId)) return minion;
         if (uint32_t pet = LookupPetFileHash(modelId)) return pet;
+        if (const HenchmanInfo* h = LookupHenchman(modelId)) return h->fileHash;
     }
     return 0;
 }
@@ -649,6 +705,8 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
         // and there is no measured GWCA height to fit them to.
         if (uint32_t minion = LookupMinionFileHash(modelId)) return { minion, 0.f, 1.0f };
         if (uint32_t pet = LookupPetFileHash(modelId)) return { pet, 0.f, 1.0f };
+        // Henchman meshes are the PvE henchmen the player stand-ins already use, authored at size.
+        if (const HenchmanInfo* h = LookupHenchman(modelId)) return { h->fileHash, 0.f, 1.0f };
     }
     return { 0, 0.f, 1.0f };
 }
@@ -1503,6 +1561,12 @@ struct AgentReplayData
         return true;
     }
 };
+
+// ClassifyAgents only makes a henchman model id an NPC once the recording agrees it is one.
+inline bool IsHenchmanAgent(const AgentReplayData& a)
+{
+    return a.type == AgentType::NPC && IsHenchmanModelId(a.modelId);
+}
 
 // ---------------------------------------------------------------------------
 // Combat log row (built from merged StoC streams)

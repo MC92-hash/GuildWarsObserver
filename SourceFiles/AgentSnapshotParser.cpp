@@ -596,6 +596,24 @@ void ClassifyAgents(std::unordered_map<int, AgentReplayData>& agents,
             continue;
         }
 
+        // Guild hall henchman. Model ids are an NPC table index, so a low id like these may name
+        // another NPC on a map that is not a guild hall: the recorded profession has to agree.
+        if (const HenchmanInfo* hench = LookupHenchman(first.model_id);
+            hench && first.agent_model_type == 0x2000 && (first.team_id == 1 || first.team_id == 2))
+        {
+            int recordedPrimary = -1;
+            for (auto& [partyId, party] : meta.parties)
+                for (auto& o : party.others)
+                    if (o.id == agentId) recordedPrimary = o.primary;
+            if (recordedPrimary <= 0 || recordedPrimary == hench->profession)
+            {
+                ard.type         = AgentType::NPC;
+                ard.categoryName = hench->name;
+                ard.primaryProf  = hench->profession;
+                continue;
+            }
+        }
+
         // NPC check
         const char* npcName = LookupNpcName(first.model_id);
         if (npcName)

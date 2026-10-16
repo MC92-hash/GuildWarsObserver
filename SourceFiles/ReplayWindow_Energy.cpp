@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
+#include "HenchmanEnergy.h"
 #include <algorithm>
 #include <cctype>
 
@@ -54,6 +55,7 @@ void ReplayWindow::BuildEnergyTracks() const
     };
 
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
+    m_energyTracks.merge(EnergyModel::BuildHenchmen(m_replayCtx.agents, in));
     m_energyBuilt = true;
     m_energyUsedAttributes = m_attributesDeduced;
 
