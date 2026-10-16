@@ -1586,6 +1586,7 @@ struct CombatLogRow {
     int         interrupterId = 0;
     float       valuePct    = 0.f;
     int         valueAbs    = 0;
+    int         combatIndex = -1;   // the StoCData::combat packet valuePct came from, -1 for none
     int         jumboTeam   = 0;
     CombatLogCategory category = CombatLogCategory::Skill;
     std::string eventType;

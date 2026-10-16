@@ -1540,6 +1540,10 @@ void ReplayWindow::EnsureSkillIconIndex()
     for (const auto& [skillId, file] : hazards)
         if (m_skillIconIndex.find(skillId) == m_skillIconIndex.end() && std::filesystem::exists(npcFolder / file))
             m_skillIconIndex[skillId] = (npcFolder / file).string();
+    // Minion Apocalypse's hits show the PvP flux icon the focus HUD's flux slot draws.
+    if (m_skillIconIndex.find(DamageAttribution::kMinionApocalypse) == m_skillIconIndex.end() &&
+        std::filesystem::exists(folder / "PvP_Flair.png"))
+        m_skillIconIndex[DamageAttribution::kMinionApocalypse] = (folder / "PvP_Flair.png").string();
 }
 
 

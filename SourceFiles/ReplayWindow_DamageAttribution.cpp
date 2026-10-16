@@ -62,6 +62,13 @@ void ReplayWindow::BuildDamageAttribution() const
         in.tags.push_back({ t.time, t.victimId, t.skillId });
     for (const ProjectileEvent& s : stoc.projectiles)
         in.shots.push_back({ s.time, s.sourceId, s.flight });
+    for (const LifecycleEvent& l : stoc.lifecycle)
+        if (l.isAdd) in.spawns.push_back({ l.time, l.agent_type });
+    // The recording names the flux when the recorder saw it; the month decides otherwise.
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+    in.minionApocalypse = flux == AttributeModel::Flux::MinionApocalypse;
 
     std::unordered_map<int, SkillFacts> facts;
     in.skill = [&](int skillId) -> const SkillFacts* {
@@ -102,11 +109,40 @@ void ReplayWindow::BuildDamageAttribution() const
         if (!ce.IsDamageOrHeal()) continue;
         const Result& r = m_damageAttribution.packets[i];
         const SkillInfo* si = r.skillId ? m_skillView.Get(r.skillId) : nullptr;
+        const char* name = si ? si->name.c_str()
+                         : r.skillId == kSpikedCoral      ? "Spiked Coral"
+                         : r.skillId == kAcidTrap         ? "Acid Trap"
+                         : r.skillId == kMinionApocalypse ? "Minion Apocalypse"
+                         : r.skillId ? "?" : "-";
         fprintf(f, "%zu\t%.3f\t%s\t%d\t%d\t%.6f\t%d\t%d\t%s\t%s\t%d\t%d\t%u\t%d\n", i, ce.time, ce.type.c_str(),
                 ce.caster_id, ce.target_id, ce.value, ce.damage_type, r.skillId,
-                si ? si->name.c_str() : (r.skillId ? "?" : "-"), RuleName(r.rule), r.weaponHit ? 1 : 0,
+                name, RuleName(r.rule), r.weaponHit ? 1 : 0,
                 in.packets[i].amount, m_damageAttribution.maxHpFix[i], in.packets[i].maxHp);
     }
+    fclose(f);
+}
+
+// Beside the damage dump: %TEMP%\gwo_combatlog_<match>.txt, one line per damage or heal row of the
+// combat log, with the packet it read, so its numbers can be compared with the floaters'.
+void ReplayWindow::WriteCombatLogValueDump() const
+{
+    char flag[16] = {};
+    char tempDir[MAX_PATH] = {};
+    if (GetEnvironmentVariableA("GWO_DAMAGE_DEBUG", flag, (DWORD)sizeof(flag)) == 0 ||
+        GetTempPathA(MAX_PATH, tempDir) == 0)
+        return;
+    std::string folder = m_replayCtx.matchFolderPath.filename().string();
+    if (folder.empty()) folder = "replay";
+    for (char& c : folder)
+        if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
+    FILE* f = nullptr;
+    if (fopen_s(&f, (std::string(tempDir) + "gwo_combatlog_" + folder + ".txt").c_str(), "w") != 0 || !f) return;
+    fprintf(f, "# time\tcategory\tcaster\ttarget\tskill\tvalue\tvalue_abs\tpacket\n");
+    for (const CombatLogRow& row : m_combatLog)
+        if (row.category == CombatLogCategory::Damage || row.category == CombatLogCategory::Heal)
+            fprintf(f, "%.3f\t%s\t%d\t%d\t%d\t%.6f\t%d\t%d\n", row.time,
+                    row.category == CombatLogCategory::Damage ? "DAMAGE" : "HEAL", row.casterId, row.targetId,
+                    row.skillId, row.valuePct, row.valueAbs, row.combatIndex);
     fclose(f);
 }
 

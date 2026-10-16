@@ -490,6 +490,7 @@ private:
     bool m_knockdownIntervalsBuilt = false;
     bool m_maxHpSolved             = false;
     bool m_maxHpBreakpointSolved   = false;
+    bool m_combatLogMaxHpFixed     = false;   // the attribution's per-packet maxima applied to the log
     bool m_armourSolved            = false;
 
     // Inputs the forward max-HP model needs from this window: the equipment stream, plus the
@@ -518,6 +519,7 @@ private:
     // player and over the PiP target both read it, so a hit shows the same icon in either.
     void BuildDamageAttribution() const;
     const DamageAttribution::Table* DamageAttributionTable() const;
+    void WriteCombatLogValueDump() const;   // GWO_DAMAGE_DEBUG: the combat log's damage and heal values
     mutable DamageAttribution::Table m_damageAttribution;
     mutable bool m_damageAttributionBuilt = false;
 

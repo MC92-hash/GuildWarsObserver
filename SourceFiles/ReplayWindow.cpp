@@ -6280,6 +6280,7 @@ void ReplayWindow::Tick()
 
             for (auto& ce : m_replayCtx.stocData.combat)
             {
+                const int combatIndex = (int)(&ce - m_replayCtx.stocData.combat.data());
                 if (ce.IsDamageOrHeal())
                 {
                     int bestIdx = -1;
@@ -6315,6 +6316,7 @@ void ReplayWindow::Tick()
                         if (r.targetId <= 0 || r.targetId == r.casterId)
                             r.targetId = ce.target_id;
                         r.valuePct = ce.value;
+                        r.combatIndex = combatIndex;
                         uint32_t mhp = CorrectMaxHpForPacket(
                             findMaxHp(ce.target_id, ce.time), ce.value);
                         // The corrected value makes this fraction land on a
@@ -6333,6 +6335,7 @@ void ReplayWindow::Tick()
                         r.casterId = ce.caster_id;
                         r.targetId = ce.target_id;
                         r.valuePct = ce.value;
+                        r.combatIndex = combatIndex;
                         uint32_t mhp = CorrectMaxHpForPacket(
                             findMaxHp(ce.target_id, ce.time), ce.value);
                         // The corrected value makes this fraction land on a
@@ -6505,6 +6508,36 @@ void ReplayWindow::Tick()
         m_maxHpBreakpointSolved = true;
     }
 
+    // Then the combat log reads each packet against the maximum its overhead number does: the one
+    // the damage attribution fixed for it (a spiked coral or Minion Apocalypse hit's own reading,
+    // the packets beside it, a chant share), else PacketMaxHp wherever that makes the packet a
+    // whole number of Health - so the two views show one number. The log's own lookup has no Deep
+    // Wound correction and no guild NPC or henchman maximum; it disagreed with the floaters on
+    // 136k of 1.18M packets over 159 recordings, 112k of them where the floater's was whole
+    // (2026-10-16). After the restatement above, which would undo it.
+    if (m_maxHpBreakpointSolved && !m_combatLogMaxHpFixed)
+        if (const DamageAttribution::Table* da = DamageAttributionTable())
+        {
+            const auto& combat = m_replayCtx.stocData.combat;
+            for (CombatLogRow& row : m_combatLog)
+            {
+                if (row.combatIndex < 0 || (size_t)row.combatIndex >= combat.size()) continue;
+                const CombatEvent& ce = combat[(size_t)row.combatIndex];
+                const double frac = std::fabs((double)ce.value);
+                uint32_t mhp = (size_t)row.combatIndex < da->maxHpFix.size() ? da->maxHpFix[(size_t)row.combatIndex] : 0;
+                if (mhp == 0)
+                {
+                    mhp = PacketMaxHp(ce.target_id, ce.time, ce.value);
+                    const double h = frac * (double)mhp;
+                    if (mhp == 0 || std::fabs(h - std::round(h)) > 0.0015) continue;
+                }
+                row.valueAbs = (int)std::lround(frac * (double)mhp);
+            }
+            m_meterAbsCacheBuilt = false;
+            m_combatLogMaxHpFixed = true;
+            WriteCombatLogValueDump();
+        }
+
     // Solve each player's armour health once the equipment stream is in, so the forward model can
     // state a maximum at any instant instead of only where a packet happens to land. Morale has to
     // be folded first: it is a term of the same equation.
@@ -6525,13 +6558,13 @@ void ReplayWindow::Tick()
             return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView,
                                                     fx && fx->WeaknessAt(agentId, span.start) == 1);
         };
-        // The maxima the damage attribution confirmed from chant shares vote with the readings.
+        // The maxima the damage attribution confirmed (chant shares, flat hits) vote with the readings.
         if (const DamageAttribution::Table* da = DamageAttributionTable())
         {
             const auto& combat = m_replayCtx.stocData.combat;
-            for (size_t i = 0; i < da->maxHpFix.size() && i < combat.size(); ++i)
-                if (da->maxHpFix[i])
-                    m_healthInputs.packetMaxHp.push_back({ combat[i].target_id, combat[i].time, da->maxHpFix[i] });
+            for (size_t i = 0; i < da->maxHpVote.size() && i < combat.size(); ++i)
+                if (da->maxHpVote[i])
+                    m_healthInputs.packetMaxHp.push_back({ combat[i].target_id, combat[i].time, da->maxHpVote[i] });
         }
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
