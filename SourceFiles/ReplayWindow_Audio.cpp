@@ -289,7 +289,11 @@ void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
         const auto& s = m_audioSkillTimeline[m_audioSkillCursor];
         if (s.time > currentTime) break;
 
-        if (s.time > prevTime) {
+        if (s.time > prevTime && s.atPoint) {
+            m_audioEngine->PostFileId(s.fileId, s.category, s.point.x, s.point.y, s.point.z,
+                                      /*positional=*/true, s.gain, /*focusedPlayer=*/false, s.pitch);
+        }
+        else if (s.time > prevTime) {
             auto it = m_replayCtx.agents.find(s.agentId);
             if (it != m_replayCtx.agents.end()) {
                 float x, y, z;
@@ -363,6 +367,8 @@ void ReplayWindow::BuildSkillSoundTimeline()
     if (!m_skillUseTimelineBuilt) return;
     // The Boss claims are scheduled into the same list, so wait for them too.
     if (!m_bossTimelineBuilt) return;
+    // ...and the world's own sounds, which need the map's machines resolved.
+    if (!m_bundleCarryBuilt) return;
 
     m_audioSkillTimeline.clear();
     m_audioSkillCursor = 0;
@@ -375,7 +381,13 @@ void ReplayWindow::BuildSkillSoundTimeline()
                                          claim.agentId, claim.agentId, 0,
                                          SoundLogCategory::SkillEffect, 1.0f });
 
-    if (!m_skillSoundTable || !m_skillSoundTable->IsLoaded()) return;
+    AppendWorldSounds();
+
+    if (!m_skillSoundTable || !m_skillSoundTable->IsLoaded()) {
+        std::sort(m_audioSkillTimeline.begin(), m_audioSkillTimeline.end(),
+                  [](const ScheduledSkillSound& a, const ScheduledSkillSound& b) { return a.time < b.time; });
+        return;
+    }
 
     // An interrupted/cancelled cast still plays whatever layers had already fired, but none of
     // the ones scheduled past the point it actually ended (no impact sound for a Meteor that got

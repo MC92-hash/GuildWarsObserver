@@ -6824,6 +6824,7 @@ void ReplayWindow::Update(double elapsedMs)
     if (m_inputManager)
         m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused
                                               || m_playerMenuBlocksHotkeys);
+    RemoveCameraShake();   // before any camera places itself (normally already off after Render)
     UpdateTopViewTransition(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
@@ -6961,6 +6962,8 @@ void ReplayWindow::Update(double elapsedMs)
                 m_envQuerySource = "eye (the view meets no ground)";
         }
         ApplyMapEnvironment(qx, qz);
+        // Camera shake, weighed at the same point; taken off again at the end of Render.
+        ApplyCameraShake(qx, qz);
     }
     m_mapRenderer->Update(dt);
 
@@ -7043,6 +7046,7 @@ void ReplayWindow::Render()
     DrawHeatmapOverlay();
 
     DrawFogOfWar();
+    DrawCatapultDangerZones();
 
     DrawSkinnedAgentModels();
     // ...and, immediately after it, the recorded players who have a character of
@@ -7072,6 +7076,7 @@ void ReplayWindow::Render()
     DrawImGuiOverlay();
 
     m_deviceResources->Present();
+    RemoveCameraShake();
 }
 
 // ---------------------------------------------------------------------------

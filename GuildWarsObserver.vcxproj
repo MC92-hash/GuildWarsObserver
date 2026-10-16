@@ -357,6 +357,9 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\ScreenShake.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MapEffects.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\CatapultDangerZone.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.h" />
     <ClInclude Include="SourceFiles\DivineFavor.h" />
     <ClInclude Include="SourceFiles\TextureCache.h" />
@@ -689,6 +692,11 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ScreenShake.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ReplayWindow_ScreenShake.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ReplayWindow_MapEffects.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\CatapultDangerZone.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ReplayWindow_CatapultDangerZone.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AttributeRules_Summons.cpp" />

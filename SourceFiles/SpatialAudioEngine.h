@@ -145,8 +145,10 @@ public:
     // focusedPlayer selects CategorySettings.ini's "p" column: the louder, separately-budgeted
     // variant the game uses for sounds the local player makes or receives. Set it for the agent
     // the camera is following.
+    // pitch is a playback-rate multiplier (1 = as stored; XAudio2 allows up to 2 here).
     void PostFileId(uint32_t fileId, SoundLogCategory category, float x, float y, float z,
-                    bool positional, float gainScale = 1.0f, bool focusedPlayer = false);
+                    bool positional, float gainScale = 1.0f, bool focusedPlayer = false,
+                    float pitch = 1.0f);
 
     // Debug: play a sound at a fixed distance directly to the listener's left/right/front/back,
     // derived from the listener basis actually in use. Lets the stereo image be verified by ear
@@ -204,6 +206,7 @@ private:
         bool                  positional = true; // false => flat/centered, skip 3D emitter math
         SoundLogCategory       category = SoundLogCategory::Footstep;
         bool                  focusedPlayer = false; // uses the "p" column and its own voice budget
+        float                 pitch = 1.0f;          // playback rate, kept under the Doppler factor
         float                 baseGainLinear = 1.0f; // CategorySettings.ini gain; combined with the
                                                         // live per-type slider every frame (see UpdateListener)
         float                 emitterX = 0, emitterY = 0, emitterZ = 0;

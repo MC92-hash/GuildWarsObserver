@@ -361,6 +361,8 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
     auto drawIcon = [&](float left) {
         ImTextureID tex = (e.type == IncomingEffectType::BasicAttack)
                               ? LoadFlagIcon(dev, "kill.png")
+                          : (e.skillId == CatapultDangerZone::kHitIconId)
+                              ? LoadFlagIcon(dev, CatapultDangerZone::kHitIconFile)
                               : LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache);
         if (!tex) return;
         const float sz = OverheadFloaters::kIconSize * s;

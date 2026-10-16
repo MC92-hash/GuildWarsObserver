@@ -39,6 +39,8 @@
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
 #include "OverheadFloaters.h"
+#include "ScreenShake.h"
+#include "CatapultDangerZone.h"
 #include "SkillDatabase.h"
 #include <string>
 #include <memory>
@@ -719,6 +721,24 @@ private:
     void ResolveCatapultLevers();
     void SetupCatapultLeverProps();
     void UpdateCatapultLeverProps();
+
+    // Camera shake (the game shakes its camera when a siege catapult lands). The model and the
+    // offsets are private (ReplayWindow_ScreenShake.cpp); the frame applies this frame's offset
+    // after the cameras are placed and takes it off again after the render, so nothing accumulates.
+    ScreenShake::Shaker m_screenShake;
+    bool  m_screenShakeBuilt   = false;
+    bool  m_screenShakeApplied = false;
+    float m_screenShakeOffset[3] = { 0.f, 0.f, 0.f };
+    void ApplyCameraShake(float listenerX, float listenerZ);
+    void RemoveCameraShake();
+
+    // The ground marker where a catapult shot is about to land (private, ReplayWindow_CatapultDangerZone.cpp).
+    CatapultDangerZone::Renderer m_catapultDangerZone;
+    bool m_catapultDangerZoneBuilt = false;
+    void DrawCatapultDangerZones();
+    // The catapult's hits on an agent, as damage pops with the monster-skill icon: no DAMAGE packet
+    // carries them, so they are read from the health snapshots (private, CatapultDangerZone.h).
+    void AppendCatapultHits(int agentId, std::vector<DamagePop>& pops) const;
 
     // The catapults themselves (model 0x220F6). One clip holds every pose the
     // machine can be in, from wrecked through to mid-shot, so the prop is parked
@@ -2275,7 +2295,14 @@ private:
         int      targetId = 0;    // playback time - the followed agent changes while playing
         SoundLogCategory category{};   // which per-category budget/volume it plays under
         float    gain    = 1.0f;       // ducking for stacked simultaneous layers of one cast
+        float    pitch   = 1.0f;       // playback rate (1 = as recorded)
+        bool     atPoint = false;      // emitted from `point` (render space), not from an agent
+        DirectX::XMFLOAT3 point{};
     };
+
+    // Sounds of the world rather than of a cast - the map's machines, the server's point effects -
+    // appended to the timeline below while it is built (private schedule).
+    void AppendWorldSounds();
 
     // Every skill sound for the whole match, flattened and sorted by time, so playback is the
     // same single-cursor walk the StoC sound events use (and a seek is one binary search).

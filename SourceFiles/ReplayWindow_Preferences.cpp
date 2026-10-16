@@ -615,6 +615,20 @@ void ReplayWindow::DrawInterfacePreferences()
         }
         PopPrefsFrameStyle();
 
+        ImGui::Dummy(ImVec2(0, 10.f));
+        PushPrefsFrameStyle();
+        if (ImGui::Checkbox("Screen shake (siege catapult impacts)", &GuiGlobalConstants::replay_camera_shake))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::Checkbox("Catapult danger zone", &GuiGlobalConstants::replay_catapult_danger_zone))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        PopPrefsFrameStyle();
+
         ImGui::Dummy(ImVec2(0, 16.f));
         DrawPrefsSectionHeader("SCENE OVERLAY POSITIONS");
         ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(stored as viewport %%)");
@@ -892,6 +906,8 @@ void ReplayWindow::DrawInterfacePreferences()
             GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
         GuiGlobalConstants::replay_camera_keyboard_speed_multiplier =
             GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
+        GuiGlobalConstants::replay_camera_shake = true;
+        GuiGlobalConstants::replay_catapult_danger_zone = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;

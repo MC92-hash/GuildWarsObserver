@@ -1259,6 +1259,45 @@ static void ParseProjectileEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
+// Play effects (PLAY_EFFECT;agent_id;effect_id;x;y;plane;data5;data6)
+// ---------------------------------------------------------------------------
+
+static void ParsePlayEffectEvents(const std::string& content, StoCData& data)
+{
+    const char* ptr = content.data();
+    const char* end = ptr + content.size();
+
+    while (ptr < end)
+    {
+        const char* lineEnd = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!lineEnd) lineEnd = end;
+        const char* effectiveEnd = lineEnd;
+        if (effectiveEnd > ptr && *(effectiveEnd - 1) == '\r') effectiveEnd--;
+
+        if (effectiveEnd > ptr)
+        {
+            LineInfo li;
+            if (ParseLineHeader(ptr, effectiveEnd, li))
+            {
+                Token tok[8];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 8);
+                if (n >= 5 && std::string_view(tok[0].begin, tok[0].end - tok[0].begin) == "PLAY_EFFECT")
+                {
+                    PlayEffectEvent ev;
+                    ev.time     = li.time;
+                    ev.agentId  = ToInt(tok[1].begin, tok[1].end);
+                    ev.effectId = static_cast<uint32_t>(ToInt(tok[2].begin, tok[2].end));
+                    ev.x        = ToFloat(tok[3].begin, tok[3].end);
+                    ev.y        = ToFloat(tok[4].begin, tok[4].end);
+                    data.playEffects.push_back(ev);
+                }
+            }
+        }
+        ptr = lineEnd + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Equipment (weapon/armour skins, dyes and raw mod words)
 // ---------------------------------------------------------------------------
 
@@ -1298,6 +1337,7 @@ static const StoCFileEntry kStoCFiles[] = {
     { "skill_damage_events",           ParseSkillDamageEvents },
     { "visual_effect_events",          ParseVisualEffectEvents },
     { "projectile_events",             ParseProjectileEvents },
+    { "play_effect_events",            ParsePlayEffectEvents },
 };
 
 static constexpr int kNumStoCFiles = static_cast<int>(sizeof(kStoCFiles) / sizeof(kStoCFiles[0]));

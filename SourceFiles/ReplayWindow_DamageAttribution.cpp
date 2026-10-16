@@ -169,6 +169,7 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
         const Group& g = groups[keyOf(k)];
         if (g.steal && g.holder != k) pops[k].skillId = 0;
     }
+    AppendCatapultHits(agentId, pops);
     std::stable_sort(pops.begin(), pops.end(), [](const DamagePop& a, const DamagePop& b) { return a.time < b.time; });
     return pops;
 }

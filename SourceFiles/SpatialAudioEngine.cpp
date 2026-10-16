@@ -355,7 +355,7 @@ void SpatialAudioEngine::UpdateListener(const XMFLOAT3& pos,
                 std::swap(slot.matrixCoeffs[0], slot.matrixCoeffs[1]);
 
             slot.voice->SetOutputMatrix(m_masterVoice, 1, m_masterChannels, slot.matrixCoeffs);
-            slot.voice->SetFrequencyRatio(slot.dspSettings.DopplerFactor);
+            slot.voice->SetFrequencyRatio(slot.dspSettings.DopplerFactor * slot.pitch);
 
             // Apply low-pass filter for sounds approaching the side/rear
             float lpfCoeff = slot.dspSettings.LPFDirectCoefficient;
@@ -372,6 +372,7 @@ void SpatialAudioEngine::UpdateListener(const XMFLOAT3& pos,
             for (UINT32 ch = 0; ch < m_masterChannels; ch++)
                 slot.matrixCoeffs[ch] = coeff;
             slot.voice->SetOutputMatrix(m_masterVoice, 1, m_masterChannels, slot.matrixCoeffs);
+            slot.voice->SetFrequencyRatio(slot.pitch);
         }
 
         // Check if voice has finished playing
@@ -396,7 +397,7 @@ int SpatialAudioEngine::CountActiveVoicesInCategory(SoundLogCategory category, b
 }
 
 void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, float x, float y, float z,
-                                    bool positional, float gainScale, bool focusedPlayer)
+                                    bool positional, float gainScale, bool focusedPlayer, float pitch)
 {
     if (!m_initialized || !m_soundCache) return;
 
@@ -458,9 +459,13 @@ void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, 
     slot->emitterX = x;
     slot->emitterY = y;
     slot->emitterZ = z;
+    // The voice is made with a maximum frequency ratio of 2 (SubmitBuffer).
+    slot->pitch = std::clamp(pitch, 1.0f / 64.0f, 2.0f);
 
     slot->baseGainLinear = (focusedPlayer ? profile.playerGainLinear : profile.gainLinear) * gainScale;
     SubmitBuffer(slot, buf, slot->baseGainLinear * TypeVolumeMultiplier(category, m_config));
+    if (slot->inUse && slot->voice && slot->pitch != 1.0f)
+        slot->voice->SetFrequencyRatio(slot->pitch);
     m_lastPlayedFileId = fileId;
     m_debugStats.soundsPlayed++;
 }
@@ -561,6 +566,7 @@ SpatialAudioEngine::VoiceSlot* SpatialAudioEngine::AcquireVoice()
         if (!slot.inUse) {
             slot.inUse = true;
             slot.positional = true;
+            slot.pitch = 1.0f;
             ZeroEmitter(slot.emitter);
             memset(slot.matrixCoeffs, 0, sizeof(slot.matrixCoeffs));
             memset(&slot.dspSettings, 0, sizeof(slot.dspSettings));
@@ -576,6 +582,7 @@ SpatialAudioEngine::VoiceSlot* SpatialAudioEngine::AcquireVoice()
     }
     slot.inUse = true;
     slot.positional = true;
+    slot.pitch = 1.0f;
     slot.pcmOwned.clear();
     ZeroEmitter(slot.emitter);
     memset(slot.matrixCoeffs, 0, sizeof(slot.matrixCoeffs));

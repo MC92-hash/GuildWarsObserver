@@ -1858,6 +1858,15 @@ struct ProjectileEvent
     float flight   = 0.f;   // seconds in the air; 0 when not recorded
 };
 
+// A PLAY_EFFECT line: a visual the server played at a map point (agent 0 when it has no source).
+struct PlayEffectEvent
+{
+    float    time     = 0.f;
+    int      agentId  = 0;
+    uint32_t effectId = 0;
+    float    x = 0.f, y = 0.f;
+};
+
 struct EnergyCoverage
 {
     int skillId  = 0;
@@ -2066,6 +2075,7 @@ struct StoCData
     std::vector<SkillDamageEvent>       skillDamage;
     std::vector<VisualEffectEvent>      visualEffects;
     std::vector<ProjectileEvent>        projectiles;
+    std::vector<PlayEffectEvent>        playEffects;
     Equipment::Data                     equipment;
 };
 

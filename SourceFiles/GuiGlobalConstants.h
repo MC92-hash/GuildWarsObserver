@@ -333,6 +333,11 @@ public:
 	inline static float replay_camera_zoom_speed_multiplier      = kDefaultReplayCameraSensitivityMultiplier;
 	inline static float replay_camera_keyboard_speed_multiplier = kDefaultReplayCameraSensitivityMultiplier;
 
+	// Replay camera shake on the events that shake the game's own camera (persisted, default on).
+	inline static bool replay_camera_shake = true;
+	// Ground marker where a siege catapult shot will land (persisted, default on).
+	inline static bool replay_catapult_danger_zone = true;
+
 	static float ClampReplayCameraSensitivityMultiplier(float mult)
 	{
 		return std::clamp(mult, kMinReplayCameraSensitivityMultiplier, kMaxReplayCameraSensitivityMultiplier);
@@ -696,6 +701,8 @@ public:
 		file << "replay_camera_rotation_speed_multiplier=" << replay_camera_rotation_speed_multiplier << "\n";
 		file << "replay_camera_zoom_speed_multiplier=" << replay_camera_zoom_speed_multiplier << "\n";
 		file << "replay_camera_keyboard_speed_multiplier=" << replay_camera_keyboard_speed_multiplier << "\n";
+		file << "replay_camera_shake=" << (replay_camera_shake ? 1 : 0) << "\n";
+		file << "replay_catapult_danger_zone=" << (replay_catapult_danger_zone ? 1 : 0) << "\n";
 
 		file << "\n[AutoCamera]\n";
 		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
@@ -863,6 +870,8 @@ public:
 			else if (key == "character_shadows") character_shadows = (value != 0);
 			else if (key == "character_haze") character_haze = (value != 0);
 			else if (key == "map_saturation_enabled") map_saturation_enabled = (value != 0);
+			else if (key == "replay_camera_shake") replay_camera_shake = (value != 0);
+			else if (key == "replay_catapult_danger_zone") replay_catapult_danger_zone = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -
 			// Classic - while its saved map_light_gain is still loaded and kept as the Client
 			// mode's own value, Classic taking its calibrated default on that first run.
