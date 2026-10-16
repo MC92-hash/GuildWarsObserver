@@ -279,6 +279,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayProjectileSchedule.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayProjectiles.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\EffectLayerRules.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayOneShots.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_builder.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.h" />

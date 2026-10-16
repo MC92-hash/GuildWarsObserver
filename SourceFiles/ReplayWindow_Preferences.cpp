@@ -638,6 +638,13 @@ void ReplayWindow::DrawInterfacePreferences()
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Arrows, spears, wand bolts and spell projectiles in flight.");
+        if (ImGui::Checkbox("Skill effects", &GuiGlobalConstants::replay_skill_effects))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The effects the game plays on characters and on the ground when skills land.");
         PopPrefsFrameStyle();
 
         ImGui::Dummy(ImVec2(0, 16.f));
@@ -920,6 +927,7 @@ void ReplayWindow::DrawInterfacePreferences()
         GuiGlobalConstants::replay_camera_shake = true;
         GuiGlobalConstants::replay_catapult_danger_zone = true;
         GuiGlobalConstants::replay_projectiles = true;
+        GuiGlobalConstants::replay_skill_effects = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;

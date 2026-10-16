@@ -339,6 +339,8 @@ public:
 	inline static bool replay_catapult_danger_zone = true;
 	// Projectiles in flight: arrows, spears, wand bolts, spell projectiles (persisted, default on).
 	inline static bool replay_projectiles = true;
+	// The server's one-shot skill effects on agents and at map points (persisted, default on).
+	inline static bool replay_skill_effects = true;
 
 	static float ClampReplayCameraSensitivityMultiplier(float mult)
 	{
@@ -706,6 +708,7 @@ public:
 		file << "replay_camera_shake=" << (replay_camera_shake ? 1 : 0) << "\n";
 		file << "replay_catapult_danger_zone=" << (replay_catapult_danger_zone ? 1 : 0) << "\n";
 		file << "replay_projectiles=" << (replay_projectiles ? 1 : 0) << "\n";
+		file << "replay_skill_effects=" << (replay_skill_effects ? 1 : 0) << "\n";
 
 		file << "\n[AutoCamera]\n";
 		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
@@ -876,6 +879,7 @@ public:
 			else if (key == "replay_camera_shake") replay_camera_shake = (value != 0);
 			else if (key == "replay_catapult_danger_zone") replay_catapult_danger_zone = (value != 0);
 			else if (key == "replay_projectiles") replay_projectiles = (value != 0);
+			else if (key == "replay_skill_effects") replay_skill_effects = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -
 			// Classic - while its saved map_light_gain is still loaded and kept as the Client
 			// mode's own value, Classic taking its calibrated default on that first run.
