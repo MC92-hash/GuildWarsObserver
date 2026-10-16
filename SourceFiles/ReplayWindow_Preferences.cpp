@@ -631,6 +631,13 @@ void ReplayWindow::DrawInterfacePreferences()
             GuiGlobalConstants::SaveSettings();
             changed = true;
         }
+        if (ImGui::Checkbox("Projectiles", &GuiGlobalConstants::replay_projectiles))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Arrows, spears, wand bolts and spell projectiles in flight.");
         PopPrefsFrameStyle();
 
         ImGui::Dummy(ImVec2(0, 16.f));
@@ -912,6 +919,7 @@ void ReplayWindow::DrawInterfacePreferences()
             GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
         GuiGlobalConstants::replay_camera_shake = true;
         GuiGlobalConstants::replay_catapult_danger_zone = true;
+        GuiGlobalConstants::replay_projectiles = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;

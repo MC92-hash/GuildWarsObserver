@@ -395,6 +395,7 @@ void ReplayWindow::RenderPiP()
     DrawPlayerVisuals(/*secondaryView=*/true);
     DrawHeadpieceParticles(cam->GetView());
     DrawAgentEffects(cam->GetView());
+    DrawProjectiles(cam->GetView());
     DrawWeaponModels();
     DrawAgentCylinders();
 

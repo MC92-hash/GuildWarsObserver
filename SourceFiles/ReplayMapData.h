@@ -1918,9 +1918,13 @@ struct VisualEffectEvent
 // attack skill fires -- the server never sends ATTACK_SKILL_FINISHED for one.
 struct ProjectileEvent
 {
-    float time     = 0.f;
-    int   sourceId = 0;
-    float flight   = 0.f;   // seconds in the air; 0 when not recorded
+    float    time     = 0.f;
+    int      sourceId = 0;
+    float    flight   = 0.f;   // seconds in the air; 0 when not recorded
+    float    destX    = 0.f;   // where it comes down, game coordinates
+    float    destY    = 0.f;
+    uint32_t look     = UINT32_MAX;   // the recording's projectile look id; UINT32_MAX when absent
+    bool     isAttack = false;
 };
 
 // A PLAY_EFFECT line: a visual the server played at a map point (agent 0 when it has no source).

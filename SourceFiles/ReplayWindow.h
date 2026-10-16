@@ -58,6 +58,8 @@ class SkillSoundTable;
 namespace PlayerVisuals { class Set; class ReplayWeapons; }
 // The effects the game plays on an agent: opaque here for the same reason.
 namespace AgentEffects { class Player; }
+// The projectiles in flight: opaque here too.
+namespace ReplayProjectiles { class State; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -1664,6 +1666,18 @@ private:
     void DrawAgentEffects(const DirectX::XMMATRIX& view);
     void ReleaseAgentEffects();   // match teardown
     std::shared_ptr<AgentEffects::Player> m_agentEffects;
+
+    // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
+    // module, which runs them alongside the agent effects above; the frame calls only the draw,
+    // once per view, after DrawAgentEffects.
+    void ProjectilesPlace(int agentId, const AgentModelInstance& tmpl,
+                          const std::vector<DirectX::XMFLOAT4X4>& boneMatrices,
+                          const DirectX::XMFLOAT4X4& characterWorld,
+                          const DirectX::XMFLOAT3& position, float heading);
+    void StepProjectiles();
+    void DrawProjectiles(const DirectX::XMMATRIX& view);
+    void ReleaseProjectiles();   // match teardown
+    std::shared_ptr<ReplayProjectiles::State> m_projectiles;
 
     // WHICH ANIMATION FILE A STAND-IN SHOULD PLAY, and not simply the first one that carries its
     // skeleton. Professions SHARE skeletons - male Monk and Mesmer are one rig, male Paragon and

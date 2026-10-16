@@ -7119,6 +7119,7 @@ void ReplayWindow::Render()
     {
         DrawHeadpieceParticles(camera->GetView());
         DrawAgentEffects(camera->GetView());
+        DrawProjectiles(camera->GetView());
     }
     DrawWeaponModels();
 

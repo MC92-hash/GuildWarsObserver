@@ -1214,8 +1214,9 @@ static void ParseVisualEffectEvents(const std::string& content, StoCData& data)
 }
 
 // ---------------------------------------------------------------------------
-// Projectiles: PROJECTILE;source;dest_x;dest_y;unk1;flight;... - the shooter, the moment and the
-// seconds in the air (a float written as its dword) are kept
+// Projectiles: PROJECTILE;source;dest_x;dest_y;unk1;flight;look;unk4;is_attack - the shooter, the
+// moment, the destination, the seconds in the air (a float written as its dword), the look id and
+// the attack flag are kept
 // ---------------------------------------------------------------------------
 
 static void ParseProjectileEvents(const std::string& content, StoCData& data)
@@ -1235,13 +1236,20 @@ static void ParseProjectileEvents(const std::string& content, StoCData& data)
             LineInfo li;
             if (ParseLineHeader(ptr, effectiveEnd, li))
             {
-                Token tok[7];
-                int n = Tokenize(li.dataStart, li.lineEnd, tok, 7);
+                Token tok[9];
+                int n = Tokenize(li.dataStart, li.lineEnd, tok, 9);
                 if (n >= 2 && std::string_view(tok[0].begin, tok[0].end - tok[0].begin) == "PROJECTILE")
                 {
                     ProjectileEvent ev;
                     ev.time     = li.time;
                     ev.sourceId = ToInt(tok[1].begin, tok[1].end);
+                    if (n >= 4)
+                    {
+                        ev.destX = ToFloat(tok[2].begin, tok[2].end);
+                        ev.destY = ToFloat(tok[3].begin, tok[3].end);
+                    }
+                    if (n >= 7) ev.look     = static_cast<uint32_t>(ToInt(tok[6].begin, tok[6].end));
+                    if (n >= 9) ev.isAttack = ToInt(tok[8].begin, tok[8].end) != 0;
                     if (n >= 6)
                     {
                         uint32_t bits = 0;

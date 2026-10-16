@@ -273,6 +273,11 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\character_catalog.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\character_colour.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\CloudParser.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Projectiles.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ProjectileEffectFiles.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ProjectileStreaks.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayProjectileSchedule.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayProjectiles.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_builder.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.h" />
@@ -580,6 +585,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_TexAnim.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_AgentEffects.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_Projectiles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\AgentEffects.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.cpp" />
