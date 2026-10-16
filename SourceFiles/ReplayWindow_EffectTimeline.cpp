@@ -66,10 +66,15 @@ void ReplayWindow::BuildEffectTimeline() const
         p.time   = ce.time;
         p.cause  = ce.caster_id;
         p.target = ce.target_id;
+        p.value  = ce.value;
+        p.type   = ce.damage_type;
         p.kind = ce.type == "DAMAGE"       ? PacketKind::Damage
                : ce.type == "HEAL"         ? PacketKind::Heal
                : ce.type == "KNOCKED_DOWN" ? PacketKind::KnockedDown
+               : ce.type == "INTERRUPTED"  ? PacketKind::Interrupted
                                            : PacketKind::Other;
+        // INTERRUPTED: the parser keeps the victim as caster_id, the interrupter as target_id.
+        if (p.kind == PacketKind::Interrupted) { p.cause = ce.target_id; p.target = ce.caster_id; p.value = 0.f; }
         in.packets.push_back(p);
     }
     for (const BasicAttackEvent& a : stoc.basicAttack)
