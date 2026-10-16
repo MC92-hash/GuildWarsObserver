@@ -645,6 +645,13 @@ void ReplayWindow::DrawInterfacePreferences()
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The effects the game plays on characters and on the ground when skills land.");
+        if (ImGui::Checkbox("Heal and damage bursts", &GuiGlobalConstants::replay_packet_bursts))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The sparkle on every heal and the burst on every armour-ignoring hit.");
         PopPrefsFrameStyle();
 
         ImGui::Dummy(ImVec2(0, 16.f));
@@ -928,6 +935,7 @@ void ReplayWindow::DrawInterfacePreferences()
         GuiGlobalConstants::replay_catapult_danger_zone = true;
         GuiGlobalConstants::replay_projectiles = true;
         GuiGlobalConstants::replay_skill_effects = true;
+        GuiGlobalConstants::replay_packet_bursts = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;
