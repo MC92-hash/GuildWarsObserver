@@ -117,6 +117,10 @@ const DamageAttribution::Table* ReplayWindow::DamageAttributionTable() const
     return &m_damageAttribution;
 }
 
+// The vampiric weapon mod is the hidden skill 657, Life Draining. Its icon (Gw.dat 383607, read from
+// the skill table at Gw.exe 0x98B4B0 + 657 * 0xA4, +0x90) ships as Textures/Skill_Icons/[657].
+static constexpr int kLifeDrainingIcon = 657;
+
 const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agentId) const
 {
     static const std::vector<DamagePop> kNone;
@@ -143,6 +147,8 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
         // weapon): it lands in the hit's tick and the attribution calls it a weapon hit, which drew
         // it in the damage digits.
         p.weaponHit = r.weaponHit && !p.heal && ce.damage_type != 55;
+        // It shows the client's own icon for it instead: the hidden skill Life Draining's.
+        if (r.weaponHit && !p.heal && ce.damage_type == 55) p.skillId = kLifeDrainingIcon;
         p.value    = ce.value;
         p.maxHpFix = i < table->maxHpFix.size() ? table->maxHpFix[i] : 0;
         pops.push_back(p);
@@ -151,13 +157,14 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
     // One icon per hit. An attack skill under a steal (Avatar of Grenth, Grenth's Aura, a vampiric
     // weapon) arrives as several damage packets in one tick - the hit and its stolen parts - and the
     // attribution names the skill on each. When a stolen part (type 55) is among them, the skill
-    // shows once, beside the hit; the stolen numbers come alone.
+    // shows once, beside the hit; the stolen numbers come alone - with Life Draining's icon when the
+    // skill is an attack, whose steal is the weapon's.
     struct Group { size_t holder = SIZE_MAX; bool steal = false; };
     std::map<std::tuple<int, long, int>, Group> groups;   // (cause, tick ms, skill)
     auto keyOf = [&](size_t k) { return std::make_tuple(pops[k].casterId, std::lround(pops[k].time * 1000.f), pops[k].skillId); };
     for (size_t k = 0; k < pops.size(); ++k)
     {
-        if (pops[k].heal || pops[k].skillId <= 0) continue;
+        if (pops[k].heal || pops[k].skillId <= 0 || pops[k].skillId == kLifeDrainingIcon) continue;
         Group& g = groups[keyOf(k)];
         const bool stolen = damageTypes[k] == 55;
         if (stolen) g.steal = true;
@@ -165,9 +172,12 @@ const std::vector<ReplayWindow::DamagePop>& ReplayWindow::DamagePopsOn(int agent
     }
     for (size_t k = 0; k < pops.size(); ++k)
     {
-        if (pops[k].heal || pops[k].skillId <= 0) continue;
+        if (pops[k].heal || pops[k].skillId <= 0 || pops[k].skillId == kLifeDrainingIcon) continue;
         const Group& g = groups[keyOf(k)];
-        if (g.steal && g.holder != k) pops[k].skillId = 0;
+        if (!g.steal || g.holder == k) continue;
+        const SkillInfo* si = m_skillView.Get(pops[k].skillId);
+        const bool attack = si && ((si->type >= 2 && si->type <= 12) || si->type == 31);
+        pops[k].skillId = (attack && damageTypes[k] == 55) ? kLifeDrainingIcon : 0;
     }
     AppendCatapultHits(agentId, pops);
     std::stable_sort(pops.begin(), pops.end(), [](const DamagePop& a, const DamagePop& b) { return a.time < b.time; });
