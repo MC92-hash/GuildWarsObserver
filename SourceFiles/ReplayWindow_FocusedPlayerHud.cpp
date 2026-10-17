@@ -433,24 +433,7 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     if (agentIt == m_replayCtx.agents.end()) return;
     const AgentReplayData& ard = agentIt->second;
 
-    std::vector<int> bar = SkillBarDisplayOrder(agentId);
-    if (bar.empty()) return;
-    if (bar.size() > kBarSlots) bar.resize(kBarSlots);
-
-    const float t = m_debugTimeline;
-    const std::vector<SkillCooldownState> cds = ComputeSkillCooldowns(ard, bar, t);
-    using CdState = SkillCooldownState::State;
-
-    // The skill in use right now, and since when (the sparkle's phase).
-    int   usingSkill = 0;
-    float usingSince = 0.f;
-    for (const auto& ev : ard.skillUseHistory) {
-        if (ev.startTime > t) break;
-        if (!ev.isInstant && ev.endTime > t) {
-            usingSkill = m_skillView.ResolvePvpSkillId(ev.skillId);
-            usingSince = ev.startTime;
-        }
-    }
+    if (SkillBarDisplayOrder(agentId).empty()) return;
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float slot  = std::round(std::clamp(kRefSlot * vp->Size.y / kRefHeight, 40.f, 84.f));
@@ -503,11 +486,6 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     const bool windowHovered = ImGui::IsWindowHovered();
 
     ImTextureID texFrame   = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_frame.png");
-    ImTextureID texSlots   = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png");
-    ImTextureID texKeys    = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_keycaps.png");
-    ImTextureID texMarkers = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_markers.png");
-    ImTextureID texNoSign  = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_check_forbidden.png");
-    ImTextureID texSparkle = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_sparkle.png");
 
     const ImVec2 frameTL(origin.x, origin.y + frameY);
     if (texFrame)
@@ -525,9 +503,51 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
         ImVec2(origin.x + artL - 7.f * scale, origin.y + (effRows - 1) * effSide), effSide,
         kBarSlots * slot + 14.f * scale);
 
+    DrawFocusHudSkillSlots(dl, agentId, ImVec2(origin.x + artL, frameTL.y + artT), slot, scale, windowHovered);
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+
+// The eight slots of the skill bar alone, top-left at rowTL, slot px each: what the HUD's skill bar
+// draws inside its frame, and what the split camera draws under its view.
+void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 rowTL, float slot, float scale, bool hoverable)
+{
+    auto agentIt = m_replayCtx.agents.find(agentId);
+    if (agentIt == m_replayCtx.agents.end()) return;
+    const AgentReplayData& ard = agentIt->second;
+
+    std::vector<int> bar = SkillBarDisplayOrder(agentId);
+    if (bar.empty()) return;
+    if (bar.size() > kBarSlots) bar.resize(kBarSlots);
+
+    const float t = m_debugTimeline;
+    const std::vector<SkillCooldownState> cds = ComputeSkillCooldowns(ard, bar, t);
+    using CdState = SkillCooldownState::State;
+
+    // The skill in use right now, and since when (the sparkle's phase).
+    int   usingSkill = 0;
+    float usingSince = 0.f;
+    for (const auto& ev : ard.skillUseHistory) {
+        if (ev.startTime > t) break;
+        if (!ev.isInstant && ev.endTime > t) {
+            usingSkill = m_skillView.ResolvePvpSkillId(ev.skillId);
+            usingSince = ev.startTime;
+        }
+    }
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+    ImTextureID texSlots   = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png");
+    ImTextureID texKeys    = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_keycaps.png");
+    ImTextureID texMarkers = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_markers.png");
+    ImTextureID texNoSign  = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_check_forbidden.png");
+    ImTextureID texSparkle = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_sparkle.png");
+
     for (int i = 0; i < kBarSlots; ++i)
     {
-        const ImVec2 tl(origin.x + artL + i * slot, frameTL.y + artT);
+        const ImVec2 tl(rowTL.x + i * slot, rowTL.y);
         const ImVec2 br(tl.x + slot, tl.y + slot);
         const bool filled = i < static_cast<int>(bar.size());
         const SkillInfo* si = filled ? m_skillView.Get(bar[i]) : nullptr;
@@ -579,19 +599,17 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
             dl->AddImage(texNoSign, tl, br, ImVec2(0.5f, 0.5f), ImVec2(1.f, 1.f));
 
         // Keycap, bottom right.
-        if (texKeys) {
+        if (texKeys && slot >= 32.f) {
             const float ks = 24.f * scale;
             const float kx = static_cast<float>(i % 5) * 24.f / 128.f, ky = static_cast<float>(i / 5) * 24.f / 128.f;
             dl->AddImage(texKeys, ImVec2(br.x - ks, br.y - ks), br,
                          ImVec2(kx, ky), ImVec2(kx + 24.f / 128.f, ky + 24.f / 128.f));
         }
 
-        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br))
+        if (hoverable && ImGui::IsMouseHoveringRect(tl, br))
             DrawGameSkillTooltip(bar[i], agentId, &cd);
     }
 
-    ImGui::End();
-    ImGui::PopStyleVar(2);
 }
 
 
@@ -1087,7 +1105,9 @@ void ReplayWindow::DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, 
     // 0.2 s smoothstep cross-fade from the previous fill, on the replay clock. The widest value
     // shown is kept with it: the client never lets the pips move back in.
     struct BarState { int agentId = -1; std::string fill, prev; float changed = -1.f; float textW = 0.f; };
-    static BarState s_bar;
+    // One per agent: the HUD and the split camera each draw a bar, often for different players.
+    static std::unordered_map<int, BarState> s_bars;
+    BarState& s_bar = s_bars[ard.agent_id];
     if (s_bar.agentId != ard.agent_id) s_bar = { ard.agent_id, fill, "", -1.f, 0.f };
     if (s_bar.fill != fill) { s_bar.prev = s_bar.fill; s_bar.fill = fill; s_bar.changed = t; }
     float prevAlpha = 0.f;

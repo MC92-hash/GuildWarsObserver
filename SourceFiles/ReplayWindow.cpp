@@ -385,6 +385,10 @@ void ReplayWindow::SaveUILayout()
     ps["pipFollowYaw"]        = m_pipFollowYaw;
     ps["pipFollowPitch"]      = m_pipFollowPitch;
     ps["pipManualAgent"]      = m_pipManualAgent;
+    ps["pipHudOverhead"]      = m_pipHudOverhead;
+    ps["pipHudEffects"]       = m_pipHudEffects;
+    ps["pipHudEnergy"]        = m_pipHudEnergy;
+    ps["pipHudSkills"]        = m_pipHudSkills;
 
     // Minimap state
     ps["minimapZoom"]         = m_minimapZoom;
@@ -516,6 +520,10 @@ void ReplayWindow::LoadUILayout()
             fv("pipFollowYaw",   m_pipFollowYaw);
             fv("pipFollowPitch", m_pipFollowPitch);
             iv("pipManualAgent", m_pipManualAgent);
+            bv("pipHudOverhead", m_pipHudOverhead);
+            bv("pipHudEffects",  m_pipHudEffects);
+            bv("pipHudEnergy",   m_pipHudEnergy);
+            bv("pipHudSkills",   m_pipHudSkills);
 
             // Minimap state
             fv("minimapZoom",        m_minimapZoom);

@@ -130,20 +130,32 @@ void ReplayWindow::UpdateIncomingEffects()
     m_lastEffectScanTime = now;
     if (scanTo <= scanFrom) return;
 
-    const auto& db = m_skillView;
-
     // Collected here and laid out together at the end, in time order, by the client's rule.
     std::vector<IncomingEffect> batch;
+    ScanIncomingEffects(focused, scanFrom, scanTo, batch);
+
+    if (!batch.empty())
+        PlaceFloaters(m_incomingEffects, batch, m_floaterToggle, FloaterBaseScale(focused, now));
+}
+
+
+// What lands on agentId in (from, to], appended to batch in no particular order (PlaceFloaters
+// sorts): energy gains and drains, damage and heal numbers with their skills, the icons of skills
+// that landed without a number, and interrupts.
+void ReplayWindow::ScanIncomingEffects(int agentId, float from, float to, std::vector<IncomingEffect>& batch)
+{
+    const auto& db = m_skillView;
+
     auto pushEffect = [&](IncomingEffect eff) { batch.push_back(std::move(eff)); };
 
     // Energy gains and drains, in the client's purple: the energy model's discrete changes (a
     // skill's payout, a critical hit, Soul Reaping, a foe's denial), not regeneration and not
     // weapon swaps.
-    if (const EnergyModel::Track* track = EnergyTrackFor(focused))
+    if (const EnergyModel::Track* track = EnergyTrackFor(agentId))
     {
-        auto g = std::upper_bound(track->gains.begin(), track->gains.end(), scanFrom,
+        auto g = std::upper_bound(track->gains.begin(), track->gains.end(), from,
                                   [](float v, const EnergyModel::Gain& x) { return v < x.time; });
-        for (; g != track->gains.end() && g->time <= scanTo; ++g)
+        for (; g != track->gains.end() && g->time <= to; ++g)
         {
             const int amount = static_cast<int>(std::lround(g->amount));
             if (amount == 0) continue;
@@ -161,10 +173,10 @@ void ReplayWindow::UpdateIncomingEffects()
     // show too, as the client shows them.
     const DamageAttribution::Table* attribution = DamageAttributionTable();
     {
-        const auto& pops = DamagePopsOn(focused);
-        auto it = std::upper_bound(pops.begin(), pops.end(), scanFrom,
+        const auto& pops = DamagePopsOn(agentId);
+        auto it = std::upper_bound(pops.begin(), pops.end(), from,
                                    [](float v, const DamagePop& p) { return v < p.time; });
-        for (; it != pops.end() && it->time <= scanTo; ++it)
+        for (; it != pops.end() && it->time <= to; ++it)
         {
             const DamagePop& pop = *it;
             IncomingEffect eff;
@@ -173,7 +185,7 @@ void ReplayWindow::UpdateIncomingEffects()
             eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
                      : pop.heal      ? IncomingEffectType::Heal
                                      : IncomingEffectType::Damage;
-            eff.label = FloaterPopLabel(focused, pop);
+            eff.label = FloaterPopLabel(agentId, pop);
             pushEffect(std::move(eff));
         }
     }
@@ -193,14 +205,14 @@ void ReplayWindow::UpdateIncomingEffects()
     // alone: a hex, a skill that deals no damage, an enchantment. A cast that explained a
     // packet in its tick has its icon beside that number already, and a damage skill with nothing
     // to show was blocked, dodged or absorbed.
-    for (const auto& [agentId, ard] : m_replayCtx.agents)
+    for (const auto& [casterId, ard] : m_replayCtx.agents)
     {
-        if (agentId == focused) continue;
+        if (casterId == agentId) continue;
         for (const auto& su : ard.skillUseHistory)
         {
-            if (su.wasCancelled || su.targetId != focused) continue;
-            if (su.endTime <= scanFrom || su.endTime > scanTo) continue;
-            if (attribution && attribution->Explained(agentId, su.endTime)) continue;
+            if (su.wasCancelled || su.targetId != agentId) continue;
+            if (su.endTime <= from || su.endTime > to) continue;
+            if (attribution && attribution->Explained(casterId, su.endTime)) continue;
 
             const SkillInfo* si = db.Get(su.skillId);
             const int skillType = si ? si->type : 0;
@@ -227,8 +239,8 @@ void ReplayWindow::UpdateIncomingEffects()
     // Interrupt events from combat log
     for (const auto& ce : m_replayCtx.stocData.combat)
     {
-        if (ce.time <= scanFrom || ce.time > scanTo) continue;
-        if (ce.target_id != focused) continue;
+        if (ce.time <= from || ce.time > to) continue;
+        if (ce.target_id != agentId) continue;
         if (ce.type != "INTERRUPTED") continue;
 
         IncomingEffect eff;
@@ -238,9 +250,6 @@ void ReplayWindow::UpdateIncomingEffects()
         eff.label = "INTERRUPT";
         pushEffect(std::move(eff));
     }
-
-    if (!batch.empty())
-        PlaceFloaters(m_incomingEffects, batch, m_floaterToggle, FloaterBaseScale(focused, now));
 }
 
 

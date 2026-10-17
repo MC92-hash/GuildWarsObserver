@@ -217,6 +217,8 @@ private:
     void DrawAgentDataWindow();
     void DrawStoCWindow();
     void DrawAgentOverlay();
+    // Whether an agent is on stage at t - the rules every view applies (fog and flags aside).
+    bool AgentOnStageAt(int agentId, const AgentReplayData& ard, float t) const;
     void DrawAgentCylinders();
     void InitCylinderRenderer();
     void LoadAgentModels();
@@ -2096,7 +2098,13 @@ private:
     void RenderPiP();
     void UpdatePiPTarget();
     void DrawPiPPanel();
-    void DrawPiPSubjectLabel(ImDrawList* dl, ImVec2 imgPos, float imgH);
+    // The watched player's HUD along the bottom of the split camera's image: name, effects,
+    // energy, health and skill bar, with the main HUD's own renderers at a smaller scale.
+    void DrawPiPHud(ImDrawList* dl, ImVec2 imgPos, float imgW, float imgH);
+    bool m_pipHudOverhead = true;   // damage / heal / energy numbers over the watched player
+    bool m_pipHudEffects  = true;
+    bool m_pipHudEnergy   = true;
+    bool m_pipHudSkills   = true;
 
     // --- Player Info Panel ---
     bool m_showPlayerInfoPanel = false;
@@ -2183,6 +2191,8 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
+    // The eight slots alone (icons, frames, recharge, markers, in-use sparkle), top-left at rowTL.
+    void DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 rowTL, float slot, float scale, bool hoverable);
     // `rowTopLeft` is the bottom row's; full rows wrap upwards. Returns the rows used.
     int  DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side, float rowWidth);
     int  m_focusHudEffectRows = 1;   // last frame's effect rows: the skill bar window's height
@@ -2291,6 +2301,9 @@ private:
     void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();
+    // What lands on agentId in (from, to]: the overhead numbers and icons, for the main view's
+    // followed player and the split camera's alike.
+    void ScanIncomingEffects(int agentId, float from, float to, std::vector<IncomingEffect>& batch);
     // The energy model's gains and drains over every OTHER player on screen (the followed one has
     // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
     void RenderEnergyPopsOverPlayers();

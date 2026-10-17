@@ -155,6 +155,46 @@ void DrawOverheadHealthBar(ImDrawList* dl, ImTextureID atlas, ImVec2 topLeft,
 }
 }
 
+// Whether an agent is on stage at time t: the rules every view applies before drawing anything of
+// it (name, dot, icons) - the main view and the split camera alike. Fog of war and flags are the
+// caller's: fog can ghost rather than hide, and flags are drawn from the flag timeline.
+bool ReplayWindow::AgentOnStageAt(int agentId, const AgentReplayData& ard, float t) const
+{
+    if (ard.snapshots.empty()) return false;
+
+    // Empty agents (no model, no gadget) and the bodyguard model 166.
+    const auto& fs = ard.snapshots.front();
+    if (fs.model_id == 0 && fs.gadget_id == 0) return false;
+    if (fs.model_id == 166) return false;
+
+    // Spirits exist within their snapshot range, alive, and not overwritten by a newer spirit of
+    // the same kind (overlapHidden, set each frame by DrawAgentOverlay).
+    if (ard.type == AgentType::Spirit)
+    {
+        if (t < fs.time || t > ard.snapshots.back().time) return false;
+        if (ard.overlapHidden) return false;
+        if (ard.isDeadAtTime(t) || !ard.isAliveAtTime(t)) return false;
+    }
+
+    // Items: the lifecycle AGENT_REMOVE time is the precise cutoff.
+    if (ard.type == AgentType::Item)
+    {
+        if (t < fs.time) return false;
+        auto rmIt = m_itemRemoveTime.find(agentId);
+        const float removeT = rmIt != m_itemRemoveTime.end() ? rmIt->second
+                            : m_replayCtx.stocLoaded         ? FLT_MAX
+                                                             : ard.snapshots.back().time;
+        if (t > removeT) return false;
+    }
+
+    // Summoned minions (e.g. Bone Horror): only while the agent exists and is alive (the same rule
+    // as its 3D model).
+    if (ard.type == AgentType::NPC && IsNpcHiddenWhenDead(ard.modelId) && !ard.isMinionVisibleAtTime(t))
+        return false;
+
+    return true;
+}
+
 void ReplayWindow::DrawAgentOverlay()
 {
     if (!m_showAgentOverlay) return;
@@ -298,56 +338,13 @@ void ReplayWindow::DrawAgentOverlay()
 
         if (ard.type == AgentType::Flag) continue;
 
-        // Skip empty agents (no model, no gadget) and bodyguard model 166
-        {
-            const auto& fs = ard.snapshots.front();
-            if (fs.model_id == 0 && fs.gadget_id == 0) continue;
-            if (fs.model_id == 166) continue;
-        }
+        // Who is on stage at all: one rule for every view (AgentOnStageAt).
+        if (!AgentOnStageAt(agentId, ard, m_debugTimeline)) continue;
 
         if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId))
         {
             if (!m_fogGhostMode) continue;
         }
-
-        // Spirits only exist within their snapshot time range
-        if (ard.type == AgentType::Spirit)
-        {
-            if (m_debugTimeline < ard.snapshots.front().time ||
-                m_debugTimeline > ard.snapshots.back().time)
-                continue;
-        }
-
-        // Items: use lifecycle AGENT_REMOVE time for precise visibility cutoff
-        if (ard.type == AgentType::Item)
-        {
-            if (m_debugTimeline < ard.snapshots.front().time)
-                continue;
-            auto rmIt = m_itemRemoveTime.find(agentId);
-            float removeT;
-            if (rmIt != m_itemRemoveTime.end())
-                removeT = rmIt->second;
-            else if (m_replayCtx.stocLoaded)
-                removeT = FLT_MAX;
-            else
-                removeT = ard.snapshots.back().time;
-            if (m_debugTimeline > removeT)
-                continue;
-        }
-
-        // Spirit visibility: hide overwritten, dead, or not-alive spirits immediately
-        if (ard.type == AgentType::Spirit)
-        {
-            if (ard.overlapHidden) continue;
-            if (ard.isDeadAtTime(m_debugTimeline) || !ard.isAliveAtTime(m_debugTimeline))
-                continue;
-        }
-
-        // Summoned minions (e.g. Bone Horror): the name/overlay only appears
-        // while the agent exists and is alive (same rule as its 3D model).
-        if (ard.type == AgentType::NPC && IsNpcHiddenWhenDead(ard.modelId)
-            && !ard.isMinionVisibleAtTime(m_debugTimeline))
-            continue;
 
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);

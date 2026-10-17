@@ -66,41 +66,10 @@ void ReplayWindow::UpdatePiPIncomingEffects()
     m_pipLastEffectScanTime = now;
     if (scanTo <= scanFrom) return;
 
-    // Laid out together at the end, in time order, by the client's floater rule.
+    // The same numbers and icons as over the main view's followed player, from the same scan;
+    // laid out together by the client's floater rule.
     std::vector<IncomingEffect> batch;
-    auto pushPipEffect = [&](IncomingEffect eff) { batch.push_back(std::move(eff)); };
-
-    // The same numbers and icons as over the followed player: one attribution table for both.
-    {
-        const auto& pops = DamagePopsOn(pipTarget);
-        auto it = std::upper_bound(pops.begin(), pops.end(), scanFrom,
-                                   [](float v, const DamagePop& p) { return v < p.time; });
-        for (; it != pops.end() && it->time <= scanTo; ++it) {
-            const DamagePop& pop = *it;
-            IncomingEffect eff;
-            eff.spawnTime = pop.time;
-            eff.skillId = pop.skillId;
-            eff.type = pop.weaponHit ? IncomingEffectType::BasicAttack
-                     : pop.heal      ? IncomingEffectType::Heal
-                                     : IncomingEffectType::Damage;
-            const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix : PacketMaxHp(pipTarget, pop.time, pop.value);
-            eff.label = DamagePopLabel(pop, mhp);
-            pushPipEffect(std::move(eff));
-        }
-    }
-
-    for (const auto& ce : m_replayCtx.stocData.combat) {
-        if (ce.time <= scanFrom || ce.time > scanTo) continue;
-        if (ce.target_id != pipTarget) continue;
-        if (ce.type != "INTERRUPTED") continue;
-
-        IncomingEffect eff;
-        eff.spawnTime = ce.time;
-        eff.skillId = (int)ce.value;
-        eff.type = IncomingEffectType::Interrupt;
-        eff.label = "INTERRUPT";
-        pushPipEffect(std::move(eff));
-    }
+    ScanIncomingEffects(pipTarget, scanFrom, scanTo, batch);
 
     // The PiP camera's distance is not the main view's; the client's scale at its usual distance.
     if (!batch.empty())
@@ -413,72 +382,86 @@ void ReplayWindow::RenderPiP()
 }
 
 
-// Who the split camera is watching, in the image's bottom-left corner: profession icons,
-// "Name (number)" in the team colour, health. The view says who it shows on its own, so the
-// panel needs no roster on screen.
-void ReplayWindow::DrawPiPSubjectLabel(ImDrawList* dl, ImVec2 imgPos, float imgH)
+// The watched player's HUD, a strip along the bottom of the split camera's image: name, effect
+// monitor, energy, health and skill bar - the main HUD's own renderers (DrawFocusHud*), laid out
+// small. Under ~320 px wide only the name and the bars fit; the header's HUD menu turns each part
+// off. An NPC (the Guild Lord on auto-detect) shows its name and health only.
+void ReplayWindow::DrawPiPHud(ImDrawList* dl, ImVec2 imgPos, float imgW, float imgH)
 {
     auto it = m_replayCtx.agents.find(m_pipTargetAgent);
     if (it == m_replayCtx.agents.end()) return;
     const AgentReplayData& ard = it->second;
-    const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
+    const int id = m_pipTargetAgent;
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
 
-    std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
-    if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+    const bool isPlayer = ard.type == AgentType::Player || IsHenchmanAgent(ard);
+    const bool roomy    = imgW >= 320.f;
+    const bool skills   = m_pipHudSkills  && isPlayer && roomy && !SkillBarDisplayOrder(id).empty();
+    const bool effects  = m_pipHudEffects && roomy;
+    const bool energy   = m_pipHudEnergy  && isPlayer && EnergyTrackFor(id);
 
-    const bool dead = !snap || snap->is_dead || ard.isDeadAtTime(m_debugTimeline);
-    const float hp = dead ? 0.f : std::clamp(snap->health_pct, 0.f, 1.f);
-    char hpText[32];
-    if (dead)
-        snprintf(hpText, sizeof(hpText), "Dead");
-    else if (uint32_t maxHp = ResolveMaxHp(ard, m_debugTimeline).value)
-        snprintf(hpText, sizeof(hpText), "%u/%u", (uint32_t)(hp * maxHp + 0.5f), maxHp);
-    else
-        snprintf(hpText, sizeof(hpText), "%d%%", (int)(hp * 100.f + 0.5f));
+    // Sizes follow a skill slot, as the main HUD's do (a slot is 56 UI units).
+    const float margin = 8.f;
+    const float slot   = std::round(std::clamp(imgW * 0.6f / 8.f, 22.f, 40.f));
+    const float scale  = slot / 56.f;
+    const float barH   = std::max(11.f, std::round(14.f * slot / 70.f) + 1.f);
+    const float gap    = std::round(4.f * scale) + 2.f;
+    const float effSide = std::round(slot * 0.62f);
+    const float lampW  = barH + 4.f * scale + 10.f * scale;   // the energy bar's confidence lamp
 
-    const ImU32 teamCol = Team::IsRed(ard.teamId)  ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
-                        : Team::IsBlue(ard.teamId) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
-                                                   : IM_COL32(240, 240, 240, 255);
-    const float iconSz = 16.f, pad = 6.f, barH = 4.f, fs = ImGui::GetFontSize();
+    // The row the bars and slots share, centred; narrower images stretch it to the margins.
+    const float rowW = roomy ? 8.f * slot : imgW - 2.f * margin - 14.f * scale - lampW;
+    const float x0   = std::round(imgPos.x + (imgW - rowW) * 0.5f);
+    const float x1   = x0 + rowW;
 
-    ImTextureID icons[2] = {};
-    int nIcons = 0;
-    for (int prof : { ard.primaryProf, ard.secondaryProf })
-        if (ImTextureID tex = (prof > 0) ? LoadProfIcon(dev, prof) : nullptr)
-            icons[nIcons++] = tex;
+    float y = imgPos.y + imgH - margin;
+    float skillY = 0.f, hpY = 0.f, enY = 0.f, effY = 0.f;
+    if (skills) { skillY = y - slot; y = skillY - gap; }
+    hpY = y - barH; y = hpY - gap;
+    if (energy) { enY = y - barH; y = enY - gap; }
+    if (effects) { effY = y - effSide; y = effY - gap; }
+    const float fs = ImGui::GetFontSize();
+    const float nameY = y - fs;
 
-    const float nameW  = ImGui::CalcTextSize(name.c_str()).x;
-    const float hpW    = ImGui::CalcTextSize(hpText).x;
-    const float lineH  = std::max(iconSz, fs);
-    const float innerW = std::max(120.f, nIcons * (iconSz + 1.f) + 4.f + nameW + 10.f + hpW);
-    const ImVec2 bMin(imgPos.x + 8.f, imgPos.y + imgH - 8.f - (pad * 2.f + lineH + 4.f + barH));
-    const ImVec2 bMax(bMin.x + innerW + pad * 2.f, imgPos.y + imgH - 8.f);
+    dl->PushClipRect(imgPos, ImVec2(imgPos.x + imgW, imgPos.y + imgH), true);
 
-    dl->AddRectFilled(bMin, bMax, IM_COL32(8, 10, 14, 170), 6.f);
+    // A soft shade under the strip, so it reads over bright ground without boxing the view in.
+    const float shadeTop = nameY - 12.f;
+    dl->AddRectFilledMultiColor(ImVec2(imgPos.x, shadeTop), ImVec2(imgPos.x + imgW, imgPos.y + imgH),
+                                IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
+                                IM_COL32(0, 0, 0, 170), IM_COL32(0, 0, 0, 170));
 
-    float x = bMin.x + pad;
-    const float y = bMin.y + pad;
-    for (int i = 0; i < nIcons; ++i)
+    // Name: [primary][secondary] Name (number), in the team colour.
     {
-        const float iy = y + (lineH - iconSz) * 0.5f;
-        dl->AddImage(icons[i], ImVec2(x, iy), ImVec2(x + iconSz, iy + iconSz),
-                     ImVec2(0, 0), ImVec2(1, 1), dead ? IM_COL32(255, 255, 255, 110) : IM_COL32_WHITE);
-        x += iconSz + 1.f;
+        std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
+        if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+        const bool dead = ard.isDeadAtTime(m_debugTimeline);
+        float x = x0 - 7.f * scale;
+        const float iconSz = std::round(fs);
+        for (int prof : { ard.primaryProf, ard.secondaryProf })
+            if (ImTextureID tex = (prof > 0) ? LoadProfIcon(dev, prof) : nullptr)
+            {
+                dl->AddImage(tex, ImVec2(x, nameY), ImVec2(x + iconSz, nameY + iconSz),
+                             ImVec2(0, 0), ImVec2(1, 1), dead ? IM_COL32(255, 255, 255, 110) : IM_COL32_WHITE);
+                x += iconSz + 1.f;
+            }
+        x += 3.f;
+        const ImU32 teamCol = Team::IsRed(ard.teamId)  ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
+                            : Team::IsBlue(ard.teamId) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
+                                                       : IM_COL32(240, 240, 240, 255);
+        dl->AddText(ImVec2(x + 1.f, nameY + 1.f), IM_COL32(0, 0, 0, 200), name.c_str());
+        dl->AddText(ImVec2(x, nameY), teamCol, name.c_str());
     }
-    x += 3.f;
-    const float ty = y + (lineH - fs) * 0.5f;
-    dl->AddText(ImVec2(x + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), name.c_str());
-    dl->AddText(ImVec2(x, ty), teamCol, name.c_str());
-    dl->AddText(ImVec2(bMax.x - pad - hpW, ty),
-                dead ? IM_COL32(200, 110, 100, 255) : IM_COL32(205, 210, 218, 255), hpText);
 
-    const ImVec2 barMin(bMin.x + pad, y + lineH + 4.f);
-    const ImVec2 barMax(bMax.x - pad, barMin.y + barH);
-    dl->AddRectFilled(barMin, barMax, IM_COL32(40, 12, 12, 220), 2.f);
-    if (hp > 0.f)
-        dl->AddRectFilled(barMin, ImVec2(barMin.x + (barMax.x - barMin.x) * hp, barMax.y),
-                          IM_COL32(204, 40, 40, 255), 2.f);
+    if (effects)
+        DrawFocusHudEffectBar(id, ImVec2(x0 - 7.f * scale, effY), effSide, rowW + 14.f * scale);
+    if (energy)
+        DrawFocusHudEnergyBar(ard, ImVec2(x0 - 7.f * scale, enY), ImVec2(x1 + 7.f * scale, enY + barH), scale);
+    DrawFocusHudHealthBar(ard, ImVec2(x0 - 7.f * scale, hpY), ImVec2(x1 + 7.f * scale, hpY + barH), scale);
+    if (skills)
+        DrawFocusHudSkillSlots(dl, id, ImVec2(x0, skillY), slot, scale, ImGui::IsWindowHovered());
+
+    dl->PopClipRect();
 }
 
 void ReplayWindow::DrawPiPPanel()
@@ -613,8 +596,8 @@ void ReplayWindow::DrawPiPPanel()
 
         const float frameH = ImGui::GetFrameHeight();
         const float gap = 3.f;
-        const float rulesW = autoSel
-            ? ImGui::CalcTextSize("Rules").x + 12.f + ImGui::GetStyle().ItemSpacing.x : 0.f;
+        auto pillW = [&](const char* s) { return ImGui::CalcTextSize(s).x + 12.f + ImGui::GetStyle().ItemSpacing.x; };
+        const float rulesW = (autoSel ? pillW("Rules") : 0.f) + pillW("HUD");
 
         ImGui::SameLine(0.f, 6.f);
         if (ImGui::ArrowButton("##pip_prev", ImGuiDir_Left)) Step(-1);
@@ -676,6 +659,11 @@ void ReplayWindow::DrawPiPPanel()
             if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##pip_rules"))
                 ImGui::SetTooltip("What auto-detect looks for");
         }
+        ImGui::SameLine();
+        if (Pill("HUD", ImGui::IsPopupOpen("##pip_hud")))
+            ImGui::OpenPopup("##pip_hud");
+        if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##pip_hud"))
+            ImGui::SetTooltip("What the view shows of the watched player");
 
         ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.97f));
         ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.40f, 0.33f, 0.15f, 0.85f));
@@ -696,6 +684,19 @@ void ReplayWindow::DrawPiPPanel()
             ImGui::MenuItem("Isolated",     nullptr, &cfg.focusIsolated);
             ImGui::MenuItem("Flag Carrier", nullptr, &cfg.focusFlagCarry);
             ImGui::PopItemFlag();
+            ImGui::EndPopup();
+        }
+
+        if (ImGui::BeginPopup("##pip_hud"))
+        {
+            ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
+            ImGui::MenuItem("Overhead numbers", nullptr, &m_pipHudOverhead);
+            ImGui::MenuItem("Effects",          nullptr, &m_pipHudEffects);
+            ImGui::MenuItem("Energy",           nullptr, &m_pipHudEnergy);
+            ImGui::MenuItem("Skill bar",        nullptr, &m_pipHudSkills);
+            ImGui::PopItemFlag();
+            ImGui::Separator();
+            ImGui::TextDisabled("Name and health always show.\nEffects and the skill bar need\na view at least 320 px wide.");
             ImGui::EndPopup();
         }
 
@@ -846,17 +847,16 @@ void ReplayWindow::DrawPiPPanel()
                         && y >= imgPos.y && y <= imgPos.y + imgH;
                 };
 
+                // Names and skill icons: the main view's rules (AgentOnStageAt, fog, the name
+                // and skill-icon toggles), so the two views always show the same agents.
                 for (auto& [agentId, ard] : m_replayCtx.agents)
                 {
-                    if (ard.snapshots.empty()) continue;
-                    if (ard.type != AgentType::Player && ard.type != AgentType::NPC
-                        && ard.type != AgentType::Gadget && ard.type != AgentType::Flag)
+                    if (ard.type == AgentType::Flag) continue;   // drawn from the flag timeline below
+                    if (!AgentOnStageAt(agentId, ard, now)) continue;
+                    if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId)
+                        && !m_fogGhostMode)
                         continue;
-                    if (!m_show3DLabels) continue;
-                    if (m_hiddenNameAgents.count(agentId)) continue;
-
-                    const AgentSnapshot* snap = FindSnapshotAtTime(ard, now);
-                    if (!snap || snap->is_dead) continue;
+                    const bool dead = ard.isDeadAtTime(now);
 
                     float sx, sy, sz;
                     InterpolateAgentPosition(ard, now, is, sx, sy, sz);
@@ -866,42 +866,55 @@ void ReplayWindow::DrawPiPPanel()
                     if (!ProjectToImage(pos, scrX, scrY)) continue;
                     if (!InBounds(scrX, scrY)) continue;
 
-                    std::string label = GetAgentLabel(ard);
-                    ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
-                    float lx = scrX - textSz.x * 0.5f;
                     float ly = scrY;
-                    float pad = 2.f;
-
-                    bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
-                                           ard.categoryName == "Tower Flag Stand" ||
-                                           ard.categoryName == "Obelisk Flag Stand" ||
-                                           ard.categoryName == "Resurrection Shrine" ||
-                                           ard.categoryName == "Dwarven Resurrection Shrine" ||
-                                           ard.categoryName == "Southern Health Shrine" ||
-                                           ard.categoryName == "Gate lever");
-                    if (isSpecialLabel)
+                    if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
                     {
-                        dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                                          ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
-                                          IM_COL32(0, 0, 0, 13), 3.f);
-                        dl->AddText(font, fontSize, ImVec2(lx, ly),
-                                    IM_COL32(245, 228, 180, 255), label.c_str());
-                    }
-                    else
-                    {
-                        dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                                          ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
-                                          IM_COL32(0, 0, 0, 25), 3.f);
-                        ImU32 labelCol;
-                        if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
-                        else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                        else                               labelCol = IM_COL32(255, 255, 255, 230);
-                        dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
-                                    IM_COL32(0, 0, 0, 200), label.c_str());
-                        dl->AddText(font, fontSize, ImVec2(lx, ly), labelCol, label.c_str());
+                        std::string label = GetAgentLabel(ard);
+                        ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
+                        float lx = scrX - textSz.x * 0.5f;
+                        float pad = 2.f;
+
+                        bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
+                                               ard.categoryName == "Tower Flag Stand" ||
+                                               ard.categoryName == "Obelisk Flag Stand" ||
+                                               ard.categoryName == "Resurrection Shrine" ||
+                                               ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                               ard.categoryName == "Southern Health Shrine" ||
+                                               ard.categoryName == "Gate lever");
+                        if (isSpecialLabel)
+                        {
+                            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                              ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
+                                              IM_COL32(0, 0, 0, 13), 3.f);
+                            dl->AddText(font, fontSize, ImVec2(lx, ly),
+                                        IM_COL32(245, 228, 180, 255), label.c_str());
+                        }
+                        else
+                        {
+                            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                              ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
+                                              IM_COL32(0, 0, 0, 25), 3.f);
+                            ImU32 labelCol;
+                            if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                            else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                            else                               labelCol = IM_COL32(255, 255, 255, 230);
+                            // A dead player or NPC keeps its team hue at 60%, as in the main view.
+                            if (dead && (ard.type == AgentType::NPC || ard.type == AgentType::Player))
+                            {
+                                const ImU32 r = (labelCol >> IM_COL32_R_SHIFT) & 0xFF;
+                                const ImU32 g = (labelCol >> IM_COL32_G_SHIFT) & 0xFF;
+                                const ImU32 b = (labelCol >> IM_COL32_B_SHIFT) & 0xFF;
+                                const ImU32 a = (labelCol >> IM_COL32_A_SHIFT) & 0xFF;
+                                labelCol = IM_COL32(r * 3 / 5, g * 3 / 5, b * 3 / 5, a);
+                            }
+                            dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
+                                        IM_COL32(0, 0, 0, 200), label.c_str());
+                            dl->AddText(font, fontSize, ImVec2(lx, ly), labelCol, label.c_str());
+                        }
                     }
 
-                    if (ard.type == AgentType::Player)
+                    if (m_showSkillIcons && !dead &&
+                        (ard.type == AgentType::Player || ard.type == AgentType::NPC))
                     {
                         auto sv = ard.skillVisualAtTime(now);
                         if (sv.skillId > 0 && sv.alpha > 0.01f)
@@ -942,13 +955,15 @@ void ReplayWindow::DrawPiPPanel()
                     }
                 }
 
+                // Lasers: the casters the main view's laser filters let through.
                 for (auto& [agentId, ard] : m_replayCtx.agents)
                 {
-                    if (ard.type != AgentType::Player) continue;
-                    if (ard.snapshots.empty()) continue;
+                    if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+                    if (ard.snapshots.empty() || ard.isDeadAtTime(now)) continue;
+                    if (!LaserCasterVisible(agentId, ard)) continue;
 
                     auto laser = ard.skillLaserAtTime(now);
-                    if (laser.targetId < 0 || laser.alpha < 0.01f) continue;
+                    if (laser.targetId <= 0 || laser.alpha < 0.01f) continue;
 
                     auto tgtIt = m_replayCtx.agents.find(laser.targetId);
                     if (tgtIt == m_replayCtx.agents.end()) continue;
@@ -1085,7 +1100,7 @@ void ReplayWindow::DrawPiPPanel()
                 }
 
                 // --- PiP incoming damage/heal floating numbers ---
-                if (!m_pipIncomingEffects.empty() && m_pipTargetAgent >= 0)
+                if (m_pipHudOverhead && !m_pipIncomingEffects.empty() && m_pipTargetAgent >= 0)
                 {
                     auto tgtIt = m_replayCtx.agents.find(m_pipTargetAgent);
                     if (tgtIt != m_replayCtx.agents.end() && !tgtIt->second.snapshots.empty())
@@ -1110,7 +1125,7 @@ void ReplayWindow::DrawPiPPanel()
                 }
             }
 
-            DrawPiPSubjectLabel(dl, imgPos, imgH);
+            DrawPiPHud(dl, imgPos, imgW, imgH);
         }
     }
     else
