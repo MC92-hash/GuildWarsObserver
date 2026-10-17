@@ -22,6 +22,8 @@ struct SkillCooldownState
     };
 
     int   skillId = 0;
+    int   shownSkillId = 0;            // what the slot shows: the copy while Echo / Arcane Echo holds one
+    bool  castingNow = false;          // a cast on this slot is running at the moment asked
     State state   = State::Ready;
 
     // The governing countdown, for the sweep and the number.
@@ -83,6 +85,9 @@ struct SkillDisable
     // The end the rule itself gives, before any later evidence shortened the one shown (the
     // victim's next use proves the skill ready). The cooldown dump checks the rule against it.
     float ruleEnd = 0.f;
+    // The victim's use it lands on (an index into his skillUseHistory), -1 when it lands on no one
+    // use. With an Echo copy of the skill on his bar, only that use's slot is locked.
+    int   victimUse = -1;
 };
 
 // A skill that recharges others: Oath Shot recharges every skill but itself, Needling Shot

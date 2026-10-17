@@ -550,12 +550,14 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         const ImVec2 tl(rowTL.x + i * slot, rowTL.y);
         const ImVec2 br(tl.x + slot, tl.y + slot);
         const bool filled = i < static_cast<int>(bar.size());
-        const SkillInfo* si = filled ? m_skillView.Get(bar[i]) : nullptr;
+        // The skill the slot shows: Echo / Arcane Echo show the copy they hold.
+        const int shown = filled ? cds[i].shownSkillId : 0;
+        const SkillInfo* si = filled ? m_skillView.Get(shown) : nullptr;
 
         // Icon (or the empty slot's grey), then the slot frame over it.
         if (!filled)
             dl->AddRectFilled(tl, br, IM_COL32(0x40, 0x40, 0x40, 0xC0));
-        else if (ImTextureID tex = LoadSkillIcon(this, dev, bar[i], m_skillIconIndex, m_skillIconCache))
+        else if (ImTextureID tex = LoadSkillIcon(this, dev, shown, m_skillIconIndex, m_skillIconCache))
             dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
         if (texSlots) {
             ImVec2 uv0, uv1;
@@ -568,7 +570,7 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         const bool disabled = cd.state == CdState::Disabled;
 
         // Skill in use: the client's looping sparkle.
-        if (texSparkle && bar[i] == usingSkill) {
+        if (texSparkle && shown == usingSkill && cd.castingNow) {
             const int frame = static_cast<int>((t - usingSince) * 16.f) & 15;
             const float fx = static_cast<float>(frame % 4) * 0.25f, fy = static_cast<float>(frame / 4) * 0.25f;
             dl->AddImage(texSparkle, tl, br, ImVec2(fx, fy), ImVec2(fx + 0.25f, fy + 0.25f));
@@ -607,7 +609,7 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         }
 
         if (hoverable && ImGui::IsMouseHoveringRect(tl, br))
-            DrawGameSkillTooltip(bar[i], agentId, &cd);
+            DrawGameSkillTooltip(shown, agentId, &cd);
     }
 
 }

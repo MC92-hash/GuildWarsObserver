@@ -1067,7 +1067,9 @@ void ReplayWindow::DrawPlayerInfoPanel()
             dl->AddRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
                         IM_COL32(255, 255, 255, 31), 5.f);
 
-            ImTextureID skillTex = LoadSkillIcon(this, dev, sl.skillId,
+            // Echo / Arcane Echo show the copy they hold.
+            const int shownSkill = cooldowns[i].shownSkillId ? cooldowns[i].shownSkillId : sl.skillId;
+            ImTextureID skillTex = LoadSkillIcon(this, dev, shownSkill,
                 m_skillIconIndex, m_skillIconCache);
             if (skillTex)
                 dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
@@ -1165,7 +1167,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             else if (iconHovered)
             {
                 const char* modTip = (!cd.modifierText.empty()) ? cd.modifierText.c_str() : nullptr;
-                DrawPipSkillTooltip(sl.skillId, skillTex, modTip);
+                DrawPipSkillTooltip(shownSkill, skillTex, modTip);
             }
 
             // Cast counter text

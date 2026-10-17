@@ -38,6 +38,7 @@
 #include "EnergyModel.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
+#include "EchoSlots.h"
 #include "OverheadFloaters.h"
 #include "ScreenShake.h"
 #include "CatapultDangerZone.h"
@@ -639,6 +640,7 @@ private:
     // Skill cooldowns and disables (ReplayWindow_SkillCooldowns.cpp): one model behind every skill bar.
     mutable std::unordered_map<int, std::vector<SkillDisable>>  m_skillDisables;   // by the agent disabled
     mutable std::unordered_map<int, std::vector<RechargeReset>> m_rechargeResets;  // by the agent recharged
+    mutable std::unordered_map<int, EchoSlots::Agent>          m_echoSlots;       // Echo / Arcane Echo copies, by player
     mutable bool m_skillDisablesBuilt = false;
     mutable bool m_skillDisablesUsedAttributes = false;  // rebuilt once the attribute ranks are solved
     void  BuildSkillDisables() const;

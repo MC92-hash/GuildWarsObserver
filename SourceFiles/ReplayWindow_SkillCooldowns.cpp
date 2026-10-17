@@ -198,7 +198,8 @@ namespace
         { 1093, Who::User, DisableScope::Skill, 0, -1, 20.f, -1 },  // Teinai's Heat
     };
     // Not modelled: Recall (the disable starts when the upkeep is dropped, which is not recorded),
-    // Echo, Arcane Echo and Arcane Mimicry (they swap the slot for another skill).
+    // Arcane Mimicry (it swaps the slot for another skill). Echo and Arcane Echo swap theirs too:
+    // which copy a slot holds, and which uses went to it, is EchoSlots' (private).
 
     // Skills that lock themselves longer for each effect they removed, counted on the effect bar's
     // timeline. Shatter Storm is disabled 7 s per enchantment (a disable: no recharge modifier
@@ -414,6 +415,29 @@ void ReplayWindow::BuildSkillDisables() const
         return false;
     };
 
+    // Echo / Arcane Echo: which uses went to the copy in their slot (EchoSlots, private).
+    m_echoSlots.clear();
+    {
+        const EffectTimeline::Table* fx = EffectTimelineTable();
+        for (const auto& [id, ard] : m_replayCtx.agents) {
+            if (ard.type != AgentType::Player) continue;
+            EchoSlots::Agent a = EchoSlots::Build(id, ard, sdb, fx);
+            if (!a.windows.empty()) m_echoSlots.emplace(id, std::move(a));
+        }
+    }
+    // The caster's next try at the skill of use `index` on the same slot (an Echo copy and the
+    // original are two slots), or -1.
+    auto nextOnSlot = [&](int agentId, const AgentReplayData& ard, size_t index) {
+        auto eit = m_echoSlots.find(agentId);
+        if (eit == m_echoSlots.end()) return NextAttempt(ard, index, sdb);
+        const auto& h = ard.skillUseHistory;
+        const int sid = resolve(h[index].skillId), slot = eit->second.copyOf[index];
+        for (size_t j = index + 1; j < h.size(); ++j)
+            if (resolve(h[j].skillId) == sid && eit->second.copyOf[j] == slot && h[j].startTime > CastEnd(h[index]))
+                return h[j].startTime;
+        return -1.f;
+    };
+
     // Which use caused each interrupt: only that one applies its "if it interrupts" effect.
     const InterruptCauses::Table causes = InterruptCauses::Build(m_replayCtx.agents, m_replayCtx.stocData, sdb);
 
@@ -463,6 +487,7 @@ void ReplayWindow::BuildSkillDisables() const
                 d.scope = rule.scope;
                 d.skillId = resolve(cut->skillId);
                 d.sourceSkill = rule.skillId; d.sourceAgent = casterId;
+                d.victimUse = cause->victimUse;
                 if (rule.scope == DisableScope::Attribute) {
                     // Power Block: the skill, and every skill of its attribute. A skill with no
                     // attribute has no siblings.
@@ -472,6 +497,7 @@ void ReplayWindow::BuildSkillDisables() const
                 add(vit->first, d);
 
                 if (rule.area) {
+                    d.victimUse = -1;   // the others' copies of the skill, whichever slot
                     for (const auto& [otherId, other] : m_replayCtx.agents) {
                         if (otherId == vit->first || other.type != AgentType::Player) continue;
                         if (other.teamId != victim.teamId || !other.isAliveAtTime(tCut)) continue;
@@ -510,9 +536,10 @@ void ReplayWindow::BuildSkillDisables() const
                 SkillDisable d;
                 d.start = t0;
                 d.end   = t0 + kShatterStormPerEnchantment * n;
-                if (const float next = NextAttempt(caster, ei, sdb); next >= 0.f) d.end = std::min(d.end, next);
+                if (const float next = nextOnSlot(casterId, caster, ei); next >= 0.f) d.end = std::min(d.end, next);
                 d.scope = DisableScope::Skill; d.skillId = rid;
                 d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
+                d.victimUse = static_cast<int>(ei);
                 add(casterId, d);
             }
 
@@ -552,6 +579,7 @@ void ReplayWindow::BuildSkillDisables() const
                     d.end   = d.start + secs + (kAdditionalAddsToRecharge ? ni->recharge : 0.f);
                     d.scope = DisableScope::Skill; d.skillId = resolve(nev.skillId);
                     d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
+                    d.victimUse = static_cast<int>(j);
                     add(casterId, d);
                     break;
                 }
@@ -577,7 +605,12 @@ void ReplayWindow::BuildSkillDisables() const
                         d.endLo = dv.done + lo + recharge;
                         d.endHi = dv.done + hi + recharge;
                     }
-                    if (dv.next > 0.f) d.end = std::min(d.end, dv.next);
+                    const AgentReplayData& victim = m_replayCtx.agents.at(ev.targetId);
+                    d.victimUse = static_cast<int>(dv.trigger - victim.skillUseHistory.data());
+                    // The victim's next try on the same slot (an Echo copy of it is another slot).
+                    const float next = m_echoSlots.count(ev.targetId)
+                                     ? nextOnSlot(ev.targetId, victim, static_cast<size_t>(d.victimUse)) : dv.next;
+                    if (next > 0.f) d.end = std::min(d.end, next);
                     d.scope = DisableScope::Skill; d.skillId = dv.skill;
                     d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
                     add(ev.targetId, d);
@@ -706,9 +739,39 @@ void ReplayWindow::WriteCooldownDebug(const std::string& path) const
     for (int id : ids) {
         const AgentReplayData& ard = m_replayCtx.agents.at(id);
         const auto& h = ard.skillUseHistory;
+        const EchoSlots::Agent* echo = nullptr;
+        if (auto eit = m_echoSlots.find(id); eit != m_echoSlots.end()) echo = &eit->second;
+        if (echo)
+            for (size_t w = 0; w < echo->windows.size(); ++w) {
+                const EchoSlots::Window& ew = echo->windows[w];
+                int onCopy = 0, onOriginal = 0;
+                for (size_t i = 0; i < h.size(); ++i) {
+                    if (resolve(h[i].skillId) != ew.copied || static_cast<int>(i) == ew.captureUse) continue;
+                    if (echo->copyOf[i] == static_cast<int>(w)) ++onCopy;
+                    else if (h[i].startTime >= ew.capture && h[i].startTime < ew.close) ++onOriginal;
+                }
+                out << std::format("echo\t{:.3f}\t{}\t{}\t{}\t{:.2f}\t{:.2f}\t{}\t{}\t{}\n", ew.open, id, name(ew.echoSkill),
+                                   name(ew.copied), ew.capture - ew.open, ew.close - ew.capture, ew.closedBy,
+                                   onCopy, onOriginal);
+                // The uses around it, each with the slot it went to (c: the copy, s: its own).
+                for (size_t i = 0; i < h.size(); ++i) {
+                    if (h[i].startTime < ew.open - 3.f || h[i].startTime > ew.close + 15.f) continue;
+                    out << std::format("echouse\t{:.3f}\t{}\t{:.3f}\t{}\t{}\t{}\n", ew.open, id, h[i].startTime,
+                                       name(h[i].skillId), echo->copyOf[i] == static_cast<int>(w) ? "c" : "s",
+                                       h[i].wasInterrupted ? "int" : h[i].wasCancelled ? "cancel" : "ok");
+                }
+            }
         for (size_t i = 0; i < h.size(); ++i) {
             const SkillUseEvent& u = h[i];
-            const SkillCooldownState cd = ComputeSkillCooldowns(ard, { u.skillId }, u.startTime - 0.02f).front();
+            // A use of an Echo copy is checked on the Echo slot, as the copy stood.
+            int slotSkill = u.skillId;
+            float at = u.startTime - 0.02f;
+            if (echo && echo->OnCopy(i)) {
+                const EchoSlots::Window& ew = echo->windows[echo->copyOf[i]];
+                slotSkill = ew.echoSkill;
+                at = std::max(at, ew.capture);
+            }
+            const SkillCooldownState cd = ComputeSkillCooldowns(ard, { slotSkill }, at).front();
             const char* state = cd.state == SkillCooldownState::State::Disabled   ? "DISABLED"
                               : cd.state == SkillCooldownState::State::Recharging ? "RECHARGING"
                               : cd.state == SkillCooldownState::State::Spent      ? "SPENT" : nullptr;
@@ -717,10 +780,13 @@ void ReplayWindow::WriteCooldownDebug(const std::string& path) const
                                    cd.remaining, cd.disableSourceSkill ? name(cd.disableSourceSkill) : "-",
                                    cd.disableSourceAgent);
 
-            if (!u.wasFastRecast) continue;
+            // A fast recast, read per slot (an Echo copy's use is no early recast of the original).
+            if (u.wasCancelled && !u.wasInterrupted) continue;
             const SkillInfo* si = sdb.Get(u.skillId);
             const float end = CastEnd(u), normal = si ? si->recharge : 0.f;
-            const float next = end + u.rechargeDuration;
+            const float recharge = echo ? echo->recharge[i] : u.rechargeDuration;
+            if (!(normal > 0.f && recharge < normal - 0.5f)) continue;
+            const float next = end + recharge;
             std::string why;
             if (boostBetween(ard, end, next + 0.05f)) why = "boost";
             if (why.empty()) {
@@ -739,10 +805,10 @@ void ReplayWindow::WriteCooldownDebug(const std::string& path) const
                     const SkillCooldownState m = ComputeSkillCooldowns(ard, { u.skillId }, at).front();
                     if (m.rechargeMult < mult) { mult = m.rechargeMult; text = m.modifierText; }
                 }
-                if (mult < 1.f && u.rechargeDuration >= normal * mult - 0.5f) why = "mod " + text;
+                if (mult < 1.f && recharge >= normal * mult - 0.5f) why = "mod " + text;
             }
             out << std::format("fast\t{:.3f}\t{}\t{}\t{:.2f}\t{:.0f}\t{}\n", end, id, name(u.skillId),
-                               u.rechargeDuration, normal, why.empty() ? "UNEXPLAINED" : why);
+                               recharge, normal, why.empty() ? "UNEXPLAINED" : why);
         }
     }
 
@@ -840,29 +906,56 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
     const std::vector<RechargeReset>* resets = nullptr;
     if (auto rit = m_rechargeResets.find(ard.agent_id); rit != m_rechargeResets.end()) resets = &rit->second;
 
+    // Echo / Arcane Echo: a copy in their slot is a slot of its own (EchoSlots, private).
+    const EchoSlots::Agent* echo = nullptr;
+    if (auto eit = m_echoSlots.find(ard.agent_id); eit != m_echoSlots.end()) echo = &eit->second;
+    const auto& hist = ard.skillUseHistory;
+
     std::vector<SkillCooldownState> out;
     out.reserve(skillIds.size());
     for (int rawSid : skillIds) {
         SkillCooldownState cd;
         cd.skillId = rawSid;
-        const int sid = resolve(rawSid);
+        cd.shownSkillId = rawSid;
+        // While Echo holds a copy the slot IS that skill, and only the uses that went to the copy
+        // are its own; every other slot leaves those uses out.
+        const int slotSid = resolve(rawSid);
+        const int echoSkill = slotSid == resolve(EchoSlots::kEcho)       ? EchoSlots::kEcho
+                            : slotSid == resolve(EchoSlots::kArcaneEcho) ? EchoSlots::kArcaneEcho : 0;
+        const EchoSlots::Window* held = echo && echoSkill ? echo->HeldAt(echoSkill, t) : nullptr;
+        const int heldIndex = held ? static_cast<int>(held - echo->windows.data()) : -1;
+        if (held) cd.shownSkillId = held->copied;
+        const int sid = held ? held->copied : slotSid;
         const SkillInfo* si = sdb.Get(sid);
+        auto mine = [&](size_t i) { return !echo || echo->copyOf[i] == heldIndex; };
 
         // --- Recharge: the last use, cleared by a morale boost or a skill that recharges it ---
         float rechargeStart = -1.f, rechargeDur = 0.f;
         float rechargeCap = -1.f;   // the caster's next try at the skill, where one bounds the recharge
         bool spent = false;
         const SkillUseEvent* last = nullptr;
-        for (const auto& ev : ard.skillUseHistory) {
+        size_t lastIndex = 0;
+        for (size_t i = 0; i < hist.size(); ++i) {
+            const SkillUseEvent& ev = hist[i];
+            if (resolve(ev.skillId) != sid || !mine(i)) continue;
+            if (!ev.isInstant && ev.startTime <= t && ev.endTime > t) cd.castingNow = true;
             // A cast the player let go of starts no recharge; an interrupted one (also recorded as
             // stopped) recharges in full, with any interrupt disable laid on top.
-            if ((ev.wasCancelled && !ev.wasInterrupted) || ev.endTime > t || resolve(ev.skillId) != sid) continue;
+            if ((ev.wasCancelled && !ev.wasInterrupted) || ev.endTime > t) continue;
             last = &ev;
+            lastIndex = i;
         }
         if (last) {
             rechargeStart = CastEnd(*last);
             if (sid == kResurrectionSignet) spent = true;
-            else rechargeDur = last->rechargeDuration;
+            else rechargeDur = echo ? echo->recharge[lastIndex] : last->rechargeDuration;
+            // Echo back from a copy recharges from the copy's end, in full.
+            if (echoSkill && !held && echo)
+                if (const EchoSlots::Window* w = echo->LastClosedBy(echoSkill, t);
+                    w && w->echoUse == static_cast<int>(lastIndex)) {
+                    rechargeStart = w->close;
+                    rechargeDur = si ? si->recharge : 0.f;
+                }
             if (sid == resolve(kWordOfCensure) && !last->wasFastRecast) {
                 auto tit = m_replayCtx.agents.find(last->targetId);
                 if (tit != m_replayCtx.agents.end() && tit->second.healthPctAtTime(rechargeStart) < 0.5f)
@@ -912,6 +1005,9 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
             for (const auto& d : *disables) {
                 if (d.start > t || d.end <= t || d.start < lastBoost) continue;
                 if (!Covers(d, sid, si)) continue;
+                // A lock on one use of the skill holds the slot that use went to (Echo copies).
+                if (d.scope == DisableScope::Skill && d.victimUse >= 0 &&
+                    static_cast<size_t>(d.victimUse) < hist.size() && !mine(static_cast<size_t>(d.victimUse))) continue;
                 // Recharged since by a skill that also ends disables (Keystone Signet).
                 bool cleared = false;
                 if (resets)
