@@ -409,9 +409,22 @@ int SpatialAudioEngine::CountActiveVoicesInCategory(SoundLogCategory category, b
 }
 
 void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, float x, float y, float z,
-                                    bool positional, float gainScale, bool focusedPlayer, float pitch)
+                                    bool positional, float gainScale, bool focusedPlayer, float pitch,
+                                    float startOffset)
 {
     if (!m_initialized || !m_soundCache) return;
+
+    // One music track at a time: the next track line replaces the one playing (the category's cap
+    // of 1 used to drop the new one while the old still ran).
+    if (category == SoundLogCategory::Music) {
+        std::lock_guard<std::mutex> lock(m_voiceMutex);
+        for (auto& s : m_voicePool) {
+            if (!s.inUse || s.category != SoundLogCategory::Music) continue;
+            if (s.voice) { s.voice->Stop(); s.voice->FlushSourceBuffers(); }
+            s.inUse = false;
+            s.pcmOwned.clear();
+        }
+    }
 
     m_debugStats.eventsPosted++;
 
@@ -503,7 +516,7 @@ void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, 
     slot->pitch = std::clamp(pitch, 1.0f / 64.0f, 2.0f);
 
     slot->baseGainLinear = (focusedPlayer ? profile.playerGainLinear : profile.gainLinear) * gainScale;
-    SubmitBuffer(slot, buf, slot->baseGainLinear * TypeVolumeMultiplier(category, m_config));
+    SubmitBuffer(slot, buf, slot->baseGainLinear * TypeVolumeMultiplier(category, m_config), startOffset);
     if (slot->inUse && slot->voice && slot->pitch != 1.0f)
         slot->voice->SetFrequencyRatio(slot->pitch);
     m_lastPlayedFileId = fileId;
@@ -649,7 +662,7 @@ void SpatialAudioEngine::ReleaseVoice(VoiceSlot* slot)
     }
 }
 
-void SpatialAudioEngine::SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, float volume)
+void SpatialAudioEngine::SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, float volume, float startOffset)
 {
     if (!buf || !buf->valid || buf->pcmData.empty()) {
         slot->inUse = false;
@@ -739,6 +752,17 @@ decoded:
     xbuf.pAudioData = slot->pcmOwned.data();
     xbuf.Flags      = XAUDIO2_END_OF_STREAM;
     xbuf.pContext   = slot;
+    if (startOffset > 0.0f) {
+        const UINT32 frames = static_cast<UINT32>(slot->pcmOwned.size() / wfx.nBlockAlign);
+        const UINT32 begin  = static_cast<UINT32>(startOffset * static_cast<float>(wfx.nSamplesPerSec));
+        if (begin + 1 >= frames) {   // started past its end: nothing left to hear
+            slot->voice->DestroyVoice();
+            slot->voice = nullptr;
+            slot->inUse = false;
+            return;
+        }
+        xbuf.PlayBegin = begin;
+    }
 
     hr = slot->voice->SubmitSourceBuffer(&xbuf);
     if (FAILED(hr)) {

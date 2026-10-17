@@ -163,9 +163,11 @@ public:
     // variant the game uses for sounds the local player makes or receives. Set it for the agent
     // the camera is following.
     // pitch is a playback-rate multiplier (1 = as stored; XAudio2 allows up to 2 here).
+    // startOffset starts the sound that many seconds in (a music track joined after a seek); a
+    // start past its end plays nothing. A Music post replaces the track already playing.
     void PostFileId(uint32_t fileId, SoundLogCategory category, float x, float y, float z,
                     bool positional, float gainScale = 1.0f, bool focusedPlayer = false,
-                    float pitch = 1.0f);
+                    float pitch = 1.0f, float startOffset = 0.0f);
 
     // Debug: play a sound at a fixed distance directly to the listener's left/right/front/back,
     // derived from the listener basis actually in use. Lets the stereo image be verified by ear
@@ -264,7 +266,7 @@ private:
 
     VoiceSlot* AcquireVoice();
     void ReleaseVoice(VoiceSlot* slot);
-    void SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, float volume);
+    void SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, float volume, float startOffset = 0.0f);
     // MP3s decoded once and kept (the recorded sound programs replay the same few hundred files
     // thousands of times a match; decoding at every play stalled the frame). Keyed by the cache's
     // buffer, which lives as long as the SoundCache; bounded by kDecodedBudgetBytes.
