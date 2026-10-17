@@ -2096,6 +2096,7 @@ private:
     void RenderPiP();
     void UpdatePiPTarget();
     void DrawPiPPanel();
+    void DrawPiPSubjectLabel(ImDrawList* dl, ImVec2 imgPos, float imgH);
 
     // --- Player Info Panel ---
     bool m_showPlayerInfoPanel = false;

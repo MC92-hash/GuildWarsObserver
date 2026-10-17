@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "ReplayWindow.h"
+#include "ReplayWindow_Internal.h"
 #include "GuiGlobalConstants.h"
 #include "ReplayHotkeys.h"
 #include <algorithm>
@@ -547,6 +548,23 @@ namespace
         bool tintAsGlyph  = false;   // colour it like a stroked glyph
     };
 
+    // Art shared by the ribbon and the player context menu (DrawRibbonArt), so a menu entry
+    // shows the same picture as the toolbar button that opens the same thing.
+    const TexIcon kArtSkillLasers{ "Toolbar\\ui_template_actions.png", ImVec4(27, 23, 44, 46), 1.26f };
+    const TexIcon kArtFogOfWar{ "Toolbar\\FogON.png", ImVec4(12, 14, 49, 44), 1.18f,
+                                ImVec4(0, 0, 0, 0), "Toolbar\\FogOFF.png", ImVec4(6, 6, 51, 51) };
+    const TexIcon kArtMorale{ "Toolbar\\Morale_Boost.jpg", ImVec4(0, 0, 0, 0), 1.16f };
+    const TexIcon kArtLordDamage{ "Others_UI\\redguildlord2.png", ImVec4(0, 0, 0, 0), 1.14f };
+    const TexIcon kArtCombatLog{ "Toolbar\\texture_277156.dds", ImVec4(6, 50, 17, 69), 1.30f };
+    const TexIcon kArtSkillAnalytics{ "Toolbar\\texture_143781.dds", ImVec4(0, 96, 21, 117), 1.22f,
+                                      ImVec4(24, 96, 45, 117) };
+    const TexIcon kArtHeatmap{ "Toolbar\\heatmap.png", ImVec4(57, 0, 305, 248), 1.22f };
+    const TexIcon kArtPianoRoll{ "Toolbar\\piano.png", ImVec4(0, 0, 0, 0), 1.16f,
+                                 ImVec4(0, 0, 0, 0), nullptr, ImVec4(0, 0, 0, 0),
+                                 false, true, true };
+    const TexIcon kArtSplitCamera{ "Toolbar\\Splitcamera.png", ImVec4(6, 12, 62, 56), 1.18f };
+    const TexIcon kArtCharacterPanel{ "Toolbar\\texture_9125.dds", ImVec4(0, 0, 16, 16), 1.18f };
+
     // Returns false when the art is missing so the caller can fall back to a glyph.
     bool DrawTexIcon(ImDrawList* dl, ID3D11Device* dev, const TexIcon& t, ImVec2 c,
                      float s, float alpha, bool on, bool hovered, ImU32 glyphCol)
@@ -675,6 +693,32 @@ ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
     if (outW) *outW = rt.w;
     if (outH) *outH = rt.h;
     return rt.id;
+}
+
+// Exposed for the player context menu; see ReplayWindow_Internal.h.
+void DrawRibbonArt(ImDrawList* dl, ID3D11Device* dev, RibbonArt art, ImVec2 c, float s, float alpha)
+{
+    const ImU32 glyph = Shade(kIconHot, 1.f, alpha);
+    auto Tex = [&](const TexIcon& t, Ico fallback)
+    {
+        if (!DrawTexIcon(dl, dev, t, c, s, alpha, true, false, glyph))
+            DrawIcon(dl, fallback, c, s, glyph);
+    };
+    switch (art)
+    {
+        case RibbonArt::SplitCamera:    Tex(kArtSplitCamera,    Ico::Frame);    break;
+        case RibbonArt::CharacterPanel: Tex(kArtCharacterPanel, Ico::Shield);   break;
+        case RibbonArt::RangeRings:     DrawRingsGlyph(dl, c, s, alpha, true);  break;
+        case RibbonArt::SkillLasers:    Tex(kArtSkillLasers,    Ico::Lasers);   break;
+        case RibbonArt::FogOfWar:       Tex(kArtFogOfWar,       Ico::CloudOff); break;
+        case RibbonArt::CombatLog:      Tex(kArtCombatLog,      Ico::LogList);  break;
+        case RibbonArt::SkillAnalytics: Tex(kArtSkillAnalytics, Ico::BarChart); break;
+        case RibbonArt::PianoRoll:      Tex(kArtPianoRoll,      Ico::Piano);    break;
+        case RibbonArt::Heatmap:        Tex(kArtHeatmap,        Ico::Gradient); break;
+        case RibbonArt::Morale:         Tex(kArtMorale,         Ico::Morale);   break;
+        case RibbonArt::LordDamage:     Tex(kArtLordDamage,     Ico::Crown);    break;
+        case RibbonArt::AgentNames:     DrawIcon(dl, Ico::Tag, c, s, glyph);    break;
+    }
 }
 
 void ReplayWindow::DrawRibbonToolbar()
@@ -837,8 +881,7 @@ void ReplayWindow::DrawRibbonToolbar()
                   [this] { return m_showSkillLasers; },
                   [this] { m_showLaserPanel = !m_showLaserPanel; },
                   false, Ico::None, nullptr, nullptr,
-                  TexIcon{ "Toolbar\\ui_template_actions.png",
-                           ImVec4(27, 23, 44, 46), 1.26f },
+                  kArtSkillLasers,
                   0,
                   "Open the skill laser panel. Lasers draw a line from each "
                   "caster to the target of their skill. The panel filters which "
@@ -878,9 +921,7 @@ void ReplayWindow::DrawRibbonToolbar()
                       }
                   },
                   false, Ico::None, nullptr, nullptr,
-                  TexIcon{ "Toolbar\\FogON.png", ImVec4(12, 14, 49, 44), 1.18f,
-                           ImVec4(0, 0, 0, 0), "Toolbar\\FogOFF.png",
-                           ImVec4(6, 6, 51, 51) },
+                  kArtFogOfWar,
                   0,
                   "Limit visibility to a single player, multiple selected "
                   "players, or an entire team - hiding agents outside their "
@@ -892,7 +933,7 @@ void ReplayWindow::DrawRibbonToolbar()
 
         groups.push_back({ "Combat & stats", {
             T(Ico::Morale, "Morale", m_showMoralePanel,
-              TexIcon{ "Toolbar\\Morale_Boost.jpg", ImVec4(0, 0, 0, 0), 1.16f },
+              kArtMorale,
               "Open the per-player morale panel. Morale is tracked live for "
               "each player from these rules:\n"
               "- -15% per death, down to a floor of -60%\n"
@@ -903,7 +944,7 @@ void ReplayWindow::DrawRibbonToolbar()
               "Pact Signet, are ignored and do not reduce morale.",
               hk.toggleMoralePanel),
             T(Ico::Crown, "Lord Damage", m_showLordDamagePanel,
-              TexIcon{ "Others_UI\\redguildlord2.png", ImVec4(0, 0, 0, 0), 1.14f },
+              kArtLordDamage,
               "Open the Guild Lord damage panel, showing how much damage "
               "each player dealt to the enemy Lord over the match:\n"
               "- Built from the lord-damage hit records logged in the match "
@@ -914,26 +955,23 @@ void ReplayWindow::DrawRibbonToolbar()
               "degen, poison, bleeding or lifesteal ticks is not included",
               hk.toggleLordDamage),
             T(Ico::LogList, "Combat Log", m_showCombatLog,
-              TexIcon{ "Toolbar\\texture_277156.dds", ImVec4(6, 50, 17, 69), 1.30f },
+              kArtCombatLog,
               "Chronological log of skills, damage, heals, interrupts, deaths "
               "and attacks from the replay. Damage and heals are matched to "
               "skill casts when the timing fits. Category toggles in the "
               "panel control what is listed."),
             T(Ico::BarChart, "Skill Analytics", m_showSkillAnalytics,
-              TexIcon{ "Toolbar\\texture_143781.dds", ImVec4(0, 96, 21, 117), 1.22f,
-                       ImVec4(24, 96, 45, 117) },
+              kArtSkillAnalytics,
               "Open skill usage analytics for the match (beta)."),
             T(Ico::Gradient, "Heatmap", m_heatmapSettings.show,
-              TexIcon{ "Toolbar\\heatmap.png", ImVec4(57, 0, 305, 248), 1.22f },
+              kArtHeatmap,
               "Accumulate player movement into a density overlay on the map. "
               "Each layer samples positions over time, so hotter areas show "
               "where agents spent more time. Track a single player, several "
               "players, or an entire team over a chosen time window.",
               hk.toggleHeatmap),
             T(Ico::Piano, "Piano Roll", m_showPianoRoll,
-              TexIcon{ "Toolbar\\piano.png", ImVec4(0, 0, 0, 0), 1.16f,
-                       ImVec4(0, 0, 0, 0), nullptr, ImVec4(0, 0, 0, 0),
-                       false, true, true },
+              kArtPianoRoll,
               "Show each player's skill casts on a shared timeline, like a "
               "music piano roll, so you can compare cast timing, overlaps "
               "and cooldowns across the match.",
@@ -961,7 +999,7 @@ void ReplayWindow::DrawRibbonToolbar()
                   "team positioning and split calls at a glance.",
                   hk.toggleTopView },
             T(Ico::Frame, "Split Camera", m_pipEnabled,
-              TexIcon{ "Toolbar\\Splitcamera.png", ImVec4(6, 12, 62, 56), 1.18f },
+              kArtSplitCamera,
               "Enable a picture-in-picture second camera. Adds a smaller, "
               "independently aimed view on top of the main one, so you can "
               "watch two locations on the map at once."),
@@ -1009,7 +1047,7 @@ void ReplayWindow::DrawRibbonToolbar()
                   [] { return false; },
                   [this] { OpenCharacterPanel(); },
                   false, Ico::None, nullptr, nullptr,
-                  TexIcon{ "Toolbar\\texture_9125.dds", ImVec4(0, 0, 16, 16), 1.18f },
+                  kArtCharacterPanel,
                   0,
                   "Open a character panel: one player's weapons and armour laid out like the "
                   "in-game inventory, with the skin and dye of every piece and the runes and "

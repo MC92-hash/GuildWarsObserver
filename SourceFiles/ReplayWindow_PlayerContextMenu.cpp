@@ -37,6 +37,48 @@ namespace
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
     }
+
+    // Blank text as wide as one line is tall: handed to ImGui as an entry's "icon", it makes the
+    // menu reserve an icon column (labels stay aligned), and the toolbar picture is drawn over it.
+    const char* IconColumn()
+    {
+        static std::string pad;
+        static float padFor = -1.f;
+        const float want = ImGui::GetTextLineHeight();
+        if (padFor != want)
+        {
+            pad = " ";
+            while (ImGui::CalcTextSize(pad.c_str()).x < want) pad += ' ';
+            padFor = want;
+        }
+        return pad.c_str();
+    }
+
+    void MenuIcon(ImDrawList* dl, ID3D11Device* dev, RibbonArt art, ImVec2 rowPos, bool enabled)
+    {
+        const float h = ImGui::GetTextLineHeight();
+        DrawRibbonArt(dl, dev, art, ImVec2(rowPos.x + h * 0.5f, rowPos.y + h * 0.5f), h * 0.85f,
+                      enabled ? 1.f : 0.45f);
+    }
+
+    // MenuItem / BeginMenu with the picture of the ribbon button that opens the same thing.
+    bool IconMenuItem(ID3D11Device* dev, RibbonArt art, const char* label,
+                      const char* shortcut = nullptr, bool selected = false, bool enabled = true)
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool clicked = ImGui::MenuItemEx(label, IconColumn(), shortcut, selected, enabled);
+        MenuIcon(ImGui::GetWindowDrawList(), dev, art, p, enabled);
+        return clicked;
+    }
+
+    bool IconBeginMenu(ID3D11Device* dev, RibbonArt art, const char* label)
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();   // the parent's: BeginMenu switches window
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool open = ImGui::BeginMenuEx(label, IconColumn());
+        MenuIcon(dl, dev, art, p, true);
+        return open;
+    }
 }
 
 void ReplayWindow::RequestPlayerContextMenu(int agentId, bool byKeyboard)
@@ -254,7 +296,8 @@ void ReplayWindow::DrawPlayerContextMenu()
             if (m_autoCameraEnabled)
                 MenuNote("Auto camera is on and may switch to another player.");
 
-            if (ImGui::MenuItem("Watch in split camera", nullptr, m_pipEnabled && m_pipManualAgent == id))
+            if (IconMenuItem(dev, RibbonArt::SplitCamera, "Watch in split camera", nullptr,
+                             m_pipEnabled && m_pipManualAgent == id))
             {
                 m_pipEnabled = true;
                 m_pipManualAgent = id;
@@ -269,7 +312,7 @@ void ReplayWindow::DrawPlayerContextMenu()
                 m_playerMenuActionTookFocus = true;
             }
 
-            if (ImGui::MenuItem("Open equipment"))
+            if (IconMenuItem(dev, RibbonArt::CharacterPanel, "Open equipment"))
             {
                 auto cp = std::find_if(m_characterPanels.begin(), m_characterPanels.end(),
                     [&](const CharacterPanelInstance& c) { return c.open && c.agentId == id; });
@@ -286,7 +329,7 @@ void ReplayWindow::DrawPlayerContextMenu()
             ImGui::Separator();
 
             // --- Range rings (this player only) ---
-            if (ImGui::BeginMenu("Range rings"))
+            if (IconBeginMenu(dev, RibbonArt::RangeRings, "Range rings"))
             {
                 ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, keepOpen);
                 bool eff[kRingTypeCount];
@@ -326,7 +369,7 @@ void ReplayWindow::DrawPlayerContextMenu()
             }
 
             // --- Skill lasers (outgoing, this player as caster) ---
-            if (ImGui::BeginMenu("Skill lasers"))
+            if (IconBeginMenu(dev, RibbonArt::SkillLasers, "Skill lasers"))
             {
                 ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, keepOpen);
                 MenuNote("Lines from this player to the targets of their skills.");
@@ -358,7 +401,7 @@ void ReplayWindow::DrawPlayerContextMenu()
             }
 
             // --- Fog of war (whole view) ---
-            if (ImGui::BeginMenu("Fog of war"))
+            if (IconBeginMenu(dev, RibbonArt::FogOfWar, "Fog of war"))
             {
                 ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, keepOpen);
                 MenuNote("Changes what the whole replay view reveals, not just this player.",
@@ -399,20 +442,20 @@ void ReplayWindow::DrawPlayerContextMenu()
             }
 
             // --- Damage & healing ---
-            if (ImGui::BeginMenu("Damage & healing"))
+            if (IconBeginMenu(dev, RibbonArt::CombatLog, "Damage & healing"))
             {
                 const bool ready = m_combatLogBuilt;
-                if (ImGui::MenuItem("Open player breakdown...", nullptr, false, ready))
+                if (IconMenuItem(dev, RibbonArt::SkillAnalytics, "Open player breakdown...", nullptr, false, ready))
                 {
                     OpenPlayerSkillAnalytics(id);
                     m_playerMenuActionTookFocus = true;
                 }
-                if (ImGui::MenuItem("Show damage events...", nullptr, false, ready))
+                if (IconMenuItem(dev, RibbonArt::CombatLog, "Show damage events...", nullptr, false, ready))
                 {
                     OpenPlayerCombatLog(id, true);
                     m_playerMenuActionTookFocus = true;
                 }
-                if (ImGui::MenuItem("Show healing events...", nullptr, false, ready))
+                if (IconMenuItem(dev, RibbonArt::CombatLog, "Show healing events...", nullptr, false, ready))
                 {
                     OpenPlayerCombatLog(id, false);
                     m_playerMenuActionTookFocus = true;
@@ -425,9 +468,9 @@ void ReplayWindow::DrawPlayerContextMenu()
             }
 
             // --- Analysis ---
-            if (ImGui::BeginMenu("Analysis"))
+            if (IconBeginMenu(dev, RibbonArt::SkillAnalytics, "Analysis"))
             {
-                if (ImGui::MenuItem("Skill analytics...", nullptr, false, m_combatLogBuilt))
+                if (IconMenuItem(dev, RibbonArt::SkillAnalytics, "Skill analytics...", nullptr, false, m_combatLogBuilt))
                 {
                     OpenPlayerSkillAnalytics(id);
                     m_playerMenuActionTookFocus = true;
@@ -435,7 +478,7 @@ void ReplayWindow::DrawPlayerContextMenu()
                 if (!m_combatLogBuilt)
                     MenuNote("Skill analytics need the combat data, still being prepared.");
 
-                if (ImGui::MenuItem("Cast timeline..."))
+                if (IconMenuItem(dev, RibbonArt::PianoRoll, "Cast timeline..."))
                 {
                     m_showPianoRoll = true;
                     if (Team::IsRed(ard.teamId)) m_pianoRollTeam2Open = true;
@@ -445,13 +488,13 @@ void ReplayWindow::DrawPlayerContextMenu()
                     m_playerMenuActionTookFocus = true;
                 }
 
-                if (ImGui::MenuItem("Movement heatmap...", nullptr, PlayerHeatmapLayerShown(id)))
+                if (IconMenuItem(dev, RibbonArt::Heatmap, "Movement heatmap...", nullptr, PlayerHeatmapLayerShown(id)))
                 {
                     ShowPlayerHeatmapLayer(id);
                     m_playerMenuActionTookFocus = true;
                 }
 
-                if (ImGui::MenuItem("Morale..."))
+                if (IconMenuItem(dev, RibbonArt::Morale, "Morale..."))
                 {
                     m_showMoralePanel = true;
                     m_moraleDetailsExpanded = true;
@@ -472,7 +515,7 @@ void ReplayWindow::DrawPlayerContextMenu()
                             if (h.casterId == id) lordDmg += h.rawDmg;
                         }
                 const std::string lordShort = hasLord ? (lordDmg > 0 ? WithThousands(lordDmg) : "none yet") : "";
-                if (ImGui::MenuItem("Lord damage...", lordShort.c_str(), false, hasLord))
+                if (IconMenuItem(dev, RibbonArt::LordDamage, "Lord damage...", lordShort.c_str(), false, hasLord))
                 {
                     m_showLordDamagePanel = true;
                     m_lordDmgHighlightAgent = id;
@@ -492,7 +535,7 @@ void ReplayWindow::DrawPlayerContextMenu()
             {
                 ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, keepOpen);
                 const bool nameShown = m_show3DLabels && !m_hiddenNameAgents.count(id);
-                if (ImGui::MenuItem("Show name under character", nullptr, nameShown, m_show3DLabels))
+                if (IconMenuItem(dev, RibbonArt::AgentNames, "Show name under character", nullptr, nameShown, m_show3DLabels))
                 {
                     if (nameShown) m_hiddenNameAgents.insert(id);
                     else           m_hiddenNameAgents.erase(id);

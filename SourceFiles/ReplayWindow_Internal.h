@@ -50,6 +50,14 @@ const ReplayWindow::RingDef& GetRangeRingDef(int type);   // ReplayWindow_RangeR
 // pipeline; outW/outH receive the source size for atlas sub-rects.
 ImTextureID LoadRibbonArt(ID3D11Device* device, const char* relative,
                           float* outW, float* outH);
+// A ribbon button's own picture, centred on c in an s x s box, for menus that open the same
+// thing the button does (the player context menu).
+enum class RibbonArt
+{
+    SplitCamera, CharacterPanel, RangeRings, SkillLasers, FogOfWar,
+    CombatLog, SkillAnalytics, PianoRoll, Heatmap, Morale, LordDamage, AgentNames
+};
+void DrawRibbonArt(ImDrawList* dl, ID3D11Device* dev, RibbonArt art, ImVec2 c, float s, float alpha = 1.f);
 ImTextureID LoadFlagIcon(ID3D11Device* device, const char* filename);
 // Minimap cursor / zoom-button textures: Textures/Game_UI/Cursor/<filename>
 ImTextureID LoadGameUICursorTexture(ID3D11Device* device, const char* filename);

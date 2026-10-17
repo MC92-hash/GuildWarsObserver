@@ -413,6 +413,74 @@ void ReplayWindow::RenderPiP()
 }
 
 
+// Who the split camera is watching, in the image's bottom-left corner: profession icons,
+// "Name (number)" in the team colour, health. The view says who it shows on its own, so the
+// panel needs no roster on screen.
+void ReplayWindow::DrawPiPSubjectLabel(ImDrawList* dl, ImVec2 imgPos, float imgH)
+{
+    auto it = m_replayCtx.agents.find(m_pipTargetAgent);
+    if (it == m_replayCtx.agents.end()) return;
+    const AgentReplayData& ard = it->second;
+    const AgentSnapshot* snap = FindSnapshotAtTime(ard, m_debugTimeline);
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+
+    std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
+    if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+
+    const bool dead = !snap || snap->is_dead || ard.isDeadAtTime(m_debugTimeline);
+    const float hp = dead ? 0.f : std::clamp(snap->health_pct, 0.f, 1.f);
+    char hpText[32];
+    if (dead)
+        snprintf(hpText, sizeof(hpText), "Dead");
+    else if (uint32_t maxHp = ResolveMaxHp(ard, m_debugTimeline).value)
+        snprintf(hpText, sizeof(hpText), "%u/%u", (uint32_t)(hp * maxHp + 0.5f), maxHp);
+    else
+        snprintf(hpText, sizeof(hpText), "%d%%", (int)(hp * 100.f + 0.5f));
+
+    const ImU32 teamCol = Team::IsRed(ard.teamId)  ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
+                        : Team::IsBlue(ard.teamId) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
+                                                   : IM_COL32(240, 240, 240, 255);
+    const float iconSz = 16.f, pad = 6.f, barH = 4.f, fs = ImGui::GetFontSize();
+
+    ImTextureID icons[2] = {};
+    int nIcons = 0;
+    for (int prof : { ard.primaryProf, ard.secondaryProf })
+        if (ImTextureID tex = (prof > 0) ? LoadProfIcon(dev, prof) : nullptr)
+            icons[nIcons++] = tex;
+
+    const float nameW  = ImGui::CalcTextSize(name.c_str()).x;
+    const float hpW    = ImGui::CalcTextSize(hpText).x;
+    const float lineH  = std::max(iconSz, fs);
+    const float innerW = std::max(120.f, nIcons * (iconSz + 1.f) + 4.f + nameW + 10.f + hpW);
+    const ImVec2 bMin(imgPos.x + 8.f, imgPos.y + imgH - 8.f - (pad * 2.f + lineH + 4.f + barH));
+    const ImVec2 bMax(bMin.x + innerW + pad * 2.f, imgPos.y + imgH - 8.f);
+
+    dl->AddRectFilled(bMin, bMax, IM_COL32(8, 10, 14, 170), 6.f);
+
+    float x = bMin.x + pad;
+    const float y = bMin.y + pad;
+    for (int i = 0; i < nIcons; ++i)
+    {
+        const float iy = y + (lineH - iconSz) * 0.5f;
+        dl->AddImage(icons[i], ImVec2(x, iy), ImVec2(x + iconSz, iy + iconSz),
+                     ImVec2(0, 0), ImVec2(1, 1), dead ? IM_COL32(255, 255, 255, 110) : IM_COL32_WHITE);
+        x += iconSz + 1.f;
+    }
+    x += 3.f;
+    const float ty = y + (lineH - fs) * 0.5f;
+    dl->AddText(ImVec2(x + 1.f, ty + 1.f), IM_COL32(0, 0, 0, 200), name.c_str());
+    dl->AddText(ImVec2(x, ty), teamCol, name.c_str());
+    dl->AddText(ImVec2(bMax.x - pad - hpW, ty),
+                dead ? IM_COL32(200, 110, 100, 255) : IM_COL32(205, 210, 218, 255), hpText);
+
+    const ImVec2 barMin(bMin.x + pad, y + lineH + 4.f);
+    const ImVec2 barMax(bMax.x - pad, barMin.y + barH);
+    dl->AddRectFilled(barMin, barMax, IM_COL32(40, 12, 12, 220), 2.f);
+    if (hp > 0.f)
+        dl->AddRectFilled(barMin, ImVec2(barMin.x + (barMax.x - barMin.x) * hp, barMax.y),
+                          IM_COL32(204, 40, 40, 255), 2.f);
+}
+
 void ReplayWindow::DrawPiPPanel()
 {
     if (!m_pipEnabled) return;
@@ -429,7 +497,7 @@ void ReplayWindow::DrawPiPPanel()
     if (m_panelLayout.HasSavedSize("split_camera"))
         m_panelLayout.ApplySize("split_camera");
     else
-        ImGui::SetNextWindowSize(ImVec2((float)m_pipWidth + 24.f, (float)m_pipHeight + 100.f),
+        ImGui::SetNextWindowSize(ImVec2((float)m_pipWidth + 24.f, (float)m_pipHeight + 64.f),
                                  ImGuiCond_FirstUseEver);
     m_panelLayout.ApplyPosition("split_camera");
 
@@ -463,7 +531,9 @@ void ReplayWindow::DrawPiPPanel()
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Player selector — two-column layout: [icon] truncated_name per team
+    // Header: one line - Auto-detect, previous player, the watched player (a drop-down holding
+    // both teams), next player and, while auto-detect is on, the rules it follows. The camera
+    // view is what stays on screen; the full roster only shows while choosing.
     if (m_agentsClassified)
     {
         const float iconSz = 16.f;
@@ -472,142 +542,242 @@ void ReplayWindow::DrawPiPPanel()
         const ImU32 kRedTeam  = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
         const ImU32 kSelHigh  = IM_COL32(255, 220, 100, 60);
         const ImU32 kSelBord  = IM_COL32(255, 220, 100, 180);
+        auto TeamCol = [&](uint8_t teamId) {
+            return Team::IsRed(teamId)  ? kRedTeam
+                 : Team::IsBlue(teamId) ? kBlueTeam : IM_COL32(240, 240, 240, 255);
+        };
+        auto& cfg = m_autoCamCfg;
 
-        // Auto-detect toggle + focus pills on the same line
-        {
-            auto& cfg = m_autoCamCfg;
-
-            auto Pill = [&](const char* label, bool active, bool* toggle = nullptr) {
-                ImVec4 bg, tx, hov, bdr;
-                if (active) {
-                    bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
-                    tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
-                    hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
-                    bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
-                } else {
-                    bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
-                    tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
-                    hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
-                    bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
-                }
-                ImGui::PushStyleColor(ImGuiCol_Button, bg);
-                ImGui::PushStyleColor(ImGuiCol_Text, tx);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                    ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
-                ImGui::PushStyleColor(ImGuiCol_Border, bdr);
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
-                bool clicked = ImGui::Button(label);
-                ImGui::PopStyleVar(3);
-                ImGui::PopStyleColor(5);
-                if (clicked && toggle) *toggle = !*toggle;
-                return clicked;
-            };
-
-            bool autoSel = (m_pipManualAgent < 0);
-            if (Pill("Auto-detect", autoSel)) {
-                if (autoSel)
-                    m_pipManualAgent = (m_pipTargetAgent >= 0) ? m_pipTargetAgent : 0;
-                else
-                    m_pipManualAgent = -1;
+        auto Pill = [&](const char* label, bool active) {
+            ImVec4 bg, tx, hov, bdr;
+            if (active) {
+                bg  = ImVec4(0.18f, 0.14f, 0.05f, 1.f);
+                tx  = ImVec4(1.f, 0.91f, 0.69f, 1.f);
+                hov = ImVec4(0.23f, 0.19f, 0.08f, 1.f);
+                bdr = ImVec4(1.f, 0.84f, 0.39f, 0.85f);
+            } else {
+                bg  = ImVec4(1.f, 1.f, 1.f, 0.05f);
+                tx  = ImVec4(0.60f, 0.64f, 0.69f, 1.f);
+                hov = ImVec4(1.f, 1.f, 1.f, 0.12f);
+                bdr = ImVec4(1.f, 1.f, 1.f, 0.08f);
             }
+            ImGui::PushStyleColor(ImGuiCol_Button, bg);
+            ImGui::PushStyleColor(ImGuiCol_Text, tx);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                ImVec4(bg.x * 0.85f, bg.y * 0.85f, bg.z * 0.85f, 1.f));
+            ImGui::PushStyleColor(ImGuiCol_Border, bdr);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 3));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+            bool clicked = ImGui::Button(label);
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(5);
+            return clicked;
+        };
 
-            if (m_pipManualAgent < 0)
-            {
-                ImGui::SameLine();
-                Pill("Death", cfg.focusDeath, &cfg.focusDeath);           ImGui::SameLine();
-                Pill("Low HP", cfg.focusLowHp, &cfg.focusLowHp);         ImGui::SameLine();
-                Pill("Guild Lord", cfg.focusLord, &cfg.focusLord);        ImGui::SameLine();
-                Pill("Flag", cfg.focusFlag, &cfg.focusFlag);              ImGui::SameLine();
-                Pill("Resurrection", cfg.focusRez, &cfg.focusRez);        ImGui::SameLine();
-                Pill("Isolated", cfg.focusIsolated, &cfg.focusIsolated);  ImGui::SameLine();
-                Pill("Flag Carrier", cfg.focusFlagCarry, &cfg.focusFlagCarry);
-            }
+        // Who the arrows step through: team 1 then team 2, wrapping round.
+        std::vector<int> roster;
+        for (const auto* ids : { &m_team1PlayerIds, &m_team2PlayerIds })
+            for (int id : *ids)
+                if (m_replayCtx.agents.count(id)) roster.push_back(id);
+        auto Step = [&](int dir) {
+            if (roster.empty()) return;
+            const int n = (int)roster.size();
+            const int cur = (m_pipManualAgent >= 0) ? m_pipManualAgent : m_pipTargetAgent;
+            auto it = std::find(roster.begin(), roster.end(), cur);
+            int idx = (it == roster.end()) ? (dir > 0 ? -1 : 0) : (int)(it - roster.begin());
+            m_pipManualAgent = roster[((idx + dir) % n + n) % n];
+        };
+
+        const bool autoSel = (m_pipManualAgent < 0);
+        if (Pill("Auto", autoSel)) {
+            if (autoSel)
+                m_pipManualAgent = (m_pipTargetAgent >= 0) ? m_pipTargetAgent : 0;
+            else
+                m_pipManualAgent = -1;
         }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(autoSel
+                ? "Auto-detect is on: the split camera picks who to watch (deaths, low HP, flag...).\nClick to stay on the current player."
+                : "Auto-detect is off: the split camera stays on the player you chose.\nClick to let it pick again.");
 
-        ImGui::Spacing();
+        // Arrows and the player picker share a quiet frame style.
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(1.f, 1.f, 1.f, 0.05f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 1.f, 1.f, 0.12f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.f, 1.f, 1.f, 0.16f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(1.f, 1.f, 1.f, 0.08f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.75f, 0.78f, 0.82f, 1.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
 
-        // Override Selectable hover/active colors to match our warm UI palette
-        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.14f, 0.05f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered,  ImVec4(0.20f, 0.16f, 0.07f, 0.70f));
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive,   ImVec4(0.25f, 0.20f, 0.08f, 0.85f));
+        const float frameH = ImGui::GetFrameHeight();
+        const float gap = 3.f;
+        const float rulesW = autoSel
+            ? ImGui::CalcTextSize("Rules").x + 12.f + ImGui::GetStyle().ItemSpacing.x : 0.f;
 
-        float availW = ImGui::GetContentRegionAvail().x;
-        float halfW = (availW - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+        ImGui::SameLine(0.f, 6.f);
+        if (ImGui::ArrowButton("##pip_prev", ImGuiDir_Left)) Step(-1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous player");
+        ImGui::SameLine(0.f, gap);
 
-        if (ImGui::BeginTable("##pip_teams", 2, ImGuiTableFlags_NoSavedSettings))
+        const float pickW = std::max(80.f,
+            ImGui::GetContentRegionAvail().x - frameH - gap - rulesW);
+        const ImVec2 pickMin = ImGui::GetCursorScreenPos();
+        if (ImGui::Button("##pip_pick", ImVec2(pickW, frameH)))
+            ImGui::OpenPopup("##pip_roster");
+        const bool pickHovered = ImGui::IsItemHovered();
         {
-            ImGui::TableSetupColumn("t1", ImGuiTableColumnFlags_WidthFixed, halfW);
-            ImGui::TableSetupColumn("t2", ImGuiTableColumnFlags_WidthFixed, halfW);
-
-            auto DrawTeamColumn = [&](const std::vector<int>& ids, ImU32 teamCol,
-                                      const char* teamLabel)
+            // [primary][secondary] Name (number), in the team colour, then a drop-down arrow.
+            const ImVec2 pickMax(pickMin.x + pickW, pickMin.y + frameH);
+            const float arrowW = frameH * 0.6f;
+            const float textY = pickMin.y + (frameH - ImGui::GetFontSize()) * 0.5f;
+            dl->PushClipRect(pickMin, ImVec2(pickMax.x - arrowW, pickMax.y), true);
+            float x = pickMin.x + 5.f;
+            const float iy = pickMin.y + (frameH - iconSz) * 0.5f;
+            auto tgt = m_replayCtx.agents.find(m_pipTargetAgent);
+            if (tgt != m_replayCtx.agents.end())
             {
-                ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "%s", teamLabel);
-                float colW = ImGui::GetContentRegionAvail().x;
-
-                for (int id : ids)
-                {
-                    auto agIt = m_replayCtx.agents.find(id);
-                    if (agIt == m_replayCtx.agents.end()) continue;
-                    const auto& ard = agIt->second;
-                    bool selected = (m_pipManualAgent == id);
-
-                    ImVec2 rowMin = ImGui::GetCursorScreenPos();
-
-                    ImGui::PushID(id);
-                    if (ImGui::Selectable("##s", selected, 0, ImVec2(colW, rowH)))
-                        m_pipManualAgent = id;
-                    ImGui::PopID();
-
-                    if (selected)
+                const auto& ard = tgt->second;
+                for (int prof : { ard.primaryProf, ard.secondaryProf })
+                    if (ImTextureID tex = (prof > 0) ? LoadProfIcon(dev, prof) : nullptr)
                     {
-                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + colW, rowMin.y + rowH),
-                                          kSelHigh, 3.f);
-                        dl->AddRect(rowMin, ImVec2(rowMin.x + colW, rowMin.y + rowH),
-                                    kSelBord, 3.f);
+                        dl->AddImage(tex, ImVec2(x, iy), ImVec2(x + iconSz, iy + iconSz));
+                        x += iconSz + 1.f;
                     }
+                x += 3.f;
+                std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
+                if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+                dl->AddText(ImVec2(x, textY), TeamCol(ard.teamId), name.c_str());
+            }
+            else
+            {
+                dl->AddText(ImVec2(x, textY), IM_COL32(150, 155, 165, 255), "Choose a player");
+            }
+            dl->PopClipRect();
+            ImGui::RenderArrow(dl, ImVec2(pickMax.x - arrowW, textY),
+                               IM_COL32(190, 195, 205, 255), ImGuiDir_Down, 0.8f);
+        }
+        if (pickHovered && !ImGui::IsPopupOpen("##pip_roster"))
+            ImGui::SetTooltip("Choose who the split camera watches");
 
-                    float iconY = rowMin.y + (rowH - iconSz) * 0.5f;
-                    ImTextureID profTex = (ard.primaryProf > 0)
-                        ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
-                    if (profTex)
-                        dl->AddImage(profTex, ImVec2(rowMin.x + 1, iconY),
-                                     ImVec2(rowMin.x + 1 + iconSz, iconY + iconSz));
-                    else
-                        dl->AddRectFilled(ImVec2(rowMin.x + 1, iconY),
-                                          ImVec2(rowMin.x + 1 + iconSz, iconY + iconSz),
-                                          IM_COL32(40, 40, 40, 180), 2.f);
+        ImGui::SameLine(0.f, gap);
+        if (ImGui::ArrowButton("##pip_next", ImGuiDir_Right)) Step(+1);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next player");
 
-                    std::string name = ard.playerName.empty()
-                        ? ard.categoryName : ard.playerName;
-                    ImFont* font = ImGui::GetFont();
-                    float textY = rowMin.y + (rowH - font->FontSize) * 0.5f;
-                    float textX = rowMin.x + iconSz + 4.f;
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
 
-                    dl->PushClipRect(ImVec2(textX, rowMin.y),
-                                     ImVec2(rowMin.x + colW, rowMin.y + rowH), true);
-                    dl->AddText(font, font->FontSize, ImVec2(textX, textY),
-                                teamCol, name.c_str());
-                    dl->PopClipRect();
-
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", name.c_str());
-                }
-            };
-
-            ImGui::TableNextColumn();
-            DrawTeamColumn(m_team1PlayerIds, kBlueTeam, "Team 1");
-            ImGui::TableNextColumn();
-            DrawTeamColumn(m_team2PlayerIds, kRedTeam, "Team 2");
-
-            ImGui::EndTable();
+        if (autoSel)
+        {
+            ImGui::SameLine();
+            if (Pill("Rules", ImGui::IsPopupOpen("##pip_rules")))
+                ImGui::OpenPopup("##pip_rules");
+            if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##pip_rules"))
+                ImGui::SetTooltip("What auto-detect looks for");
         }
 
-        ImGui::PopStyleColor(3);
-        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.055f, 0.063f, 0.078f, 0.97f));
+        ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.40f, 0.33f, 0.15f, 0.85f));
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.18f, 0.14f, 0.05f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.16f, 0.07f, 0.70f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0.25f, 0.20f, 0.08f, 0.85f));
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.f, 8.f));
+
+        if (ImGui::BeginPopup("##pip_rules"))
+        {
+            ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
+            ImGui::MenuItem("Death",        nullptr, &cfg.focusDeath);
+            ImGui::MenuItem("Low HP",       nullptr, &cfg.focusLowHp);
+            ImGui::MenuItem("Guild Lord",   nullptr, &cfg.focusLord);
+            ImGui::MenuItem("Flag",         nullptr, &cfg.focusFlag);
+            ImGui::MenuItem("Resurrection", nullptr, &cfg.focusRez);
+            ImGui::MenuItem("Isolated",     nullptr, &cfg.focusIsolated);
+            ImGui::MenuItem("Flag Carrier", nullptr, &cfg.focusFlagCarry);
+            ImGui::PopItemFlag();
+            ImGui::EndPopup();
+        }
+
+        // The roster: both teams side by side, as the panel used to show them all the time.
+        if (ImGui::IsPopupOpen("##pip_roster"))
+            ImGui::SetNextWindowPos(ImVec2(pickMin.x, pickMin.y + frameH + 2.f), ImGuiCond_Appearing);
+        if (ImGui::BeginPopup("##pip_roster"))
+        {
+            ImDrawList* pdl = ImGui::GetWindowDrawList();
+            const float colW = std::max(170.f, pickW * 0.5f);
+
+            if (ImGui::BeginTable("##pip_teams", 2, ImGuiTableFlags_NoSavedSettings))
+            {
+                ImGui::TableSetupColumn("t1", ImGuiTableColumnFlags_WidthFixed, colW);
+                ImGui::TableSetupColumn("t2", ImGuiTableColumnFlags_WidthFixed, colW);
+
+                auto DrawTeamColumn = [&](const std::vector<int>& ids, ImU32 teamCol,
+                                          const char* teamLabel)
+                {
+                    ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "%s", teamLabel);
+
+                    for (int id : ids)
+                    {
+                        auto agIt = m_replayCtx.agents.find(id);
+                        if (agIt == m_replayCtx.agents.end()) continue;
+                        const auto& ard = agIt->second;
+                        bool selected = (m_pipTargetAgent == id);
+
+                        ImVec2 rowMin = ImGui::GetCursorScreenPos();
+
+                        ImGui::PushID(id);
+                        if (ImGui::Selectable("##s", selected, 0, ImVec2(colW, rowH)))
+                            m_pipManualAgent = id;
+                        ImGui::PopID();
+
+                        if (selected)
+                        {
+                            pdl->AddRectFilled(rowMin, ImVec2(rowMin.x + colW, rowMin.y + rowH),
+                                               kSelHigh, 3.f);
+                            pdl->AddRect(rowMin, ImVec2(rowMin.x + colW, rowMin.y + rowH),
+                                         kSelBord, 3.f);
+                        }
+
+                        float iconY = rowMin.y + (rowH - iconSz) * 0.5f;
+                        ImTextureID profTex = (ard.primaryProf > 0)
+                            ? LoadProfIcon(dev, ard.primaryProf) : nullptr;
+                        if (profTex)
+                            pdl->AddImage(profTex, ImVec2(rowMin.x + 1, iconY),
+                                          ImVec2(rowMin.x + 1 + iconSz, iconY + iconSz));
+                        else
+                            pdl->AddRectFilled(ImVec2(rowMin.x + 1, iconY),
+                                               ImVec2(rowMin.x + 1 + iconSz, iconY + iconSz),
+                                               IM_COL32(40, 40, 40, 180), 2.f);
+
+                        std::string name = ard.playerName.empty()
+                            ? ard.categoryName : ard.playerName;
+                        if (ard.playerNumber > 0)
+                            name += " (" + std::to_string(ard.playerNumber) + ")";
+                        ImFont* font = ImGui::GetFont();
+                        float textY = rowMin.y + (rowH - font->FontSize) * 0.5f;
+                        float textX = rowMin.x + iconSz + 4.f;
+
+                        pdl->PushClipRect(ImVec2(textX, rowMin.y),
+                                          ImVec2(rowMin.x + colW, rowMin.y + rowH), true);
+                        pdl->AddText(font, font->FontSize, ImVec2(textX, textY),
+                                     teamCol, name.c_str());
+                        pdl->PopClipRect();
+                    }
+                };
+
+                ImGui::TableNextColumn();
+                DrawTeamColumn(m_team1PlayerIds, kBlueTeam, "Team 1");
+                ImGui::TableNextColumn();
+                DrawTeamColumn(m_team2PlayerIds, kRedTeam, "Team 2");
+
+                ImGui::EndTable();
+            }
+            ImGui::EndPopup();
+        }
+
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(5);
     }
 
     if (m_pipTargetAgent >= 0)
@@ -939,6 +1109,8 @@ void ReplayWindow::DrawPiPPanel()
                     }
                 }
             }
+
+            DrawPiPSubjectLabel(dl, imgPos, imgH);
         }
     }
     else
