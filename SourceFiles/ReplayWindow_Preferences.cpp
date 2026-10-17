@@ -659,6 +659,13 @@ void ReplayWindow::DrawInterfacePreferences()
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Conditions, hexes and enchantments shown on the characters while they last.");
+        if (ImGui::Checkbox("Cast and area effects", &GuiGlobalConstants::replay_cast_effects))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The glow as a skill is cast, and the areas the game draws by itself (wards, wells, storms).");
         PopPrefsFrameStyle();
 
         ImGui::Dummy(ImVec2(0, 16.f));
@@ -944,6 +951,7 @@ void ReplayWindow::DrawInterfacePreferences()
         GuiGlobalConstants::replay_skill_effects = true;
         GuiGlobalConstants::replay_packet_bursts = true;
         GuiGlobalConstants::replay_lasting_visuals = true;
+        GuiGlobalConstants::replay_cast_effects = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;
