@@ -1029,6 +1029,7 @@ private:
     bool m_showAgentOverlay = true;
     bool m_showSkillIcons   = true;
     bool m_showSkillLasers  = true;
+    bool m_skillTogglesLoaded = false;   // the two above taken from the saved settings once
     bool m_show3DLabels     = true;
     bool m_showNameFilterPanel = false;
     std::unordered_set<int> m_hiddenNameAgents;   // agent IDs whose names are hidden

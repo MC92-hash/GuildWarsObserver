@@ -347,6 +347,9 @@ public:
 	inline static bool replay_lasting_visuals = true;
 	// The cast effects and the area visuals the game draws by itself (persisted, default on).
 	inline static bool replay_cast_effects = true;
+	// The toolbar's Skill Icons and Skill Lasers (the skill arrows), as the user last left them (persisted, default on).
+	inline static bool replay_show_skill_icons = true;
+	inline static bool replay_show_skill_lasers = true;
 
 	static float ClampReplayCameraSensitivityMultiplier(float mult)
 	{
@@ -718,6 +721,8 @@ public:
 		file << "replay_packet_bursts=" << (replay_packet_bursts ? 1 : 0) << "\n";
 		file << "replay_lasting_visuals=" << (replay_lasting_visuals ? 1 : 0) << "\n";
 		file << "replay_cast_effects=" << (replay_cast_effects ? 1 : 0) << "\n";
+		file << "replay_show_skill_icons=" << (replay_show_skill_icons ? 1 : 0) << "\n";
+		file << "replay_show_skill_lasers=" << (replay_show_skill_lasers ? 1 : 0) << "\n";
 
 		file << "\n[AutoCamera]\n";
 		file << "autocam_lookahead=" << static_cast<int>(autocam_lookahead) << "\n";
@@ -892,6 +897,8 @@ public:
 			else if (key == "replay_packet_bursts") replay_packet_bursts = (value != 0);
 			else if (key == "replay_lasting_visuals") replay_lasting_visuals = (value != 0);
 			else if (key == "replay_cast_effects") replay_cast_effects = (value != 0);
+			else if (key == "replay_show_skill_icons") replay_show_skill_icons = (value != 0);
+			else if (key == "replay_show_skill_lasers") replay_show_skill_lasers = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -
 			// Classic - while its saved map_light_gain is still loaded and kept as the Client
 			// mode's own value, Classic taking its calibrated default on that first run.

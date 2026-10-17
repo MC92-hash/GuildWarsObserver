@@ -6893,6 +6893,23 @@ void ReplayWindow::Update(double elapsedMs)
         m_inputManager->SetSuppressKeyPolling(m_imguiWantTextInput || m_clSkillSearchFocused
                                               || m_playerMenuBlocksHotkeys || IsClipRendering());
     RemoveCameraShake();   // before any camera places itself (normally already off after Render)
+
+    // Skill Icons / Skill Lasers keep the user's choice between sessions: taken from the settings on the
+    // first frame, saved whenever the user flips one (toolbar, laser panel, hotkey) - never while Top View
+    // has turned both off for itself (it puts them back as it ends).
+    if (!m_skillTogglesLoaded)
+    {
+        m_skillTogglesLoaded = true;
+        m_showSkillIcons  = GuiGlobalConstants::replay_show_skill_icons;
+        m_showSkillLasers = GuiGlobalConstants::replay_show_skill_lasers;
+    }
+    else if (!m_topViewActive && (m_showSkillIcons != GuiGlobalConstants::replay_show_skill_icons ||
+                                  m_showSkillLasers != GuiGlobalConstants::replay_show_skill_lasers))
+    {
+        GuiGlobalConstants::replay_show_skill_icons  = m_showSkillIcons;
+        GuiGlobalConstants::replay_show_skill_lasers = m_showSkillLasers;
+        GuiGlobalConstants::SaveSettings();
+    }
     UpdateTopViewTransition(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
