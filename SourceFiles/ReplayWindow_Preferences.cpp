@@ -652,6 +652,13 @@ void ReplayWindow::DrawInterfacePreferences()
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The sparkle on every heal and the burst on every armour-ignoring hit.");
+        if (ImGui::Checkbox("Lasting visuals", &GuiGlobalConstants::replay_lasting_visuals))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Conditions, hexes and enchantments shown on the characters while they last.");
         PopPrefsFrameStyle();
 
         ImGui::Dummy(ImVec2(0, 16.f));
@@ -936,6 +943,7 @@ void ReplayWindow::DrawInterfacePreferences()
         GuiGlobalConstants::replay_projectiles = true;
         GuiGlobalConstants::replay_skill_effects = true;
         GuiGlobalConstants::replay_packet_bursts = true;
+        GuiGlobalConstants::replay_lasting_visuals = true;
         GuiGlobalConstants::SaveSettings();
         MapBrowser::NotifyReplayWindowsReplayCameraFovChanged();
         changed = true;
