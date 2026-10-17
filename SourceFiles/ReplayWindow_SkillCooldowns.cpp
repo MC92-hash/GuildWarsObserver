@@ -236,7 +236,6 @@ namespace
         return -1.f;
     }
 
-    constexpr int kArcaneThievery = 81, kArcaneLarceny = 1062;
     constexpr int kAuspiciousIncantation = 930;
     constexpr int kOathShot = 405, kNeedlingShot = 1197, kWordOfCensure = 1129;
     // Keystone Signet: "All of your signets except Keystone Signet are recharged." Measured
@@ -441,6 +440,34 @@ void ReplayWindow::BuildSkillDisables() const
     // Which use caused each interrupt: only that one applies its "if it interrupts" effect.
     const InterruptCauses::Table causes = InterruptCauses::Build(m_replayCtx.agents, m_replayCtx.stocData, sdb);
 
+    // Arcane Thievery / Larceny / Simple Thievery: what each steal took, and which of the thief's
+    // uses went to it (ThieverySlots, private). The target's spell is disabled for the steal's
+    // full length; Simple Thievery's lock is its interrupt rule's (kInterruptRules).
+    {
+        ThieverySlots::Inputs ti;
+        ti.agents = &m_replayCtx.agents;
+        ti.sdb = &sdb;
+        ti.causes = &causes;
+        ti.bar = [&](int agent) { return SkillBarForAgent(agent); };
+        ti.seconds = [&](int agent, int sid, float at) { return SkillSecondsAtRank(sid, agent, 0, 0.f, at); };
+        m_thievery = ThieverySlots::Build(ti);
+        for (const ThieverySlots::Steal& s : m_thievery.steals) {
+            if (s.how == ThieverySlots::How::Interrupt || s.stolen <= 0) continue;
+            SkillDisable d;
+            d.start = s.start;
+            d.end = s.targetEnd;
+            d.ruleEnd = d.end;
+            float lo = 0.f, hi = 0.f;
+            if (SkillSecondsBand(s.thiefSkill, s.thief, 0, s.start, lo, hi) && hi > lo) {
+                d.endLo = s.start + lo;
+                d.endHi = s.start + hi;
+            }
+            d.scope = DisableScope::Skill; d.skillId = s.stolen;
+            d.sourceSkill = s.thiefSkill; d.sourceAgent = s.thief;
+            add(s.target, d);
+        }
+    }
+
     for (const auto& [casterId, caster] : m_replayCtx.agents) {
         if (caster.type != AgentType::Player) continue;
 
@@ -541,27 +568,6 @@ void ReplayWindow::BuildSkillDisables() const
                 d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
                 d.victimUse = static_cast<int>(ei);
                 add(casterId, d);
-            }
-
-            // Arcane Thievery / Larceny take ONE random spell for the duration. Which one is only
-            // known if the thief casts it: a spell that is not on the thief's own bar, and is on
-            // the victim's, used inside the window.
-            if (rid == resolve(kArcaneThievery) || rid == resolve(kArcaneLarceny)) {
-                const float dur = SkillSecondsAtRank(ev.skillId, casterId, 0, 0.f, t0);
-                if (ev.targetId > 0 && dur > 0.f) {
-                    for (size_t j = ei + 1; j < caster.skillUseHistory.size(); ++j) {
-                        const auto& nev = caster.skillUseHistory[j];
-                        if (nev.startTime > t0 + dur) break;
-                        const int nid = resolve(nev.skillId);
-                        if (onBar(casterId, nid) || !onBar(ev.targetId, nid)) continue;
-                        SkillDisable d;
-                        d.start = t0; d.end = t0 + dur;
-                        d.scope = DisableScope::Skill; d.skillId = nid;
-                        d.sourceSkill = ev.skillId; d.sourceAgent = casterId;
-                        add(ev.targetId, d);
-                        break;
-                    }
-                }
             }
 
             // Auspicious Incantation: the next spell its user casts within 20 seconds is disabled
@@ -812,6 +818,34 @@ void ReplayWindow::WriteCooldownDebug(const std::string& path) const
         }
     }
 
+    // Thievery steals: what each took, how it was read, what elimination and the inference alone
+    // would have said where the thief's cast named it, and whether the target used it meanwhile.
+    auto howName = [](ThieverySlots::How h) {
+        switch (h) {
+        case ThieverySlots::How::Cast:          return "cast";
+        case ThieverySlots::How::OnlyCandidate: return "only";
+        case ThieverySlots::How::Inferred:      return "inferred";
+        case ThieverySlots::How::Interrupt:     return "interrupt";
+        default:                                return "unknown";
+        }
+    };
+    auto nameOr = [&](int sid) { return sid > 0 ? name(sid) : std::string("?"); };
+    for (size_t si = 0; si < m_thievery.steals.size(); ++si) {
+        const ThieverySlots::Steal& s = m_thievery.steals[si];
+        int uses = 0, targetUses = 0;
+        const auto& th = m_replayCtx.agents.at(s.thief).skillUseHistory;
+        for (size_t j = 0; j < th.size(); ++j) uses += m_thievery.StealOf(s.thief, j) == static_cast<int>(si);
+        if (s.stolen > 0)
+            for (const auto& v : m_replayCtx.agents.at(s.target).skillUseHistory)
+                targetUses += resolve(v.skillId) == s.stolen && v.startTime > s.start + 0.05f && v.startTime < s.targetEnd;
+        out << std::format("steal\t{:.3f}\t{}\t{}\t{}\t{:.2f}\t{:.2f}\t{}\t{}\t{}\t{}\t{}\t{}\n", s.start, s.thief,
+                           name(s.thiefSkill), s.target, s.targetEnd - s.start, s.end - s.start, nameOr(s.stolen),
+                           howName(s.how), nameOr(s.blind), howName(s.blindHow), uses, targetUses);
+    }
+    for (int id : ids)
+        if (m_thievery.onlyStolen.count(id))
+            out << std::format("bar\t{}\t{}\t{}\n", id, SkillBarForAgent(id).size(), SkillBarDisplayOrder(id).size());
+
     for (int id : ids) {
         auto dit = m_skillDisables.find(id);
         if (dit == m_skillDisables.end()) continue;
@@ -925,9 +959,35 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
         const EchoSlots::Window* held = echo && echoSkill ? echo->HeldAt(echoSkill, t) : nullptr;
         const int heldIndex = held ? static_cast<int>(held - echo->windows.data()) : -1;
         if (held) cd.shownSkillId = held->copied;
-        const int sid = held ? held->copied : slotSid;
+        // A thievery holding a steal is the stolen skill the same way (ThieverySlots).
+        const int thiefSkill = slotSid == resolve(ThieverySlots::kArcaneThievery) ? ThieverySlots::kArcaneThievery
+                             : slotSid == resolve(ThieverySlots::kArcaneLarceny)  ? ThieverySlots::kArcaneLarceny
+                             : slotSid == resolve(ThieverySlots::kSimpleThievery) ? ThieverySlots::kSimpleThievery : 0;
+        const ThieverySlots::Steal* steal = thiefSkill ? m_thievery.HeldAt(ard.agent_id, thiefSkill, t) : nullptr;
+        const int stealIndex = steal ? static_cast<int>(steal - m_thievery.steals.data()) : -1;
+        if (steal) {
+            std::string from = "?";
+            if (auto vit = m_replayCtx.agents.find(steal->target); vit != m_replayCtx.agents.end()) from = vit->second.playerName;
+            char buf[160];
+            if (steal->stolen <= 0) {
+                // Taken, but the recording does not say what: a neutral slot until it comes back.
+                snprintf(buf, sizeof(buf), "Stolen from %s: unknown spell, %.0fs left", from.c_str(), std::ceil(steal->end - t));
+                cd.shownSkillId = SkillCooldownState::kUnknownSkill;
+                cd.slotNote = buf;
+                out.push_back(std::move(cd));
+                continue;
+            }
+            snprintf(buf, sizeof(buf), "Stolen from %s%s, %.0fs left", from.c_str(),
+                     steal->how == ThieverySlots::How::Inferred ? " (inferred: the spell left unused)" : "",
+                     std::ceil(steal->end - t));
+            cd.shownSkillId = steal->stolen;
+            cd.slotNote = buf;
+        }
+        const int sid = held ? held->copied : steal ? steal->stolen : slotSid;
         const SkillInfo* si = sdb.Get(sid);
-        auto mine = [&](size_t i) { return !echo || echo->copyOf[i] == heldIndex; };
+        auto mine = [&](size_t i) {
+            return (!echo || echo->copyOf[i] == heldIndex) && m_thievery.StealOf(ard.agent_id, i) == stealIndex;
+        };
 
         // --- Recharge: the last use, cleared by a morale boost or a skill that recharges it ---
         float rechargeStart = -1.f, rechargeDur = 0.f;
@@ -949,11 +1009,18 @@ std::vector<SkillCooldownState> ReplayWindow::ComputeSkillCooldowns(
             rechargeStart = CastEnd(*last);
             if (sid == kResurrectionSignet) spent = true;
             else rechargeDur = echo ? echo->recharge[lastIndex] : last->rechargeDuration;
-            // Echo back from a copy recharges from the copy's end, in full.
+            // Echo back from a copy recharges from the copy's end, in full; so does a thievery back
+            // from its steal (only Simple Thievery has a recharge to run).
             if (echoSkill && !held && echo)
                 if (const EchoSlots::Window* w = echo->LastClosedBy(echoSkill, t);
                     w && w->echoUse == static_cast<int>(lastIndex)) {
                     rechargeStart = w->close;
+                    rechargeDur = si ? si->recharge : 0.f;
+                }
+            if (thiefSkill && !steal)
+                if (const ThieverySlots::Steal* s = m_thievery.LastEndedBy(ard.agent_id, thiefSkill, t);
+                    s && s->use == static_cast<int>(lastIndex)) {
+                    rechargeStart = s->end;
                     rechargeDur = si ? si->recharge : 0.f;
                 }
             if (sid == resolve(kWordOfCensure) && !last->wasFastRecast) {
@@ -1050,16 +1117,19 @@ std::vector<int> ReplayWindow::SkillBarDisplayOrder(int agentId) const
     const AgentReplayData& ard = it->second;
     const auto& sdb = m_skillView;
 
+    // A skill the player only ever cast as a thievery's steal is not on his bar.
+    if (!m_skillDisablesBuilt || (!m_skillDisablesUsedAttributes && m_attributesDeduced))
+        BuildSkillDisables();
     std::vector<int> ids;
     std::unordered_set<int> placed;
     for (int sid : SkillBarForAgent(agentId)) {
         const int r = sdb.ResolvePvpSkillId(sid);
-        if (r > 0 && placed.insert(r).second) ids.push_back(r);
+        if (r > 0 && !m_thievery.OnlyStolen(agentId, r) && placed.insert(r).second) ids.push_back(r);
     }
     // History is in start order, so the first sighting of a skill comes first.
     for (const auto& ev : ard.skillUseHistory) {
         const int r = sdb.ResolvePvpSkillId(ev.skillId);
-        if (r > 0 && placed.insert(r).second) ids.push_back(r);
+        if (r > 0 && !m_thievery.OnlyStolen(agentId, r) && placed.insert(r).second) ids.push_back(r);
     }
     if (ids.size() > 1)
         ids = sdb.SortSkillsForDisplay(ids, ard.primaryProf, ard.secondaryProf);

@@ -39,6 +39,7 @@
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
 #include "EchoSlots.h"
+#include "ThieverySlots.h"
 #include "OverheadFloaters.h"
 #include "ScreenShake.h"
 #include "CatapultDangerZone.h"
@@ -641,6 +642,7 @@ private:
     mutable std::unordered_map<int, std::vector<SkillDisable>>  m_skillDisables;   // by the agent disabled
     mutable std::unordered_map<int, std::vector<RechargeReset>> m_rechargeResets;  // by the agent recharged
     mutable std::unordered_map<int, EchoSlots::Agent>          m_echoSlots;       // Echo / Arcane Echo copies, by player
+    mutable ThieverySlots::Table                               m_thievery;        // Arcane Thievery / Larceny / Simple Thievery steals
     mutable bool m_skillDisablesBuilt = false;
     mutable bool m_skillDisablesUsedAttributes = false;  // rebuilt once the attribute ranks are solved
     void  BuildSkillDisables() const;

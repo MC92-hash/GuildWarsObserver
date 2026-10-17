@@ -935,6 +935,9 @@ void ReplayWindow::DrawPlayerInfoPanel()
         std::vector<SkillSlot> slots;
         {
             const auto& sdb = m_skillView;
+            // The steals (m_thievery) say which recorded skills were never his own.
+            if (!m_skillDisablesBuilt || (!m_skillDisablesUsedAttributes && m_attributesDeduced))
+                BuildSkillDisables();
 
             // Count casts per skill from history, resolving PvE skills to their PvP variant
             std::unordered_map<int, SkillSlot> slotMap;
@@ -972,6 +975,8 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 for (int sid : *usedSkills)
                 {
                     int resolved = sdb.ResolvePvpSkillId(sid);
+                    // A skill only ever cast as a thievery's steal is not his own.
+                    if (m_thievery.OnlyStolen(m_playerInfoAgentId, resolved)) continue;
                     if (!placed.insert(resolved).second) continue;
                     auto it = slotMap.find(resolved);
                     if (it != slotMap.end())
@@ -983,7 +988,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             // Append any skills from history not in used_skills, ordered by first use
             std::vector<SkillSlot> extras;
             for (auto& [id, sl] : slotMap)
-                if (placed.find(id) == placed.end())
+                if (placed.find(id) == placed.end() && !m_thievery.OnlyStolen(m_playerInfoAgentId, id))
                     extras.push_back(sl);
             std::sort(extras.begin(), extras.end(),
                 [](const SkillSlot& a, const SkillSlot& b) { return a.firstUseTime < b.firstUseTime; });
@@ -1067,10 +1072,18 @@ void ReplayWindow::DrawPlayerInfoPanel()
             dl->AddRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz),
                         IM_COL32(255, 255, 255, 31), 5.f);
 
-            // Echo / Arcane Echo show the copy they hold.
+            // Echo / Arcane Echo show the copy they hold, a thievery the skill it stole (a "?"
+            // when the recording does not name it).
             const int shownSkill = cooldowns[i].shownSkillId ? cooldowns[i].shownSkillId : sl.skillId;
-            ImTextureID skillTex = LoadSkillIcon(this, dev, shownSkill,
-                m_skillIconIndex, m_skillIconCache);
+            ImTextureID skillTex = shownSkill == SkillCooldownState::kUnknownSkill ? nullptr
+                : LoadSkillIcon(this, dev, shownSkill, m_skillIconIndex, m_skillIconCache);
+            if (shownSkill == SkillCooldownState::kUnknownSkill) {
+                const ImVec2 qs = ImGui::CalcTextSize("?");
+                dl->AddText(ImVec2(ix + (kSkIconSz - qs.x) * 0.5f, iy + (kSkIconSz - qs.y) * 0.5f),
+                            IM_COL32(0xB8, 0xB8, 0xB0, 0xFF), "?");
+                if (ImGui::IsMouseHoveringRect(ImVec2(ix, iy), ImVec2(ix + kSkIconSz, iy + kSkIconSz)))
+                    ImGui::SetTooltip("%s", cooldowns[i].slotNote.c_str());
+            }
             if (skillTex)
                 dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
                              ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1));

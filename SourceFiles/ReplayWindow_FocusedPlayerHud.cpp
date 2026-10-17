@@ -557,6 +557,14 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         // Icon (or the empty slot's grey), then the slot frame over it.
         if (!filled)
             dl->AddRectFilled(tl, br, IM_COL32(0x40, 0x40, 0x40, 0xC0));
+        else if (shown == SkillCooldownState::kUnknownSkill) {
+            // A stolen skill the recording does not name: a neutral slot with a question mark.
+            dl->AddRectFilled(tl, br, IM_COL32(0x22, 0x24, 0x2A, 0xF0));
+            const float fs = slot * 0.6f;
+            const ImVec2 qs = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.f, "?");
+            dl->AddText(nullptr, fs, ImVec2(tl.x + (slot - qs.x) * 0.5f, tl.y + (slot - qs.y) * 0.5f),
+                        IM_COL32(0xB8, 0xB8, 0xB0, 0xFF), "?");
+        }
         else if (ImTextureID tex = LoadSkillIcon(this, dev, shown, m_skillIconIndex, m_skillIconCache))
             dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
         if (texSlots) {
@@ -608,8 +616,10 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
                          ImVec2(kx, ky), ImVec2(kx + 24.f / 128.f, ky + 24.f / 128.f));
         }
 
-        if (hoverable && ImGui::IsMouseHoveringRect(tl, br))
-            DrawGameSkillTooltip(shown, agentId, &cd);
+        if (hoverable && ImGui::IsMouseHoveringRect(tl, br)) {
+            if (shown == SkillCooldownState::kUnknownSkill) ImGui::SetTooltip("%s", cd.slotNote.c_str());
+            else DrawGameSkillTooltip(shown, agentId, &cd);
+        }
     }
 
 }
@@ -1384,6 +1394,8 @@ void ReplayWindow::DrawGameSkillTooltip(int skillId, int agentId, const SkillCoo
         }
         if (!cd->modifierText.empty())
             state += (state.empty() ? "" : "\n") + std::string("Recharge: ") + cd->modifierText;
+        if (!cd->slotNote.empty())
+            state += (state.empty() ? "" : "\n") + cd->slotNote;
         if (!state.empty()) {
             ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(kMuted));

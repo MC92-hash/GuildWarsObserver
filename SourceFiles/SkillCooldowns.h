@@ -13,6 +13,8 @@
 // recharges everything and so clears both.
 struct SkillCooldownState
 {
+    static constexpr int kUnknownSkill = -1;   // shownSkillId of a slot holding a skill the recording does not name
+
     enum class State : uint8_t
     {
         Ready,
@@ -24,6 +26,7 @@ struct SkillCooldownState
     int   skillId = 0;
     int   shownSkillId = 0;            // what the slot shows: the copy while Echo / Arcane Echo holds one
     bool  castingNow = false;          // a cast on this slot is running at the moment asked
+    std::string slotNote;              // what holds the slot ("Stolen from ..."), for the tooltip
     State state   = State::Ready;
 
     // The governing countdown, for the sweep and the number.
