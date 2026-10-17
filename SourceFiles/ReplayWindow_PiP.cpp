@@ -431,10 +431,10 @@ void ReplayWindow::DrawPiPHud(ImDrawList* dl, ImVec2 imgPos, float imgW, float i
                                 IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
                                 IM_COL32(0, 0, 0, 170), IM_COL32(0, 0, 0, 170));
 
-    // Name: [primary][secondary] Name (number), in the team colour.
+    // Name: [primary][secondary] Name, in the team colour. The recorded name already ends in the
+    // party number ("Z Rox (5)").
     {
-        std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
-        if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+        const std::string& name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
         const bool dead = ard.isDeadAtTime(m_debugTimeline);
         float x = x0 - 7.f * scale;
         const float iconSz = std::round(fs);
@@ -629,8 +629,7 @@ void ReplayWindow::DrawPiPPanel()
                         x += iconSz + 1.f;
                     }
                 x += 3.f;
-                std::string name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
-                if (ard.playerNumber > 0) name += " (" + std::to_string(ard.playerNumber) + ")";
+                const std::string& name = ard.playerName.empty() ? ard.categoryName : ard.playerName;
                 dl->AddText(ImVec2(x, textY), TeamCol(ard.teamId), name.c_str());
             }
             else
@@ -751,10 +750,9 @@ void ReplayWindow::DrawPiPPanel()
                                                ImVec2(rowMin.x + 1 + iconSz, iconY + iconSz),
                                                IM_COL32(40, 40, 40, 180), 2.f);
 
-                        std::string name = ard.playerName.empty()
+                        // The recorded name already ends in the party number: "Z Rox (5)".
+                        const std::string& name = ard.playerName.empty()
                             ? ard.categoryName : ard.playerName;
-                        if (ard.playerNumber > 0)
-                            name += " (" + std::to_string(ard.playerNumber) + ")";
                         ImFont* font = ImGui::GetFont();
                         float textY = rowMin.y + (rowH - font->FontSize) * 0.5f;
                         float textX = rowMin.x + iconSz + 4.f;
