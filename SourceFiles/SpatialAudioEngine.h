@@ -59,6 +59,7 @@ enum class SoundLogCategory : uint8_t {
     AttackWoosh,  // [woosh]/[pwoosh] a weapon's swing, a bow's release, an arrow going past
     AttackOther,  // [effects]/[default]/[comfol] combat foley a program files under no hit category
     Prop,         // [smprop]/[mdprop]/[lgprop]/[ambone] the map's props and one-shot ambiences
+    EventCue,     // [ui] played in the world (MODE3D): the interrupt / cancel cue and its kind
     Count
 };
 
@@ -89,11 +90,13 @@ struct AudioConfig {
     // Raised from 0.02 when the recorded attack sounds started to play (2026-10-17): before, the
     // recording's weapon swings and hits were sound programs the replay could not read, so the
     // fader was tuned on the few MP3 children that slipped through.
-    float attacks_volume         = 0.30f;  // Hit* / AttackWoosh / AttackOther categories
+    // 0.30 -> 0.60 (2026-10-17, owner: "no attack sounds"): measured on Warrior's Isle 07.18, 4:30-5:30,
+    // followed agent, hits started at a mean level of 0.009 against 0.05 for skills (-15 dB).
+    float attacks_volume         = 0.60f;  // Hit* / AttackWoosh / AttackOther categories
     float ambient_volume         = 0.30f;  // footsteps / uncorrelated effects / map props
     // The characters' vocals (attack grunts, cast shouts, pain): the client plays them at full
     // category volume in the world, and they fire with nearly every attack - their own fader.
-    float voices_volume          = 0.15f;
+    float voices_volume          = 0.50f;
     float ui_volume              = 0.02f;
     float music_volume           = 0.0956f;  // reads 70% against a 0.02 midpoint
     float dialog_volume          = 0.00f;
@@ -207,6 +210,19 @@ public:
         float panRight = 0.f;
     };
     DebugStats GetDebugStats() const;
+
+    // Per category, since the last reset: what was posted and what became of it. `estimatedGain`
+    // is the level a started sound begins at: category x fader x per-sound gain x master x the
+    // distance curve x the rear floor (the same factors UpdateListener applies).
+    struct CategoryStats {
+        int posted = 0, culled = 0, capped = 0, unreadable = 0, started = 0, audible = 0;
+        double gainSum = 0.0;
+        float gainMax = 0.f;
+    };
+    const CategoryStats& GetCategoryStats(SoundLogCategory c) const { return m_categoryStats[static_cast<size_t>(c)]; }
+    void ResetCategoryStats() { for (auto& s : m_categoryStats) s = CategoryStats{}; }
+    // Silences the output without touching the levels (a hidden verification run).
+    void SetOutputMuted(bool muted) { m_outputMuted = muted; }
     const SoundCache* GetSoundCache() const { return m_soundCache.get(); }
 
 private:
@@ -221,6 +237,7 @@ private:
         SoundLogCategory       category = SoundLogCategory::Footstep;
         bool                  focusedPlayer = false; // uses the "p" column and its own voice budget
         float                 pitch = 1.0f;          // playback rate, kept under the Doppler factor
+        float                 startGain = 0.0f;      // the estimated level it started at (CategoryStats), for stealing
         float                 baseGainLinear = 1.0f; // CategorySettings.ini gain; combined with the
                                                         // live per-type slider every frame (see UpdateListener)
         float                 emitterX = 0, emitterY = 0, emitterZ = 0;
@@ -299,4 +316,6 @@ private:
     X3DAUDIO_DISTANCE_CURVE       m_distanceCurve;
 
     mutable DebugStats m_debugStats;
+    std::array<CategoryStats, static_cast<size_t>(SoundLogCategory::Count)> m_categoryStats{};
+    bool m_outputMuted = false;
 };

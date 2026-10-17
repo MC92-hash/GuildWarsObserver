@@ -231,7 +231,7 @@ void DrawSoundFxPanel(SpatialAudioEngine* engine, bool& show)
         // AudioConfig's defaults so a setting can ship somewhere other than dead centre (see
         // Background). These are the tuned reference mix and should not drift with the defaults.
         struct { float master, background, skills, attacks, voices, ambient, ui, music, range, vertical; }
-        const kRef{ 0.70f, 0.01f, 0.95f, 0.30f, 0.15f, 0.30f, 0.02f, 0.02f, 1.20f, 0.05f };
+        const kRef{ 0.70f, 0.01f, 0.95f, 0.60f, 0.50f, 0.30f, 0.02f, 0.02f, 1.20f, 0.05f };
 
         SectionHeader("MASTER VOLUME");
         PushFrameStyle();

@@ -54,9 +54,9 @@ void ReplayWindow::InitAudioEngine()
         return;
     }
 
-    // A hidden verification run (GWO_AUDIO_MUTE set) plays everything at zero master volume.
+    // A hidden verification run (GWO_AUDIO_MUTE set): silent output, the levels left as they are.
     if (GetEnvironmentVariableA("GWO_AUDIO_MUTE", nullptr, 0) > 0)
-        m_audioEngine->GetConfig().master_volume = 0.f;
+        m_audioEngine->SetOutputMuted(true);
 
     m_skillSoundTable = std::make_unique<SkillSoundTable>();
     m_skillSoundTable->Load(GetSkillSoundsJsonPath().string());
@@ -92,6 +92,19 @@ void ReplayWindow::UpdateAudioPlayback(float currentTime, float dt)
         if (len > 0.001f) { flatFront.x /= len; flatFront.z /= len; }
         else { flatFront = { 0.f, 0.f, 1.f }; }   // camera looking straight down
         XMFLOAT3 up = { 0.f, 1.f, 0.f };
+
+        // Following an agent, the viewer is that character: the ears go where it stands, as the
+        // game's are on the player, and the camera keeps only the orientation. From the camera,
+        // 900 units behind and above, its own swings and hits sat half-way to their silence
+        // radius (measured -15 dB) while the wider skill radius barely felt it.
+        if (m_followedAgentId > 0) {
+            auto fit = m_replayCtx.agents.find(m_followedAgentId);
+            if (fit != m_replayCtx.agents.end() && !fit->second.snapshots.empty()) {
+                float ax, ay, az;
+                InterpolateAgentPosition(fit->second, currentTime, m_replayCtx.interpSettings, ax, ay, az);
+                pos = ApplyMapTransformToPos(ax, ay, az, m_replayCtx.mapTransform);
+            }
+        }
 
         m_audioEngine->UpdateListener(pos, flatFront, up, dt);
     }

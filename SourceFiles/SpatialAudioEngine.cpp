@@ -118,6 +118,7 @@ static const CategoryProfile& GetCategoryProfile(SoundLogCategory category)
         /* AttackWoosh*/ { MillibelToLinear(-700.f), 12,   1248.f, MillibelToLinear(-200.f),   2 }, // woosh/pwoosh
         /* AttackOther*/ { MillibelToLinear(-100.f), 20,   1248.f, MillibelToLinear(-100.f),  20 }, // default
         /* Prop       */ { MillibelToLinear(-300.f), 10,   1248.f, MillibelToLinear(-300.f),  10 }, // smprop/mdprop
+        /* EventCue   */ { MillibelToLinear(0.f),    16,   2512.f, MillibelToLinear(0.f),     16 }, // ui, MODE3D
     };
     return kProfiles[static_cast<size_t>(category)];
 }
@@ -136,6 +137,7 @@ static float TypeVolumeMultiplier(SoundLogCategory category, const AudioConfig& 
         case SoundLogCategory::Footstep:   return cfg.ambient_volume;
         case SoundLogCategory::Prop:       return cfg.ambient_volume;
         case SoundLogCategory::Vocal:      return cfg.voices_volume;
+        case SoundLogCategory::EventCue:   return cfg.skills_volume;
         default:
             return IsSkillCategory(category) ? cfg.skills_volume   // Skill*
                                              : cfg.attacks_volume; // Hit*
@@ -302,7 +304,7 @@ void SpatialAudioEngine::UpdateListener(const XMFLOAT3& pos,
 
     // Apply master volume
     if (m_masterVoice)
-        m_masterVoice->SetVolume(MasterGain(m_config.master_volume));
+        m_masterVoice->SetVolume(m_outputMuted ? 0.f : MasterGain(m_config.master_volume));
 
     // Update 3D for all active voices
     std::lock_guard<std::mutex> lock(m_voiceMutex);
@@ -424,6 +426,9 @@ void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, 
     }
 
     const auto& profile = GetCategoryProfile(category);
+    CategoryStats& cs = m_categoryStats[static_cast<size_t>(category)];
+    cs.posted++;
+    float distanceGain = 1.f, frontGain = 1.f;
 
     // A zero radius means the category is 2D (CategorySettings.ini 3DMode=0: ui, music). The
     // recording still flags most of those events positional, but honouring that would run them
@@ -441,24 +446,49 @@ void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, 
         const float dz = z - m_listener.Position.z;
         if ((dx * dx + dy * dy + dz * dz) > (radius * radius)) {
             m_debugStats.culledByDistance++;
+            cs.culled++;
             return;
         }
+        distanceGain = DistanceGain(sqrtf(dx * dx + dy * dy + dz * dz) / std::max(1.0f, radius));
+        const float d2 = sqrtf(dx * dx + dz * dz);
+        const float dot = d2 > 0.01f ? (dx * m_listener.OrientFront.x + dz * m_listener.OrientFront.z) / d2 : 1.f;
+        const float f = std::clamp(dot + 0.5f, 0.0f, 1.0f);
+        frontGain = kRearGainFloor + (1.0f - kRearGainFloor) * f * f;
     }
 
     // Mirror the game's own per-category polyphony cap (CategorySettings.ini MaxSounds): if
     // this category is already saturated, drop the new instance rather than voice it - the same
     // throttling a crowded real fight would apply, just replicated here instead of (or in
     // addition to) whatever already happened upstream at capture time.
+    // At the cap, a new sound that will start louder than the quietest one playing in the category
+    // takes its place (a near hit over a far one), instead of being dropped for arriving last.
     const int cap = focusedPlayer ? profile.playerMaxSounds : profile.maxSounds;
+    const float estimate = (focusedPlayer ? profile.playerGainLinear : profile.gainLinear) * gainScale *
+                           TypeVolumeMultiplier(category, m_config) * MasterGain(m_config.master_volume) *
+                           distanceGain * frontGain;
     std::unique_lock lock(m_voiceMutex);
     if (CountActiveVoicesInCategory(category, focusedPlayer) >= cap) {
-        m_debugStats.droppedAtCap++;
-        return;
+        VoiceSlot* quietest = nullptr;
+        for (auto& s : m_voicePool)
+            if (s.inUse && s.category == category && s.focusedPlayer == focusedPlayer &&
+                (!quietest || s.startGain < quietest->startGain))
+                quietest = &s;
+        if (!quietest || quietest->startGain * 1.25f >= estimate) {
+            m_debugStats.droppedAtCap++;
+            cs.capped++;
+            return;
+        }
+        if (quietest->voice) {
+            quietest->voice->Stop();
+            quietest->voice->FlushSourceBuffers();
+        }
+        quietest->inUse = false;
+        quietest->pcmOwned.clear();
     }
     lock.unlock();
 
     const AudioBuffer* buf = m_soundCache->Get(fileId);
-    if (!buf) return;
+    if (!buf) { cs.unreadable++; return; }
 
     VoiceSlot* slot = AcquireVoice();
     if (!slot) return;
@@ -478,6 +508,16 @@ void SpatialAudioEngine::PostFileId(uint32_t fileId, SoundLogCategory category, 
         slot->voice->SetFrequencyRatio(slot->pitch);
     m_lastPlayedFileId = fileId;
     m_debugStats.soundsPlayed++;
+    if (slot->inUse) {
+        const float g = estimate;
+        slot->startGain = g;
+        cs.started++;
+        cs.gainSum += g;
+        cs.gainMax = std::max(cs.gainMax, g);
+        if (g >= 0.01f) cs.audible++;   // -40 dB
+    } else {
+        cs.unreadable++;
+    }
 }
 
 void SpatialAudioEngine::LoadSoundOverrides()
