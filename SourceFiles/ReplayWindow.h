@@ -60,6 +60,8 @@ namespace PlayerVisuals { class Set; class ReplayWeapons; }
 namespace AgentEffects { class Player; }
 // The projectiles in flight: opaque here too.
 namespace ReplayProjectiles { class State; }
+// The match's sounds - the recording's own and the scheduled ones: opaque too (private).
+namespace ReplaySounds { class State; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -169,6 +171,8 @@ public:
     static inline std::wstring s_clipSelfTestPath;
     static inline float s_clipSelfTestAt = -1.f;   // clip start in replay seconds; < 0 = 40 % in
     bool ClipSelfTestDone() const { return s_clipSelfTestPath.empty() || m_clipSelfTestStage >= 4; }
+    // GWO_SOUND_SELFTEST set: true once the match's sound schedule is built and counted (private).
+    bool SoundSelfTestDone() const;
 
     // IDeviceNotify
     void OnDeviceLost() override;
@@ -2341,12 +2345,11 @@ private:
     const BossTenure* FindBossTenure(int agentId, float t) const;
 
     // --- Spatial Audio ---
-    // Background/UI/Music/Dialog/attack-hits play back from StoC/sound_events.txt directly: real
-    // captured file_id/position/timing. Skill-cast (Effects/SkillCue) sounds are synthesized from
-    // skillUseHistory + settings/skill_sounds.json instead, since the recording client only wrote
-    // a sound_events.txt line for skills that happened to be within earshot of the *recording*
-    // camera - most skill casts elsewhere on the map were never captured at all. See
-    // ReplayWindow_Audio.cpp (UpdateAudioPlayback / BuildSkillSoundTimeline).
+    // The recording's own sounds (StoC/sound_events.txt: what the recording client played, mostly
+    // sound PROGRAMS) and the sounds scheduled for what it did not hear (skill casts from
+    // settings/skill_sounds.json, effect files' own sounds, bow shots) are played by the private
+    // sound schedule, StepReplaySounds (Character/ReplayWindow_Sounds.cpp). This file keeps the
+    // listener, pause and seek, and the Boss / world sounds timeline below.
     std::unique_ptr<SpatialAudioEngine> m_audioEngine;
     std::unique_ptr<SkillSoundTable>    m_skillSoundTable;
     bool m_audioInitialized = false;
@@ -2360,9 +2363,6 @@ private:
     bool m_volumeBarActive  = false;
     float m_audioLastTime = -1.f;
     bool m_audioWasPlaying = true;     // last-seen m_replayCtx.isPlaying, to detect pause/resume
-
-    // Cursor into stocData.soundEvents (time-ordered).
-    size_t m_audioSoundEventCursor = 0;
 
     // One scheduled skill-cast sound: a single layer of a single cast, already resolved to an
     // absolute replay time and to the agent whose position it is emitted from.
@@ -2383,22 +2383,18 @@ private:
     // appended to the timeline below while it is built (private schedule).
     void AppendWorldSounds();
 
-    // Every skill sound for the whole match, flattened and sorted by time, so playback is the
-    // same single-cursor walk the StoC sound events use (and a seek is one binary search).
-    // Built lazily once skillUseHistory exists.
+    // The Boss's sound and the world's (catapult) sounds for the whole match, sorted by time, so
+    // playback is a single-cursor walk (and a seek is one binary search). Built lazily once
+    // skillUseHistory, the Boss claims and the map's machines exist; the private schedule waits
+    // for it (its recorded copies of these sounds are dropped).
     bool m_audioSkillTimelineBuilt = false;
     std::vector<ScheduledSkillSound> m_audioSkillTimeline;
     size_t m_audioSkillCursor = 0;
 
-    // One-off analysis of this match's StoC sound events, built lazily:
-    //  - which file ids are demonstrably attack sounds, so the ~70% of them the recorder failed
-    //    to correlate to an agent stop being misfiled as footsteps
-    //  - a per-event gain that ducks simultaneous layers and drops exact duplicates, the same
-    //    treatment the skill cues get
-    bool m_audioStocAnalysisBuilt = false;
-    std::unordered_set<uint32_t> m_audioAttackSoundIds;
-    std::vector<float> m_audioStocGain;
-    void BuildStocSoundAnalysis();
+    // The private schedule: called once a frame with the previous and current replay time; on a
+    // seek (or the first frame) it only moves its cursors, as the timeline above does.
+    void StepReplaySounds(float prevTime, float currentTime, bool seeked);
+    std::shared_ptr<ReplaySounds::State> m_replaySounds;
 
     void InitAudioEngine();
     void UpdateAudioPlayback(float currentTime, float dt);

@@ -10,15 +10,17 @@
 struct SkillSoundCue {
     uint32_t file_id = 0;
     float    offset  = 0.f;   // seconds after cast start (settings/skill_sounds.json "ms" / 1000)
+    bool     afterCast = false;   // "after_cast": captured once the cast had completed
 };
 
 // A skill's full captured sound timeline, from settings/skill_sounds.json. Cues are split by
-// where they are emitted from: the caster's position or the target's. The JSON's "after_cast"
-// flag is not carried over - "ms" is already the absolute offset from cast start, so it is
-// derivable and unused at playback time.
+// where they are emitted from: the caster's position or the target's. "after_cast" and
+// "cast_completed_ms" are kept so a cue captured after the cast can be placed after the
+// replay's own release (the private sound schedule decides how they are played).
 struct SkillSoundEntry {
     std::string name;
     float castDuration = 0.f;                 // "cast_duration" seconds (0 for instants)
+    float castCompletedMs = 0.f;              // "cast_completed_ms": when the captured cast completed
     std::vector<SkillSoundCue> casterCues;    // JSON "caster" + "other" (ambient, emitted at caster)
     std::vector<SkillSoundCue> targetCues;    // JSON "target"
 };

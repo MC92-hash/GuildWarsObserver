@@ -2490,7 +2490,7 @@ void MapBrowser::ProcessAttrBatch()
         {
             const auto secs = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - m_attrBatch.openedAt).count();
-            const bool done = rw->AttributesDeduced() && rw->ClipSelfTestDone();
+            const bool done = rw->AttributesDeduced() && rw->ClipSelfTestDone() && rw->SoundSelfTestDone();
             if (!done && !rw->LoadFailed() && secs < 600.0)
                 return;
             RunLog::Line("attr-batch: closing '%s' - %s after %.0f s",

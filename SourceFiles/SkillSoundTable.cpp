@@ -7,7 +7,7 @@
 namespace {
 
 // Reads one cue array ("caster" / "target" / "other"). Entries are {"id": <file id>, "ms":
-// <offset from cast start>}; "after_cast" is ignored because "ms" is already absolute.
+// <offset from cast start>, "after_cast": <captured after the cast completed>}.
 // File ids are normally plain integers, but the capture tooling has also emitted them as a
 // "<hex> <hex>" pair encoding a GW hash, so that form is still decoded here.
 void ParseCueArray(const nlohmann::json& arr, std::vector<SkillSoundCue>& out)
@@ -39,6 +39,8 @@ void ParseCueArray(const nlohmann::json& arr, std::vector<SkillSoundCue>& out)
 
         if (e.contains("ms") && e["ms"].is_number())
             cue.offset = e["ms"].get<float>() / 1000.f;
+        if (e.contains("after_cast") && e["after_cast"].is_boolean())
+            cue.afterCast = e["after_cast"].get<bool>();
 
         out.push_back(cue);
     }
@@ -79,6 +81,8 @@ bool SkillSoundTable::Load(const std::string& jsonPath)
                 entry.name = val["name"].get<std::string>();
             if (val.contains("cast_duration") && val["cast_duration"].is_number())
                 entry.castDuration = val["cast_duration"].get<float>();
+            if (val.contains("cast_completed_ms") && val["cast_completed_ms"].is_number())
+                entry.castCompletedMs = val["cast_completed_ms"].get<float>();
 
             // "other" is ambient/environment audio with no target of its own - emitted from the
             // caster, so it rides along with the caster cues.

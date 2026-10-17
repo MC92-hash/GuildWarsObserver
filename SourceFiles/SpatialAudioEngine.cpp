@@ -112,6 +112,12 @@ static const CategoryProfile& GetCategoryProfile(SoundLogCategory category)
         /* SkillExtra */ { MillibelToLinear(-600.f),  8,   1600.f, MillibelToLinear(-50.f),    4 }, // skillx/pskillx
         /* SkillWoosh */ { MillibelToLinear(-700.f), 12,   1248.f, MillibelToLinear(-200.f),   2 }, // woosh/pwoosh
         /* Footstep   */ { MillibelToLinear(-1500.f),16,    500.f, MillibelToLinear(-1200.f),  2 }, // feet/pfeet
+        // The buses a recorded sound program names. Their gain here is the ini's own; a bus mapped onto
+        // a category with a different level carries the difference in the per-sound gain (private).
+        /* Vocal      */ { MillibelToLinear(0.f),    12,   1248.f, MillibelToLinear(0.f),     12 }, // monvoc/plyvoc
+        /* AttackWoosh*/ { MillibelToLinear(-700.f), 12,   1248.f, MillibelToLinear(-200.f),   2 }, // woosh/pwoosh
+        /* AttackOther*/ { MillibelToLinear(-100.f), 20,   1248.f, MillibelToLinear(-100.f),  20 }, // default
+        /* Prop       */ { MillibelToLinear(-300.f), 10,   1248.f, MillibelToLinear(-300.f),  10 }, // smprop/mdprop
     };
     return kProfiles[static_cast<size_t>(category)];
 }
@@ -128,6 +134,8 @@ static float TypeVolumeMultiplier(SoundLogCategory category, const AudioConfig& 
         case SoundLogCategory::Music:      return cfg.music_volume;
         case SoundLogCategory::Dialog:     return cfg.dialog_volume;
         case SoundLogCategory::Footstep:   return cfg.ambient_volume;
+        case SoundLogCategory::Prop:       return cfg.ambient_volume;
+        case SoundLogCategory::Vocal:      return cfg.voices_volume;
         default:
             return IsSkillCategory(category) ? cfg.skills_volume   // Skill*
                                              : cfg.attacks_volume; // Hit*
@@ -259,6 +267,8 @@ void SpatialAudioEngine::Shutdown()
     }
 
     m_soundCache.reset();
+    m_decoded.clear();
+    m_decodedBytes = 0;
     m_initialized = false;
 
     MFShutdown();
@@ -610,20 +620,36 @@ void SpatialAudioEngine::SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, f
     uint16_t channels = buf->channels;
     uint16_t bits = buf->bitsPerSample;
 
-    // If sampleRate==0, it's raw MP3 that needs decoding
+    // If sampleRate==0, it's raw MP3 that needs decoding - once per file, then from the cache.
     if (sampleRate == 0) {
-        std::vector<uint8_t> decoded;
-        if (!DecodeMp3ToWav(buf->pcmData.data(), static_cast<int>(buf->pcmData.size()),
-                            decoded, sampleRate, channels)) {
-            slot->inUse = false;
-            return;
+        auto cached = m_decoded.find(buf);
+        if (cached == m_decoded.end()) {
+            DecodedPcm d;
+            if (!DecodeMp3ToWav(buf->pcmData.data(), static_cast<int>(buf->pcmData.size()),
+                                d.pcm, d.sampleRate, d.channels)) {
+                slot->inUse = false;
+                return;
+            }
+            if (m_decodedBytes + d.pcm.size() > kDecodedBudgetBytes) {
+                // Over budget: play this one from its own decode, keep nothing.
+                sampleRate = d.sampleRate;
+                channels = d.channels;
+                slot->pcmOwned = std::move(d.pcm);
+                bits = 16;
+                goto decoded;
+            }
+            m_decodedBytes += d.pcm.size();
+            cached = m_decoded.emplace(buf, std::move(d)).first;
         }
-        slot->pcmOwned = std::move(decoded);
+        sampleRate = cached->second.sampleRate;
+        channels = cached->second.channels;
+        slot->pcmOwned = cached->second.pcm;
         bits = 16;
     }
     else {
         slot->pcmOwned = buf->pcmData; // copy PCM
     }
+decoded:
 
     if (slot->pcmOwned.empty() || sampleRate == 0) {
         slot->inUse = false;

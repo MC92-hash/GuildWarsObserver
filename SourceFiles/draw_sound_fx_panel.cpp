@@ -230,8 +230,8 @@ void DrawSoundFxPanel(SpatialAudioEngine* engine, bool& show)
         // Calibration midpoints: the level each slider pins to 50%. Deliberately separate from
         // AudioConfig's defaults so a setting can ship somewhere other than dead centre (see
         // Background). These are the tuned reference mix and should not drift with the defaults.
-        struct { float master, background, skills, attacks, ambient, ui, music, range, vertical; }
-        const kRef{ 0.70f, 0.01f, 0.95f, 0.02f, 0.30f, 0.02f, 0.02f, 1.20f, 0.05f };
+        struct { float master, background, skills, attacks, voices, ambient, ui, music, range, vertical; }
+        const kRef{ 0.70f, 0.01f, 0.95f, 0.30f, 0.15f, 0.30f, 0.02f, 0.02f, 1.20f, 0.05f };
 
         SectionHeader("MASTER VOLUME");
         PushFrameStyle();
@@ -247,12 +247,16 @@ void DrawSoundFxPanel(SpatialAudioEngine* engine, bool& show)
         ImGui::Dummy(ImVec2(0, 4.f));
         VolumeSlider("sfxAttacks", "Attacks", &cfg.attacks_volume, kRef.attacks);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Weapon hits. These fire far more often than skills, so they\n"
-                              "sit lower by default to keep casts readable.");
+            ImGui::SetTooltip("Weapon swings, hits and arrows. These fire far more often than\n"
+                              "skills, so they sit lower by default to keep casts readable.");
+        ImGui::Dummy(ImVec2(0, 4.f));
+        VolumeSlider("sfxVoices", "Voices", &cfg.voices_volume, kRef.voices);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The characters' grunts and shouts as they attack, cast and get hit.");
         ImGui::Dummy(ImVec2(0, 4.f));
         VolumeSlider("sfxAmbient", "Ambient", &cfg.ambient_volume, kRef.ambient);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Footsteps and uncorrelated effect sounds.");
+            ImGui::SetTooltip("Footsteps, the map's props and uncorrelated effect sounds.");
         ImGui::Dummy(ImVec2(0, 4.f));
         VolumeSlider("sfxUi", "UI", &cfg.ui_volume, kRef.ui);
         ImGui::Dummy(ImVec2(0, 4.f));

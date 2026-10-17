@@ -281,6 +281,8 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\EffectLayerRules.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayOneShots.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\SkillClientVisuals.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\ReplaySounds.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\SoundPrograms.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_builder.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\draw_character_composer_panel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\face_thumbnails.h" />
@@ -588,6 +590,8 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_TexAnim.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_HeadpieceParticles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_AgentEffects.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_Sounds.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\SoundPrograms.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_Projectiles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\AgentEffects.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />

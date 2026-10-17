@@ -9,6 +9,7 @@
 #include <thread>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
 #include <DirectXMath.h>
 // XAudio2 requires _WIN32_WINNT >= 0x0602 (Windows 8)
 #pragma push_macro("_WIN32_WINNT")
@@ -51,6 +52,13 @@ enum class SoundLogCategory : uint8_t {
     SkillExtra,   // [skillx] secondary layer stacked on the primary
     SkillWoosh,   // [woosh]  motion/whoosh layer
     Footstep,     // Effects-type sound with no correlation (footsteps/ambient loops)
+    // Categories a recorded sound PROGRAM names itself (its BUS), which the old SND_TYPE-only
+    // classification had no slot for. The private replay sound schedule maps each bus onto one of
+    // these and carries the exact CategorySettings.ini level in the per-sound gain.
+    Vocal,        // [plyvoc]/[monvoc] the characters' own grunts and shouts (0 mB in the world)
+    AttackWoosh,  // [woosh]/[pwoosh] a weapon's swing, a bow's release, an arrow going past
+    AttackOther,  // [effects]/[default]/[comfol] combat foley a program files under no hit category
+    Prop,         // [smprop]/[mdprop]/[lgprop]/[ambone] the map's props and one-shot ambiences
     Count
 };
 
@@ -78,8 +86,14 @@ struct AudioConfig {
     // reason; this is a deliberate departure from the game's own mix, because a replay is watched
     // to read what people cast, not to feel like standing in the middle of the fight.
     float skills_volume          = 0.95f;  // Skill* categories
-    float attacks_volume         = 0.02f;  // Hit* categories
-    float ambient_volume         = 0.30f;  // footsteps / uncorrelated effects
+    // Raised from 0.02 when the recorded attack sounds started to play (2026-10-17): before, the
+    // recording's weapon swings and hits were sound programs the replay could not read, so the
+    // fader was tuned on the few MP3 children that slipped through.
+    float attacks_volume         = 0.30f;  // Hit* / AttackWoosh / AttackOther categories
+    float ambient_volume         = 0.30f;  // footsteps / uncorrelated effects / map props
+    // The characters' vocals (attack grunts, cast shouts, pain): the client plays them at full
+    // category volume in the world, and they fire with nearly every attack - their own fader.
+    float voices_volume          = 0.15f;
     float ui_volume              = 0.02f;
     float music_volume           = 0.0956f;  // reads 70% against a 0.02 midpoint
     float dialog_volume          = 0.00f;
@@ -234,6 +248,17 @@ private:
     VoiceSlot* AcquireVoice();
     void ReleaseVoice(VoiceSlot* slot);
     void SubmitBuffer(VoiceSlot* slot, const AudioBuffer* buf, float volume);
+    // MP3s decoded once and kept (the recorded sound programs replay the same few hundred files
+    // thousands of times a match; decoding at every play stalled the frame). Keyed by the cache's
+    // buffer, which lives as long as the SoundCache; bounded by kDecodedBudgetBytes.
+    struct DecodedPcm {
+        std::vector<uint8_t> pcm;
+        uint32_t sampleRate = 0;
+        uint16_t channels = 1;
+    };
+    std::unordered_map<const AudioBuffer*, DecodedPcm> m_decoded;
+    size_t m_decodedBytes = 0;
+    static constexpr size_t kDecodedBudgetBytes = 128u * 1024u * 1024u;
     bool DecodeMp3ToWav(const uint8_t* mp3Data, int mp3Size,
                         std::vector<uint8_t>& pcmOut,
                         uint32_t& sampleRate, uint16_t& channels);
