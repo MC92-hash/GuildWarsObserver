@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Net/CloudReplayProvider.h"
+#include "Net/MatchFolderPath.h"
 #include "Net/TarGzExtractor.h"
 #include "json.hpp"
 
@@ -39,11 +40,15 @@ void CloudReplayProvider::SetIndex(std::shared_ptr<MatchIndex> index)
 
 std::filesystem::path CloudReplayProvider::GetCachePath(const std::string& folder) const
 {
+    if (!IsSafeMatchFolderName(folder))
+        return {};
     return m_cachePath / folder;
 }
 
 bool CloudReplayProvider::IsMatchCached(const std::string& folder) const
 {
+    if (!IsSafeMatchFolderName(folder))
+        return false;
     auto matchDir = m_cachePath / folder;
     auto infosPath = matchDir / "infos.json";
     return std::filesystem::exists(infosPath);
@@ -172,6 +177,12 @@ CloudReplayProvider::DownloadResult CloudReplayProvider::EnsureMatchAvailable(
     HttpClient::ProgressFn progress)
 {
     DownloadResult result;
+    if (!IsSafeMatchFolderName(entry.folder))
+    {
+        result.error = "Invalid match folder name";
+        return result;
+    }
+
     auto matchDir = m_cachePath / entry.folder;
 
     // Already cached?
