@@ -42,7 +42,10 @@ inline bool GzipDecompress(const std::vector<uint8_t>& gzData, std::vector<uint8
     }
     if (flags & 0x02) offset += 2; // FHCRC
 
-    if (offset >= gzData.size()) return false;
+    // The last eight bytes are the gzip trailer. Keep the parsed optional
+    // header from advancing into it, or the deflate-input length below could
+    // underflow and let inflate read beyond gzData.
+    if (offset > gzData.size() - 8) return false;
 
     // Read uncompressed size from last 4 bytes of gzip (mod 2^32)
     uint32_t uncompSize = 0;
