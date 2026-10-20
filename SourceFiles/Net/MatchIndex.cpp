@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Net/MatchIndex.h"
+#include "Net/MatchFolderPath.h"
 #include "Net/HttpClient.h"
 #include "Net/TarGzExtractor.h"
 #include "json.hpp"
@@ -242,7 +243,7 @@ bool MatchIndex::ParseJson(const std::string& jsonStr)
     {
         RemoteMatchEntry entry;
         entry.folder = item.value("folder", "");
-        if (entry.folder.empty())
+        if (!IsSafeMatchFolderName(entry.folder))
             continue;
 
         entry.map_id = item.value("map_id", 0);
