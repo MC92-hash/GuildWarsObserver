@@ -2369,6 +2369,7 @@ void ReplayWindow::StepLoadInit()
     m_frozenGateCandidates.clear();
     m_frozenGatesResolved = false;
     m_frozenGateIcons.clear();
+    m_meditationGateIcons.clear();
     m_frozenLeverModelLoaded = false;
     m_frozenLeverCandidates.clear();
     m_druidBridgeCandidates.clear();
@@ -2874,7 +2875,10 @@ void ReplayWindow::StepPlaceProps()
                             last.controller->Pause();
 
                             if (doorType == 2)
+                            {
                                 KeepSubmeshesStatic(last, m_mapRenderer->GetMeshManager(), { 3, 4 });
+                                m_meditationGateIcons.push_back(XMFLOAT3(prop_info.x, prop_info.y, prop_info.z));
+                            }
 
                             m_doorAnimPropCount++;
                             OutputDebugStringA(

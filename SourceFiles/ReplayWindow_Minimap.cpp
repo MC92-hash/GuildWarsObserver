@@ -971,6 +971,54 @@ void ReplayWindow::DrawMinimapPanel()
                 }
             }
 
+            // --- Isle of Meditation gate-lock gate state icons (door type 2) ---
+            // The three gates by the miasma always move together: a gate lock opens them and they
+            // close 20 s later. Same open/closed markers as the Frozen Isle lever gates; hovering
+            // shows a "Gate" label; not clickable.
+            if (m_replayCtx.datMapId == 0x28784)
+            {
+                const bool doorOpen = m_doorTypeOpen[2];
+                for (const auto& worldPos : m_meditationGateIcons)
+                {
+                    float dsx, dsy;
+                    if (!ProjectToImage(worldPos, dsx, dsy) || !InBounds(dsx, dsy))
+                        continue;
+
+                    const float dh = 16.f;
+
+                    ImTextureID dtex = LoadNPCIconDDS(dev, doorOpen ? "texture_193320.dds"
+                                                                    : "texture_191464.dds");
+                    if (dtex)
+                        dl->AddImage(dtex, ImVec2(dsx - dh, dsy - dh),
+                                     ImVec2(dsx + dh, dsy + dh));
+                    else
+                    {
+                        ImU32 c = doorOpen ? IM_COL32(120, 230, 120, 230)
+                                           : IM_COL32(230, 120, 120, 230);
+                        dl->AddCircleFilled(ImVec2(dsx, dsy), dh * 0.4f + 1.f,
+                                            IM_COL32(0, 0, 0, 180));
+                        dl->AddCircleFilled(ImVec2(dsx, dsy), dh * 0.4f, c);
+                    }
+
+                    if (hovered)
+                    {
+                        float mdx = io.MousePos.x - dsx;
+                        float mdy = io.MousePos.y - dsy;
+                        float d2  = mdx * mdx + mdy * mdy;
+                        float pick = dh + 2.f;
+                        if (d2 <= pick * pick && d2 < hoverLabelDist2)
+                        {
+                            hoverLabelDist2  = d2;
+                            hoverLabelActive = true;
+                            hoverLabelText   = "Gate";
+                            hoverLabelPos    = ImVec2(dsx, dsy);
+                            hoverLabelDotR   = dh;
+                            hoverLabelCol    = IM_COL32(255, 255, 255, 240);
+                        }
+                    }
+                }
+            }
+
             // --- Druid's Isle vine bridge state icons (doors 26/27) ---
             // Same markers as the lever gates elsewhere: red while the gap is still
             // open, grey once a seed has been planted and the bridge has grown, which

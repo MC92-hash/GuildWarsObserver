@@ -870,6 +870,9 @@ private:
     bool m_frozenGatesResolved = false;
     // Resolved (doorType, world pos) per lever gate, for the minimap open/closed state icons.
     std::vector<std::pair<int, DirectX::XMFLOAT3>> m_frozenGateIcons;
+    // Isle of Meditation: world position of each gate-lock gate (door type 2, the three gates by
+    // the miasma), for the minimap open/closed state icons.
+    std::vector<DirectX::XMFLOAT3> m_meditationGateIcons;
 
     // --- Obelisk Flag Stand 3D model (Isle of Meditation) ---
     int  m_obeliskAnimPropIndex = -1;
