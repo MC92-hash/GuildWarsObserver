@@ -292,7 +292,12 @@ void ReplayWindow::UpdateFollowCamera(float dt)
     const auto& ard = it->second;
     if (ard.snapshots.empty()) { ExitFollowMode(); return; }
 
-    if (ard.isDeadAtTime(m_debugTimeline) &&
+    // A dead agent past its last snapshot has despawned (spirits, minions) - but a player's or
+    // henchman's corpse stays on the map with nothing left to record, so its file simply ends at
+    // the death. Dropping those threw the camera and the whole HUD off every player killed for
+    // good late in a match (High Council vs RACK, 2026-10-17: Shaco Otp at 16:11).
+    if (ard.type != AgentType::Player && !IsHenchmanAgent(ard) &&
+        ard.isDeadAtTime(m_debugTimeline) &&
         m_debugTimeline > ard.snapshots.back().time)
     {
         ExitFollowMode();
