@@ -307,6 +307,11 @@ void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
             Icon(texEnergy);
             Txt(kTipPlain, " the range straddled");
             break;
+        case DoubtKind::SpiritSiphon:
+            Txt(kTipPlain, "Spirit Siphon not watched: ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " estimated from the spirit's refill");
+            break;
         }
         Br();
     }
