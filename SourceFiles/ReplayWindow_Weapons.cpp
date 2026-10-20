@@ -785,7 +785,10 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
     // hand has been. Everything else - a carried item, a set still composing, a player the recording
     // has no appearance for - keeps the stand-in models below.
     // The GvG flag goes that way too, for its cloth: handed in as a bundle of the flag model, its team
-    // colour (the client's old packed word, from the item or else the server's FLAG_ITEM) in the dyes.
+    // colour (the client's old packed word, from the server's FLAG_ITEM or else the item) in the dyes.
+    // The FLAG_ITEM word wins: the server recycles flag ids between the teams and re-declares the colour
+    // with each FLAG_ITEM, but the item record is sent once, so a red flag's id reused for blue keeps
+    // its old red dyes (Isle of Solitude 2026-10-17 [205826]vs[Men], item 3414 at 03:20).
     const Equipment::ItemDef* composedMain = mainItem.item;
     Equipment::ItemDef flagItem;
     if (mainItem.item && mainItem.modelFileId == kFlagModelFileId)
@@ -793,15 +796,11 @@ void ReplayWindow::DrawHeldWeapons(int agentId, const AgentReplayData& ard, int 
         flagItem = *mainItem.item;
         flagItem.modelFileId = kFlagModelFileId;
         flagItem.itemType = kBundleItemType;
-        const bool ownWord = flagItem.dyes[0] || flagItem.dyes[1] || flagItem.dyes[2] || flagItem.dyes[3];
-        if (!ownWord)
-        {
-            const float time = (snapIdx >= 0 && snapIdx < static_cast<int>(ard.snapshots.size()))
-                                   ? ard.snapshots[snapIdx].time : m_debugTimeline;
-            const uint16_t word = m_flagItems.ColourWordAt(mainItem.item->itemId, time);
+        const float time = (snapIdx >= 0 && snapIdx < static_cast<int>(ard.snapshots.size()))
+                               ? ard.snapshots[snapIdx].time : m_debugTimeline;
+        if (const uint16_t word = m_flagItems.ColourWordAt(mainItem.item->itemId, time))
             for (int i = 0; i < 4; i++)
                 flagItem.dyes[i] = static_cast<uint8_t>((word >> (4 * i)) & 0xFu);
-        }
         composedMain = &flagItem;
     }
     // Under a Ritualist weapon spell the main hand shows the spell's skin for its family, undyed;
