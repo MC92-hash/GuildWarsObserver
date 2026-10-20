@@ -1401,22 +1401,8 @@ public:
 
         RenderAnimatedProps(render_target_view, depth_stencil_view);
 
-        if (m_water_mesh_id) {
-            m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
-            m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
-                m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, m_water_mesh_id);
-        }
-
-        if (m_shore_mesh_ids.size() > 0 && m_should_render_shore_waves) {
-            m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
-            for (auto& mesh_id : m_shore_mesh_ids) {
-                const auto it = should_render_shore_mesh_id.find(mesh_id);
-                if (it != should_render_shore_mesh_id.end() && it->second) {
-                    m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
-                        m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, mesh_id);
-                }
-            }
-        }
+        if (!m_water_drawn_by_host)
+            DrawWaterAndShore(render_target_view, depth_stencil_view);
 
         // Render pathfinding trapezoids
         if (m_pathfinding_mesh_ids.size() > 0 && m_should_render_pathfinding) {
@@ -1465,6 +1451,39 @@ public:
     // whatever state it needs and must put back any sampler it changes; the renderer restores the
     // topology, the regular vertex shader, the depth state and the blend state after it. Empty: none.
     void SetWorldOverlay(std::function<void(ID3D11DeviceContext*)> overlay) { m_world_overlay = std::move(overlay); }
+
+    // THE WATER, drawn by the host AFTER its characters.
+    //
+    // The water is alpha blended (its alpha is the client's (1 - pattern.w)(1 - fresnel) term),
+    // but it writes depth. Drawn inside Render(), before the characters the replay draws after
+    // the whole world, it put its depth over every submerged leg and the character was cut off
+    // at the surface. The client draws it over the characters: what is under the surface shows
+    // through, tinted by the absorption colour, with the reflection on top. A host that draws
+    // characters sets this before Render() (the water and the shore foam are then skipped
+    // there), clears it after, and calls RenderWater once its characters are in the frame.
+    void SetWaterDrawnByHost(bool drawn_by_host) { m_water_drawn_by_host = drawn_by_host; }
+
+    // The character passes bind programs and buffers of their own, so this rebinds everything
+    // the water's program reads, as RenderAnimatedPropGlow does.
+    void RenderWater(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
+    {
+        RefreshPerFrameCB(m_last_time_elapsed);
+        m_deviceContext->VSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_SKY_CB_SLOT, 1, m_per_sky_cb.GetAddressOf());
+        m_mesh_manager->BindPerObjectCB();
+        BindRegularVertexShader();
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+
+        DrawWaterAndShore(render_target_view, depth_stencil_view);
+
+        m_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+    }
 
     void RenderForReflection(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
     {
@@ -1739,6 +1758,28 @@ public:
     }
 
 private:
+    // The water plane, then the shore foam that lies on it. The caller binds the vertex shader,
+    // the constant buffers and the depth state.
+    void DrawWaterAndShore(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
+    {
+        if (m_water_mesh_id) {
+            m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+            m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
+                m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, m_water_mesh_id);
+        }
+
+        if (m_shore_mesh_ids.size() > 0 && m_should_render_shore_waves) {
+            m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+            for (auto& mesh_id : m_shore_mesh_ids) {
+                const auto it = should_render_shore_mesh_id.find(mesh_id);
+                if (it != should_render_shore_mesh_id.end() && it->second) {
+                    m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
+                        m_stencil_state_manager.get(), m_user_camera->GetPosition3f(), m_lod_quality, mesh_id);
+                }
+            }
+        }
+    }
+
     void InitializeWaterFresnelLUT()
     {
         if (m_water_fresnel_lut_srv)
@@ -2045,6 +2086,8 @@ private:
     int m_sky_mesh_id = -1;
     int m_clouds_mesh_id = -1;
     int m_water_mesh_id = -1;
+    // Set by a host that draws the water itself after its characters (SetWaterDrawnByHost).
+    bool m_water_drawn_by_host = false;
     std::vector<int> m_shore_mesh_ids;
     std::vector<int> m_pathfinding_mesh_ids;
     std::vector<std::vector<int>> m_pathfinding_plane_mesh_ids;  // Grouped by plane

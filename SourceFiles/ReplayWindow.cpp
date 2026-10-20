@@ -7174,10 +7174,13 @@ void ReplayWindow::Render()
     auto* pickingRTV = m_assetSelectionEnabled
         ? m_deviceResources->GetPickingRenderTargetView() : nullptr;
 
+    // The water waits for the characters (RenderWater below), so what stands in it shows through.
+    m_mapRenderer->SetWaterDrawnByHost(true);
     m_mapRenderer->Render(
         m_deviceResources->GetRenderTargetView(),
         pickingRTV,
         m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->SetWaterDrawnByHost(false);
 
     // Picking readback: only perform the expensive GPU->CPU copy on click
     if (m_assetSelectionEnabled && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
@@ -7215,6 +7218,14 @@ void ReplayWindow::Render()
     // their own. Two passes rather than one because a composed character needs its
     // own sub-pass order and its own program; the pass above skips exactly these.
     DrawPlayerVisuals();
+    DrawWeaponModels();
+    // THE WATER, over the characters and their weapons as the client draws it: its alpha lets a
+    // submerged body show through, tinted, under the reflection. Before it, the water's depth
+    // cut every player off at the surface. The particles come after it, since they write no
+    // depth and the water would otherwise be blended over the ones above the surface.
+    m_mapRenderer->RenderWater(
+        m_deviceResources->GetRenderTargetView(),
+        m_deviceResources->GetDepthStencilView());
     // ...and the particles their headpieces carry, after the character so the head is already in
     // the depth buffer to hide the ones behind it.
     if (Camera* camera = m_mapRenderer->GetCamera())
@@ -7223,7 +7234,6 @@ void ReplayWindow::Render()
         DrawAgentEffects(camera->GetView());
         DrawProjectiles(camera->GetView());
     }
-    DrawWeaponModels();
 
     // The animated props' additive glow (the teleporter rings): after the characters, so a
     // player inside a ring is lit by its near wall rather than drawn over it.

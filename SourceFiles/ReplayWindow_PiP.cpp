@@ -344,7 +344,9 @@ void ReplayWindow::RenderPiP()
 
     // Render terrain/props/water to PiP target
     DrawAgentModels();
+    m_mapRenderer->SetWaterDrawnByHost(true);
     m_mapRenderer->Render(m_pipRTV.Get(), nullptr, m_pipDSV.Get());
+    m_mapRenderer->SetWaterDrawnByHost(false);
 
     // Rebind PiP render targets for agent model + cylinder passes
     ID3D11RenderTargetView* pipRTV = m_pipRTV.Get();
@@ -362,10 +364,12 @@ void ReplayWindow::RenderPiP()
     // per-frame rewrite cannot disturb them, and it saves and restores every pipeline state it
     // touches off the context - which is why the weapon and cylinder passes below still work.
     DrawPlayerVisuals(/*secondaryView=*/true);
+    DrawWeaponModels();
+    // The water over the characters, as in the main view.
+    m_mapRenderer->RenderWater(m_pipRTV.Get(), m_pipDSV.Get());
     DrawHeadpieceParticles(cam->GetView());
     DrawAgentEffects(cam->GetView());
     DrawProjectiles(cam->GetView());
-    DrawWeaponModels();
     // The teleporter glow after the characters, as in the main view.
     m_mapRenderer->RenderAnimatedPropGlow(m_pipRTV.Get(), m_pipDSV.Get());
     DrawAgentCylinders();
