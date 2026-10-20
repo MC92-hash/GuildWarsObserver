@@ -26,6 +26,7 @@
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
+#include "PropGeneratedReflection.h"
 
 #define NANOSVG_IMPLEMENTATION
 #include "../ThirdParty/nanosvg/nanosvg.h"
@@ -2498,6 +2499,7 @@ void ReplayWindow::StepPlaceProps()
 
             const auto& geom = modelFilePtr->geometry_chunk;
             std::vector<Mesh> propMeshes;
+            std::vector<PropGeneratedStages> propGeneratedStages; // per mesh - see PropGeneratedReflection.h
             for (size_t j = 0; j < geom.models.size(); j++)
             {
                 AMAT_file amat;
@@ -2511,8 +2513,10 @@ void ReplayWindow::StepPlaceProps()
                         amat = m_datManager->parse_amat_file(aIt->second.at(0));
                 }
                 Mesh mesh = modelFilePtr->GetMesh((int)j, amat, matRow);
-                if (mesh.indices.size() % 3 == 0)
+                if (mesh.indices.size() % 3 == 0) {
+                    propGeneratedStages.push_back(ApplyPropGeneratedReflectionStages(*modelFilePtr, (int)j, mesh));
                     propMeshes.push_back(mesh);
+                }
             }
             if (propMeshes.empty()) break;
 
@@ -2585,7 +2589,9 @@ void ReplayWindow::StepPlaceProps()
                         perObjectCBs[j].uv_indices[k / 4][k % 4] = (uint32_t)mesh.uv_coord_indices[k];
                         perObjectCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
                         perObjectCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
-                        perObjectCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                        perObjectCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k] |
+                            (((propGeneratedStages[j].generated >> k) & 1u) ? kTextureTypeGeneratedReflection : 0u) |
+                            (((propGeneratedStages[j].program_one >> k) & 1u) ? kTextureTypeProgramOneHighlight : 0u);
                     }
                 }
             }

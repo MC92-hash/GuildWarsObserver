@@ -87,6 +87,18 @@ struct PixelInputType
     float3x3 TBN : TEXCOORD9;
 };
 
+// A STAGE ON GENERATED COORDINATES (texture_types bit 0x10000, kTextureTypeGeneratedReflection in
+// PropGeneratedReflection.h): a material layer with no UV set, whose coordinate the client generates from
+// the camera-space reflection of the eye ray about the normal - a view-dependent sheen. Sampled on UV set 0
+// instead, its environment map tiles over the mesh as rows of spots.
+float2 generated_reflection_uv(float3 world_position, float3 world_normal)
+{
+    const float3 p = mul(float4(world_position, 1.0), View).xyz;
+    const float3 n = normalize(mul(world_normal, (float3x3) View));
+    const float3 r = reflect(normalize(p), n);
+    return float2(0.5 * r.x + 0.5, -0.5 * r.y + 0.5);
+}
+
 float4 main(PixelInputType input) : SV_TARGET
 {
     if (input.world_position.y <= water_level)
@@ -107,6 +119,7 @@ float4 main(PixelInputType input) : SV_TARGET
 
     uint prev_texture_type = -1;
     uint prev_blend_flag = -1;
+    float prev_raw_alpha = 1.0;
     for (int i = 0; i < num_uv_texture_pairs; ++i)
     {
         uint uv_set_index = uv_indices[i / 4][i % 4];
@@ -119,7 +132,20 @@ float4 main(PixelInputType input) : SV_TARGET
         {
             if (t == texture_index)
             {
-                float4 currentSampledTextureColor = shaderTextures[t].Sample(ss, texCoordsArray[uv_set_index]);
+                float2 stage_uv = (texture_types[i / 4][i % 4] & 0x10000) != 0
+                                       ? generated_reflection_uv(input.world_position, input.normal)
+                                       : texCoordsArray[uv_set_index];
+                float4 currentSampledTextureColor = shaderTextures[t].Sample(ss, stage_uv);
+                // PROGRAM 1's highlight term (texture_types bit 0x20000, kTextureTypeProgramOneHighlight in
+                // PropGeneratedReflection.h): rgb += env x saturate(2 art.a - 1), a = saturate(2 art.a),
+                // the art being the stage before.
+                if ((texture_types[i / 4][i % 4] & 0x20000) != 0)
+                {
+                    finalColor.rgb = saturate(finalColor.rgb +
+                                              currentSampledTextureColor.rgb * saturate(2.0 * prev_raw_alpha - 1.0));
+                    a = saturate(2.0 * prev_raw_alpha);
+                    break;
+                }
                 float alpha = currentSampledTextureColor.a;
                 if (blend_flag == 3 || blend_flag == 6 || blend_flag == 7)
                 {
@@ -167,6 +193,7 @@ float4 main(PixelInputType input) : SV_TARGET
 
                 prev_texture_type = texture_type;
                 prev_blend_flag = blend_flag;
+                prev_raw_alpha = currentSampledTextureColor.a;
                 break;
             }
         }
