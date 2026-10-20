@@ -103,6 +103,11 @@ class MapRenderer
 public:
     bool m_disableMovementInput = false;
     float m_replayPlaybackSpeed = 1.0f;
+    // THE GROUND FLOOR OF THE USER CAMERA: when >= 0, the camera is held at least this far above the
+    // terrain under it after every move of the frame (wheel, drag, keyboard), so it can never be
+    // panned or zoomed underground. < 0 = off. Gw.exe pushes its own camera out of the terrain with
+    // a radius of 50 (GmCam 4F7AB0), which is what the replay uses.
+    float m_cameraGroundClearance = -1.0f;
 
     // Reconstructed from Gw.exe gameplay camera path (GmView_UpdateCameraFrustum + Frame_SetCameraFovAndZFar).
     static constexpr float kGwDefaultCameraFovDegrees = 50.0f;
@@ -511,6 +516,17 @@ public:
 
 
     Terrain* GetTerrain() { return m_terrain; }
+
+    // The terrain height at (x, z), the point first clamped into the map: get_height_at itself
+    // indexes outside its grid for a point west or south of the map. False without a terrain.
+    bool TryGetGroundHeight(float x, float z, float& height) const
+    {
+        if (!m_terrain || m_terrain->m_grid_dim_x < 2 || m_terrain->m_grid_dim_z < 2) return false;
+        const auto& b = m_terrain->m_bounds;
+        height = m_terrain->get_height_at(std::clamp(x, b.map_min_x, b.map_max_x),
+                                          std::clamp(z, b.map_min_z, b.map_max_z));
+        return true;
+    }
 
     void SetTerrain(Terrain* terrain, int texture_atlas_id)
     {
@@ -1097,6 +1113,14 @@ public:
                 m_user_camera->Strafe(StrafeDirection::Left, dt_seconds, kbdMul);
             if (vkRight && m_input_manager->IsKeyDown(vkRight))
                 m_user_camera->Strafe(StrafeDirection::Right, dt_seconds, kbdMul);
+        }
+
+        if (m_cameraGroundClearance >= 0.0f)
+        {
+            const XMFLOAT3 p = m_user_camera->GetPosition3f();
+            float ground = 0.0f;
+            if (TryGetGroundHeight(p.x, p.z, ground) && p.y < ground + m_cameraGroundClearance)
+                m_user_camera->SetPosition(p.x, ground + m_cameraGroundClearance, p.z);
         }
 
         m_user_camera->Update(dt_seconds);
@@ -1910,6 +1934,52 @@ public:
     //
     // The character passes bind programs and buffers of their own, so this rebinds everything
     // the map's model program reads, and applies the map light gain the way Render() does.
+    // THE SEE-THROUGH PROPS (MeshManager::SetMeshGhost), after the characters, the water and the
+    // particles, so all of that is already in the frame to show through them. Two passes over the
+    // same meshes: the first writes only depth, the second blends at object_color.a and passes
+    // only where its depth is the one just written - so each pixel shows the NEAREST surface of
+    // the faded props once, whatever order they are drawn in, never their insides stacked up.
+    void RenderGhostMeshes(ID3D11RenderTargetView* render_target_view,
+                           ID3D11DepthStencilView* depth_stencil_view)
+    {
+        const auto& ghosts = m_mesh_manager->GetGhostMeshIds();
+        if (ghosts.empty())
+            return;
+
+        const float gain = m_map_light_gain;
+        m_map_light_gain_in_use = gain;
+        RefreshPerFrameCB(m_last_time_elapsed);
+
+        m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+        m_deviceContext->VSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_SKY_CB_SLOT, 1, m_per_sky_cb.GetAddressOf());
+        m_mesh_manager->BindPerObjectCB();
+        BindRegularVertexShader();
+
+        const XMFLOAT3 eye = m_user_camera->GetPosition3f();
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+        for (const int mesh_id : ghosts)
+            m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
+                m_stencil_state_manager.get(), eye, m_lod_quality, mesh_id, RenderSelectionState::All, true,
+                false, PixelShaderType::OldModel, BlendState::NoColorWrite);
+
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::EnabledNoWrite);
+        for (const int mesh_id : ghosts)
+            m_mesh_manager->RenderMesh(m_pixel_shaders, m_blend_state_manager.get(), m_rasterizer_state_manager.get(),
+                m_stencil_state_manager.get(), eye, m_lod_quality, mesh_id);
+
+        m_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+        m_map_light_gain_in_use = 1.0f;
+        RefreshPerFrameCB(m_last_time_elapsed);
+    }
+
     void RenderAnimatedPropGlow(ID3D11RenderTargetView* render_target_view,
                                 ID3D11DepthStencilView* depth_stencil_view)
     {

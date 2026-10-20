@@ -341,15 +341,35 @@ void ReplayWindow::UpdateFollowCamera(float dt)
         }
     }
 
-    // Spherical offset from orbit center
+    // Spherical offset from orbit center. The pitch is clamped here as well as at the mouse: entering
+    // follow mode derives it from wherever the free camera was, which can be far below the subject.
+    m_followPitch = std::clamp(m_followPitch, kFollowMinPitch, kFollowMaxPitch);
     float cosP = cosf(m_followPitch);
     float offX = m_followDist * sinf(m_followYaw) * cosP;
     float offY = m_followDist * sinf(m_followPitch);
     float offZ = m_followDist * cosf(m_followYaw) * cosP;
 
     Camera* cam = m_mapRenderer->GetCamera();
-    cam->SetPosition(center.x + offX, center.y + offY, center.z + offZ);
+    XMFLOAT3 eye(center.x + offX, center.y + offY, center.z + offZ);
+    cam->SetPosition(eye.x, eye.y, eye.z);
     cam->SetOrientation(-m_followPitch, m_followYaw + XM_PI);
+
+    // NEVER UNDER THE GROUND. An orbit below the subject, or behind it on rising ground, would put
+    // the eye inside the terrain. The eye is lifted to the same clearance the free camera keeps and
+    // re-aimed at the centre, which is what the client's own terrain pitch lift amounts to (GmCam
+    // 4F2AE0); m_followPitch is left alone, so the orbit comes back down once the ground falls away.
+    float ground = 0.f;
+    const float clearance = kFollowGroundClearance;
+    if (m_mapRenderer->TryGetGroundHeight(eye.x, eye.z, ground) &&
+        eye.y < ground + clearance)
+    {
+        eye.y = ground + clearance;
+        const float dx = center.x - eye.x, dy = center.y - eye.y, dz = center.z - eye.z;
+        const float horiz = sqrtf(dx * dx + dz * dz);
+        cam->SetPosition(eye.x, eye.y, eye.z);
+        if (horiz > 1e-3f || fabsf(dy) > 1e-3f)
+            cam->SetOrientation(atan2f(dy, horiz), atan2f(dx, dz));
+    }
 
     // THE SUBJECT, PUBLISHED. The camera above is placed at `center + spherical(...)` and aimed
     // exactly back at `center`, so `center` is the one point in the world this frame is about.

@@ -195,6 +195,17 @@ float2 generated_reflection_uv(float3 world_position, float3 world_normal)
     return float2(0.5 * r.x + 0.5, -0.5 * r.y + 0.5);
 }
 
+)" R"(
+// OCCLUSION FADE - a map prop standing between the replay camera and what it looks at is drawn
+// see-through. The host draws such a prop in a late pass of its own (MapRenderer::RenderGhostMeshes:
+// depth first, then blended), and its opacity rides in object_color.a, which a textured mesh never
+// reads otherwise (object_color is the solid colour of untextured debug primitives). The default
+// of 1 leaves every other draw exactly as it was.
+float OcclusionFadeAlpha(float fade)
+{
+    return num_uv_texture_pairs == 0 ? 1.0f : saturate(fade);
+}
+
 PSOutput main(PixelInputType input)
 {
     uint highlight_mode = highlight_state & 0xFF;
@@ -466,6 +477,7 @@ PSOutput main(PixelInputType input)
     PSOutput output;
 
     output.rt_0_output = finalColor;
+    output.rt_0_output.a *= OcclusionFadeAlpha(object_color.a);
 
     float4 colorId = float4(0, 0, 0, 1);
     colorId.r = (float) ((object_id & 0x00FF0000) >> 16) / 255.0f;

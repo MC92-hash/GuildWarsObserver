@@ -2366,6 +2366,7 @@ void ReplayWindow::StepLoadInit()
     m_weepingLeverResolved = false;
     m_weepingLeverHasDoor = false;
     m_weepingFadeProps.clear();
+    ResetPropOcclusion();
     m_weepingLeverModelLoaded = false;
     m_frozenGateCandidates.clear();
     m_frozenGatesResolved = false;
@@ -6998,6 +6999,11 @@ void ReplayWindow::Update(double elapsedMs)
         UpdateAutoCamera(dt);
     if (!m_topViewActive && !m_topViewTransitioning)
         UpdateFollowCamera(dt);
+    // The follow orbit never goes underground (UpdateFollowCamera lifts it); the free camera goes
+    // wherever the user flies it - through hills and mountains, which get out of its way instead
+    // (the terrain is culled from below, and UpdatePropOcclusion thins the props it is inside).
+    m_mapRenderer->m_cameraGroundClearance =
+        (m_cameraMode == CameraMode::FollowAgent) ? kFollowGroundClearance : -1.f;
     m_mapRenderer->m_replayPlaybackSpeed = m_replayCtx.playbackSpeed;
     // The map's fog and light are a blend of the environment regions the viewpoint is inside, so
     // they move with the camera. Cheap: a handful of squared distances over at most eight circles,
@@ -7135,6 +7141,9 @@ void ReplayWindow::Update(double elapsedMs)
     }
     m_mapRenderer->Update(dt);
 
+    // After every camera of the frame has moved (the keyboard moves it inside Update above).
+    UpdatePropOcclusion(dt);
+
     UpdateDoorAnimations();
 
     // Isle of the Weeping Stone portcullis gate (0x285BC): fake the opening by fading the
@@ -7182,10 +7191,13 @@ void ReplayWindow::Render()
 
     // The water waits for the characters (RenderWater below), so what stands in it shows through.
     m_mapRenderer->SetWaterDrawnByHost(true);
+    // The see-through props wait too (RenderGhostMeshes below), for everything behind them.
+    m_mapRenderer->GetMeshManager()->SetSkipGhostMeshes(true);
     m_mapRenderer->Render(
         m_deviceResources->GetRenderTargetView(),
         pickingRTV,
         m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->GetMeshManager()->SetSkipGhostMeshes(false);
     m_mapRenderer->SetWaterDrawnByHost(false);
 
     // Picking readback: only perform the expensive GPU->CPU copy on click
@@ -7244,6 +7256,11 @@ void ReplayWindow::Render()
     // The animated props' additive glow (the teleporter rings): after the characters, so a
     // player inside a ring is lit by its near wall rather than drawn over it.
     m_mapRenderer->RenderAnimatedPropGlow(
+        m_deviceResources->GetRenderTargetView(),
+        m_deviceResources->GetDepthStencilView());
+
+    // The props between the camera and the fight, over everything the frame has drawn so far.
+    m_mapRenderer->RenderGhostMeshes(
         m_deviceResources->GetRenderTargetView(),
         m_deviceResources->GetDepthStencilView());
 

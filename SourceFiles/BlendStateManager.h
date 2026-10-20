@@ -10,7 +10,10 @@ enum class BlendState
     Subtractive,
     // SRC_ALPHA / ONE: additive weighted by source alpha, dst += rgb * a. Set by a caller that
     // draws a mesh itself; nothing in the render batch uses it.
-    AdditiveSrcAlpha
+    AdditiveSrcAlpha,
+    // Writes no colour at all: a depth-only pass (the see-through props lay their nearest surface
+    // into the depth buffer with it before they are blended over the frame).
+    NoColorWrite
 };
 
 class BlendStateManager
@@ -31,6 +34,8 @@ public:
                          D3D11_BLEND_OP_REV_SUBTRACT); // Subtractive
         CreateBlendState(device, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ONE,
                          &m_additive_src_alpha_blend_state); // AdditiveSrcAlpha
+        CreateBlendState(device, D3D11_BLEND_ONE, D3D11_BLEND_ZERO, &m_no_color_write_blend_state,
+                         D3D11_BLEND_OP_ADD, 0); // NoColorWrite
     }
 
     ID3D11BlendState* GetBlendState(BlendState blendState)
@@ -51,6 +56,8 @@ public:
             return m_subtractive_blend_state.Get();
         case BlendState::AdditiveSrcAlpha:
             return m_additive_src_alpha_blend_state.Get();
+        case BlendState::NoColorWrite:
+            return m_no_color_write_blend_state.Get();
         default:
             return nullptr;
         }
@@ -81,7 +88,7 @@ public:
 private:
     HRESULT CreateBlendState(ID3D11Device* device, D3D11_BLEND srcBlend, D3D11_BLEND destBlend,
         Microsoft::WRL::ComPtr<ID3D11BlendState>* blendState,
-        D3D11_BLEND_OP blendOp = D3D11_BLEND_OP_ADD)
+        D3D11_BLEND_OP blendOp = D3D11_BLEND_OP_ADD, UINT8 writeMask = D3D11_COLOR_WRITE_ENABLE_ALL)
     {
         D3D11_BLEND_DESC blendDesc;
         ZeroMemory(&blendDesc, sizeof(blendDesc));
@@ -99,7 +106,7 @@ private:
         blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA; // Use inverse of source alpha
         blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
 
-        blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        blendDesc.RenderTarget[0].RenderTargetWriteMask = writeMask;
 
         return device->CreateBlendState(&blendDesc, blendState->GetAddressOf());
     }
@@ -115,4 +122,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_screen_blend_state;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_subtractive_blend_state;
     Microsoft::WRL::ComPtr<ID3D11BlendState> m_additive_src_alpha_blend_state;
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_no_color_write_blend_state;
 };

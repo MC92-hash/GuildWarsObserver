@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <DirectXMath.h>
 #include "RenderCommand.h"
@@ -187,6 +188,7 @@ public:
 
 	bool RemoveMesh(int meshID)
 	{
+		m_ghostMeshIds.erase(meshID);
 		auto it = m_triangleMeshes.find(meshID);
 		if (it != m_triangleMeshes.end())
 		{
@@ -246,6 +248,18 @@ public:
 		it = m_lineMeshes.find(meshID);
 		if (it != m_lineMeshes.end()) { it->second->SetPerObjectData(data); }
 	}
+
+	// SEE-THROUGH ("GHOST") MESHES: skipped by Render and drawn instead, after the characters, by
+	// MapRenderer::RenderGhostMeshes - depth first, then blended at their object_color.a.
+	void SetMeshGhost(int mesh_id, bool ghost)
+	{
+		if (ghost) m_ghostMeshIds.insert(mesh_id);
+		else m_ghostMeshIds.erase(mesh_id);
+	}
+	const std::unordered_set<int>& GetGhostMeshIds() const { return m_ghostMeshIds; }
+	// On only around the one view that runs the ghost pass afterwards; every other view (the
+	// picture-in-picture, the minimap, the water's reflection) draws them as ordinary props.
+	void SetSkipGhostMeshes(bool skip) { m_skipGhostMeshes = skip; }
 
 	std::optional<PerObjectCB> GetMeshPerObjectData(int mesh_id) {
 		auto it = m_triangleMeshes.find(mesh_id);
@@ -470,7 +484,8 @@ public:
 		BlendStateManager* blend_state_manager, RasterizerStateManager* rasterizer_state_manager,
 		DepthStencilStateManager* depth_stencil_state_manager, XMFLOAT3 camera_position, LODQuality lod_quality, 
 		int mesh_id, RenderSelectionState render_select_state = RenderSelectionState::All, bool should_set_ps = true,
-		bool should_overwrite_shader = false, PixelShaderType overwrite_shader = PixelShaderType::OldModel) {
+		bool should_overwrite_shader = false, PixelShaderType overwrite_shader = PixelShaderType::OldModel,
+		BlendState blend_state = BlendState::AlphaBlend) {
 
 		auto command = m_renderBatch.GetCommand(mesh_id);
 		if (command.has_value()) {
@@ -502,7 +517,7 @@ public:
 			else { rasterizer_state_manager->SetRasterizerState(RasterizerStateType::Solid_NoCull); }
 
 
-			blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+			blend_state_manager->SetBlendState(blend_state);
 
 			PerObjectCB transposedData = command->meshInstance->GetPerObjectData();
 
@@ -573,6 +588,10 @@ public:
 		for (const RenderCommand& command : m_renderBatch.GetCommands())
 		{
 			if (!command.should_render)
+				continue;
+			// A see-through prop is left to the host's late ghost pass (MapRenderer::RenderGhostMeshes).
+			if (m_skipGhostMeshes && !m_ghostMeshIds.empty() &&
+			    m_ghostMeshIds.count(command.meshInstance->GetMeshID()))
 				continue;
 			// A mesh that ADDS light (a flame, a glow) is drawn with its own blend state, and only with
 			// the transparent pass - over everything opaque, like the client's effect materials.
@@ -685,6 +704,8 @@ private:
 	ID3D11DeviceContext* m_deviceContext;
 	int m_nextMeshID;
 	bool m_needsUpdate;
+	std::unordered_set<int> m_ghostMeshIds;
+	bool m_skipGhostMeshes = false;
 	std::unordered_map<int, std::shared_ptr<MeshInstance>> m_triangleMeshes;
 	std::unordered_map<int, std::shared_ptr<MeshInstance>> m_lineMeshes;
 	RenderBatch m_renderBatch;

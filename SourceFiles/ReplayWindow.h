@@ -855,6 +855,33 @@ private:
     // fake the opening. Holds the prop indices whose alpha is driven by the timeline.
     std::vector<uint32_t> m_weepingFadeProps;
 
+    // --- See-through props in the way (ReplayWindow_PropOcclusion.cpp) ---
+    // Every static map prop the client lets fade, with its world bounds and, per mesh, the inverse
+    // world matrix and local box the segment tests run in. Built once the props are placed;
+    // `opacity` and `hold` are the client's two per-prop values (Props::UpdateOpacity) and
+    // `applied` the opacity its meshes carry now.
+    struct OcclusionMesh
+    {
+        int meshId = -1;
+        DirectX::XMFLOAT4X4 invWorld{};
+        DirectX::XMFLOAT3 boxMin{}, boxMax{};
+    };
+    struct OcclusionProp
+    {
+        uint32_t propIndex = 0;
+        std::vector<OcclusionMesh> meshes;
+        DirectX::XMFLOAT3 center{};
+        float radius = 0.f;
+        float opacity = 1.f;
+        float hold = 1.5f;
+        float applied = 1.f;
+        bool clientFades = false;   // the client's own eligibility (model flag 0x40 clear, top > 36)
+    };
+    std::vector<OcclusionProp> m_occlusionProps;
+    size_t m_occlusionPropsBuiltFrom = 0;   // GetPropsMeshIds().size() the list was built from
+    void ResetPropOcclusion();
+    void UpdatePropOcclusion(float dt);
+
     // Frozen Isle lever gates (0x255BE = doors 1/2, 0x57B57 = doors 3/4). Each model has
     // two instances that toggle independently from different levers, so each needs its own
     // door type. Props carry no game object id, so we record every instance (animated-prop
@@ -1291,7 +1318,12 @@ private:
     static constexpr float kFollowLerpSpeed   = 6.0f;
     static constexpr float kFollowMinDist     = 50.f;
     static constexpr float kFollowMaxDist     = 10000.f;
-    static constexpr float kFollowMinPitch    = -1.40f;  // ~-80 degrees
+    // Below the subject: Gw.exe clamps its own camera's pitch to +-0.3 pi (+-54 degrees, GmCam
+    // 4F57E0). The upper limit stays steeper than the client's for an overview from above.
+    static constexpr float kFollowMinPitch    = -0.942478f;  // -54 degrees, the client's limit
+    // The follow orbit's least height over the terrain: Gw.exe pushes its camera out of the
+    // terrain with a radius of 50 (GmCam 4F7AB0). The free camera has no floor.
+    static constexpr float kFollowGroundClearance = 50.f;
     static constexpr float kFollowMaxPitch    =  1.40f;  // ~+80 degrees
 
     // Smooth transition when switching between followed agents:

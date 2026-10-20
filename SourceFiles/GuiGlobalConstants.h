@@ -335,6 +335,9 @@ public:
 
 	// Replay camera shake on the events that shake the game's own camera (persisted, default on).
 	inline static bool replay_camera_shake = true;
+	// Props standing between the replay camera and what it looks at (or that the camera is inside)
+	// turn see-through as in the game, so roofs, arches and walls stop hiding the fight (persisted, default on).
+	inline static bool replay_fade_occluding_props = true;
 	// Ground marker where a siege catapult shot will land (persisted, default on).
 	inline static bool replay_catapult_danger_zone = true;
 	// Projectiles in flight: arrows, spears, wand bolts, spell projectiles (persisted, default on).
@@ -715,6 +718,7 @@ public:
 		file << "replay_camera_zoom_speed_multiplier=" << replay_camera_zoom_speed_multiplier << "\n";
 		file << "replay_camera_keyboard_speed_multiplier=" << replay_camera_keyboard_speed_multiplier << "\n";
 		file << "replay_camera_shake=" << (replay_camera_shake ? 1 : 0) << "\n";
+		file << "replay_fade_occluding_props=" << (replay_fade_occluding_props ? 1 : 0) << "\n";
 		file << "replay_catapult_danger_zone=" << (replay_catapult_danger_zone ? 1 : 0) << "\n";
 		file << "replay_projectiles=" << (replay_projectiles ? 1 : 0) << "\n";
 		file << "replay_skill_effects=" << (replay_skill_effects ? 1 : 0) << "\n";
@@ -891,6 +895,7 @@ public:
 			else if (key == "character_haze") character_haze = (value != 0);
 			else if (key == "map_saturation_enabled") map_saturation_enabled = (value != 0);
 			else if (key == "replay_camera_shake") replay_camera_shake = (value != 0);
+			else if (key == "replay_fade_occluding_props") replay_fade_occluding_props = (value != 0);
 			else if (key == "replay_catapult_danger_zone") replay_catapult_danger_zone = (value != 0);
 			else if (key == "replay_projectiles") replay_projectiles = (value != 0);
 			else if (key == "replay_skill_effects") replay_skill_effects = (value != 0);

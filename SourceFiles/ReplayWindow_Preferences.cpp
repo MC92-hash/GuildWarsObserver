@@ -626,6 +626,14 @@ void ReplayWindow::DrawInterfacePreferences()
             GuiGlobalConstants::SaveSettings();
             changed = true;
         }
+        if (ImGui::Checkbox("See through props in the way", &GuiGlobalConstants::replay_fade_occluding_props))
+        {
+            GuiGlobalConstants::SaveSettings();
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("As in the game: a building or wall between the camera and the followed\n"
+                              "player (or, in free camera, the players on screen) turns see-through.");
         if (ImGui::Checkbox("Catapult danger zone", &GuiGlobalConstants::replay_catapult_danger_zone))
         {
             GuiGlobalConstants::SaveSettings();
@@ -946,6 +954,7 @@ void ReplayWindow::DrawInterfacePreferences()
         GuiGlobalConstants::replay_camera_keyboard_speed_multiplier =
             GuiGlobalConstants::kDefaultReplayCameraSensitivityMultiplier;
         GuiGlobalConstants::replay_camera_shake = true;
+        GuiGlobalConstants::replay_fade_occluding_props = true;
         GuiGlobalConstants::replay_catapult_danger_zone = true;
         GuiGlobalConstants::replay_projectiles = true;
         GuiGlobalConstants::replay_skill_effects = true;

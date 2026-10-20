@@ -659,6 +659,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Bloom.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FogOfWar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_PropOcclusion.cpp" />
     <ClCompile Include="SourceFiles\ProjectedAgentShadows.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_LordDamage.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_CombatLog.cpp" />

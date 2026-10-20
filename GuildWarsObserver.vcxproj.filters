@@ -903,6 +903,9 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
+    <ClCompile Include="SourceFiles\ReplayWindow_PropOcclusion.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
     <ClCompile Include="SourceFiles\HeatmapMenu.cpp">
       <Filter>GUI</Filter>
     </ClCompile>

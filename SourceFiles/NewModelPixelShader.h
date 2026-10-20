@@ -45,7 +45,11 @@ cbuffer PerObjectCB : register(b1)
     uint num_uv_texture_pairs;
     uint object_id;
     uint highlight_state; // 0 is not hightlight, 1 is dark green, 2 is lightgreen
-    float pad1[1];
+    float shore_max_alpha;
+    float shore_wave_speed;
+    float mesh_alpha;
+    float2 pad_object_color;
+    float4 object_color;  // .a = the occlusion fade coverage on a textured mesh (see OcclusionFadeAlpha)
 };
 
 cbuffer PerCameraCB : register(b2)
@@ -197,6 +201,17 @@ float3 TeamGlow(float3 world_normal, uint team_glow_id)
     float f = saturate(x - (float)i0);
     float3 ramp = lerp(TeamGlowRampTexel(i0), TeamGlowRampTexel(i1), f);
     return ramp * kTeamGlowColors[min(team_glow_id, 7)];
+}
+
+)" R"(
+// OCCLUSION FADE - a map prop standing between the replay camera and what it looks at is drawn
+// see-through. The host draws such a prop in a late pass of its own (MapRenderer::RenderGhostMeshes:
+// depth first, then blended), and its opacity rides in object_color.a, which a textured mesh never
+// reads otherwise (object_color is the solid colour of untextured debug primitives). The default
+// of 1 leaves every other draw exactly as it was.
+float OcclusionFadeAlpha(float fade)
+{
+    return num_uv_texture_pairs == 0 ? 1.0f : saturate(fade);
 }
 
 PSOutput main(PixelInputType input)
@@ -387,6 +402,7 @@ PSOutput main(PixelInputType input)
     
     PSOutput output;
     output.rt_0_output = float4(final_color, sampled_texture_color.a);
+    output.rt_0_output.a *= OcclusionFadeAlpha(object_color.a);
 
 	float4 color_id = float4(0, 0, 0, 1);
 	color_id.r = (float) ((object_id & 0x00FF0000) >> 16) / 255.0f;
