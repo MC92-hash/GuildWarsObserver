@@ -1852,7 +1852,79 @@ private:
 
         m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
         BindSkinnedVertexShader();
+        DrawAnimatedPropMeshes(/*glow*/ false);
+        BindRegularVertexShader();
+    }
 
+public:
+    // THE ADDITIVE GLOW OF THE ANIMATED PROPS, drawn by the host AFTER its characters.
+    //
+    // A legacy layer with blend_state 2 is the client's additive glow (texOp 4, SrcAlpha/One):
+    // the teleporter ring walls of Isle of Jade (0x285EA), Isle of Solitude (0x2E13A) and
+    // Nomad's Isle (0x22143) are such a layer alone. Drawn like the rest of the prop, the near
+    // side of the wall painted over the legs of whoever stood inside. It adds its light with the
+    // depth test on and depth write off - and it must come after the characters, which the
+    // replay draws after the whole world: drawn before them, a glow that writes no depth is
+    // simply painted over, and the player looks in front of the ring instead of inside it.
+    //
+    // The character passes bind programs and buffers of their own, so this rebinds everything
+    // the map's model program reads, and applies the map light gain the way Render() does.
+    void RenderAnimatedPropGlow(ID3D11RenderTargetView* render_target_view,
+                                ID3D11DepthStencilView* depth_stencil_view)
+    {
+        bool any = false;
+        for (const auto& ap : m_animated_props)
+        {
+            if (!ap.active || (ap.proceduralGrow && ap.growProgress <= 0.0f))
+                continue;
+            for (size_t i = 0; i < ap.meshes.size() && !any; i++)
+                any = ap.meshes[i] && ap.IsSubmeshVisible(i) && IsAnimatedPropGlow(ap, i);
+            if (any)
+                break;
+        }
+        if (!any)
+            return;
+
+        const float gain = m_map_light_gain;
+        m_map_light_gain_in_use = gain;
+        RefreshPerFrameCB(m_last_time_elapsed);
+
+        m_deviceContext->OMSetRenderTargets(1, &render_target_view, depth_stencil_view);
+        m_deviceContext->VSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->VSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_FRAME_CB_SLOT, 1, m_per_frame_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_CAMERA_CB_SLOT, 1, m_per_camera_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_TERRAIN_CB_SLOT, 1, m_per_terrain_cb.GetAddressOf());
+        m_deviceContext->PSSetConstantBuffers(PER_SKY_CB_SLOT, 1, m_per_sky_cb.GetAddressOf());
+        m_mesh_manager->BindPerObjectCB();
+        m_deviceContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        m_rasterizer_state_manager->SetRasterizerState(RasterizerStateType::Solid);
+        m_blend_state_manager->SetBlendState(BlendState::AdditiveSrcAlpha);
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::EnabledNoWrite);
+        BindSkinnedVertexShader();
+
+        DrawAnimatedPropMeshes(/*glow*/ true);
+
+        m_blend_state_manager->SetBlendState(BlendState::AlphaBlend);
+        m_stencil_state_manager->SetDepthStencilState(DepthStencilStateType::Enabled);
+        BindRegularVertexShader();
+
+        m_map_light_gain_in_use = 1.0f;
+        RefreshPerFrameCB(m_last_time_elapsed);
+    }
+
+private:
+    static bool IsAnimatedPropGlow(const MapAnimatedProp& ap, size_t i)
+    {
+        return i < ap.perObjectCBs.size() && ap.perObjectCBs[i].num_uv_texture_pairs > 0 &&
+               ap.perObjectCBs[i].blend_flags[0][0] == 2;
+    }
+
+    // Draws the animated props' submeshes: the glow submeshes when `glow`, every other one
+    // otherwise. The caller binds the targets, the skinned vertex shader and the blend/depth state.
+    void DrawAnimatedPropMeshes(bool glow)
+    {
         for (const auto& ap : m_animated_props)
         {
             if (!ap.active)
@@ -1862,6 +1934,12 @@ private:
             // full-length bridge and growProgress only scales it, so at 0 there is nothing
             // to draw: skip the prop instead of submitting a zero-length one.
             if (ap.proceduralGrow && ap.growProgress <= 0.0f)
+                continue;
+
+            bool anyHere = false;
+            for (size_t i = 0; i < ap.meshes.size() && !anyHere; i++)
+                anyHere = ap.meshes[i] && ap.IsSubmeshVisible(i) && IsAnimatedPropGlow(ap, i) == glow;
+            if (!anyHere)
                 continue;
 
             auto psIt = m_pixel_shaders.find(ap.pixelShaderType);
@@ -1884,12 +1962,19 @@ private:
                 if (!ap.IsSubmeshVisible(i))
                     continue;
 
+                if (IsAnimatedPropGlow(ap, i) != glow)
+                    continue;
+
                 if (i < ap.perObjectCBs.size())
                 {
                     PerObjectCB transposedData = ap.perObjectCBs[i];
                     XMMATRIX worldMatrix = XMLoadFloat4x4(&transposedData.world);
                     worldMatrix = XMMatrixTranspose(worldMatrix);
                     XMStoreFloat4x4(&transposedData.world, worldMatrix);
+                    // Haze lerps a surface toward the fog colour; on an added glow that would
+                    // ADD fog, so the glow keeps it off (bit 12, as a backdrop does).
+                    if (glow)
+                        transposedData.highlight_state |= 0x1000;
                     m_mesh_manager->SetPerObjectCB(transposedData);
                 }
 
@@ -1899,8 +1984,6 @@ private:
             if (ap.doubleSided)
                 m_rasterizer_state_manager->SetRasterizerState(RasterizerStateType::Solid);
         }
-
-        BindRegularVertexShader();
     }
 
     void PushPerTerrainCBUpdate()

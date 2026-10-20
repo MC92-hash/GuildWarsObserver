@@ -448,6 +448,15 @@ public:
 	 *
 	 * @param data Per-object constant buffer data (world matrix should already be transposed).
 	 */
+	// Puts this manager's per-object buffer back on its slot, for a pass that runs after another
+	// program has bound its own buffer there (the map's late additive glow, after the characters).
+	void BindPerObjectCB()
+	{
+		ID3D11Buffer* constantBuffers[] = {m_perObjectCB.Get()};
+		m_deviceContext->VSSetConstantBuffers(PER_OBJECT_CB_SLOT, 1, constantBuffers);
+		m_deviceContext->PSSetConstantBuffers(PER_OBJECT_CB_SLOT, 1, constantBuffers);
+	}
+
 	void SetPerObjectCB(const PerObjectCB& data)
 	{
 		D3D11_MAPPED_SUBRESOURCE mappedResource;

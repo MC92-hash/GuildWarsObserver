@@ -366,6 +366,8 @@ void ReplayWindow::RenderPiP()
     DrawAgentEffects(cam->GetView());
     DrawProjectiles(cam->GetView());
     DrawWeaponModels();
+    // The teleporter glow after the characters, as in the main view.
+    m_mapRenderer->RenderAnimatedPropGlow(m_pipRTV.Get(), m_pipDSV.Get());
     DrawAgentCylinders();
 
     // --- Restore main camera ---

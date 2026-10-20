@@ -7225,6 +7225,12 @@ void ReplayWindow::Render()
     }
     DrawWeaponModels();
 
+    // The animated props' additive glow (the teleporter rings): after the characters, so a
+    // player inside a ring is lit by its near wall rather than drawn over it.
+    m_mapRenderer->RenderAnimatedPropGlow(
+        m_deviceResources->GetRenderTargetView(),
+        m_deviceResources->GetDepthStencilView());
+
     DrawAgentCylinders();
 
     // THE GAME'S OWN POST-PROCESS, and it goes here on purpose: after the world and after the
