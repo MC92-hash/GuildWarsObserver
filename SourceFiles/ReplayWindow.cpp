@@ -6644,11 +6644,13 @@ void ReplayWindow::Tick()
         m_healthInputs.skillHealth = &m_skillHealthSpans;
         // The span's health is a rank the attribute solve has not reached yet; until it has, the
         // model answers Fallback inside a span and the recorded value stands.
+        // It pays at its caster's rank: a Vital Weapon's span sits on its target.
         m_healthInputs.skillHealthBonus = [this](int agentId, const HealthModel::SkillHealthSpan& span) {
-            if (m_attrProfiles.find(agentId) == m_attrProfiles.end()) return -1;
+            const int casterId = span.caster != 0 ? span.caster : agentId;
+            if (m_attrProfiles.find(casterId) == m_attrProfiles.end()) return -1;
             const EffectTimeline::Table* fx = EffectTimelineTable();
             return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView,
-                                                    fx && fx->WeaknessAt(agentId, span.start) == 1);
+                                                    fx && fx->WeaknessAt(casterId, span.start) == 1);
         };
         // The maxima the damage attribution confirmed (chant shares, flat hits) vote with the readings.
         if (const DamageAttribution::Table* da = DamageAttributionTable())
