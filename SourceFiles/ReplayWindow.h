@@ -1562,6 +1562,15 @@ private:
     DirectX::XMFLOAT3 m_followCenter{0.0f, 0.0f, 0.0f};
     bool m_followCenterValid = false;
     void EnvIndicesAt(float world_x, float world_z, uint16_t out_indices[8]) const;
+    // THE LIVE WATER ENTRY. Slot 6 is winner-takes-all in the client and is re-resolved every
+    // frame at the same query point as the fog and the light, so a map with several water
+    // entries changes its water height as the view moves (Isle of the Dead: 0, 650 and 991).
+    // Resolving it once at the map centre floods every low area with the edge water.
+    // Textures are loaded for every entry at map load, indexed by entry.
+    void ApplyMapWater(float world_x, float world_z);
+    int m_liveWaterEntry = -1;
+    uint16_t m_waterWindEntry = 0;
+    std::vector<std::vector<ID3D11ShaderResourceView*>> m_waterEntryTextures;
 
     // ---- WHAT COLOUR THE GROUND IS, MEASURED RATHER THAN ARGUED ------------------------------
     //

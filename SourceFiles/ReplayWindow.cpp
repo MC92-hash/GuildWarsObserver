@@ -1578,10 +1578,49 @@ void ReplayWindow::LogTerrainAlbedoAt(float world_x, float world_z, const float 
                      px[1] * 255.0f, px[2] * 255.0f);
 }
 
+// The water entry live at a point: winner-takes-all on slot 6, like the client's EnvUpdate
+// (0x007178f1). Swaps the height, the parameters and the two textures only when the winner
+// changes, so a still camera costs one lookup.
+void ReplayWindow::ApplyMapWater(float world_x, float world_z)
+{
+    if (!m_mapRenderer || m_liveWaterEntry < 0)
+        return;
+    const auto& env = m_mapFile.environment_info_chunk;
+    uint16_t idx[8];
+    EnvIndicesAt(world_x, world_z, idx);
+    const int entry = idx[6] < env.env_sub_chunk6.size() ? idx[6] : 0;
+    if (entry == m_liveWaterEntry)
+        return;
+    m_liveWaterEntry = entry;
+
+    const EnvSubChunk7* wind = nullptr;
+    if (!env.env_sub_chunk7.empty())
+        wind = &env.env_sub_chunk7[m_waterWindEntry < env.env_sub_chunk7.size() ? m_waterWindEntry : 0u];
+    m_mapRenderer->UpdateWaterProperties(env.env_sub_chunk6[entry], wind);
+
+    const int waterMeshId = m_mapRenderer->GetWaterMeshId();
+    if (waterMeshId >= 0 && entry < (int)m_waterEntryTextures.size())
+    {
+        const auto& textures = m_waterEntryTextures[entry];
+        auto obj = m_mapRenderer->GetMeshManager()->GetMeshPerObjectData(waterMeshId);
+        if (obj.has_value())
+        {
+            PerObjectCB waterObj = obj.value();
+            for (int i = 0; i < (int)textures.size(); i++)
+                waterObj.texture_types[i / 4][i % 4] = textures[i] == nullptr ? 0xFF : 0;
+            m_mapRenderer->GetMeshManager()->UpdateMeshPerObjectData(waterMeshId, waterObj);
+        }
+        m_mapRenderer->GetMeshManager()->SetTexturesForMesh(waterMeshId, textures, 0);
+    }
+    RunLog::Line("map: water entry %d live at (%.0f, %.0f) - surface height %.0f", entry, world_x,
+                 world_z, env.env_sub_chunk6[entry].water_surface_base_height);
+}
+
 void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
 {
     if (!m_mapRenderer)
         return;
+    ApplyMapWater(world_x, world_z);
     const auto& env = m_mapFile.environment_info_chunk;
     if (env.env_sub_chunk2.empty() && env.env_sub_chunk3.empty())
         return;
@@ -2138,6 +2177,24 @@ void ReplayWindow::StepLoadInit()
     for (size_t i = 0; i < waterTexIndices.size(); i++)
         waterTextures[i] = loadEnvTexture(waterTexIndices[i]);
 
+    // Every water entry's textures, for ApplyMapWater's per-frame switch. Loaded once per file.
+    m_liveWaterEntry = -1;
+    m_waterEntryTextures.clear();
+    {
+        std::unordered_map<uint16_t, ID3D11ShaderResourceView*> loaded;
+        loaded[water_color_idx] = waterTextures[0];
+        loaded[water_distort_idx] = waterTextures[1];
+        const auto texture = [&](uint16_t file_index) {
+            auto it = loaded.find(file_index);
+            if (it == loaded.end())
+                it = loaded.emplace(file_index, loadEnvTexture(file_index)).first;
+            return it->second;
+        };
+        for (const auto& w : envChunk.env_sub_chunk6)
+            m_waterEntryTextures.push_back(
+                {texture(w.water_color_texture_index), texture(w.water_distortion_texture_index)});
+    }
+
     if (!waterTextures.empty()) {
         int waterMeshId = map_renderer->GetMeshManager()->AddGwSkyCircle(70000, PixelShaderType::Water);
         map_renderer->SetWaterMeshId(waterMeshId);
@@ -2258,6 +2315,8 @@ void ReplayWindow::StepLoadInit()
             wind = &envChunk.env_sub_chunk7[wii];
         }
         map_renderer->UpdateWaterProperties(envChunk.env_sub_chunk6[wi], wind);
+        m_liveWaterEntry = static_cast<int>(wi);
+        m_waterWindEntry = selWindIdx;
     }
 
     // Cloud mesh
