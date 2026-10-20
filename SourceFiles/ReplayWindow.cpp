@@ -3067,21 +3067,35 @@ void ReplayWindow::StepPlaceProps()
                 {
                     if (fileHash == 0x285E7)
                     {
-                        // Double hinge door. GWMB analysis (matrix-stack skinning on): the
-                        // .dat only swings one leaf, driven by bones 0 and 4-23; bones 1,2,3
-                        // are the static frame; bones 24-57 are the dead second leaf. Pin the
-                        // frame, keep the driver leaf swinging, and mirror it onto the dead
-                        // leaf (all of 24-57 -> mirrored copy of driver bone 0) so both leaves
-                        // pivot symmetrically and meet cleanly at the center.
-                        std::vector<uint32_t> deadLeafBones;
-                        for (uint32_t b = 24; b <= 57; b++)
-                            deadLeafBones.push_back(b);
+                        // Double hinge door. Measured from the model (bone parents, the
+                        // centroid of each bone's vertices, bone pivots):
+                        //   - left leaf = bone 0 (hinge x -278.6) and its children 2-25,
+                        //     which swing correctly (88 deg) in the .dat;
+                        //   - right leaf = bone 26 (its own hinge, x +339.4) and its parts
+                        //     28-56, which the .dat parents to bone 0, so they swing around
+                        //     the LEFT hinge;
+                        //   - bones 1, 27, 57 are static roots (57 = submesh 2, the frame).
+                        // Vertex groups here are ancestor chains such as {15 24} or {26 48};
+                        // under the last-bone reading, left-leaf vertices land on 24/25, so
+                        // the split is by leaf, not by a bone range. Mirror the whole right
+                        // leaf from bone 0 across the plane halfway between the two hinges.
+                        std::vector<uint32_t> rightLeafBones = { 26 };
+                        for (uint32_t b = 28; b <= 56; b++)
+                            rightLeafBones.push_back(b);
                         SetupDoorHingeMirror(i, *modelFilePtr, fileHash, propMeshes,
                                              perObjectCBs, meshIds, perMeshTexIds, pst, 14,
-                                             /*staticBones*/ { 1, 2, 3 },
+                                             /*staticBones*/ { 1, 2, 3, 27, 57 },
                                              /*driverBone*/ 0,
-                                             /*mirrorBones*/ deadLeafBones,
-                                             /*staticSubmeshes*/ { 2 });
+                                             /*mirrorBones*/ rightLeafBones,
+                                             /*staticSubmeshes*/ { 2 },
+                                             /*driverRemapBones*/ {},
+                                             /*hiddenSubmeshes*/ {},
+                                             /*unlockedBones*/ {},
+                                             /*openSegHash*/ 0x303419C9,
+                                             /*lockRoot*/ false,
+                                             /*closeSegHash*/ 0,
+                                             /*ctrlLockedBones*/ {},
+                                             /*mirrorHingeBone*/ 26);
                     }
                     else if (fileHash == 0x265B5)
                     {

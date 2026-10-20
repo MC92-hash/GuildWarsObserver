@@ -447,7 +447,8 @@ private:
                               uint32_t openSegHash = 0x303419C9,
                               bool lockRoot = false,
                               uint32_t closeSegHash = 0,
-                              const std::vector<uint32_t>& ctrlLockedBones = {});
+                              const std::vector<uint32_t>& ctrlLockedBones = {},
+                              int mirrorHingeBone = -1);
 
     // Procedural double-hinge door for a broken rig: the two visible panels are rigged
     // to static bones (the .dat never swings them), so instead of borrowing another

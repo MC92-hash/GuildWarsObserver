@@ -764,7 +764,8 @@ void ReplayWindow::SetupDoorHingeMirror(
     uint32_t openSegHash,
     bool lockRoot,
     uint32_t closeSegHash,
-    const std::vector<uint32_t>& ctrlLockedBones)
+    const std::vector<uint32_t>& ctrlLockedBones,
+    int mirrorHingeBone)
 {
     if (!m_datManager || !m_hashIndex || !m_mapRenderer || !m_deviceResources)
         return;
@@ -933,6 +934,21 @@ void ReplayWindow::SetupDoorHingeMirror(
     if (cntDriver > 0 && cntMirror > 0)
         mirrorPlaneX = static_cast<float>(
             (sumXDriver / cntDriver + sumXMirror / cntMirror) * 0.5);
+
+    // When the dead leaf still has its own hinge bone, the plane is exactly halfway between
+    // the two hinges (closed pose), so the mirrored leaf pivots on its real post. The vertex
+    // centroids above can sit far from that when one leaf's root bone holds only its post.
+    if (mirrorHingeBone >= 0 && static_cast<size_t>(mirrorHingeBone) < boneCount &&
+        driverBone < boneCount)
+    {
+        GW::Animation::AnimationEvaluator ev;
+        std::vector<XMFLOAT3> bonePos;
+        std::vector<XMFLOAT4> boneRot;
+        ev.EvaluateHierarchical(*clip, static_cast<float>(segments[openSeg].startTime),
+                                bonePos, boneRot);
+        if (bonePos.size() == boneCount)
+            mirrorPlaneX = (bonePos[driverBone].x + bonePos[mirrorHingeBone].x) * 0.5f;
+    }
 
     MapAnimatedProp prop;
     prop.controller        = controller;
