@@ -689,8 +689,8 @@ void ReplayWindow::DrawAgentOverlay()
 
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
+                    // Follows only, like a party-row click: player info opens from the context menu.
                     EnterFollowMode(agentId);
-                    OpenPlayerInfoPanel(agentId);
                     if (m_showRangeRings)
                         m_ringAgentFilter = (m_ringAgentFilter == agentId) ? -1 : agentId;
                     if (m_fogPerspective > 0)
