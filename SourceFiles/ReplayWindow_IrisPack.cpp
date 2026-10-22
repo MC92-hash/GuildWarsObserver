@@ -20,9 +20,11 @@
 //   players[]                 {id, party, number, name, primary, secondary}
 //   attributes                the solved builds, exactly what --export-attributes writes
 //   max_hp{id: [[t, hp, est]]}            change points, sampled every second
-//   energy{id: {pts: [[t, energy, band low, band high, max after overcast, overcast]]}}  change points at the
-//                             model's 0.1 s steps (packs before 2026-10-23: e/lo/hi per second + max change points)
-//   effects{id: [[skill, start, end, caster, exact, kind]]}
+//   energy{id: {pts: [[t, energy, band low, band high, max after overcast, overcast, pips]]}}  points the bar
+//                             runs on from at pips / 3 per second, as the client's bar does (older packs: no pips,
+//                             whole-number steps; before 2026-10-23: e/lo/hi per second + max change points)
+//   effects{id: [[skill, start, end, caster, exact, kind, removed_by, removed_by_caster]]}  removed_by: the skill that
+//                             took it off at `end` (0 unknown or a natural end)
 //   morale{id: [[t, morale]]}             step function
 //   lords[]                   {team, id, max_hp, hp: [[t, frac]], hits: [[t, caster, dmg]]}
 //   event_types[], events[]   [[t, type, agent, team, label]]
@@ -130,21 +132,36 @@ bool ReplayWindow::ExportIrisPack(const std::filesystem::path& outPath) const
     {
         const EnergyModel::Track* track = EnergyTrackFor(id);
         if (!track || track->samples.empty()) continue;
-        // Change points at the model's own 0.1 s steps: [t, energy, band low, band high, max after overcast,
-        // overcast], written whenever one of them changes as a whole number - a spend lands at once, regeneration
-        // ticks a point at a time, nothing is interpolated (owner, 2026-10-22).
+        // As the client carries a bar: a value and the regeneration it runs at, the bar filling at pips / 3 per
+        // second from there. [t, energy, band low, band high, max after overcast, overcast, pips], written whenever
+        // the model leaves the line the last point draws (a spend, a gain, a pip change) or max/overcast change.
+        // Iris advances from the last point at that rate - the model's own rate, nothing interpolated
+        // (owner, 2026-10-22: the bar moves smoothly in game, the number is the floor).
         std::ostringstream pts;
-        int last[5] = {INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN};
+        float lt = 0.f, le = 0.f, llo = 0.f, lhi = 0.f;
+        int lmax = INT_MIN, loc = INT_MIN, lpips = INT_MIN;
+        const auto ahead = [&](const float from, const float dt, const float cap) {
+            const float v = std::min(cap, from + static_cast<float>(lpips) / 3.f * dt);
+            return from >= 0.f ? std::max(0.f, v) : v;
+        };
         bool any = false;
         for (size_t i = 0; i < track->samples.size(); i++)
         {
             const EnergyModel::Sample& x = track->samples[i];
-            const int v[5] = {static_cast<int>(std::lround(std::max(0.f, x.energy))), static_cast<int>(std::lround(std::max(0.f, x.energy - x.down))),
-                              static_cast<int>(std::lround(std::max(0.f, x.energy + x.up))), static_cast<int>(std::lround(x.maxEnergy)),
-                              static_cast<int>(std::lround(x.overcast))};
-            if (std::equal(v, v + 5, last)) continue;
-            pts << (any ? "," : "") << "[" << Num(static_cast<float>(i) * track->dt) << "," << v[0] << "," << v[1] << "," << v[2] << "," << v[3] << "," << v[4] << "]";
-            std::copy(v, v + 5, last);
+            const float t = static_cast<float>(i) * track->dt;
+            const int mx = static_cast<int>(std::lround(x.maxEnergy)), oc = static_cast<int>(std::lround(x.overcast));
+            const float cap = static_cast<float>(mx);
+            const float e = std::min(cap, x.energy), lo = std::clamp(x.energy - x.down, 0.f, cap), hi = std::clamp(x.energy + x.up, 0.f, cap);
+            const int pips = x.dead ? 0 : x.pips;
+            if (any && mx == lmax && oc == loc && pips == lpips)
+            {
+                const float dt = t - lt;
+                if (std::abs(ahead(le, dt, cap) - e) < 0.05f && std::abs(ahead(llo, dt, cap) - lo) < 0.05f &&
+                    std::abs(ahead(lhi, dt, cap) - hi) < 0.05f)
+                    continue;
+            }
+            pts << (any ? "," : "") << "[" << Num(t) << "," << Num(e) << "," << Num(lo) << "," << Num(hi) << "," << mx << "," << oc << "," << pips << "]";
+            lt = t, le = e, llo = lo, lhi = hi, lmax = mx, loc = oc, lpips = pips;
             any = true;
         }
         js << (first ? "" : ",") << "\"" << id << "\":{\"pts\":[" << pts.str() << "]}";
@@ -165,7 +182,8 @@ bool ReplayWindow::ExportIrisPack(const std::filesystem::path& outPath) const
             for (const EffectTimeline::Effect& fx : it->second)
             {
                 js << (any ? "," : "") << "[" << fx.skillId << "," << Num(fx.start) << "," << Num(fx.end) << ","
-                   << fx.caster << "," << (fx.endExact ? 1 : 0) << "," << static_cast<int>(fx.kind) << "]";
+                   << fx.caster << "," << (fx.endExact ? 1 : 0) << "," << static_cast<int>(fx.kind) << "," << fx.removedBy << ","
+                   << fx.removedByCaster << "]";
                 any = true;
             }
             js << "]";
@@ -221,7 +239,24 @@ bool ReplayWindow::ExportIrisPack(const std::filesystem::path& outPath) const
     for (size_t i = 0; i < m_timeline.events.size(); i++)
     {
         const TimelineEvent& ev = m_timeline.events[i];
-        js << (i ? "," : "") << "[" << Num(ev.time) << "," << static_cast<int>(ev.type) << "," << ev.agentId << ","
+        // GW's tower announcement names no player; the flag timeline does: the carrier who planted the flag (Stick),
+        // or the player who touched a dropped flag home (Return). The nearest such event within 5 s.
+        int agent = ev.agentId;
+        if (agent <= 0 && m_flagTimelineBuilt && m_flagTimeline.valid &&
+            (ev.type == TimelineEventType::FlagCapture || ev.type == TimelineEventType::FlagReturn ||
+             ev.type == TimelineEventType::ObeliskCapture))
+        {
+            const auto wanted = ev.type == TimelineEventType::FlagReturn ? FlagTimelineEventType::Return : FlagTimelineEventType::Stick;
+            float best = 5.f;
+            for (const FlagTimelineEvent& f : m_flagTimeline.allEvents)
+            {
+                const int who = f.carrierAgentId >= 0 ? f.carrierAgentId : f.actorAgentId;
+                if (f.eventType != wanted || who < 0 || std::abs(f.time - ev.time) >= best) continue;
+                best = std::abs(f.time - ev.time);
+                agent = who;
+            }
+        }
+        js << (i ? "," : "") << "[" << Num(ev.time) << "," << static_cast<int>(ev.type) << "," << agent << ","
            << ev.teamId << ",\"" << Esc(ev.label) << "\"]";
     }
     js << "]";
