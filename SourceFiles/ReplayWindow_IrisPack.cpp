@@ -37,6 +37,9 @@
 //                             state 1 recharging, 2 disabled, 3 spent
 //   weapons{id: [[t, main, offhand, "main name", "offhand name"]]}  change points of the set in hand
 //   output{id: {dmg: [], heal: []}}   cumulative damage dealt / healing done, one value per 2 s from t = 0
+//   weapon_sets{id: [{main, off, cat, main_type, off_type, bundle, bundle_name, main_tip, off_tip}]}  the Observer's
+//                             set list; *_tip = [[kind, text, condition, "RRGGBB"]], kind 0 name 1 stat 2 mod 3 muted
+//   pips{id: [[t, health arrows, energy arrows]]}  change points, signed, as the Observer counts them
 //   bundles[]                 [t, item, type, location, carrier] - vine seeds and repair kits; type 2
 //                             repair kit, 3 vine seed; location 0 base, 1 carried, 2 ground, 3 used
 namespace
@@ -386,6 +389,89 @@ void ReplayWindow::WriteIrisPackV2(std::ostringstream& js, const std::vector<int
         js << "],\"heal\":[";
         for (int i = 0; i < steps; i++) js << (i ? "," : "") << series.second[i];
         js << "]}";
+    }
+    js << "}";
+
+    // The Observer's own weapon-set list (BuildWeaponSets: momentary swaps dropped, sorted by slot) with each
+    // item's categories and its finished tooltip - name in its rarity colour, damage/armour line, every mod
+    // with its condition - exactly as DrawWeaponSetTooltip shows it.
+    const auto tooltipOf = [this](const uint16_t itemId) {
+        std::ostringstream t;
+        t << "[";
+        const auto& equipment = m_replayCtx.stocData.equipment;
+        const Equipment::ItemDef* item = (equipment.loaded && itemId) ? equipment.FindByAgentItemId(itemId) : nullptr;
+        if (item)
+        {
+            const auto tip = Equipment::BuildTooltip(*item);
+            const auto rgb = [](const Equipment::Rgb c) { return std::format("\"{:02X}{:02X}{:02X}\"", c.r, c.g, c.b); };
+            bool firstLine = true;
+            for (const auto& line : tip.lines)
+            {
+                using Kind = Equipment::TooltipLine::Kind;
+                const std::string color = line.kind == Kind::Name ? rgb(Equipment::RarityColor(tip.rarity))
+                                        : line.kind == Kind::Stat ? rgb(Equipment::kStatColor)
+                                        : line.kind == Kind::Mod  ? rgb(Equipment::ModTextColor(tip.rarity))
+                                                                  : std::string("\"7C7E7E\"");
+                t << (firstLine ? "" : ",") << "[" << static_cast<int>(line.kind) << ",\"" << Esc(line.text) << "\",\""
+                  << Esc(line.condition) << "\"," << color << "]";
+                firstLine = false;
+            }
+        }
+        t << "]";
+        return t.str();
+    };
+    js << ",\"weapon_sets\":{";
+    first = true;
+    for (const int id : playerIds)
+    {
+        PlayerWeaponSets sets;
+        BuildWeaponSets(id, sets);
+        js << (first ? "" : ",") << "\"" << id << "\":[";
+        first = false;
+        for (size_t i = 0; i < sets.sets.size(); i++)
+        {
+            const WeaponSetEntry& w = sets.sets[i];
+            js << (i ? "," : "") << "{\"main\":" << w.mainId << ",\"off\":" << w.offId << ",\"cat\":" << w.weapCat << ",\"main_type\":"
+               << static_cast<int>(w.mainType) << ",\"off_type\":" << static_cast<int>(w.offType) << ",\"bundle\":" << static_cast<int>(w.bundleType)
+               << ",\"bundle_name\":\"" << Esc(w.bundleType != BundleType::Unknown ? BundleTypeName(w.bundleType) : "") << "\""
+               << ",\"main_tip\":" << tooltipOf(w.mainId) << ",\"off_tip\":" << tooltipOf(w.offId) << "}";
+        }
+        js << "]";
+    }
+    js << "}";
+
+    // Regeneration arrows: health from the recording (the observing client does not get them), energy from
+    // the model; change points [t, health arrows, energy arrows], arrows as the Observer counts them.
+    js << ",\"pips\":{";
+    first = true;
+    for (const int id : playerIds)
+    {
+        const auto it = m_replayCtx.agents.find(id);
+        if (it == m_replayCtx.agents.end()) continue;
+        const EnergyModel::Track* track = EnergyTrackFor(id);
+        js << (first ? "" : ",") << "\"" << id << "\":[";
+        first = false;
+        int lastHp = 1000, lastEn = 1000;
+        bool any = false;
+        for (float t = 0.f; t <= end; t += 0.5f)
+        {
+            const int snap = it->second.snapshotIndexAtTime(t);
+            int hpPips = 0;
+            if (snap >= 0)
+            {
+                const AgentSnapshot& s = it->second.snapshots[snap];
+                const uint32_t maxHp = ResolveMaxHp(it->second, t).value;
+                if (!s.is_dead && maxHp)
+                    hpPips = std::clamp(static_cast<int>(std::lround(s.hp_pips * static_cast<float>(maxHp) / 2.f)), -10, 10);
+            }
+            const int enPips = track ? static_cast<int>(track->At(t).pips) : 0;
+            if (hpPips == lastHp && enPips == lastEn) continue;
+            js << (any ? "," : "") << "[" << Num(t) << "," << hpPips << "," << enPips << "]";
+            lastHp = hpPips;
+            lastEn = enPips;
+            any = true;
+        }
+        js << "]";
     }
     js << "}";
 
