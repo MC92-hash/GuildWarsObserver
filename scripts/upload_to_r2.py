@@ -31,7 +31,7 @@ import tarfile
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -766,6 +766,71 @@ def upload_attributes(s3, bucket: str, safe_name: str, attributes: dict):
     )
 
 
+# --- Iris (the in-game observer HUD, a GWToolbox plugin) -------------------
+# Iris reads two things from the bucket: iris/recent.json, the matches the
+# in-game Observe list can still offer, and iris/<folder>.pack, one sealed
+# pack per match written by the app's --export-iris-pack. <folder> is the
+# index entry's own "folder", which is what Iris looks a match up by.
+IRIS_RECENT_KEY = "iris/recent.json"
+# The in-game list was seen offering matches up to five days old (2026-10-22).
+IRIS_RECENT_DAYS = 7
+
+
+def iris_pack_key(folder_name: str) -> str:
+    """R2 key for one match's Iris pack."""
+    return f"iris/{folder_name}.pack"
+
+
+def build_iris_pack(match_dir: Path, config: dict | None = None) -> bytes | None:
+    """The sealed Iris pack for one match, or None when it cannot be built.
+
+    Same exporter and same failure contract as the attributes: a warning and no
+    object, never a lost index entry.
+    """
+    exe = observer_exe(config)
+    if exe is None:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "iris.pack"
+        try:
+            result = subprocess.run(
+                [str(exe), "--export-iris-pack", str(match_dir), "--out", str(out)],
+                capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  Warning: Iris pack timed out for {match_dir.name}")
+            return None
+        except Exception as exc:
+            print(f"  Warning: Iris pack failed: {type(exc).__name__}: {exc}")
+            return None
+        if result.returncode != 0 or not out.is_file():
+            detail = (result.stderr or "").strip().splitlines()
+            if result.returncode not in (5, 6):
+                print(f"  Warning: Iris pack: {detail[-1] if detail else f'exit {result.returncode}'}")
+            return None
+        return out.read_bytes()
+
+
+def upload_iris_pack(s3, bucket: str, folder_name: str, pack: bytes):
+    """Write one match's Iris pack."""
+    s3.put_object(Bucket=bucket, Key=iris_pack_key(folder_name), Body=pack,
+                  ContentType="application/octet-stream")
+
+
+def write_iris_recent(s3, bucket: str, entries: list[dict]) -> int:
+    """Publish the index entries recent enough to be in the in-game Observe list.
+
+    Iris downloads this instead of the whole index: a few KB, and only what the
+    player could be watching. Same entry shape as index.json.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    recent = [e for e in entries if e.get("date", "") >= cutoff]
+    body = json.dumps({"version": 1, "matches": recent}, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+    s3.put_object(Bucket=bucket, Key=IRIS_RECENT_KEY, Body=body, ContentType="application/json")
+    return len(recent)
+
+
 def build_equipment_entry(infos: dict, match_dir: Path | None = None) -> dict:
     """Per-match weapon sets and armour, or {} when the recording has none.
 
@@ -1364,6 +1429,20 @@ def cmd_upload(args, config: dict) -> dict:
                         "warning": f"Attributes not published: {e}",
                     })
 
+            # The Iris pack, from the same headless app. Keyed by the original
+            # folder name: that is the index entry's "folder", which Iris uses.
+            iris_pack = build_iris_pack(match_dir, config)
+            if iris_pack:
+                try:
+                    upload_iris_pack(s3, bucket, folder_name, iris_pack)
+                    print(f"  Iris pack: {len(iris_pack) // 1024} KB")
+                except Exception as e:
+                    print(f"  Warning: Iris pack not published: {e}")
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": f"Iris pack not published: {e}",
+                    })
+
             report["uploaded"] += 1
 
             # Clean up temp archive
@@ -1404,6 +1483,11 @@ def cmd_upload(args, config: dict) -> dict:
         try:
             upload_index(s3, bucket, all_entries)
             print("Index updated.")
+            try:
+                print(f"Iris recent list: {write_iris_recent(s3, bucket, all_entries)} matches.")
+            except Exception as e:
+                print(f"  Warning: {IRIS_RECENT_KEY} not written: {e}")
+                report["warnings"].append({"match": "", "warning": f"Iris recent list not written: {e}"})
         except Exception as e:
             msg = f"Failed to update index.json: {e}"
             print(f"ERROR: {msg}")
@@ -1681,6 +1765,45 @@ def cmd_cleanup_duplicates(args, config: dict):
     print(f"Done. Deleted {deleted} archive(s), index updated.")
 
 
+def cmd_iris_backfill(args, config: dict):
+    """Give every recent, already-published match its Iris pack, then rewrite iris/recent.json.
+
+    Recent = within IRIS_RECENT_DAYS, the window the in-game Observe list offers;
+    older matches cannot be observed in game, so a pack for them is wasted work.
+    Needs the recordings locally (MATCH_SOURCE_DIR or --source-dir) and skips
+    matches whose pack is already in the bucket.
+    """
+    s3 = create_s3_client(config)
+    bucket = config["R2_BUCKET"]
+    source_dir = Path(os.path.expandvars(os.path.expanduser(args.source_dir or config.get("MATCH_SOURCE_DIR", ""))))
+    entries = fetch_remote_index(s3, bucket)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    recent = {e["folder"] for e in entries if e.get("date", "") >= cutoff}
+    print(f"{len(recent)} published matches since {cutoff}")
+
+    built = missing = present = 0
+    for match_dir in scan_local_matches(source_dir):
+        if match_dir.name not in recent:
+            continue
+        if object_exists(s3, bucket, iris_pack_key(match_dir.name)):
+            present += 1
+            continue
+        if args.dry_run:
+            print(f"  would build: {match_dir.name}")
+            missing += 1
+            continue
+        pack = build_iris_pack(match_dir, config)
+        if not pack:
+            missing += 1
+            continue
+        upload_iris_pack(s3, bucket, match_dir.name, pack)
+        built += 1
+        print(f"  {match_dir.name}: {len(pack) // 1024} KB")
+    print(f"Iris packs: {built} built, {present} already there, {missing} {'to build' if args.dry_run else 'not built'}")
+    if not args.dry_run:
+        print(f"Iris recent list: {write_iris_recent(s3, bucket, entries)} matches.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Upload GvG match recordings to Cloudflare R2."
@@ -1739,6 +1862,12 @@ def main():
              "match folder names. Pair with --dry-run first.",
     )
     parser.add_argument(
+        "--iris-backfill",
+        action="store_true",
+        help="Build and upload the Iris pack of every recent published match that has none, "
+             "then rewrite iris/recent.json. Pair with --dry-run first.",
+    )
+    parser.add_argument(
         "--dedup-index",
         action="store_true",
         help="Remove duplicate entries from index.json",
@@ -1768,7 +1897,9 @@ def main():
         print(f"Set them in {args.env_file} or as environment variables.")
         sys.exit(1)
 
-    if args.cleanup_duplicates:
+    if args.iris_backfill:
+        cmd_iris_backfill(args, config)
+    elif args.cleanup_duplicates:
         cmd_cleanup_duplicates(args, config)
     elif args.dedup_index:
         cmd_dedup_index(args, config)
