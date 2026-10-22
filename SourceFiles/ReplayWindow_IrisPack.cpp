@@ -37,8 +37,9 @@
 //                             state 1 recharging, 2 disabled, 3 spent
 //   weapons{id: [[t, main, offhand, "main name", "offhand name"]]}  change points of the set in hand
 //   output{id: {dmg: [], heal: []}}   cumulative damage dealt / healing done, one value per 2 s from t = 0
-//   weapon_sets{id: [{main, off, cat, main_type, off_type, bundle, bundle_name, main_tip, off_tip}]}  the Observer's
-//                             set list; *_tip = [[kind, text, condition, "RRGGBB"]], kind 0 name 1 stat 2 mod 3 muted
+//   weapon_sets{id: [{main, off, cat, main_type, off_type, bundle, bundle_name, main_icon, off_icon, main_tip, off_tip}]}
+//                             the Observer's set list; *_icon = the item's Gw.dat icon file (its skin);
+//                             *_tip = [[kind, text, condition, "RRGGBB"]], kind 0 name 1 stat 2 mod 3 muted
 //   pips{id: [[t, health arrows, energy arrows]]}  change points, signed, as the Observer counts them
 //   bundles[]                 [t, item, type, location, carrier] - vine seeds and repair kits; type 2
 //                             repair kit, 3 vine seed; location 0 base, 1 carried, 2 ground, 3 used
@@ -420,6 +421,12 @@ void ReplayWindow::WriteIrisPackV2(std::ostringstream& js, const std::vector<int
         t << "]";
         return t.str();
     };
+    // The item's Gw.dat icon file: the real skin, which the in-game client can decode (toolbox LoadItemImage).
+    const auto iconOf = [this](const uint16_t itemId) -> uint32_t {
+        const auto& equipment = m_replayCtx.stocData.equipment;
+        const Equipment::ItemDef* item = (equipment.loaded && itemId) ? equipment.FindByAgentItemId(itemId) : nullptr;
+        return item ? (item->iconFileId ? item->iconFileId : item->modelFileId) : 0u;
+    };
     js << ",\"weapon_sets\":{";
     first = true;
     for (const int id : playerIds)
@@ -434,6 +441,7 @@ void ReplayWindow::WriteIrisPackV2(std::ostringstream& js, const std::vector<int
             js << (i ? "," : "") << "{\"main\":" << w.mainId << ",\"off\":" << w.offId << ",\"cat\":" << w.weapCat << ",\"main_type\":"
                << static_cast<int>(w.mainType) << ",\"off_type\":" << static_cast<int>(w.offType) << ",\"bundle\":" << static_cast<int>(w.bundleType)
                << ",\"bundle_name\":\"" << Esc(w.bundleType != BundleType::Unknown ? BundleTypeName(w.bundleType) : "") << "\""
+               << ",\"main_icon\":" << iconOf(w.mainId) << ",\"off_icon\":" << iconOf(w.offId)
                << ",\"main_tip\":" << tooltipOf(w.mainId) << ",\"off_tip\":" << tooltipOf(w.offId) << "}";
         }
         js << "]";
