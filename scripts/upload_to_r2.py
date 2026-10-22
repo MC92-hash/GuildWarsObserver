@@ -778,8 +778,9 @@ def iris_bucket(config: dict) -> str:
     """Where the Iris objects go: IRIS_BUCKET when set (a bucket only Iris's
     read key can see), else the recordings bucket."""
     return config.get("IRIS_BUCKET") or config["R2_BUCKET"]
-# The in-game list was seen offering matches up to five days old (2026-10-22).
-IRIS_RECENT_DAYS = 7
+# The in-game Observe list keeps monthly tournament matches for about two weeks
+# (owner, 2026-10-22).
+IRIS_RECENT_DAYS = 14
 
 
 def iris_pack_key(folder_name: str) -> str:
@@ -1435,12 +1436,12 @@ def cmd_upload(args, config: dict) -> dict:
                         "warning": f"Attributes not published: {e}",
                     })
 
-            # The Iris pack, from the same headless app. Keyed by the original
-            # folder name: that is the index entry's "folder", which Iris uses.
+            # The Iris pack, from the same headless app. Keyed by the URL-safe
+            # name: that is the index entry's "folder", which Iris looks up.
             iris_pack = build_iris_pack(match_dir, config)
             if iris_pack:
                 try:
-                    upload_iris_pack(s3, iris_bucket(config), folder_name, iris_pack)
+                    upload_iris_pack(s3, iris_bucket(config), safe_name, iris_pack)
                     print(f"  Iris pack: {len(iris_pack) // 1024} KB")
                 except Exception as e:
                     print(f"  Warning: Iris pack not published: {e}")
@@ -1776,35 +1777,50 @@ def cmd_iris_backfill(args, config: dict):
 
     Recent = within IRIS_RECENT_DAYS, the window the in-game Observe list offers;
     older matches cannot be observed in game, so a pack for them is wasted work.
-    Needs the recordings locally (MATCH_SOURCE_DIR or --source-dir) and skips
-    matches whose pack is already in the bucket.
+    A recording found under MATCH_SOURCE_DIR (or --source-dir) is used as is;
+    otherwise its archive is downloaded from the bucket for the export. Matches
+    whose pack is already in the bucket are skipped.
     """
     s3 = create_s3_client(config)
     bucket = config["R2_BUCKET"]
     source_dir = Path(os.path.expandvars(os.path.expanduser(args.source_dir or config.get("MATCH_SOURCE_DIR", ""))))
+    local = {d.name: d for d in scan_local_matches(source_dir)} if source_dir.is_dir() else {}
     entries = fetch_remote_index(s3, bucket)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
-    recent = {e["folder"] for e in entries if e.get("date", "") >= cutoff}
+    recent = sorted((e["folder"] for e in entries if e.get("date", "") >= cutoff), reverse=True)
     print(f"{len(recent)} published matches since {cutoff}")
 
     built = missing = present = 0
-    for match_dir in scan_local_matches(source_dir):
-        if match_dir.name not in recent:
-            continue
-        if object_exists(s3, iris_bucket(config), iris_pack_key(match_dir.name)):
+    for i, folder in enumerate(recent, 1):
+        if object_exists(s3, iris_bucket(config), iris_pack_key(folder)):
             present += 1
             continue
         if args.dry_run:
-            print(f"  would build: {match_dir.name}")
+            print(f"  would build: {folder}")
             missing += 1
             continue
-        pack = build_iris_pack(match_dir, config)
-        if not pack:
-            missing += 1
-            continue
-        upload_iris_pack(s3, iris_bucket(config), match_dir.name, pack)
-        built += 1
-        print(f"  {match_dir.name}: {len(pack) // 1024} KB")
+        with tempfile.TemporaryDirectory() as tmp:
+            match_dir = local.get(folder)
+            if match_dir is None:
+                archive = Path(tmp) / "match.tar.gz"
+                try:
+                    s3.download_file(bucket, f"matches/{folder}.tar.gz", str(archive))
+                    with tarfile.open(archive, "r:gz") as tar:
+                        tar.extractall(tmp, filter="data")
+                except Exception as exc:
+                    print(f"  [{i}/{len(recent)}] {folder}: archive unavailable ({type(exc).__name__}: {exc})")
+                    missing += 1
+                    continue
+                found = [p.parent for p in Path(tmp).rglob("infos.json")]
+                match_dir = found[0] if found else None
+            pack = build_iris_pack(match_dir, config) if match_dir else None
+            if not pack:
+                print(f"  [{i}/{len(recent)}] {folder}: no pack")
+                missing += 1
+                continue
+            upload_iris_pack(s3, iris_bucket(config), folder, pack)
+            built += 1
+            print(f"  [{i}/{len(recent)}] {folder}: {len(pack) // 1024} KB")
     print(f"Iris packs: {built} built, {present} already there, {missing} {'to build' if args.dry_run else 'not built'}")
     if not args.dry_run:
         print(f"Iris recent list: {write_iris_recent(s3, iris_bucket(config), entries)} matches.")
