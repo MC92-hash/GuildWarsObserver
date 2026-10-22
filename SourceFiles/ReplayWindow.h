@@ -146,6 +146,9 @@ public:
     // Write the sealed Iris pack (the in-game HUD's data for this match, ReplayWindow_IrisPack.cpp).
     // False when the analysis left nothing to export or the file could not be written.
     bool ExportIrisPack(const std::filesystem::path& outPath) const;
+    // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
+    // damage/healing over time, bundles), appended to the open JSON object.
+    void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
 
     ~ReplayWindow();
 

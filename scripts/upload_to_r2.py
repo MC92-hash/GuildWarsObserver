@@ -1818,7 +1818,7 @@ def cmd_iris_backfill(args, config: dict):
 
     built = missing = present = 0
     for i, folder in enumerate(recent, 1):
-        if object_exists(s3, iris_bucket(config), iris_pack_key(folder)):
+        if not getattr(args, "iris_force", False) and object_exists(s3, iris_bucket(config), iris_pack_key(folder)):
             present += 1
             continue
         if args.dry_run:
@@ -1914,6 +1914,11 @@ def main():
         action="store_true",
         help="Build and upload the Iris pack of every recent published match that has none, "
              "then rewrite iris/recent.json. Pair with --dry-run first.",
+    )
+    parser.add_argument(
+        "--iris-force",
+        action="store_true",
+        help="With --iris-backfill: rebuild packs that already exist (after the pack format changes).",
     )
     parser.add_argument(
         "--dedup-index",
