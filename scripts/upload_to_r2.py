@@ -852,6 +852,7 @@ def write_iris_recent(s3, bucket: str, entries: list[dict]) -> int:
         "folder": e["folder"],
         "map_id": e.get("map_id", 0),
         "date": e.get("date", ""),
+        "duration": e.get("duration", ""),  # "mm:ss": Iris turns instance time into GW's "Time elapsed"
         "guilds": {k: {"name": g.get("name", ""), "tag": g.get("tag", "")}
                    for k, g in e.get("guilds", {}).items() if k in ("1", "2")},
         "parties": {k: {"PLAYER": [{"encoded_name": p.get("encoded_name", "")} for p in party.get("PLAYER", [])]}
