@@ -824,14 +824,39 @@ def upload_iris_pack(s3, bucket: str, folder_name: str, pack: bytes):
                   ContentType="application/octet-stream")
 
 
-def write_iris_recent(s3, bucket: str, entries: list[dict]) -> int:
-    """Publish the index entries recent enough to be in the in-game Observe list.
+def published_iris_packs(s3, bucket: str) -> set[str]:
+    """Folders whose Iris pack is in the bucket."""
+    folders = set()
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="iris/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith(".pack"):
+                folders.add(key.removeprefix("iris/").removesuffix(".pack"))
+    return folders
 
-    Iris downloads this instead of the whole index: a few KB, and only what the
-    player could be watching. Same entry shape as index.json.
+
+def write_iris_recent(s3, bucket: str, entries: list[dict]) -> int:
+    """Publish the recent index entries whose Iris pack is out.
+
+    Iris shows its Eye of Janthir on exactly these matches in the in-game
+    Observe list, and re-reads this file while that list is open: an entry here
+    is a promise that the HUD works for the match, so it lists only matches
+    with a pack, and is written after the pack uploads. Same entry shape as
+    index.json, a few KB.
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
-    recent = [e for e in entries if e.get("date", "") >= cutoff]
+    packed = published_iris_packs(s3, bucket)
+    # Only what Iris reads (the full entries are ~5 KB each): the folder, the map and date and both
+    # guilds to find the match in the Observe list, and the player names to recognise it once watched.
+    recent = [{
+        "folder": e["folder"],
+        "map_id": e.get("map_id", 0),
+        "date": e.get("date", ""),
+        "guilds": {k: {"name": g.get("name", ""), "tag": g.get("tag", "")}
+                   for k, g in e.get("guilds", {}).items() if k in ("1", "2")},
+        "parties": {k: {"PLAYER": [{"encoded_name": p.get("encoded_name", "")} for p in party.get("PLAYER", [])]}
+                    for k, party in e.get("parties", {}).items()},
+    } for e in entries if e.get("date", "") >= cutoff and e.get("folder") in packed]
     body = json.dumps({"version": 1, "matches": recent}, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
     s3.put_object(Bucket=bucket, Key=IRIS_RECENT_KEY, Body=body, ContentType="application/json")
