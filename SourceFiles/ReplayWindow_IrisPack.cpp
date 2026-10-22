@@ -20,7 +20,8 @@
 //   players[]                 {id, party, number, name, primary, secondary}
 //   attributes                the solved builds, exactly what --export-attributes writes
 //   max_hp{id: [[t, hp, est]]}            change points, sampled every second
-//   energy{id: {e[], lo[], hi[], max[]}}  one value per second from t = 0; lo/hi = the model's band
+//   energy{id: {pts: [[t, energy, band low, band high, max after overcast, overcast]]}}  change points at the
+//                             model's 0.1 s steps (packs before 2026-10-23: e/lo/hi per second + max change points)
 //   effects{id: [[skill, start, end, caster, exact, kind]]}
 //   morale{id: [[t, morale]]}             step function
 //   lords[]                   {team, id, max_hp, hp: [[t, frac]], hits: [[t, caster, dmg]]}
@@ -129,26 +130,24 @@ bool ReplayWindow::ExportIrisPack(const std::filesystem::path& outPath) const
     {
         const EnergyModel::Track* track = EnergyTrackFor(id);
         if (!track || track->samples.empty()) continue;
-        std::ostringstream e, lo, hi, mx;
-        int lastMax = INT_MIN;
-        bool anyMax = false;
-        for (int s = 0; s <= seconds; s++)
+        // Change points at the model's own 0.1 s steps: [t, energy, band low, band high, max after overcast,
+        // overcast], written whenever one of them changes as a whole number - a spend lands at once, regeneration
+        // ticks a point at a time, nothing is interpolated (owner, 2026-10-22).
+        std::ostringstream pts;
+        int last[5] = {INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN};
+        bool any = false;
+        for (size_t i = 0; i < track->samples.size(); i++)
         {
-            const EnergyModel::Sample x = track->At(static_cast<float>(s));
-            const char* sep = s ? "," : "";
-            e << sep << std::lround(std::max(0.f, x.energy));
-            lo << sep << std::lround(std::max(0.f, x.energy - x.down));
-            hi << sep << std::lround(std::max(0.f, x.energy + x.up));
-            const int m = static_cast<int>(std::lround(x.maxEnergy));
-            if (m != lastMax)
-            {
-                mx << (anyMax ? "," : "") << "[" << s << "," << m << "]";
-                lastMax = m;
-                anyMax = true;
-            }
+            const EnergyModel::Sample& x = track->samples[i];
+            const int v[5] = {static_cast<int>(std::lround(std::max(0.f, x.energy))), static_cast<int>(std::lround(std::max(0.f, x.energy - x.down))),
+                              static_cast<int>(std::lround(std::max(0.f, x.energy + x.up))), static_cast<int>(std::lround(x.maxEnergy)),
+                              static_cast<int>(std::lround(x.overcast))};
+            if (std::equal(v, v + 5, last)) continue;
+            pts << (any ? "," : "") << "[" << Num(static_cast<float>(i) * track->dt) << "," << v[0] << "," << v[1] << "," << v[2] << "," << v[3] << "," << v[4] << "]";
+            std::copy(v, v + 5, last);
+            any = true;
         }
-        js << (first ? "" : ",") << "\"" << id << "\":{\"e\":[" << e.str() << "],\"lo\":[" << lo.str()
-           << "],\"hi\":[" << hi.str() << "],\"max\":[" << mx.str() << "]}";
+        js << (first ? "" : ",") << "\"" << id << "\":{\"pts\":[" << pts.str() << "]}";
         first = false;
     }
     js << "}";
