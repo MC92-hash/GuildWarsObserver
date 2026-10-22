@@ -143,6 +143,10 @@ public:
     // False when nothing was solved or the file could not be written.
     bool ExportAttributes(const std::filesystem::path& outPath) const;
 
+    // Write the sealed Iris pack (the in-game HUD's data for this match, ReplayWindow_IrisPack.cpp).
+    // False when the analysis left nothing to export or the file could not be written.
+    bool ExportIrisPack(const std::filesystem::path& outPath) const;
+
     ~ReplayWindow();
 
     ReplayWindow(const ReplayWindow&) = delete;

@@ -364,6 +364,8 @@
     <ClInclude Include="SourceFiles\ArmourNames.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HealthModel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\IrisPack.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\IrisPackKey.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HenchmanEnergy.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.h" />
@@ -708,6 +710,8 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HealthModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\IrisPack.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_IrisPack.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HenchmanEnergy.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.cpp" />
