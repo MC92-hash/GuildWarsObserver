@@ -41,6 +41,7 @@
 //                             the Observer's set list; *_icon = the item's Gw.dat icon file (its skin);
 //                             *_tip = [[kind, text, condition, "RRGGBB"]], kind 0 name 1 stat 2 mod 3 muted
 //   pips{id: [[t, health arrows, energy arrows]]}  change points, signed, as the Observer counts them
+//   casts{id: [[start, end, target, skill, instant]]}  targeted casts of players and NPCs, for the skill lasers
 //   bundles[]                 [t, item, type, location, carrier] - vine seeds and repair kits; type 2
 //                             repair kit, 3 vine seed; location 0 base, 1 carried, 2 ground, 3 used
 namespace
@@ -480,6 +481,27 @@ void ReplayWindow::WriteIrisPackV2(std::ostringstream& js, const std::vector<int
             any = true;
         }
         js << "]";
+    }
+    js << "}";
+
+    // Casts with a target, for the skill lasers (the Observer's skillLaserAtTime reads the same history):
+    // players and NPCs, [start, end, target, skill, instant].
+    js << ",\"casts\":{";
+    first = true;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+        bool any = false;
+        for (const SkillUseEvent& ev : ard.skillUseHistory)
+        {
+            if (ev.targetId <= 0 || ev.targetId == id) continue;
+            if (!any) js << (first ? "" : ",") << "\"" << id << "\":[";
+            js << (any ? "," : "") << "[" << Num(ev.startTime) << "," << Num(ev.endTime) << "," << ev.targetId << "," << ev.skillId << ","
+               << (ev.isInstant ? 1 : 0) << "]";
+            any = true;
+            first = false;
+        }
+        if (any) js << "]";
     }
     js << "}";
 
