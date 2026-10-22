@@ -66,7 +66,7 @@ def load_config(env_path: Path | None) -> dict:
     # Environment variables override .env file
     for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY",
                 "MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR",
-                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE"):
+                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE", "IRIS_BUCKET"):
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -772,6 +772,12 @@ def upload_attributes(s3, bucket: str, safe_name: str, attributes: dict):
 # pack per match written by the app's --export-iris-pack. <folder> is the
 # index entry's own "folder", which is what Iris looks a match up by.
 IRIS_RECENT_KEY = "iris/recent.json"
+
+
+def iris_bucket(config: dict) -> str:
+    """Where the Iris objects go: IRIS_BUCKET when set (a bucket only Iris's
+    read key can see), else the recordings bucket."""
+    return config.get("IRIS_BUCKET") or config["R2_BUCKET"]
 # The in-game list was seen offering matches up to five days old (2026-10-22).
 IRIS_RECENT_DAYS = 7
 
@@ -1434,7 +1440,7 @@ def cmd_upload(args, config: dict) -> dict:
             iris_pack = build_iris_pack(match_dir, config)
             if iris_pack:
                 try:
-                    upload_iris_pack(s3, bucket, folder_name, iris_pack)
+                    upload_iris_pack(s3, iris_bucket(config), folder_name, iris_pack)
                     print(f"  Iris pack: {len(iris_pack) // 1024} KB")
                 except Exception as e:
                     print(f"  Warning: Iris pack not published: {e}")
@@ -1484,7 +1490,7 @@ def cmd_upload(args, config: dict) -> dict:
             upload_index(s3, bucket, all_entries)
             print("Index updated.")
             try:
-                print(f"Iris recent list: {write_iris_recent(s3, bucket, all_entries)} matches.")
+                print(f"Iris recent list: {write_iris_recent(s3, iris_bucket(config), all_entries)} matches.")
             except Exception as e:
                 print(f"  Warning: {IRIS_RECENT_KEY} not written: {e}")
                 report["warnings"].append({"match": "", "warning": f"Iris recent list not written: {e}"})
@@ -1785,7 +1791,7 @@ def cmd_iris_backfill(args, config: dict):
     for match_dir in scan_local_matches(source_dir):
         if match_dir.name not in recent:
             continue
-        if object_exists(s3, bucket, iris_pack_key(match_dir.name)):
+        if object_exists(s3, iris_bucket(config), iris_pack_key(match_dir.name)):
             present += 1
             continue
         if args.dry_run:
@@ -1796,12 +1802,12 @@ def cmd_iris_backfill(args, config: dict):
         if not pack:
             missing += 1
             continue
-        upload_iris_pack(s3, bucket, match_dir.name, pack)
+        upload_iris_pack(s3, iris_bucket(config), match_dir.name, pack)
         built += 1
         print(f"  {match_dir.name}: {len(pack) // 1024} KB")
     print(f"Iris packs: {built} built, {present} already there, {missing} {'to build' if args.dry_run else 'not built'}")
     if not args.dry_run:
-        print(f"Iris recent list: {write_iris_recent(s3, bucket, entries)} matches.")
+        print(f"Iris recent list: {write_iris_recent(s3, iris_bucket(config), entries)} matches.")
 
 
 def main():
