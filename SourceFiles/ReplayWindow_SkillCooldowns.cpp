@@ -256,10 +256,9 @@ namespace
 int ReplayWindow::AttributeRankFor(int agentId, int attribute) const
 {
     auto it = m_attrProfiles.find(agentId);
-    if (it != m_attrProfiles.end()) {
-        auto a = it->second.attributes.find(attribute);
-        if (a != it->second.attributes.end() && !a->second.budgetOnly) return a->second.best;
-    }
+    if (it != m_attrProfiles.end())
+        if (const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute))
+            return a->best;
     return kFallbackRank;
 }
 
@@ -280,10 +279,13 @@ ReplayWindow::RankBand ReplayWindow::SkillRankBandAt(int skillId, int userAgentI
         bit != m_attrProfiles.end() ? &bit->second : nullptr, *si, usedAt);
     band.best = AttributeRankFor(userAgentId, attribute);
     if (bit != m_attrProfiles.end()) {
-        if (auto a = bit->second.attributes.find(attribute); a != bit->second.attributes.end()) {
+        if (const AttributeModel::AttributeRange* s = AttributeModel::SolvedRange(&bit->second, attribute)) {
+            band.lo = s->lo;
+            band.hi = s->hi;
+            band.solved = true;
+        } else if (auto a = bit->second.attributes.find(attribute); a != bit->second.attributes.end()) {
             band.lo = a->second.lo;
             band.hi = a->second.hi;
-            band.solved = !a->second.budgetOnly;
         }
     }
     band.lo = std::min(band.lo, band.best);
@@ -344,8 +346,7 @@ const AttributeModel::AttributeRange* ReplayWindow::SkillRankAt(int skillId, int
     if (!si || bit == m_attrProfiles.end()) return nullptr;
     const int used = AttributeModel::SkillAttributeAt(&bit->second, *si, usedAt);
     if (attribute) *attribute = used;
-    auto it = bit->second.attributes.find(used);
-    return it != bit->second.attributes.end() && !it->second.budgetOnly ? &it->second : nullptr;
+    return AttributeModel::SolvedRange(&bit->second, used);
 }
 
 // Developer dump (GWO_ATTR_DEBUG): for every player whose skills change attribute over the match,

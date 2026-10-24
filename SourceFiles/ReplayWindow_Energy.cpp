@@ -24,13 +24,16 @@ void ReplayWindow::BuildEnergyTracks() const
     in.attributeRank = [this](int agentId, int attribute) -> int {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return -1;
-        auto a = it->second.attributes.find(attribute);
-        if (a == it->second.attributes.end() || a->second.budgetOnly) return -1;
-        return a->second.best;
+        const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
+        return a ? a->best : -1;
     };
     in.attributeRange = [this](int agentId, int attribute, int& lo, int& hi) -> bool {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return false;
+        if (const AttributeModel::AttributeRange* s = AttributeModel::SolvedRange(&it->second, attribute)) {
+            lo = s->lo; hi = s->hi;
+            return true;
+        }
         auto a = it->second.attributes.find(attribute);
         if (a == it->second.attributes.end()) return false;
         lo = a->second.lo; hi = a->second.hi;

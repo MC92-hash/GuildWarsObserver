@@ -874,9 +874,7 @@ namespace
 
         // The rank this player was read at, if his solve covers the attribute the skill scales on.
         const AttributeModel::AttributeRange* rank = nullptr;
-        if (build)
-            if (auto it = build->attributes.find(si.attribute); it != build->attributes.end())
-                if (!it->second.budgetOnly) rank = &it->second;
+        if (build) rank = AttributeModel::SolvedRange(build, si.attribute);
 
         const std::vector<SkillTextRun> runs =
             BuildSkillTextRuns(si, rank, ImGui::GetColorU32(ImVec4(0.85f, 0.82f, 0.75f, 1.f)),

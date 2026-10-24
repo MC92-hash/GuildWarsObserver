@@ -158,9 +158,8 @@ void ReplayWindow::BuildEffectTimeline() const
     in.rank = [this](int agentId, int attribute) -> int {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return -1;
-        auto a = it->second.attributes.find(attribute);
-        if (a == it->second.attributes.end() || a->second.budgetOnly) return -1;
-        return a->second.best;
+        const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
+        return a ? a->best : -1;
     };
 
     in.skillHealth = &m_skillHealthSpans;

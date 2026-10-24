@@ -871,9 +871,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
         {
             const AttributeModel::AttributeRange* rank = nullptr;
             if (auto bit = m_attrProfiles.find(m_playerInfoAgentId); bit != m_attrProfiles.end())
-                if (auto ait = bit->second.attributes.find(si->attribute);
-                    ait != bit->second.attributes.end() && !ait->second.budgetOnly)
-                    rank = &ait->second;
+                rank = AttributeModel::SolvedRange(&bit->second, si->attribute);
 
             constexpr float kDescWrap = 340.f;
             const std::vector<SkillTextRun> runs = BuildSkillTextRuns(
