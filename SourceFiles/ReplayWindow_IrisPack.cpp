@@ -47,6 +47,8 @@
 //   casts{id: [[start, end, target, skill, instant]]}  targeted casts of players and NPCs, for the skill lasers
 //   bundles[]                 [t, item, type, location, carrier] - vine seeds and repair kits; type 2
 //                             repair kit, 3 vine seed; location 0 base, 1 carried, 2 ground, 3 used
+//   flag_moves[]              [t, kind, agent, flag team, bundle] - kind 0 picked up, 1 dropped; flag team 1 blue,
+//                             2 red (0 for a bundle); bundle 0 a flag, 1 repair kit, 2 vine seed
 namespace
 {
     std::string Esc(const std::string& s)
@@ -549,5 +551,40 @@ void ReplayWindow::WriteIrisPackV2(std::ostringstream& js, const std::vector<int
                << static_cast<int>(e.newLocation) << "," << e.carrierAgentId << "]";
             first = false;
         }
+    js << "]";
+
+    // Who picked up or dropped a flag, a vine seed or a repair kit: the Observer's on-screen announcements
+    // (BuildFlagMessages), for Iris's chat. A bundle's drop names the player of the carry it ends.
+    struct Move { float t; int kind, agent, flagTeam, bundle; };
+    std::vector<Move> moves;
+    if (m_flagTimeline.valid)
+    {
+        for (const FlagTimelineEvent& ev : m_flagTimeline.allEvents)
+            if ((ev.eventType == FlagTimelineEventType::Pickup || ev.eventType == FlagTimelineEventType::Drop) && ev.actorAgentId >= 0)
+                moves.push_back({ev.time, ev.eventType == FlagTimelineEventType::Pickup ? 0 : 1, ev.actorAgentId, ev.flagTeam == FlagTeam::Red ? 2 : 1, 0});
+        for (const BundleTimeline& b : m_flagTimeline.bundles)
+        {
+            int carrier = -1;
+            for (const BundleTimelineEvent& e : b.events)
+            {
+                if (e.newLocation == BundleLocation::Carried && e.carrierAgentId >= 0)
+                {
+                    carrier = e.carrierAgentId;
+                    moves.push_back({e.time, 0, carrier, 0, b.type == BundleType::RepairKit ? 1 : 2});
+                }
+                else
+                {
+                    if (e.newLocation == BundleLocation::Ground && carrier >= 0)
+                        moves.push_back({e.time, 1, carrier, 0, b.type == BundleType::RepairKit ? 1 : 2});
+                    carrier = -1;
+                }
+            }
+        }
+        std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) { return a.t < b.t; });
+    }
+    js << ",\"flag_moves\":[";
+    for (size_t i = 0; i < moves.size(); i++)
+        js << (i ? "," : "") << "[" << Num(moves[i].t) << "," << moves[i].kind << "," << moves[i].agent << "," << moves[i].flagTeam << ","
+           << moves[i].bundle << "]";
     js << "]";
 }

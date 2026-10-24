@@ -21,6 +21,7 @@ Configuration via scripts/r2_config.env or environment variables:
 """
 
 import argparse
+import hashlib
 import io
 import gzip
 import json
@@ -31,6 +32,7 @@ import tarfile
 import subprocess
 import tempfile
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -66,7 +68,7 @@ def load_config(env_path: Path | None) -> dict:
     # Environment variables override .env file
     for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY",
                 "MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR",
-                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE", "IRIS_BUCKET"):
+                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE", "IRIS_BUCKET", "IRIS_EXPORTER_AUTO"):
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -788,13 +790,122 @@ def iris_pack_key(folder_name: str) -> str:
     return f"iris/{folder_name}.pack"
 
 
+
+# The Iris exporter, published so the recording machine never rebuilds it. The pack format follows the
+# Observer's exporter, which changes with Iris; rather than asking the recording machine to pull and rebuild
+# each time, the build is published to the private bucket (--publish-iris-exporter) and fetched here when a
+# newer one is out: the exe plus its Data folder, ~5 MB zipped, checked against its SHA-256 and kept under
+# %LOCALAPPDATA%\GWObserver\iris-exporter\<version>. An OBSERVER_EXE in the config still wins (a machine that
+# builds its own), IRIS_EXPORTER_AUTO=0 turns the fetch off, and any failure falls back to the local build.
+IRIS_EXPORTER_PREFIX = "tools/iris-exporter/"
+IRIS_EXPORTER_LATEST = IRIS_EXPORTER_PREFIX + "latest.json"
+_iris_exporter_cache: dict = {}
+
+
+def iris_exporter_home() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "GWObserver" / "iris-exporter"
+
+
+def iris_exporter_exe(config: dict | None) -> Path | None:
+    """The published exporter, fetched once per run when newer; None to use the local build."""
+    config = config or {}
+    if config.get("OBSERVER_EXE") or config.get("IRIS_EXPORTER_AUTO", "1") == "0":
+        return None
+    if "exe" in _iris_exporter_cache:
+        return _iris_exporter_cache["exe"]
+    _iris_exporter_cache["exe"] = None
+    try:
+        s3 = create_s3_client(config)
+        latest = json.loads(s3.get_object(Bucket=config["R2_BUCKET"], Key=IRIS_EXPORTER_LATEST)["Body"].read())
+        version = str(latest["version"])
+        if not version or any(c in version for c in "/\\:") or ".." in version:
+            raise ValueError(f"bad version {version!r}")
+        home = iris_exporter_home()
+        target = home / version
+        exe = target / "GuildWarsObserver.exe"
+        if not exe.is_file():
+            home.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=home) as tmp:
+                archive = Path(tmp) / "exporter.zip"
+                s3.download_file(config["R2_BUCKET"], latest["key"], str(archive))
+                digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+                if digest != latest["sha256"]:
+                    raise ValueError("SHA-256 mismatch")
+                staging = Path(tmp) / "unpacked"
+                with zipfile.ZipFile(archive) as z:
+                    for name in z.namelist():
+                        if name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                            raise ValueError(f"unsafe path in archive: {name}")
+                    z.extractall(staging)
+                if not (staging / "GuildWarsObserver.exe").is_file():
+                    raise ValueError("archive holds no GuildWarsObserver.exe")
+                staging.rename(target)
+            print(f"  Iris exporter {version} installed")
+            # Keep the newest two: the one in use and the one before it.
+            for old in sorted((d for d in home.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime)[:-2]:
+                shutil.rmtree(old, ignore_errors=True)
+        _iris_exporter_cache["exe"] = exe
+    except Exception as exc:
+        print(f"  Iris exporter: using the local build ({type(exc).__name__}: {exc})")
+    return _iris_exporter_cache["exe"]
+
+
+def _git_head(repo: Path) -> str:
+    try:
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              timeout=30).stdout.strip()
+    except Exception:
+        return ""
+
+
+def cmd_publish_iris_exporter(args, config: dict):
+    """Zip the exporter build (exe + Data) and publish it as the newest Iris exporter."""
+    exe = Path(args.publish_iris_exporter) if args.publish_iris_exporter != "auto" else observer_exe(config)
+    if exe is None or not exe.is_file():
+        print("Error: no GuildWarsObserver.exe to publish (pass its path).")
+        sys.exit(1)
+    root = Path(__file__).resolve().parent.parent
+    data = root / "Data"
+    observer_commit = _git_head(root)
+    private_commit = _git_head(root.parent / "gwobserver-private") or _git_head(root.parent / "gwobserver-private-dev")
+    version = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + (f"-{observer_commit}" if observer_commit else "")
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "exporter.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(exe, "GuildWarsObserver.exe")
+            for f in sorted(data.rglob("*")):
+                if f.is_file():
+                    z.write(f, str(Path("Data") / f.relative_to(data)))
+        body = archive.read_bytes()
+        latest = {
+            "version": version,
+            "key": f"{IRIS_EXPORTER_PREFIX}{version}.zip",
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "size": len(body),
+            "observer_commit": observer_commit,
+            "private_commit": private_commit,
+            "published": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        print(f"Iris exporter {version}: {len(body) // 1024} KB from {exe}")
+        if args.dry_run:
+            print(json.dumps(latest, indent=2))
+            return
+        s3 = create_s3_client(config)
+        s3.put_object(Bucket=config["R2_BUCKET"], Key=latest["key"], Body=body, ContentType="application/zip")
+        s3.put_object(Bucket=config["R2_BUCKET"], Key=IRIS_EXPORTER_LATEST, Body=json.dumps(latest, indent=2).encode(),
+                      ContentType="application/json", CacheControl="no-cache")
+        print(f"Published {latest['key']} and {IRIS_EXPORTER_LATEST}")
+
+
 def build_iris_pack(match_dir: Path, config: dict | None = None) -> bytes | None:
     """The sealed Iris pack for one match, or None when it cannot be built.
 
-    Same exporter and same failure contract as the attributes: a warning and no
+    The published Iris exporter when there is one (iris_exporter_exe), else the
+    same exporter as the attributes; same failure contract: a warning and no
     object, never a lost index entry.
     """
-    exe = observer_exe(config)
+    exe = iris_exporter_exe(config) or observer_exe(config)
     if exe is None:
         return None
     with tempfile.TemporaryDirectory() as tmp:
@@ -1921,6 +2032,15 @@ def main():
         help="With --iris-backfill: rebuild packs that already exist (after the pack format changes).",
     )
     parser.add_argument(
+        "--publish-iris-exporter",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="EXE",
+        help="Publish an Iris exporter build (GuildWarsObserver.exe + Data) to the bucket; every machine's next "
+             "upload fetches it. EXE defaults to this checkout's build. Pair with --dry-run first.",
+    )
+    parser.add_argument(
         "--dedup-index",
         action="store_true",
         help="Remove duplicate entries from index.json",
@@ -1950,7 +2070,9 @@ def main():
         print(f"Set them in {args.env_file} or as environment variables.")
         sys.exit(1)
 
-    if args.iris_backfill:
+    if args.publish_iris_exporter:
+        cmd_publish_iris_exporter(args, config)
+    elif args.iris_backfill:
         cmd_iris_backfill(args, config)
     elif args.cleanup_duplicates:
         cmd_cleanup_duplicates(args, config)
