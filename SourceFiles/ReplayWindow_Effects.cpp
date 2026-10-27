@@ -60,10 +60,14 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
     // never looked at it. Without this a Guild Lord fell through to the player-only solver,
     // which returns 0 for an NPC, and his damage numbers were dropped for want of a
-    // denominator. Deep Wound is the only thing that moves it.
+    // denominator. Deep Wound moves it, and a Guild Lord's also steps up with his team's morale boosts.
     if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
+    {
+        if (it->second.modelId == 170)
+            fixed += (uint32_t)LordAggressiveness::LordMoraleHealth(TeamMoraleBoostsAt(it->second.teamId, t));
         return (s && s->has_deep_wound)
                    ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
+    }
     // A henchman's maximum is modelled (level health, morale, Deep Wound) and never recorded.
     if (IsHenchmanAgent(it->second))
         return ResolveMaxHp(it->second, t).value;

@@ -368,6 +368,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\IrisPackKey.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HenchmanEnergy.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\LordAggressiveness.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\ScreenShake.h" />
@@ -714,6 +715,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_IrisPack.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HenchmanEnergy.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\LordAggressiveness.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ScreenShake.cpp" />

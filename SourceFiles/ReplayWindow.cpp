@@ -216,7 +216,7 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("team1_party",     "Team 1 Party",         &m_showTeam1Party,       true,  true);
     m_panelLayout.RegisterPanel("team2_party",     "Team 2 Party",         &m_showTeam2Party,       true,  true);
     m_panelLayout.RegisterPanel("morale",          "Morale",               &m_showMoralePanel,      false, true);
-    m_panelLayout.RegisterPanel("lord_damage",     "Lord Damage",          &m_showLordDamagePanel,  false, true);
+    m_panelLayout.RegisterPanel("lord_damage",     "Aggressiveness",       &m_showLordDamagePanel,  false, true);
     m_panelLayout.RegisterPanel("event_timeline",  "Event Timeline",       &m_showEventTimeline,    false, false);
     m_panelLayout.RegisterPanel("range_rings",     "Range Rings",          &m_showRangeRings,       false, true);
     m_panelLayout.RegisterPanel("skill_lasers",    "Skill Lasers",         &m_showLaserPanel,       false, true);

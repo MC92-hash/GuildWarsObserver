@@ -432,7 +432,7 @@ void ReplayWindow::DrawShortcutPreferences()
         HotkeyInput("Drawing Toolbar",     &editing.toggleDrawingBar, true);
         HotkeyInput("Morale Panel",        &editing.toggleMoralePanel, true);
         HotkeyInput("Event Timeline",      &editing.toggleEventTimeline, true);
-        HotkeyInput("Lord Damage Panel",   &editing.toggleLordDamage, true);
+        HotkeyInput("Aggressiveness Panel", &editing.toggleLordDamage, true);
         HotkeyInput("Heatmap",             &editing.toggleHeatmap, true);
         HotkeyInput("Piano Roll",          &editing.togglePianoRoll, true);
         HotkeyInput("Minimap",             &editing.toggleMinimap, true);

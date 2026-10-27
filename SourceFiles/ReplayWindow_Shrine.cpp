@@ -69,6 +69,9 @@ HealthModel::Inputs ReplayWindow::BuildHealthModelInputs() const
         return MoralePercentAtTime(ard, t);
     };
 
+    // The Guild Lord's maximum steps up with his team's morale boosts.
+    in.teamMoraleBoosts = [this](int team, float t) { return TeamMoraleBoostsAt(team, t); };
+
     in.shrineBonus = [this](const AgentReplayData& ard, float t) -> int {
         // Isle of Wurms only, and it is a team-wide effect: holding the shrine grants the whole
         // party the bonus wherever they happen to be standing.

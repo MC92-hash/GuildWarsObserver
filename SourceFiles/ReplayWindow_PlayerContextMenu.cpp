@@ -515,15 +515,15 @@ void ReplayWindow::DrawPlayerContextMenu()
                             if (h.casterId == id) lordDmg += h.rawDmg;
                         }
                 const std::string lordShort = hasLord ? (lordDmg > 0 ? WithThousands(lordDmg) : "none yet") : "";
-                if (IconMenuItem(dev, RibbonArt::LordDamage, "Lord damage...", lordShort.c_str(), false, hasLord))
+                if (IconMenuItem(dev, RibbonArt::LordDamage, "Aggressiveness...", lordShort.c_str(), false, hasLord))
                 {
                     m_showLordDamagePanel = true;
                     m_lordDmgHighlightAgent = id;
-                    m_pendingWindowFocus = "Lord Damage##lord_dmg";
+                    m_pendingWindowFocus = "Aggressiveness##lord_dmg";
                     m_playerMenuActionTookFocus = true;
                 }
                 if (!m_combatLogBuilt || !m_lordDamageBuilt)
-                    MenuNote("Lord damage needs the combat data, still being prepared.");
+                    MenuNote("Aggressiveness needs the combat data, still being prepared.");
                 else if (!hasLord)
                     MenuNote("No Guild Lord was found in this match.");
                 ImGui::EndMenu();

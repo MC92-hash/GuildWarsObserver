@@ -667,7 +667,7 @@ static void draw_settings_window()
 	HotkeyInput("Drawing Toolbar",     &editingKeys.toggleDrawingBar);
 	HotkeyInput("Morale Panel",        &editingKeys.toggleMoralePanel);
 	HotkeyInput("Event Timeline",      &editingKeys.toggleEventTimeline);
-	HotkeyInput("Lord Damage Panel",   &editingKeys.toggleLordDamage);
+	HotkeyInput("Aggressiveness Panel", &editingKeys.toggleLordDamage);
 	HotkeyInput("Heatmap",             &editingKeys.toggleHeatmap);
 	HotkeyInput("Piano Roll",          &editingKeys.togglePianoRoll);
 	HotkeyInput("Minimap",             &editingKeys.toggleMinimap);

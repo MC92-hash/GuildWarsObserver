@@ -780,8 +780,10 @@ inline bool IsNpcHiddenWhenDead(uint32_t modelId)
 //
 // The eight NPCs that come with the guild hall have a fixed maximum, and it is fixed in a
 // stronger sense than a player's: they wear no armour, carry no runes or insignias, swap no
-// weapon sets, and take no morale. Nothing in a match moves these numbers except Deep Wound,
-// which is a percentage taken off the end like it is for everyone.
+// weapon sets, and take no player morale. Nothing in a match moves these numbers except Deep
+// Wound, which is a percentage taken off the end like it is for everyone, and - for the Guild
+// Lord alone - his team's morale boosts: about +1% each, up to ten (measured 2026-10-26; the
+// steps are in LordAggressiveness::kLordHealthByBoosts). This table is the unboosted value.
 //
 // That is why they are a lookup rather than a solve. The forward model exists because a
 // player's maximum is a sum of unknowns; an Archer's is a constant, and running it through

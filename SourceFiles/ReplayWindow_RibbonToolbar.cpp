@@ -953,16 +953,16 @@ void ReplayWindow::DrawRibbonToolbar()
               "Deaths counted right after a resurrection, or caused by Death "
               "Pact Signet, are ignored and do not reduce morale.",
               hk.toggleMoralePanel),
-            T(Ico::Crown, "Lord Damage", m_showLordDamagePanel,
+            T(Ico::Crown, "Aggressiveness", m_showLordDamagePanel,
               kArtLordDamage,
-              "Open the Guild Lord damage panel, showing how much damage "
-              "each player dealt to the enemy Lord over the match:\n"
-              "- Built from the lord-damage hit records logged in the match "
-              "file, one entry per attack that landed\n"
-              "- Totalled per attacking player, so you can see who is "
-              "chipping or finishing the Lord\n"
-              "- Only those recorded hits count - HP lost by the Lord to "
-              "degen, poison, bleeding or lifesteal ticks is not included",
+              "Open the Aggressiveness panel: the 28:00 tiebreak score of each "
+              "team and who dealt the damage to each Guild Lord.\n"
+              "- If neither lord dies, the team with more aggressiveness at "
+              "28:00 wins\n"
+              "- Damage on the enemy lord, 20% under his Entourage, +20 per "
+              "blocked attack (+30 blind miss), -50 per enchantment or weapon spell "
+              "on your own lord (-300 while its Entourage is up)\n"
+              "- Hover any icon in the panel for the details",
               hk.toggleLordDamage),
             T(Ico::LogList, "Combat Log", m_showCombatLog,
               kArtCombatLog,

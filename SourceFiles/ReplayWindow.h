@@ -38,6 +38,7 @@
 #include "EnergyModel.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
+#include "LordAggressiveness.h"
 #include "EchoSlots.h"
 #include "ThieverySlots.h"
 #include "OverheadFloaters.h"
@@ -1206,9 +1207,14 @@ public:
         std::vector<LordHitEvent> hits;
     };
     LordDamageData m_lordDmg[2];
+    // The 28:00 tiebreak score, every point with its cause and who caused it (private formula).
+    LordAggressiveness::Result m_lordAggr;
     bool m_showLordDamagePanel = false;
     bool m_lordDamageBuilt = false;
     void BuildLordDamageData();
+    void BuildLordAggressiveness();
+    // Morale boosts team 1 or 2 has earned by time t (jumbo MORALE_BOOST messages).
+    int TeamMoraleBoostsAt(int team, float t) const;
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
