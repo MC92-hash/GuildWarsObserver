@@ -2056,6 +2056,35 @@ private:
     bool  m_pianoRollTeam1Open  = true;
     bool  m_pianoRollTeam2Open  = true;
     float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
+    int   m_pianoRollPinned     = -1;    // player whose casts (out and in) are linked on the roll
+    bool  m_pianoRollLanes      = true;  // the thin "incoming" lane under each player row
+    int   m_pianoRollSpikeSel   = -1;    // spike picked with the card's arrows or the spike bar
+    int   m_pianoRollMonkSel    = -1;    // Monk card picked: the spike bar marks the spikes they answered
+
+    // One cast for the shared hover table: the event and who cast it.
+    struct CastRef { const SkillUseEvent* ev; int casterId; };
+
+    // Spikes: 3+ enemy damage skills hitting one player within 1.5 s (owner's definition), with the
+    // allied prots and heals cast on that player around it. Built once per match.
+    struct SpikeInfo
+    {
+        int   target   = -1;
+        float cue      = 0.f;   // first enemy cast START - the moment a Monk can read it
+        float firstHit = 0.f;
+        float lastHit  = 0.f;
+        std::vector<CastRef> hits;      // the enemy damage skills, in hit order
+        std::vector<CastRef> answers;   // allied prots / heals on the target, in start order
+        float lowHp = -1.f;             // lowest health fraction from the first cast to 1 s after the last hit
+    };
+    std::vector<SpikeInfo> m_spikes;
+    bool m_spikesBuilt = false;
+    void BuildSpikes();
+    bool IsSpikeDamageSkill(int skillId) const;
+    bool IsSpikeAnswerSkill(int skillId) const;
+    int  PianoRollCardSpike(float now) const;
+    void DrawPianoRollSpikeBar(float winStart, float winEnd, int cardSpike);
+    void DrawPianoRollSpikeCard(int cardSpike);
+    void DrawPianoRollMonkCards();
 
     void DrawPianoRollPanel();
 
@@ -2254,6 +2283,7 @@ private:
     bool  m_showFocusCasts = true;
     float m_focusHudRightLimitX = 0.f;   // left edge of the weapon sets this frame (the strip stops there)
     void DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, float height, float slot);
+    void DrawCastTableTooltip(std::vector<CastRef> rows, const char* headline = nullptr);
     // The eight slots alone (icons, frames, recharge, markers, in-use sparkle), top-left at rowTL.
     void DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 rowTL, float slot, float scale, bool hoverable);
     // `rowTopLeft` is the bottom row's; full rows wrap upwards. Returns the rows used.

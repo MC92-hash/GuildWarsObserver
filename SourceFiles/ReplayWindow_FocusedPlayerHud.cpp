@@ -761,110 +761,19 @@ void ReplayWindow::DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, fl
                 hit = &e;
         if (!hit) return;
 
-        // One line per cast, in the order they hit: skill, caster, the match-clock moment it hits, and
-        // a small bar on a shared scale (cast from start to hit) so the order reads at a glance.
-        std::vector<const Entry*> pile;
+        std::vector<CastRef> pile;
         for (const auto& e : row)
-            if (e.pile == hit->pile) pile.push_back(&e);
-        auto landsAt = [](const Entry* e) { return std::max(e->ev->endTime, e->ev->startTime); };
-        std::stable_sort(pile.begin(), pile.end(),
-            [&](const Entry* a, const Entry* b) { return landsAt(a) < landsAt(b); });
-        float axis0 = FLT_MAX, axis1 = -FLT_MAX;
-        for (const Entry* e : pile)
-        {
-            axis0 = std::min(axis0, e->ev->startTime);
-            axis1 = std::max(axis1, landsAt(e));
-        }
-        axis0 -= 0.25f;
-        axis1 += 0.25f;
-
-        const float iconSz = std::round(ImGui::GetTextLineHeight() * 1.45f);
-        const ImVec4 kHead(0.72f, 0.68f, 0.56f, 1.f), kTime(1.f, 0.84f, 0.30f, 1.f), kDim(0.80f, 0.78f, 0.72f, 1.f);
-        auto teamText = [](uint8_t team) {
-            return team == 1 ? ImVec4(0.45f, 0.66f, 1.f, 1.f) : team == 2 ? ImVec4(1.f, 0.45f, 0.40f, 1.f)
-                                                              : ImVec4(0.85f, 0.85f, 0.85f, 1.f);
-        };
-        // Text centred on an icon of iconSz drawn just before it on the same line.
-        auto alignedText = [&](const ImVec4& col, const char* fmt, auto... args) {
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (iconSz - ImGui::GetTextLineHeight()) * 0.5f);
-            ImGui::TextColored(col, fmt, args...);
-        };
-
-        ImGui::BeginTooltip();
+            if (e.pile == hit->pile) pile.push_back({ e.ev, e.casterId });
+        std::string headline;
         if (!row.empty() && row.front().casterId != agentId)
             for (const Spike& sp : spikes)
                 if (sp.pile == hit->pile)
-                    ImGui::TextColored(ImVec4(1.f, 0.42f, 0.36f, 1.f), "Spike: %d damage skills hit in %.2f s", sp.count, sp.span);
-        constexpr ImGuiTableFlags kTable = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg |
-                                           ImGuiTableFlags_PadOuterX;
-        constexpr int kCols = 4;
-        if (ImGui::BeginTable("##cast_pile", kCols, kTable))
-        {
-            ImGui::TableSetupColumn("Skill");
-            ImGui::TableSetupColumn("Cast by");
-            ImGui::TableSetupColumn("Hits at");
-            ImGui::TableSetupColumn("");
-            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            for (int c = 0; c < kCols; ++c)
-            {
-                ImGui::TableSetColumnIndex(c);
-                ImGui::TextColored(kHead, "%s", ImGui::TableGetColumnName(c));
-            }
-
-            for (const Entry* e : pile)
-            {
-                const SkillUseEvent& ev = *e->ev;
-                ImGui::TableNextRow();
-
-                ImGui::TableSetColumnIndex(0);
-                if (ImTextureID tex = LoadSkillIcon(this, dev, ev.skillId, m_skillIconIndex, m_skillIconCache))
-                    ImGui::Image(tex, ImVec2(iconSz, iconSz));
-                else
-                    ImGui::Dummy(ImVec2(iconSz, iconSz));
-                ImGui::SameLine();
-                const std::string name = GetSkillDisplayName(ev.skillId);
-                if (ev.wasInterrupted)     alignedText(ImVec4(0.75f, 0.45f, 1.f, 1.f), "%s (interrupted)", name.c_str());
-                else if (ev.wasCancelled)  alignedText(ImVec4(1.f, 0.62f, 0.25f, 1.f), "%s (cancelled)", name.c_str());
-                else                       alignedText(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", name.c_str());
-
-                ImGui::TableSetColumnIndex(1);
-                auto cit = m_replayCtx.agents.find(e->casterId);
-                if (cit != m_replayCtx.agents.end())
                 {
-                    const AgentReplayData& caster = cit->second;
-                    ImTextureID prof = caster.primaryProf > 0 ? LoadProfIcon(dev, caster.primaryProf) : nullptr;
-                    if (prof) ImGui::Image(prof, ImVec2(iconSz, iconSz));
-                    else      ImGui::Dummy(ImVec2(iconSz, iconSz));
-                    ImGui::SameLine();
-                    const std::string& who = !caster.playerName.empty() ? caster.playerName : caster.categoryName;
-                    alignedText(teamText(caster.teamId), "%s", who.c_str());
+                    char buf[96];
+                    snprintf(buf, sizeof(buf), "Spike: %d damage skills hit in %.2f s", sp.count, sp.span);
+                    headline = buf;
                 }
-
-                ImGui::TableSetColumnIndex(2);
-                const float hitT = landsAt(e);
-                const int mins = static_cast<int>(hitT / 60.f);
-                alignedText(kTime, "%d:%04.1f", mins, hitT - mins * 60.f);
-
-                // The cast as a bar from its start to its hit, the hit as a gold mark.
-                ImGui::TableSetColumnIndex(3);
-                {
-                    const float barW = std::round(iconSz * 5.f);
-                    const ImVec2 p = ImGui::GetCursorScreenPos();
-                    ImGui::Dummy(ImVec2(barW, iconSz));
-                    ImDrawList* tdl = ImGui::GetWindowDrawList();
-                    auto ax = [&](float t) { return std::round(p.x + (t - axis0) / (axis1 - axis0) * barW); };
-                    const float cy = p.y + iconSz * 0.5f;
-                    for (float g = std::ceil(axis0 * 2.f) * 0.5f; g <= axis1; g += 0.5f)
-                        tdl->AddLine(ImVec2(ax(g), p.y + 2.f), ImVec2(ax(g), p.y + iconSz - 2.f), IM_COL32(255, 255, 255, 28));
-                    tdl->AddRectFilled(ImVec2(ax(ev.startTime), cy - 1.5f), ImVec2(ax(hitT), cy + 1.5f),
-                                       withAlpha(castColour(ev, e->casterId), 0.8f), 1.5f);
-                    tdl->AddRectFilled(ImVec2(ax(hitT) - 1.5f, p.y + 3.f), ImVec2(ax(hitT) + 1.5f, p.y + iconSz - 3.f),
-                                       IM_COL32(0xFF, 0xD6, 0x4D, 0xFF), 1.f);
-                }
-            }
-            ImGui::EndTable();
-        }
-        ImGui::EndTooltip();
+        DrawCastTableTooltip(pile, headline.empty() ? nullptr : headline.c_str());
     };
 
     // Events sorted by start; a long cast that began before the window can still reach into it.
@@ -952,6 +861,126 @@ void ReplayWindow::DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, fl
     dl->PopClipRect();
     ImGui::End();
     ImGui::PopStyleVar(2);
+}
+
+
+// The hover table shared by the cast strip and the Piano Roll: one line per cast in the order they
+// hit - skill, caster, the match-clock moment it hits - and a small bar on a shared scale (cast from
+// start to hit) so the order reads at a glance. `headline` (optional) goes above it in red.
+void ReplayWindow::DrawCastTableTooltip(std::vector<CastRef> rows, const char* headline)
+{
+    if (rows.empty()) return;
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+
+    auto landsAt = [](const CastRef& c) { return std::max(c.ev->endTime, c.ev->startTime); };
+    std::stable_sort(rows.begin(), rows.end(),
+        [&](const CastRef& a, const CastRef& b) { return landsAt(a) < landsAt(b); });
+    float axis0 = FLT_MAX, axis1 = -FLT_MAX;
+    for (const CastRef& c : rows)
+    {
+        axis0 = std::min(axis0, c.ev->startTime);
+        axis1 = std::max(axis1, landsAt(c));
+    }
+    axis0 -= 0.25f;
+    axis1 += 0.25f;
+
+    const float iconSz = std::round(ImGui::GetTextLineHeight() * 1.45f);
+    const ImVec4 kHead(0.72f, 0.68f, 0.56f, 1.f), kTime(1.f, 0.84f, 0.30f, 1.f);
+    auto teamOf = [&](int agentId) -> uint8_t {
+        auto it = m_replayCtx.agents.find(agentId);
+        return it != m_replayCtx.agents.end() ? it->second.teamId : 0;
+    };
+    auto teamText = [](uint8_t team) {
+        return team == 1 ? ImVec4(0.45f, 0.66f, 1.f, 1.f) : team == 2 ? ImVec4(1.f, 0.45f, 0.40f, 1.f)
+                                                          : ImVec4(0.85f, 0.85f, 0.85f, 1.f);
+    };
+    // The bar takes the caster's team colour, or the outcome's for an interrupted / cancelled cast.
+    auto barColour = [&](const CastRef& c) -> ImU32 {
+        if (c.ev->wasInterrupted) return IM_COL32(0x90, 0x30, 0xD0, 176);
+        if (c.ev->wasCancelled)   return IM_COL32(0xE0, 0x80, 0x20, 176);
+        const uint8_t team = teamOf(c.casterId);
+        return team == 1 ? IM_COL32(0x60, 0x9C, 0xFF, 176) : team == 2 ? IM_COL32(0xE8, 0x50, 0x48, 176)
+                                                           : IM_COL32(0xC8, 0xC8, 0xC8, 176);
+    };
+    // Text centred on an icon of iconSz drawn just before it on the same line.
+    auto alignedText = [&](const ImVec4& col, const char* fmt, auto... args) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (iconSz - ImGui::GetTextLineHeight()) * 0.5f);
+        ImGui::TextColored(col, fmt, args...);
+    };
+
+    ImGui::BeginTooltip();
+    if (headline)
+        ImGui::TextColored(ImVec4(1.f, 0.42f, 0.36f, 1.f), "%s", headline);
+    constexpr ImGuiTableFlags kTable = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg |
+                                       ImGuiTableFlags_PadOuterX;
+    constexpr int kCols = 4;
+    if (ImGui::BeginTable("##cast_pile", kCols, kTable))
+    {
+        ImGui::TableSetupColumn("Skill");
+        ImGui::TableSetupColumn("Cast by");
+        ImGui::TableSetupColumn("Hits at");
+        ImGui::TableSetupColumn("");
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int c = 0; c < kCols; ++c)
+        {
+            ImGui::TableSetColumnIndex(c);
+            ImGui::TextColored(kHead, "%s", ImGui::TableGetColumnName(c));
+        }
+
+        for (const CastRef& c : rows)
+        {
+            const SkillUseEvent& ev = *c.ev;
+            ImGui::TableNextRow();
+
+            ImGui::TableSetColumnIndex(0);
+            if (ImTextureID tex = LoadSkillIcon(this, dev, ev.skillId, m_skillIconIndex, m_skillIconCache))
+                ImGui::Image(tex, ImVec2(iconSz, iconSz));
+            else
+                ImGui::Dummy(ImVec2(iconSz, iconSz));
+            ImGui::SameLine();
+            const std::string name = GetSkillDisplayName(ev.skillId);
+            if (ev.wasInterrupted)     alignedText(ImVec4(0.75f, 0.45f, 1.f, 1.f), "%s (interrupted)", name.c_str());
+            else if (ev.wasCancelled)  alignedText(ImVec4(1.f, 0.62f, 0.25f, 1.f), "%s (cancelled)", name.c_str());
+            else                       alignedText(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", name.c_str());
+
+            ImGui::TableSetColumnIndex(1);
+            auto cit = m_replayCtx.agents.find(c.casterId);
+            if (cit != m_replayCtx.agents.end())
+            {
+                const AgentReplayData& caster = cit->second;
+                ImTextureID prof = caster.primaryProf > 0 ? LoadProfIcon(dev, caster.primaryProf) : nullptr;
+                if (prof) ImGui::Image(prof, ImVec2(iconSz, iconSz));
+                else      ImGui::Dummy(ImVec2(iconSz, iconSz));
+                ImGui::SameLine();
+                const std::string& who = !caster.playerName.empty() ? caster.playerName : caster.categoryName;
+                alignedText(teamText(caster.teamId), "%s", who.c_str());
+            }
+
+            ImGui::TableSetColumnIndex(2);
+            const float hitT = landsAt(c);
+            const int mins = static_cast<int>(hitT / 60.f);
+            alignedText(kTime, "%d:%04.1f", mins, hitT - mins * 60.f);
+
+            // The cast as a bar from its start to its hit, the hit as a gold mark.
+            ImGui::TableSetColumnIndex(3);
+            {
+                const float barW = std::round(iconSz * 5.f);
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(ImVec2(barW, iconSz));
+                ImDrawList* tdl = ImGui::GetWindowDrawList();
+                auto ax = [&](float t) { return std::round(p.x + (t - axis0) / (axis1 - axis0) * barW); };
+                const float cy = p.y + iconSz * 0.5f;
+                for (float g = std::ceil(axis0 * 2.f) * 0.5f; g <= axis1; g += 0.5f)
+                    tdl->AddLine(ImVec2(ax(g), p.y + 2.f), ImVec2(ax(g), p.y + iconSz - 2.f), IM_COL32(255, 255, 255, 28));
+                tdl->AddRectFilled(ImVec2(ax(ev.startTime), cy - 1.5f), ImVec2(ax(hitT), cy + 1.5f), barColour(c), 1.5f);
+                tdl->AddRectFilled(ImVec2(ax(hitT) - 1.5f, p.y + 3.f), ImVec2(ax(hitT) + 1.5f, p.y + iconSz - 3.f),
+                                   IM_COL32(0xFF, 0xD6, 0x4D, 0xFF), 1.f);
+            }
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndTooltip();
 }
 
 
