@@ -275,6 +275,7 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashBool(m_showDamageMeter);
     hashBool(m_showHealMeter);
     hashBool(m_showPartyEnergy);
+    hashBool(m_showFocusCasts);
     return h;
 }
 
@@ -380,6 +381,7 @@ void ReplayWindow::SaveUILayout()
     ps["showDamageMeter"]     = m_showDamageMeter;
     ps["showHealMeter"]       = m_showHealMeter;
     ps["showPartyEnergy"]     = m_showPartyEnergy;
+    ps["showFocusCasts"]      = m_showFocusCasts;
 
     // Split Camera state
     ps["pipFollowDist"]       = m_pipFollowDist;
@@ -514,6 +516,7 @@ void ReplayWindow::LoadUILayout()
             bv("showDamageMeter", m_showDamageMeter);
             bv("showHealMeter",   m_showHealMeter);
             bv("showPartyEnergy", m_showPartyEnergy);
+            bv("showFocusCasts",  m_showFocusCasts);
             bv("showAbsoluteHp",  m_showAbsoluteHp);
 
             // Split Camera state

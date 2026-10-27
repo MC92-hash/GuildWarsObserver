@@ -129,6 +129,8 @@ void ReplayWindow::DrawFocusedPlayerHud()
     if (it == m_replayCtx.agents.end()) return;
     if (it->second.type != AgentType::Player && !IsHenchmanAgent(it->second)) return;
 
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    m_focusHudRightLimitX = vp->Pos.x + vp->Size.x - kMargin;   // the weapon sets lower it when shown
     DrawFocusHudWeaponSets(focused);
     DrawFocusHudSkillBar(focused);
 }
@@ -186,6 +188,7 @@ void ReplayWindow::DrawFocusHudWeaponSets(int agentId)
     const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
     const float posX = std::max(vp->Pos.x, vp->Pos.x + vp->Size.x - winW - kMargin);
     const float posY = std::max(vp->Pos.y, floorY - kMargin - winH);
+    m_focusHudRightLimitX = posX;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
@@ -505,6 +508,448 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
 
     DrawFocusHudSkillSlots(dl, agentId, ImVec2(origin.x + artL, frameTL.y + artT), slot, scale, windowHovered);
 
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+
+    // The cast strip stands beside the bar, as tall as its frame, and stops short of the weapon sets.
+    if (m_showFocusCasts)
+    {
+        const float stripX = posX + winW + std::round(10.f * scale);
+        const float stripW = std::min(m_focusHudRightLimitX - std::round(16.f * scale) - stripX, 12.f * slot);
+        if (stripW > 3.f * slot)
+            DrawFocusHudCastStrip(agentId, ImVec2(stripX, posY + frameY), stripW, artT + slot + artB, slot);
+    }
+}
+
+
+void ReplayWindow::DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, float height, float slot)
+{
+    auto focusIt = m_replayCtx.agents.find(agentId);
+    if (focusIt == m_replayCtx.agents.end()) return;
+    const AgentReplayData& focus = focusIt->second;
+
+    // Light by design: no frame, a faint shade that fades out at both ends, hairlines, and icons
+    // that carry the weight. Future casts are dimmed like the info panel's cast timeline.
+    // Incoming casts on the top row, the player's own on the bottom row beside the skill bar. Incoming
+    // casts that land together stack upwards like cards (each kStackStep of an icon higher), rising
+    // over the scene rather than leaving their true time.
+    constexpr float kLabelFont = 11.f;
+    constexpr int   kMaxStack  = 6;
+    const float labelW = std::round(ImGui::GetFont()->CalcTextSizeA(kLabelFont, FLT_MAX, 0.f, "OUTGOING").x + 8.f);
+    const float lineX  = tl.x + labelW;                 // where the timeline starts, right of the row labels
+    const float icon   = std::round(std::min(height * 0.5f - 6.f, slot * 0.48f));
+    const float step   = std::round(icon * 0.55f);
+    constexpr float kRulerFont = 12.f;
+    const float below  = kRulerFont + 4.f;              // second labels hang under the strip
+    // Text over a bright floor needs a dark shadow to stay readable without a backing panel.
+    auto shadowText = [](ImDrawList* d, float size, ImVec2 p, ImU32 col, const char* text) {
+        const ImU32 shadow = IM_COL32(0, 0, 0, ((col >> IM_COL32_A_SHIFT) & 0xFF) * 3 / 4);
+        d->AddText(nullptr, size, ImVec2(p.x + 1.f, p.y + 1.f), shadow, text);
+        d->AddText(nullptr, size, p, col, text);
+    };
+    const float rise   = (kMaxStack - 1) * step;
+    const float pps    = icon * 1.35f;                  // pixels per second
+    const float nowX   = std::round(lineX + (width - labelW) * 0.42f);
+    const float curT   = m_debugTimeline;
+    const float tStart = curT - (nowX - lineX) / pps;
+    const float tEnd   = curT + (tl.x + width - nowX) / pps;
+    const float rowInY  = std::round(tl.y + height * 0.25f - icon * 0.5f);
+    const float rowOutY = std::round(tl.y + height * 0.75f - icon * 0.5f);
+    auto timeToX = [&](float t) { return nowX + (t - curT) * pps; };
+
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar   | ImGuiWindowFlags_NoResize        |
+        ImGuiWindowFlags_NoMove       | ImGuiWindowFlags_NoScrollbar     |
+        ImGuiWindowFlags_NoCollapse   | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoInputs;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::SetNextWindowPos(ImVec2(tl.x, tl.y - rise));
+    ImGui::SetNextWindowSize(ImVec2(width, height + rise + below));
+    if (!ImGui::Begin("##focus_hud_cast_strip", nullptr, kFlags))
+    {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        return;
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+    const ImVec2 br(tl.x + width, tl.y + height);
+    dl->PushClipRect(ImVec2(tl.x, tl.y - rise), ImVec2(br.x, br.y + below), true);
+
+    // Shade: transparent at both ends, at most a light veil around the playhead.
+    const ImU32 shade0 = IM_COL32(0, 0, 0, 0), shade1 = IM_COL32(0, 0, 0, 46);
+    dl->AddRectFilledMultiColor(ImVec2(lineX, tl.y), ImVec2(nowX, br.y), shade0, shade1, shade1, shade0);
+    dl->AddRectFilledMultiColor(ImVec2(nowX, tl.y), br, shade1, shade0, shade0, shade1);
+    const float midY = std::round(tl.y + height * 0.5f);
+    dl->AddRectFilledMultiColor(ImVec2(lineX, midY), ImVec2(nowX, midY + 1.f),
+        IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 22), IM_COL32(255, 255, 255, 22), IM_COL32(255, 255, 255, 0));
+    dl->AddRectFilledMultiColor(ImVec2(nowX, midY), ImVec2(br.x, midY + 1.f),
+        IM_COL32(255, 255, 255, 22), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 22));
+
+    // Ruler on the bottom edge, counted from the playhead: a tick every half second, a taller one
+    // and a label every second, so the gap between a spike and the answer to it can be read off.
+    dl->AddRectFilledMultiColor(ImVec2(lineX, br.y - 1.f), ImVec2(nowX, br.y + 1.f),
+        IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 90), IM_COL32(0, 0, 0, 90), IM_COL32(0, 0, 0, 0));
+    dl->AddRectFilledMultiColor(ImVec2(nowX, br.y - 1.f), ImVec2(br.x, br.y + 1.f),
+        IM_COL32(0, 0, 0, 90), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 90));
+    dl->AddRectFilledMultiColor(ImVec2(lineX, br.y - 1.f), ImVec2(nowX, br.y),
+        IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 130), IM_COL32(255, 255, 255, 130), IM_COL32(255, 255, 255, 0));
+    dl->AddRectFilledMultiColor(ImVec2(nowX, br.y - 1.f), ImVec2(br.x, br.y),
+        IM_COL32(255, 255, 255, 130), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 130));
+    for (int k = static_cast<int>(std::floor((tStart - curT) * 2.f)); k <= static_cast<int>((tEnd - curT) * 2.f); ++k)
+    {
+        if (k == 0) continue;
+        const float x = std::round(timeToX(curT + k * 0.5f));
+        if (x < lineX || x > br.x) continue;
+        const float edge = std::min(std::clamp((x - lineX) / icon, 0.f, 1.f), std::clamp((br.x - x) / icon, 0.f, 1.f));
+        const bool whole = (k % 2) == 0;
+        const float tickH = whole ? 8.f : 4.f;
+        dl->AddLine(ImVec2(x + 1.f, br.y - tickH), ImVec2(x + 1.f, br.y), IM_COL32(0, 0, 0, static_cast<int>(110 * edge)), 1.f);
+        dl->AddLine(ImVec2(x, br.y - tickH), ImVec2(x, br.y),
+                    IM_COL32(255, 255, 255, static_cast<int>((whole ? 220 : 150) * edge)), whole ? 1.5f : 1.f);
+        if (whole)
+        {
+            char lab[8];
+            snprintf(lab, sizeof(lab), "%+d", k / 2);
+            const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(kRulerFont, FLT_MAX, 0.f, lab);
+            shadowText(dl, kRulerFont, ImVec2(std::round(x - sz.x * 0.5f), br.y + 2.f),
+                       IM_COL32(0xF2, 0xE6, 0xC0, static_cast<int>(235 * edge)), lab);
+        }
+    }
+
+    // Row labels, quiet, right-aligned against the start of the timeline.
+    auto rowLabel = [&](const char* text, float rowY) {
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(kLabelFont, FLT_MAX, 0.f, text);
+        shadowText(dl, kLabelFont, ImVec2(std::round(lineX - 6.f - sz.x), std::round(rowY + (icon - sz.y) * 0.5f)),
+                   IM_COL32(0xF2, 0xE6, 0xC0, 215), text);
+    };
+    rowLabel("INCOMING", rowInY);
+    rowLabel("OUTGOING", rowOutY);
+
+    // Fades the ends out, and the past more the older it is.
+    const float fadeW = icon;
+    auto alphaAt = [&](float x0, float x1, float t) -> float {
+        float a = std::clamp((x0 - lineX) / fadeW, 0.f, 1.f) * std::clamp((br.x - x1) / fadeW, 0.f, 1.f);
+        if (t > curT) a *= 0.6f;
+        else          a *= 1.f - 0.45f * std::clamp((curT - t) / (curT - tStart), 0.f, 1.f);
+        return a;
+    };
+    auto withAlpha = [](ImU32 c, float a) {
+        const float base = static_cast<float>((c >> IM_COL32_A_SHIFT) & 0xFF);
+        return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(base * a) << IM_COL32_A_SHIFT);
+    };
+    // One colour code only: the caster's team, so a cast from an ally reads apart from one from an
+    // enemy. An interrupted or cancelled cast keeps the info panel's purple / orange.
+    auto teamColour = [&](int casterId) -> ImU32 {
+        auto cit = m_replayCtx.agents.find(casterId);
+        const uint8_t team = cit != m_replayCtx.agents.end() ? cit->second.teamId : 0;
+        return team == 1 ? IM_COL32(0x60, 0x9C, 0xFF, 220) : team == 2 ? IM_COL32(0xE8, 0x50, 0x48, 220)
+                                                         : IM_COL32(0xC8, 0xC8, 0xC8, 220);
+    };
+    auto castColour = [&](const SkillUseEvent& ev, int casterId) -> ImU32 {
+        if (ev.wasInterrupted) return IM_COL32(0x90, 0x30, 0xD0, 220);
+        if (ev.wasCancelled)   return IM_COL32(0xE0, 0x80, 0x20, 220);
+        return teamColour(casterId);
+    };
+
+    // (x, y) = where the icon is drawn: a crowd on the outgoing row pushes it right of its true time
+    // (tx), a crowd on the incoming row stacks it upwards. lineY = its row's cast-line height. pile =
+    // the run of overlapping icons it belongs to, listed together on hover.
+    struct Entry { const SkillUseEvent* ev; int casterId; float x = 0.f, y = 0.f, tx = 0.f, lineY = 0.f; int pile = 0; };
+
+    // Outgoing: the player's own casts rarely collide, and when they do they fan out to the right,
+    // each keeping at least this much of itself visible.
+    constexpr float kMinShown = 0.55f;
+    auto fanRow = [&](std::vector<Entry>& row, float rowY) {
+        float prevX = -FLT_MAX;
+        int pile = -1;
+        for (auto& e : row)
+        {
+            e.tx = std::round(timeToX(e.ev->startTime));
+            e.x  = std::max(e.tx, prevX + std::round(icon * kMinShown));
+            e.y  = rowY;
+            e.lineY = rowY + icon + 2.f;
+            if (e.x >= prevX + icon) ++pile;
+            e.pile = pile;
+            prevX = e.x;
+        }
+    };
+
+    // Incoming: each icon keeps its true time and takes the lowest level free at that moment.
+    auto stackRow = [&](std::vector<Entry>& row, float rowY) {
+        std::vector<float> levelRight;   // right edge of the last icon on each level
+        float pileRight = -FLT_MAX;
+        int pile = -1;
+        for (auto& e : row)
+        {
+            e.tx = e.x = std::round(timeToX(e.ev->startTime));
+            size_t level = 0;
+            while (level < levelRight.size() && levelRight[level] > e.x) ++level;
+            if (level == levelRight.size())
+            {
+                if (levelRight.size() < static_cast<size_t>(kMaxStack)) levelRight.push_back(0.f);
+                else level = levelRight.size() - 1;   // a pile taller than the room overlaps its top card
+            }
+            levelRight[level] = e.x + icon;
+            e.y = rowY - level * step;
+            e.lineY = rowY + icon + 2.f;
+            if (e.x >= pileRight) ++pile;
+            pileRight = std::max(pileRight, e.x + icon);
+            e.pile = pile;
+        }
+    };
+
+    auto drawEntry = [&](const Entry& e, ImU32 edge)
+    {
+        const SkillUseEvent& ev = *e.ev;
+        const float x0 = e.x;
+        const float a  = alphaAt(x0, x0 + icon, ev.startTime);
+        if (a <= 0.01f) return;
+        const ImU32 col = castColour(ev, e.casterId);
+
+        // The cast's length as a hairline under the row, filled up to the playhead. It starts at the
+        // true time, so a pushed icon stays tied to when it was cast.
+        const float ly = e.lineY;
+        if (!ev.isInstant && ev.endTime > ev.startTime)
+        {
+            const float lx1 = timeToX(ev.endTime);
+            dl->AddRectFilled(ImVec2(e.tx, ly), ImVec2(lx1, ly + 2.f), withAlpha(col, a * 0.45f), 1.f);
+            const float fill = std::clamp(timeToX(curT), e.tx, lx1);
+            if (fill > e.tx) dl->AddRectFilled(ImVec2(e.tx, ly), ImVec2(fill, ly + 2.f), withAlpha(col, a), 1.f);
+        }
+        else if (x0 > e.tx + 1.f)
+            dl->AddRectFilled(ImVec2(e.tx, ly), ImVec2(e.tx + 2.f, ly + 3.f), withAlpha(col, a), 1.f);
+
+        const ImVec2 i0(x0, e.y), i1(x0 + icon, e.y + icon);
+        if (ImTextureID tex = LoadSkillIcon(this, dev, ev.skillId, m_skillIconIndex, m_skillIconCache))
+            dl->AddImageRounded(tex, i0, i1, ImVec2(0, 0), ImVec2(1, 1), withAlpha(IM_COL32_WHITE, a), 3.f);
+        else
+            dl->AddRectFilled(i0, i1, withAlpha(col, a), 3.f);
+
+        if (ev.wasInterrupted || ev.wasCancelled)
+            dl->AddRect(ImVec2(i0.x - 0.5f, i0.y - 0.5f), ImVec2(i1.x + 0.5f, i1.y + 0.5f), withAlpha(col, a), 3.f, 0, 1.5f);
+        else if (edge)
+            dl->AddRect(ImVec2(i0.x - 0.5f, i0.y - 0.5f), ImVec2(i1.x + 0.5f, i1.y + 0.5f), withAlpha(edge, a), 3.f, 0, 1.2f);
+
+        // Incoming casts carry their caster's profession in the corner.
+        if (e.casterId != agentId)
+        {
+            auto cit = m_replayCtx.agents.find(e.casterId);
+            if (cit != m_replayCtx.agents.end() && cit->second.primaryProf > 0)
+                if (ImTextureID prof = LoadProfIcon(dev, cit->second.primaryProf))
+                {
+                    const float ps = std::round(icon * 0.42f);
+                    dl->AddImage(prof, ImVec2(i1.x - ps + 2.f, i1.y - ps + 2.f), ImVec2(i1.x + 2.f, i1.y + 2.f),
+                                 ImVec2(0, 0), ImVec2(1, 1), withAlpha(IM_COL32_WHITE, a));
+                }
+        }
+    };
+
+    // Spikes found on the incoming row: how many damage skills, and first hit to last hit.
+    struct Spike { int pile; int count; float span; };
+    std::vector<Spike> spikes;
+
+    // Hovering any icon of a pile lists the whole pile, in time order.
+    auto tooltipFor = [&](const std::vector<Entry>& row) {
+        const Entry* hit = nullptr;
+        for (const auto& e : row)   // later icons are drawn on top, so the last hit wins
+            if (ImGui::IsMouseHoveringRect(ImVec2(e.x, e.y), ImVec2(e.x + icon, e.y + icon), false))
+                hit = &e;
+        if (!hit) return;
+
+        // One line per cast, in the order they hit: skill, caster, the match-clock moment it hits, and
+        // a small bar on a shared scale (cast from start to hit) so the order reads at a glance.
+        std::vector<const Entry*> pile;
+        for (const auto& e : row)
+            if (e.pile == hit->pile) pile.push_back(&e);
+        auto landsAt = [](const Entry* e) { return std::max(e->ev->endTime, e->ev->startTime); };
+        std::stable_sort(pile.begin(), pile.end(),
+            [&](const Entry* a, const Entry* b) { return landsAt(a) < landsAt(b); });
+        float axis0 = FLT_MAX, axis1 = -FLT_MAX;
+        for (const Entry* e : pile)
+        {
+            axis0 = std::min(axis0, e->ev->startTime);
+            axis1 = std::max(axis1, landsAt(e));
+        }
+        axis0 -= 0.25f;
+        axis1 += 0.25f;
+
+        const float iconSz = std::round(ImGui::GetTextLineHeight() * 1.45f);
+        const ImVec4 kHead(0.72f, 0.68f, 0.56f, 1.f), kTime(1.f, 0.84f, 0.30f, 1.f), kDim(0.80f, 0.78f, 0.72f, 1.f);
+        auto teamText = [](uint8_t team) {
+            return team == 1 ? ImVec4(0.45f, 0.66f, 1.f, 1.f) : team == 2 ? ImVec4(1.f, 0.45f, 0.40f, 1.f)
+                                                              : ImVec4(0.85f, 0.85f, 0.85f, 1.f);
+        };
+        // Text centred on an icon of iconSz drawn just before it on the same line.
+        auto alignedText = [&](const ImVec4& col, const char* fmt, auto... args) {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (iconSz - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::TextColored(col, fmt, args...);
+        };
+
+        ImGui::BeginTooltip();
+        if (!row.empty() && row.front().casterId != agentId)
+            for (const Spike& sp : spikes)
+                if (sp.pile == hit->pile)
+                    ImGui::TextColored(ImVec4(1.f, 0.42f, 0.36f, 1.f), "Spike: %d damage skills hit in %.2f s", sp.count, sp.span);
+        constexpr ImGuiTableFlags kTable = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg |
+                                           ImGuiTableFlags_PadOuterX;
+        constexpr int kCols = 4;
+        if (ImGui::BeginTable("##cast_pile", kCols, kTable))
+        {
+            ImGui::TableSetupColumn("Skill");
+            ImGui::TableSetupColumn("Cast by");
+            ImGui::TableSetupColumn("Hits at");
+            ImGui::TableSetupColumn("");
+            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+            for (int c = 0; c < kCols; ++c)
+            {
+                ImGui::TableSetColumnIndex(c);
+                ImGui::TextColored(kHead, "%s", ImGui::TableGetColumnName(c));
+            }
+
+            for (const Entry* e : pile)
+            {
+                const SkillUseEvent& ev = *e->ev;
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                if (ImTextureID tex = LoadSkillIcon(this, dev, ev.skillId, m_skillIconIndex, m_skillIconCache))
+                    ImGui::Image(tex, ImVec2(iconSz, iconSz));
+                else
+                    ImGui::Dummy(ImVec2(iconSz, iconSz));
+                ImGui::SameLine();
+                const std::string name = GetSkillDisplayName(ev.skillId);
+                if (ev.wasInterrupted)     alignedText(ImVec4(0.75f, 0.45f, 1.f, 1.f), "%s (interrupted)", name.c_str());
+                else if (ev.wasCancelled)  alignedText(ImVec4(1.f, 0.62f, 0.25f, 1.f), "%s (cancelled)", name.c_str());
+                else                       alignedText(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", name.c_str());
+
+                ImGui::TableSetColumnIndex(1);
+                auto cit = m_replayCtx.agents.find(e->casterId);
+                if (cit != m_replayCtx.agents.end())
+                {
+                    const AgentReplayData& caster = cit->second;
+                    ImTextureID prof = caster.primaryProf > 0 ? LoadProfIcon(dev, caster.primaryProf) : nullptr;
+                    if (prof) ImGui::Image(prof, ImVec2(iconSz, iconSz));
+                    else      ImGui::Dummy(ImVec2(iconSz, iconSz));
+                    ImGui::SameLine();
+                    const std::string& who = !caster.playerName.empty() ? caster.playerName : caster.categoryName;
+                    alignedText(teamText(caster.teamId), "%s", who.c_str());
+                }
+
+                ImGui::TableSetColumnIndex(2);
+                const float hitT = landsAt(e);
+                const int mins = static_cast<int>(hitT / 60.f);
+                alignedText(kTime, "%d:%04.1f", mins, hitT - mins * 60.f);
+
+                // The cast as a bar from its start to its hit, the hit as a gold mark.
+                ImGui::TableSetColumnIndex(3);
+                {
+                    const float barW = std::round(iconSz * 5.f);
+                    const ImVec2 p = ImGui::GetCursorScreenPos();
+                    ImGui::Dummy(ImVec2(barW, iconSz));
+                    ImDrawList* tdl = ImGui::GetWindowDrawList();
+                    auto ax = [&](float t) { return std::round(p.x + (t - axis0) / (axis1 - axis0) * barW); };
+                    const float cy = p.y + iconSz * 0.5f;
+                    for (float g = std::ceil(axis0 * 2.f) * 0.5f; g <= axis1; g += 0.5f)
+                        tdl->AddLine(ImVec2(ax(g), p.y + 2.f), ImVec2(ax(g), p.y + iconSz - 2.f), IM_COL32(255, 255, 255, 28));
+                    tdl->AddRectFilled(ImVec2(ax(ev.startTime), cy - 1.5f), ImVec2(ax(hitT), cy + 1.5f),
+                                       withAlpha(castColour(ev, e->casterId), 0.8f), 1.5f);
+                    tdl->AddRectFilled(ImVec2(ax(hitT) - 1.5f, p.y + 3.f), ImVec2(ax(hitT) + 1.5f, p.y + iconSz - 3.f),
+                                       IM_COL32(0xFF, 0xD6, 0x4D, 0xFF), 1.f);
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndTooltip();
+    };
+
+    // Events sorted by start; a long cast that began before the window can still reach into it.
+    auto forEachInWindow = [&](const AgentReplayData& ard, auto&& fn) {
+        const auto& hist = ard.skillUseHistory;
+        auto it = std::lower_bound(hist.begin(), hist.end(), tStart - 10.f,
+            [](const SkillUseEvent& ev, float t) { return ev.startTime < t; });
+        for (; it != hist.end() && it->startTime <= tEnd; ++it)
+            if (std::max(it->endTime, it->startTime) + icon / pps >= tStart) fn(*it);
+    };
+
+    // Outgoing: the followed player's own casts.
+    std::vector<Entry> outgoing;
+    forEachInWindow(focus, [&](const SkillUseEvent& ev) { outgoing.push_back({ &ev, agentId }); });
+    fanRow(outgoing, rowOutY);
+    for (const auto& e : outgoing) drawEntry(e, 0);
+
+    // Incoming: every other agent's casts aimed at the followed player.
+    std::vector<Entry> incoming;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (id == agentId) continue;
+        forEachInWindow(ard, [&](const SkillUseEvent& ev) {
+            if (ev.targetId == agentId) incoming.push_back({ &ev, id });
+        });
+    }
+    std::sort(incoming.begin(), incoming.end(),
+        [](const Entry& a, const Entry& b) { return a.ev->startTime < b.ev->startTime; });
+    stackRow(incoming, rowInY);
+
+    auto isEnemy = [&](int casterId) {
+        auto cit = m_replayCtx.agents.find(casterId);
+        return cit != m_replayCtx.agents.end() && cit->second.teamId != focus.teamId;
+    };
+    auto dealsDamage = [&](int skillId) {
+        const SkillInfo* si = m_skillView.IsLoaded() ? m_skillView.Get(skillId) : nullptr;
+        if (!si) return false;
+        for (const auto& sc : si->scales)
+            if (sc.kind == SkillScaleKind::Damage || sc.kind == SkillScaleKind::LifeSteal ||
+                sc.kind == SkillScaleKind::LifeLoss)
+                return true;
+        return false;
+    };
+
+    // Spikes: three or more enemy damage skills landing within 1.5 s of each other.
+    {
+        std::vector<std::pair<float, const Entry*>> lands;
+        for (const auto& e : incoming)
+            if (!e.ev->wasInterrupted && !e.ev->wasCancelled && isEnemy(e.casterId) && dealsDamage(e.ev->skillId))
+                lands.push_back({ std::max(e.ev->endTime, e.ev->startTime), &e });
+        std::sort(lands.begin(), lands.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i + 2 < lands.size();)
+        {
+            size_t j = i;
+            while (j + 1 < lands.size() && lands[j + 1].first - lands[i].first <= 1.5f) ++j;
+            if (j - i + 1 < 3) { ++i; continue; }
+            float x0 = FLT_MAX, x1 = -FLT_MAX, y0 = rowInY;
+            for (size_t k = i; k <= j; ++k)
+            {
+                const Entry& e = *lands[k].second;
+                x0 = std::min(x0, e.x); x1 = std::max(x1, e.x + icon); y0 = std::min(y0, e.y);
+            }
+            const float a = alphaAt(x0, x0, lands[i].first) * 0.85f + 0.15f;
+            const ImU32 red = withAlpha(IM_COL32(0xE0, 0x48, 0x40, 200), a);
+            dl->AddRect(ImVec2(x0 - 3.f, y0 - 3.f), ImVec2(x1 + 3.f, rowInY + icon + 3.f), red, 4.f, 0, 1.f);
+            char label[24];
+            snprintf(label, sizeof(label), "SPIKE x%d", static_cast<int>(j - i + 1));
+            shadowText(dl, kLabelFont, ImVec2(std::round(x1 + 6.f), std::round(rowInY + icon * 0.5f - 6.f)), red, label);
+            // How tightly the damage was packed (first hit to last hit) goes to the hover tooltip.
+            spikes.push_back({ lands[i].second->pile, static_cast<int>(j - i + 1), lands[j].first - lands[i].first });
+            i = j + 1;
+        }
+    }
+
+    for (const auto& e : incoming)
+        drawEntry(e, teamColour(e.casterId));
+    tooltipFor(outgoing);
+    tooltipFor(incoming);
+
+    // The playhead.
+    dl->AddLine(ImVec2(nowX, tl.y + 2.f), ImVec2(nowX, br.y - 2.f), IM_COL32(0xCB, 0xAA, 0x09, 200), 1.5f);
+    dl->AddTriangleFilled(ImVec2(nowX - 3.f, tl.y), ImVec2(nowX + 3.f, tl.y), ImVec2(nowX, tl.y + 4.f),
+                          IM_COL32(0xCB, 0xAA, 0x09, 220));
+
+    dl->PopClipRect();
     ImGui::End();
     ImGui::PopStyleVar(2);
 }

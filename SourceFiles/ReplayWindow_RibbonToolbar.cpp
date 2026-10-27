@@ -64,7 +64,7 @@ namespace
         Shield, Bubble, Lasers, Rings, CloudOff, Tag, Arrow,
         Morale, Crown, LogList, BarChart, Gradient, Piano,
         Camcorder, Eye, Frame, MapGrid,
-        Party1, Party2, Clock,
+        Party1, Party2, Clock, CastStrip,
         Brush, Bookmark, Doc, Speaker, More,
         Pin, Close
     };
@@ -239,6 +239,16 @@ namespace
             dl->AddLine(P(0.1f, -0.15f), P(0.52f, -0.15f), col, th);
             dl->AddLine(P(-0.95f, 0.82f), P(0.95f, 0.82f), col, th * 0.85f);
             dl->AddCircleFilled(P(-0.35f, 0.82f), std::max(1.f, h * 0.16f), col, 8);
+            break;
+        case Ico::CastStrip:
+            // The cast strip itself: two casts on one row, a pile on the other, the playhead
+            // through them.
+            dl->AddRectFilled(P(-0.95f, -0.85f), P(-0.45f, -0.35f), col, s * 0.05f);
+            dl->AddRectFilled(P(0.30f, -0.85f),  P(0.80f, -0.35f),  col, s * 0.05f);
+            dl->AddRect(P(-0.70f, 0.30f), P(-0.20f, 0.80f), col, s * 0.05f, 0, th * 0.8f);
+            dl->AddRect(P(-0.40f, 0.30f), P(0.10f, 0.80f),  col, s * 0.05f, 0, th * 0.8f);
+            dl->AddRectFilled(P(-0.10f, 0.30f), P(0.40f, 0.80f), col, s * 0.05f);
+            dl->AddLine(P(-0.05f, -1.f), P(-0.05f, 1.f), col, th);
             break;
         case Ico::Brush:
         {
@@ -1041,6 +1051,12 @@ void ReplayWindow::DrawRibbonToolbar()
               "highlighting the one currently equipped. It only appears while the "
               "camera is following a player, and does not affect the weapon sets "
               "shown in the player info panel."),
+            C(Ico::CastStrip, "Cast Strip", m_showFocusCasts, IM_COL32(0xE8, 0xD9, 0xA8, 0xFF),
+              "Show a light timeline to the right of the skill bar while the camera "
+              "follows a player: the skills cast on them on the top row (edged in the "
+              "caster's team colour; skills landing together stack upwards), their own casts on the "
+              "bottom row, a few seconds of the past and of what is coming. Enemy damage "
+              "landing together is marked as a spike."),
             // Momentary rather than a toggle: each press opens another panel, because comparing
             // two players side by side is the whole point of it.
             Item{ Ico::Shield, "Character Panel",

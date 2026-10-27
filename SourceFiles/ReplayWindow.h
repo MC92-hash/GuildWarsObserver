@@ -2248,6 +2248,12 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
+    // Right of the skill bar: the casts aimed at the followed player (top row, piles stacking
+    // upwards) and their own casts (bottom row) on one short timeline around the playhead,
+    // future included.
+    bool  m_showFocusCasts = true;
+    float m_focusHudRightLimitX = 0.f;   // left edge of the weapon sets this frame (the strip stops there)
+    void DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, float height, float slot);
     // The eight slots alone (icons, frames, recharge, markers, in-use sparkle), top-left at rowTL.
     void DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 rowTL, float slot, float scale, bool hoverable);
     // `rowTopLeft` is the bottom row's; full rows wrap upwards. Returns the rows used.
