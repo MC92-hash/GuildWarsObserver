@@ -19,6 +19,7 @@
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
+#include <imgui_internal.h>
 #include "../ThirdParty/nanosvg/nanosvg.h"
 #include "../ThirdParty/nanosvg/nanosvgrast.h"
 #include <d3dcompiler.h>
@@ -45,6 +46,28 @@
 
 namespace
 {
+    // The roll's toolbar: spike boxes on or off, and the skill being searched (0 none).
+    bool sPrSpikeBoxes = true;
+
+    // GW's own left / right arrow (Textures\Game_UI\ui_left_right.png: four 16 px cells - left lit,
+    // right lit, left, right). Lit while hovered; true when clicked.
+    bool PrGwArrow(ID3D11Device* dev, const char* id, bool right, float size)
+    {
+        const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+        const bool hov = ImGui::IsItemHovered();
+        const int cell = (hov ? 0 : 2) + (right ? 1 : 0);
+        ImDrawList* adl = ImGui::GetWindowDrawList();
+        if (ImTextureID tex = dev ? LoadGameUITexture(dev, "ui_left_right.png") : nullptr)
+            adl->AddImage(tex, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                          ImVec2(cell * 0.25f, 0.f), ImVec2((cell + 1) * 0.25f, 1.f));
+        else
+            adl->AddText(ImGui::GetItemRectMin(), IM_COL32(225, 190, 80, 255), right ? ">" : "<");
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        return pressed;
+    }
+    int  sPrFindSkill  = 0;
+    char sPrFindText[64] = {};
+
     constexpr float kSpikeWindow   = 1.5f;
     constexpr int   kSpikeMinHits  = 3;
     constexpr float kAnswerBefore  = 1.5f;
@@ -54,7 +77,7 @@ namespace
 
     ImU32 TeamColour(uint8_t team, int alpha)
     {
-        return team == 1 ? IM_COL32(0x60, 0x9C, 0xFF, alpha) : team == 2 ? IM_COL32(0xE8, 0x50, 0x48, alpha)
+        return team == 1 ? IM_COL32(74, 200, 255, alpha) : team == 2 ? IM_COL32(255, 107, 107, alpha)
                                                              : IM_COL32(0xC8, 0xC8, 0xC8, alpha);
     }
 }
@@ -150,8 +173,8 @@ void ReplayWindow::DrawPianoRollPanel()
     EnsureSkillIconIndex();
 
     // Zoom table: half-window sizes in seconds
-    static const float kZoomHalf[] = { 5.f, 10.f, 15.f, 30.f, 60.f };
-    static const int   kZoomCount  = 5;
+    static const float kZoomHalf[] = { 1.f, 2.5f, 5.f, 10.f, 15.f, 30.f, 60.f };
+    static const int   kZoomCount  = 7;
     m_pianoRollZoomIdx = std::clamp(m_pianoRollZoomIdx, 0, kZoomCount - 1);
     const float halfWin = kZoomHalf[m_pianoRollZoomIdx];
     const float winStart = now - halfWin;
@@ -174,17 +197,20 @@ void ReplayWindow::DrawPianoRollPanel()
     const int nBlueRows = m_pianoRollTeam1Open ? nBlue : 0;
     const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
     const int nRows = std::max(1, nBlueRows + nRedRows);
-    const float minRowH = m_pianoRollLanes ? 38.f : 28.f;
+    const float minRowH = m_pianoRollLanes ? 32.f : 26.f;
     const float totalH = 32.f + kSpikeBarH + kTimeAxisH + 2.f * kTeamLabelH + nRows * minRowH * 1.3f + kMonkH;
 
     const float screenW = io.DisplaySize.x;
 
     // Panel window — Morale-style: standard ImGui title bar, matching colors
-    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.055f, 0.078f, 0.102f, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
     ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.f));
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.10f, 0.09f, 0.06f, 1.f));
     ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
     ImGui::PushStyleColor(ImGuiCol_Separator,     ImVec4(0.40f, 0.33f, 0.15f, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_ResizeGrip,        ImVec4(0.94f, 0.78f, 0.31f, 0.25f));
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, ImVec4(0.94f, 0.78f, 0.31f, 0.60f));
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripActive,  ImVec4(0.94f, 0.78f, 0.31f, 0.90f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -206,7 +232,7 @@ void ReplayWindow::DrawPianoRollPanel()
         m_panelLayout.TrackWindow("piano_roll");
         ImGui::End();
         ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor(5);
+        ImGui::PopStyleColor(8);
         return;
     }
 
@@ -224,16 +250,199 @@ void ReplayWindow::DrawPianoRollPanel()
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.f, 0.f));
     const int cardSpike = PianoRollCardSpike(now);
+    {
+        // A player pinned through a spike (the card's arrows, the bar) follows the card to the next
+        // spike's target as the timeline plays on; a player pinned by hand stays.
+        static int sCardTarget = -1;
+        if (cardSpike >= 0)
+        {
+            const int target = m_spikes[cardSpike].target;
+            if (target != sCardTarget && sCardTarget >= 0 && m_pianoRollPinned == sCardTarget) m_pianoRollPinned = target;
+            sCardTarget = target;
+        }
+    }
     DrawPianoRollSpikeBar(winStart, winEnd, cardSpike);
+
+    // ── Toolbar: lanes, spike boxes, find a skill, the zoom hint ──
+    {
+        constexpr float kBarH = 32.f;
+        const ImVec2 t0 = ImGui::GetCursorScreenPos();
+        const float tw = ImGui::GetContentRegionAvail().x;
+        ImDrawList* wdl = ImGui::GetWindowDrawList();
+        wdl->AddLine(ImVec2(t0.x, t0.y + kBarH - 0.5f), ImVec2(t0.x + tw, t0.y + kBarH - 0.5f), IM_COL32(0x66, 0x54, 0x26, 0x66));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.f, 4.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.f, 3.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.04f, 0.05f, 0.06f, 0.80f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.09f, 0.10f, 0.12f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.12f, 0.12f, 0.13f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.40f, 0.33f, 0.15f, 0.55f));
+        ImGui::PushStyleColor(ImGuiCol_CheckMark,      ImVec4(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_Button,         ImVec4(0.04f, 0.05f, 0.06f, 0.80f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.12f, 0.12f, 0.13f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.16f, 0.15f, 0.12f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(0.88f, 0.75f, 0.31f, 0.35f));
+        ImGui::SetCursorScreenPos(ImVec2(t0.x + 10.f, t0.y + (kBarH - ImGui::GetFrameHeight()) * 0.5f));
+        ImGui::Checkbox("Incoming lanes", &m_pianoRollLanes);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Under each player, a thin line for the casts aimed at them,\nin the caster's team colour.");
+        ImGui::SameLine(0.f, 18.f);
+        ImGui::Checkbox("Spike boxes", &sPrSpikeBoxes);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The red boxes around spikes on the roll.");
+
+        // Find a skill, like the Library's skill search: type a name and pick it from the list; the
+        // picked skill shows as its icon, and clicking the icon clears the search.
+        ImGui::SameLine(0.f, 28.f);
+        static std::vector<int> sUsed;
+        static const void* sUsedOwner = nullptr;
+        if (sUsedOwner != m_spikes.data() || sUsed.empty())
+        {
+            sUsedOwner = m_spikes.data();
+            std::unordered_set<int> ids;
+            for (const auto& [id, ard] : m_replayCtx.agents)
+                for (const auto& ev : ard.skillUseHistory) ids.insert(ev.skillId);
+            sUsed.assign(ids.begin(), ids.end());
+            std::sort(sUsed.begin(), sUsed.end(), [&](int a, int b) { return GetSkillDisplayName(a) < GetSkillDisplayName(b); });
+            if (sPrFindSkill && !ids.count(sPrFindSkill)) sPrFindSkill = 0;
+        }
+        const ImVec4 kGoldText(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f);
+        if (sPrFindSkill)
+        {
+            const std::string name = GetSkillDisplayName(sPrFindSkill);
+            const float chip = ImGui::GetFrameHeight();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.f, 1.f));
+            bool clear = false;
+            if (ImTextureID tex = LoadSkillIcon(this, dev, sPrFindSkill, m_skillIconIndex, m_skillIconCache))
+                clear = ImGui::ImageButton("##pr_find_chip", tex, ImVec2(chip - 2.f, chip - 2.f));
+            else
+                clear = ImGui::Button("x##pr_find_chip");
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("%s\nClick to clear the search.", name.c_str());
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            }
+            ImGui::SameLine(0.f, 6.f);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ImVec4(216 / 255.f, 220 / 255.f, 226 / 255.f, 1.f), "%s", name.c_str());
+
+            // Every use of the skill in the match, by anyone, in time order.
+            std::vector<float> uses;
+            for (const auto& [id, ard] : m_replayCtx.agents)
+                for (const auto& ev : ard.skillUseHistory)
+                    if (ev.skillId == sPrFindSkill) uses.push_back(ev.startTime);
+            std::sort(uses.begin(), uses.end());
+            const float arrow = 20.f;
+            ImGui::SameLine(0.f, 10.f);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ImGui::GetFrameHeight() - arrow) * 0.5f);
+            if (PrGwArrow(dev, "##pr_find_prev", false, arrow))
+                for (auto it = uses.rbegin(); it != uses.rend(); ++it)
+                    if (*it < now - 0.05f) { m_debugTimeline = *it; break; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous use");
+            ImGui::SameLine(0.f, 4.f);
+            if (PrGwArrow(dev, "##pr_find_next", true, arrow))
+                for (float u : uses)
+                    if (u > now + 0.05f) { m_debugTimeline = u; break; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next use");
+            ImGui::SameLine(0.f, 8.f);
+            const int at = static_cast<int>(std::upper_bound(uses.begin(), uses.end(), now + 0.05f) - uses.begin());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(kGoldText, "%d / %d", at, static_cast<int>(uses.size()));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uses of this skill up to now, out of the whole match.");
+            if (clear) sPrFindSkill = 0;
+        }
+        else
+        {
+            ImGui::SetNextItemWidth(220.f);
+            ImGui::InputTextWithHint("##pr_find", "Find a skill...", sPrFindText, sizeof(sPrFindText));
+            const ImVec2 inMin = ImGui::GetItemRectMin(), inMax = ImGui::GetItemRectMax();
+            const bool inputActive = ImGui::IsItemActive();
+            static bool sListHovered = false;
+            if (sPrFindText[0] && (inputActive || sListHovered))
+            {
+                std::string q = sPrFindText;
+                std::transform(q.begin(), q.end(), q.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                std::vector<int> hits;
+                for (int id : sUsed)
+                {
+                    std::string low = GetSkillDisplayName(id);
+                    std::transform(low.begin(), low.end(), low.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                    if (low.find(q) != std::string::npos) hits.push_back(id);
+                }
+                const float iconH = 22.f;
+                const float rowH = std::max(iconH + 2.f, ImGui::GetTextLineHeightWithSpacing());
+                const float dropW = std::max(inMax.x - inMin.x, 260.f);
+                const float maxH = std::min(320.f, std::max(1.f, (float)hits.size()) * rowH + 12.f);
+                ImGui::SetNextWindowPos(ImVec2(inMin.x, inMax.y));
+                ImGui::SetNextWindowSizeConstraints(ImVec2(dropW, 0.f), ImVec2(dropW, maxH));
+                ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.055f, 0.063f, 0.078f, 0.98f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.40f, 0.33f, 0.15f, 0.70f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(225 / 255.f, 190 / 255.f, 80 / 255.f, 0.14f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(225 / 255.f, 190 / 255.f, 80 / 255.f, 0.24f));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.f, 4.f));
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
+                sListHovered = false;
+                if (ImGui::Begin("##pr_find_list", nullptr,
+                                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+                    sListHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows |
+                                                          ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+                    if (hits.empty())
+                        ImGui::TextColored(ImVec4(0.48f, 0.50f, 0.53f, 1.f), "No skill matches");
+                    for (int id : hits)
+                    {
+                        const ImVec2 pos = ImGui::GetCursorScreenPos();
+                        ImGui::PushID(id);
+                        if (ImGui::Selectable("##row", false, 0, ImVec2(0.f, rowH)))
+                        {
+                            sPrFindSkill = id;
+                            sPrFindText[0] = 0;
+                            sListHovered = false;
+                        }
+                        ImGui::PopID();
+                        ImDrawList* ldl = ImGui::GetWindowDrawList();
+                        if (ImTextureID tex = LoadSkillIcon(this, dev, id, m_skillIconIndex, m_skillIconCache))
+                            ldl->AddImage(tex, ImVec2(pos.x + 4.f, pos.y + 1.f), ImVec2(pos.x + 4.f + iconH, pos.y + 1.f + iconH));
+                        ldl->AddText(ImVec2(pos.x + iconH + 10.f, pos.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f),
+                                     IM_COL32(216, 220, 226, 255), GetSkillDisplayName(id).c_str());
+                    }
+                }
+                ImGui::End();
+                ImGui::PopStyleVar(3);
+                ImGui::PopStyleColor(4);
+            }
+            else
+                sListHovered = false;
+        }
+
+        // The zoom hint, right-aligned.
+        const char* hint = "Mouse wheel on the timeline: zoom in / out";
+        const float hw = ImGui::CalcTextSize(hint).x;
+        ImGui::SameLine();
+        const float hx = t0.x + tw - hw - 12.f;
+        if (hx > ImGui::GetCursorScreenPos().x + 10.f)
+        {
+            ImGui::SetCursorScreenPos(ImVec2(hx, t0.y + (kBarH - ImGui::GetTextLineHeight()) * 0.5f));
+            ImGui::TextDisabled("%s", hint);
+        }
+        ImGui::PopStyleColor(9);
+        ImGui::PopStyleVar(4);
+        ImGui::SetCursorScreenPos(ImVec2(t0.x, t0.y + kBarH));
+    }
 
     const float availH = ImGui::GetContentRegionAvail().y;
     const float rollH = std::max(100.f, availH - kMonkH);
     const float rollW = std::max(300.f, ImGui::GetContentRegionAvail().x - kCardW);
     const float fitRowH = (rollH - kTimeAxisH - 2.f * kTeamLabelH - 2.f) / nRows;
-    const float kRowH = std::floor(std::clamp(fitRowH, minRowH, m_pianoRollLanes ? 64.f : 48.f));
-    const float kInLaneH = m_pianoRollLanes ? std::round(std::clamp(kRowH * 0.26f, 10.f, 16.f)) : 0.f;
+    const float kRowH = std::floor(std::clamp(fitRowH, minRowH, m_pianoRollLanes ? 44.f : 34.f));
+    const float kInLaneH = m_pianoRollLanes ? std::round(std::clamp(kRowH * 0.24f, 8.f, 11.f)) : 0.f;
     const float kCastLaneH = kRowH - kInLaneH - 2.f;
-    const float kIconSz = std::round(std::clamp(kCastLaneH - 9.f, 18.f, 30.f));
+    const float kIconSz = std::round(std::clamp(kCastLaneH - 7.f, 18.f, 26.f));
 
     // The roll in its own child: it scrolls only when the window is too short for the minimum rows.
     ImGui::BeginChild("##pr_roll", ImVec2(rollW, rollH), false, ImGuiWindowFlags_NoScrollWithMouse);
@@ -260,12 +469,12 @@ void ReplayWindow::DrawPianoRollPanel()
     // ── Ruler: match clock, a label every few seconds, ticks every half second when there is room ──
     const float pps = tlW / winDur;
     float labelStep = 1.f;
-    for (float st : { 1.f, 2.f, 5.f, 10.f, 15.f, 30.f })
+    for (float st : { 0.5f, 1.f, 2.f, 5.f, 10.f, 15.f, 30.f })
         if (st * pps >= 56.f) { labelStep = st; break; }
     {
         const float axisTop = curY;
         dl->AddRectFilled(ImVec2(cp.x, axisTop), ImVec2(cp.x + panelW, axisTop + kTimeAxisH), IM_COL32(0, 0, 0, 40));
-        const float tickStep = pps * 0.5f >= 6.f ? 0.5f : labelStep;
+        const float tickStep = pps * 0.1f >= 8.f ? 0.1f : pps * 0.5f >= 6.f ? 0.5f : labelStep;
         for (float s = std::ceil(winStart / tickStep) * tickStep; s <= winEnd; s += tickStep)
         {
             const float x = std::round(timeToX(s));
@@ -276,22 +485,14 @@ void ReplayWindow::DrawPianoRollPanel()
             {
                 char lbl[16];
                 const int m = static_cast<int>(s) / 60;
-                snprintf(lbl, sizeof(lbl), "%d:%02d", m, static_cast<int>(s) - m * 60);
-                const ImVec2 ts = font->CalcTextSizeA(13.f, FLT_MAX, 0.f, lbl);
+                if (labelStep < 1.f) snprintf(lbl, sizeof(lbl), "%d:%04.1f", m, s - m * 60.f);
+                else                 snprintf(lbl, sizeof(lbl), "%d:%02d", m, static_cast<int>(s) - m * 60);
+                const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, lbl);
                 const float tx = x - ts.x * 0.5f;
                 if (tx > tlLeft - 4.f && tx + ts.x < tlRight)
-                    dl->AddText(font, 13.f, ImVec2(tx, axisTop + 2.f), IM_COL32(0xB0, 0xAA, 0x98, 0xFF), lbl);
+                    dl->AddText(font, font->FontSize, ImVec2(tx, axisTop + 2.f), IM_COL32(0xB0, 0xAA, 0x98, 0xFF), lbl);
             }
         }
-        // The incoming lanes toggle sits in the ruler's corner, above the names.
-        ImGui::SetCursorScreenPos(ImVec2(cp.x + 8.f, axisTop + 3.f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2.f, 1.f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.66f, 0.66f, 0.70f, 1.f));
-        ImGui::Checkbox("Incoming lanes", &m_pianoRollLanes);
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Under each player, a thin line for the casts aimed at them,\nin the caster's team colour.");
         curY += kTimeAxisH;
     }
 
@@ -356,9 +557,8 @@ void ReplayWindow::DrawPianoRollPanel()
         // Team label row
         ImVec2 tlMin(cp.x, curY);
         ImVec2 tlMax(cp.x + panelW, curY + kTeamLabelH);
-        dl->AddRectFilled(tlMin, tlMax, teamBg);
-        dl->AddLine(tlMin, ImVec2(tlMax.x, tlMin.y), teamBorder);
-        dl->AddLine(ImVec2(tlMin.x, tlMax.y), tlMax, teamBorder);
+        (void)teamBg; (void)teamBorder;
+        dl->AddLine(ImVec2(tlMin.x + 8.f, tlMax.y - 1.f), ImVec2(tlMax.x, tlMax.y - 1.f), (teamCol & 0x00FFFFFFu) | 0x55000000u);
 
         // Collapse triangle
         {
@@ -377,7 +577,7 @@ void ReplayWindow::DrawPianoRollPanel()
         char teamBuf[128];
         if (expanded) snprintf(teamBuf, sizeof(teamBuf), "%s", teamName);
         else          snprintf(teamBuf, sizeof(teamBuf), "%s  (%d players)", teamName, nPlayers);
-        dl->AddText(font, 14.f, ImVec2(cp.x + 22.f, curY + (kTeamLabelH - 14.f) * 0.5f), teamCol, teamBuf);
+        dl->AddText(font, font->FontSize, ImVec2(cp.x + 22.f, curY + (kTeamLabelH - 14.f) * 0.5f), teamCol, teamBuf);
 
         if (ImGui::IsMouseHoveringRect(tlMin, tlMax) && ImGui::IsMouseClicked(0))
             expanded = !expanded;
@@ -405,41 +605,47 @@ void ReplayWindow::DrawPianoRollPanel()
 
             dl->AddLine(ImVec2(cp.x, rowBot), ImVec2(cp.x + panelW, rowBot), IM_COL32(255, 255, 255, 8));
             if (isDead)
-                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(204, 48, 48, 15));
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(0, 0, 0, 70));   // dead: the row darkens
             if (rowHovered)
                 dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(255, 255, 255, 10));
             if (pinned)
-                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(0xF0, 0xC8, 0x50, 0x16));
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(0xE1, 0xBE, 0x50, 0x16));
             // The player picked from a party row's context menu (Cast timeline...).
             if (m_pianoRollHighlightAgent == agentId)
             {
-                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(0xFF, 0xD7, 0x64, 0x18));
+                dl->AddRectFilled(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot), IM_COL32(0xE1, 0xBE, 0x50, 0x18));
                 dl->AddRect(ImVec2(cp.x + 1.f, rowTop + 1.f), ImVec2(cp.x + panelW - 1.f, rowBot - 1.f),
-                            IM_COL32(0xFF, 0xD7, 0x64, 0xC0), 0.f, 0, 1.5f);
+                            IM_COL32(0xE1, 0xBE, 0x50, 0xC0), 0.f, 0, 1.5f);
             }
 
             // Player label: click pins the player's links, double-click opens their info panel.
             {
                 const float profIconSz = 18.f;
                 ImTextureID profTex = LoadProfIcon(dev, ard.primaryProf);
-                const float iconY = rowTop + (kCastLaneH - profIconSz) * 0.5f;
+                const float iconY = rowTop + (kRowH - 2.f - profIconSz) * 0.5f;
                 if (profTex)
                     dl->AddImage(profTex, ImVec2(cp.x + 6.f, iconY), ImVec2(cp.x + 6.f + profIconSz, iconY + profIconSz));
 
-                ImU32 nameCol = isDead ? IM_COL32(0xCC, 0x30, 0x30, 0xFF)
-                              : pinned ? IM_COL32(0xF0, 0xC8, 0x50, 0xFF) : TeamColour(ard.teamId, 0xFF);
+                ImU32 nameCol = pinned ? IM_COL32(0xE1, 0xBE, 0x50, 0xFF)
+                              : isDead ? IM_COL32(216, 220, 226, 120) : IM_COL32(216, 220, 226, 255);
                 // The name cut with ".." only when it does not fit the column.
                 std::string name = ard.playerName;
-                const float nameMaxW = kNameColW - 26.f - 6.f;
-                if (font->CalcTextSizeA(14.f, FLT_MAX, 0.f, name.c_str()).x > nameMaxW)
+                const float skullSz = font->FontSize;
+                const float nameMaxW = kNameColW - 26.f - 6.f - (isDead ? skullSz + 4.f : 0.f);
+                if (font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, name.c_str()).x > nameMaxW)
                 {
-                    while (!name.empty() && font->CalcTextSizeA(14.f, FLT_MAX, 0.f, (name + "..").c_str()).x > nameMaxW) name.pop_back();
+                    while (!name.empty() && font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, (name + "..").c_str()).x > nameMaxW) name.pop_back();
                     name += "..";
                 }
-                dl->AddText(font, 14.f, ImVec2(cp.x + 26.f, rowTop + (kCastLaneH - 14.f) * 0.5f), nameCol, name.c_str());
-                if (m_pianoRollLanes)
-                    dl->AddText(font, 11.f, ImVec2(cp.x + 26.f, rowTop + kCastLaneH + (kInLaneH - 11.f) * 0.5f),
-                                IM_COL32(0x80, 0x7A, 0x6C, 0xFF), "incoming");
+                const float nameY = rowTop + (kRowH - 2.f - font->FontSize) * 0.5f;
+                dl->AddText(font, font->FontSize, ImVec2(cp.x + 26.f, nameY), nameCol, name.c_str());
+                // Dead at the playhead: the combat log's skull after the name.
+                if (isDead)
+                    if (ImTextureID skull = LoadFlagIcon(dev, "death.png"))
+                    {
+                        const float sx = cp.x + 26.f + font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, name.c_str()).x + 4.f;
+                        dl->AddImage(skull, ImVec2(sx, nameY), ImVec2(sx + skullSz, nameY + skullSz));
+                    }
 
                 const bool overName = ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + kNameColW, rowBot));
                 if (overName && !m_annotationMgr.IsDrawModeActive())
@@ -461,6 +667,8 @@ void ReplayWindow::DrawPianoRollPanel()
                 const bool linked = m_pianoRollPinned < 0 || m_pianoRollPinned == agentId || ev.targetId == m_pianoRollPinned;
                 float a = ev.startTime > now ? 0.5f : 1.f;
                 if (!linked) a *= 0.25f;
+                const bool found = sPrFindSkill != 0 && ev.skillId == sPrFindSkill;
+                if (sPrFindSkill != 0 && !found) a *= 0.3f;
                 const ImU32 edge = ev.wasInterrupted ? IM_COL32(0x90, 0x30, 0xD0, 0xFF)
                                  : ev.wasCancelled   ? IM_COL32(0xE0, 0x80, 0x20, 0xFF) : TeamColour(ard.teamId, 0xFF);
                 const ImU32 edgeA = (edge & ~IM_COL32_A_MASK) | (static_cast<ImU32>(220 * a) << IM_COL32_A_SHIFT);
@@ -470,6 +678,9 @@ void ReplayWindow::DrawPianoRollPanel()
                     dl->AddImageRounded(tex, ImVec2(x0, iconY), ImVec2(x0 + kIconSz, iconY + kIconSz),
                                         ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, (int)(255 * a)), 2.f);
                 dl->AddRect(ImVec2(x0 - 0.5f, iconY - 0.5f), ImVec2(x0 + kIconSz + 0.5f, iconY + kIconSz + 0.5f), edgeA, 2.f, 0, 1.f);
+                if (found)
+                    dl->AddRect(ImVec2(x0 - 2.5f, iconY - 2.5f), ImVec2(x0 + kIconSz + 2.5f, iconY + kIconSz + 2.5f),
+                                IM_COL32(0xE1, 0xBE, 0x50, 0xFF), 3.f, 0, 2.f);
 
                 if (ImGui::IsMouseHoveringRect(ImVec2(x0, iconY), ImVec2(std::max(x1, x0 + kIconSz), lineY + 2.f)))
                 {
@@ -485,10 +696,10 @@ void ReplayWindow::DrawPianoRollPanel()
     };
 
     drawTeamBlock(m_team1PlayerIds, m_team1GuildHeader.empty() ? "Blue Team" : m_team1GuildHeader.c_str(),
-                  m_pianoRollTeam1Open, IM_COL32(0x60, 0x9C, 0xFF, 0xFF), IM_COL32(0x4A, 0x90, 0xD8, 0x14),
+                  m_pianoRollTeam1Open, IM_COL32(74, 200, 255, 255), IM_COL32(0x4A, 0x90, 0xD8, 0x14),
                   IM_COL32(0x4A, 0x90, 0xD8, 0x26));
     drawTeamBlock(m_team2PlayerIds, m_team2GuildHeader.empty() ? "Red Team" : m_team2GuildHeader.c_str(),
-                  m_pianoRollTeam2Open, IM_COL32(0xE8, 0x50, 0x48, 0xFF), IM_COL32(0xD0, 0x48, 0x48, 0x14),
+                  m_pianoRollTeam2Open, IM_COL32(255, 107, 107, 255), IM_COL32(0xD0, 0x48, 0x48, 0x14),
                   IM_COL32(0xD0, 0x48, 0x48, 0x26));
     const float bodyBot = curY;
 
@@ -499,7 +710,7 @@ void ReplayWindow::DrawPianoRollPanel()
         dl->AddLine(ImVec2(std::round(timeToX(s)), bodyTop), ImVec2(std::round(timeToX(s)), bodyBot), IM_COL32(255, 255, 255, 10));
 
     // Spike bands on the target's row: from the first enemy cast start to the last hit.
-    for (size_t si = 0; si < m_spikes.size(); ++si)
+    for (size_t si = 0; si < m_spikes.size() && sPrSpikeBoxes; ++si)
     {
         const SpikeInfo& sp = m_spikes[si];
         auto rit = rowTopOf.find(sp.target);
@@ -511,7 +722,7 @@ void ReplayWindow::DrawPianoRollPanel()
                     onCard ? IM_COL32(0xFF, 0x8A, 0x80, 0xFF) : IM_COL32(0xE8, 0x50, 0x48, 0xB0), 2.f, 0, onCard ? 1.5f : 1.f);
         char lbl[24];
         snprintf(lbl, sizeof(lbl), "SPIKE x%d", (int)sp.hits.size());
-        dl->AddText(font, 12.f, ImVec2(x1 + 4.f, rit->second + 2.f), IM_COL32(0xFF, 0x8A, 0x80, 0xFF), lbl);
+        dl->AddText(font, font->FontSize, ImVec2(x1 + 4.f, rit->second + 2.f), IM_COL32(0xFF, 0x8A, 0x80, 0xFF), lbl);
     }
 
     // Incoming lanes: every cast aimed at a laid-out player, as a mark at its hit with a thin line
@@ -547,7 +758,7 @@ void ReplayWindow::DrawPianoRollPanel()
         const ImVec2 p1(timeToX(HitTime(ev)), b->second + (m_pianoRollLanes ? kCastLaneH + kInLaneH * 0.5f : kCastLaneH * 0.5f));
         const float bend = std::max(24.f, std::fabs(p1.x - p0.x) * 0.5f);
         dl->AddBezierCubic(p0, ImVec2(p0.x + bend, p0.y), ImVec2(p1.x - bend, p1.y), p1, col, 1.5f);
-        dl->AddCircleFilled(p1, 3.f, IM_COL32(0xF0, 0xC8, 0x50, 0xFF));
+        dl->AddCircleFilled(p1, 3.f, IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
     };
     if (m_pianoRollPinned >= 0)
         for (const auto& [casterId, caster] : m_replayCtx.agents)
@@ -574,7 +785,7 @@ void ReplayWindow::DrawPianoRollPanel()
     }
 
     // ── Now line ───────────────────────────────────────────────────────
-    dl->AddLine(ImVec2(nowLineX, bodyTop), ImVec2(nowLineX, bodyBot), IM_COL32(0xF0, 0xC8, 0x50, 0xD0), 1.5f);
+    dl->AddLine(ImVec2(nowLineX, bodyTop), ImVec2(nowLineX, bodyBot), IM_COL32(0xE1, 0xBE, 0x50, 0xD0), 1.5f);
 
     // Edge fades
     const ImU32 kFadeSolid = IM_COL32(14, 20, 26, 234);
@@ -593,12 +804,12 @@ void ReplayWindow::DrawPianoRollPanel()
         {
             float alpha = (elapsed < 0.8f) ? 1.f : 1.f - (elapsed - 0.8f) / 0.4f;
             char zoomTxt[16];
-            snprintf(zoomTxt, sizeof(zoomTxt), "Â± %.0fs", halfWin);
-            ImVec2 ts = font->CalcTextSizeA(12.f, FLT_MAX, 0.f, zoomTxt);
+            snprintf(zoomTxt, sizeof(zoomTxt), "\xc2\xb1 %gs", halfWin);
+            ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, zoomTxt);
             float tx = tlLeft + tlW * 0.5f - ts.x * 0.5f;
             float ty = bodyTop + 8.f;
             dl->AddRectFilled(ImVec2(tx - 8.f, ty - 4.f), ImVec2(tx + ts.x + 8.f, ty + ts.y + 4.f), IM_COL32(0, 0, 0, (int)(180 * alpha)), 6.f);
-            dl->AddText(font, 12.f, ImVec2(tx, ty), IM_COL32(255, 255, 255, (int)(220 * alpha)), zoomTxt);
+            dl->AddText(font, font->FontSize, ImVec2(tx, ty), IM_COL32(255, 255, 255, (int)(220 * alpha)), zoomTxt);
         }
     }
 
@@ -619,7 +830,7 @@ void ReplayWindow::DrawPianoRollPanel()
 
     ImGui::End();
     ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(5);
+    ImGui::PopStyleColor(8);
 }
 
 
@@ -632,14 +843,14 @@ void ReplayWindow::DrawPianoRollPanel()
 
 namespace
 {
-    const ImVec4 kPrGold(1.f, 0.84f, 0.30f, 1.f);
-    const ImVec4 kPrDim(0.62f, 0.60f, 0.54f, 1.f);
+    const ImVec4 kPrGold(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f);   // the Character panel's heading gold
+    const ImVec4 kPrDim(0.48f, 0.50f, 0.53f, 1.f);                       // and its muted text
     const ImVec4 kPrSpike(1.f, 0.54f, 0.50f, 1.f);
     constexpr ImU32 kPrRule = IM_COL32(0x66, 0x54, 0x26, 0x66);   // the panel's separator colour
 
     ImVec4 PrTeamText(uint8_t team)
     {
-        return team == 1 ? ImVec4(0.45f, 0.66f, 1.f, 1.f) : team == 2 ? ImVec4(1.f, 0.45f, 0.40f, 1.f)
+        return team == 1 ? ImVec4(74 / 255.f, 200 / 255.f, 1.f, 1.f) : team == 2 ? ImVec4(1.f, 107 / 255.f, 107 / 255.f, 1.f)
                                                           : ImVec4(0.85f, 0.85f, 0.85f, 1.f);
     }
 
@@ -760,14 +971,17 @@ ReplayWindow::ProtUse ReplayWindow::PianoRollProtUse(const CastRef& answer, int 
 // else the last one whose first cast has started, until 8 s after its last hit.
 int ReplayWindow::PianoRollCardSpike(float now) const
 {
+    int best = -1;   // the latest spike whose first cast has started (within 1 s), until 8 s after it
+    for (size_t i = 0; i < m_spikes.size(); ++i)
+        if (m_spikes[i].cue - 1.f <= now && now - m_spikes[i].lastHit < 8.f &&
+            (best < 0 || m_spikes[i].cue >= m_spikes[best].cue)) best = static_cast<int>(i);
+    // A spike picked with the arrows or the bar stays until a later one starts.
     if (m_pianoRollSpikeSel >= 0 && m_pianoRollSpikeSel < static_cast<int>(m_spikes.size()))
     {
-        const SpikeInfo& sp = m_spikes[m_pianoRollSpikeSel];
-        if (now >= sp.cue - 1.5f && now <= sp.lastHit + 8.f) return m_pianoRollSpikeSel;
+        const SpikeInfo& sel = m_spikes[m_pianoRollSpikeSel];
+        if (now >= sel.cue - 1.5f && now <= sel.lastHit + 8.f && (best < 0 || m_spikes[best].cue <= sel.cue))
+            return m_pianoRollSpikeSel;
     }
-    int best = -1;
-    for (size_t i = 0; i < m_spikes.size(); ++i)
-        if (m_spikes[i].cue - 1.f <= now && now - m_spikes[i].lastHit < 8.f) best = static_cast<int>(i);
     return best;
 }
 
@@ -792,11 +1006,11 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
     dl->AddLine(ImVec2(p0.x + kLabelW, p0.y), ImVec2(p0.x + kLabelW, p0.y + kH), kPrRule);
 
     // Label column.
-    dl->AddText(font, 16.f, ImVec2(p0.x + 10.f, p0.y + 7.f), ImGui::ColorConvertFloat4ToU32(kPrGold), "Spikes");
+    dl->AddText(font, font->FontSize, ImVec2(p0.x + 10.f, p0.y + 7.f), ImGui::ColorConvertFloat4ToU32(kPrGold), "Spikes");
     char buf[96];
     snprintf(buf, sizeof(buf), "%d in the match", static_cast<int>(m_spikes.size()));
-    dl->AddText(font, 14.f, ImVec2(p0.x + 10.f, p0.y + 30.f), ImGui::ColorConvertFloat4ToU32(kPrDim), buf);
-    ImGui::SetCursorScreenPos(ImVec2(p0.x + 14.f + font->CalcTextSizeA(16.f, FLT_MAX, 0.f, "Spikes").x, p0.y + 7.f));
+    dl->AddText(font, font->FontSize, ImVec2(p0.x + 10.f, p0.y + 30.f), ImGui::ColorConvertFloat4ToU32(kPrDim), buf);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + 14.f + font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, "Spikes").x, p0.y + 7.f));
     PrHelp("One mark = one spike: 3+ enemy damage skills on one player in 1.5 s.\n"
            "Top: spikes on blue. Bottom: spikes on red.\n"
            "Taller = more skills. Click a mark to jump to it.");
@@ -832,8 +1046,8 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
             bool answered = false;
             for (const auto& a : sp.answers) answered |= a.casterId == m_pianoRollMonkSel;
             const ImVec2 c(x, top ? y0 - 5.f : y1 + 5.f);
-            if (answered) dl->AddCircleFilled(c, 2.6f, IM_COL32(0xF0, 0xC8, 0x50, 0xFF));
-            else          dl->AddCircle(c, 2.6f, IM_COL32(0xF0, 0xC8, 0x50, 0x99), 0, 1.f);
+            if (answered) dl->AddCircleFilled(c, 2.6f, IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
+            else          dl->AddCircle(c, 2.6f, IM_COL32(0xE1, 0xBE, 0x50, 0x99), 0, 1.f);
         }
         if (static_cast<int>(i) == cardSpike)
             dl->AddRect(ImVec2(x - 3.5f, y0 - 2.f), ImVec2(x + 3.5f, y1 + 2.f), IM_COL32(255, 255, 255, 0xE0), 1.f);
@@ -846,9 +1060,9 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
 
     // The roll's window and the playhead.
     const float wx0 = std::round(X(winStart)), wx1 = std::round(X(winEnd)), nx = std::round(X(m_debugTimeline));
-    dl->AddRectFilled(ImVec2(wx0, p0.y + 1.f), ImVec2(wx1, p0.y + kH - 2.f), IM_COL32(0xF0, 0xC8, 0x50, 0x12));
-    dl->AddRect(ImVec2(wx0, p0.y + 1.f), ImVec2(wx1, p0.y + kH - 2.f), IM_COL32(0xF0, 0xC8, 0x50, 0xB0), 0.f, 0, 1.f);
-    dl->AddLine(ImVec2(nx, p0.y), ImVec2(nx, p0.y + kH - 1.f), IM_COL32(0xF0, 0xC8, 0x50, 0xFF), 1.5f);
+    dl->AddRectFilled(ImVec2(wx0, p0.y + 1.f), ImVec2(wx1, p0.y + kH - 2.f), IM_COL32(0xE1, 0xBE, 0x50, 0x12));
+    dl->AddRect(ImVec2(wx0, p0.y + 1.f), ImVec2(wx1, p0.y + kH - 2.f), IM_COL32(0xE1, 0xBE, 0x50, 0xB0), 0.f, 0, 1.f);
+    dl->AddLine(ImVec2(nx, p0.y), ImVec2(nx, p0.y + kH - 1.f), IM_COL32(0xE1, 0xBE, 0x50, 0xFF), 1.5f);
 
     // Click a mark to jump to its spike; click or drag elsewhere to scrub.
     ImGui::SetCursorScreenPos(ImVec2(bx0 - kPad, p0.y));
@@ -990,7 +1204,8 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
             m_debugTimeline = std::max(0.f, m_spikes[idx].cue - 1.f);
             m_pianoRollPinned = m_spikes[idx].target;
         };
-        if (ImGui::ArrowButton("##pr_prev", ImGuiDir_Left))
+        constexpr float kArrow = 22.f;
+        if (PrGwArrow(dev, "##pr_prev", false, kArrow))
         {
             int idx = -1;
             if (cur != list.end()) { if (cur != list.begin()) idx = *(cur - 1); }
@@ -1000,11 +1215,11 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous spike");
         if (cur != list.end()) snprintf(buf, sizeof(buf), "Spike %d / %d", static_cast<int>(cur - list.begin()) + 1, static_cast<int>(list.size()));
         else                   snprintf(buf, sizeof(buf), "%d spikes", static_cast<int>(list.size()));
-        const float arrowW = ImGui::GetFrameHeight();
+        const float arrowW = kArrow;
         ImGui::SameLine(kMargin + (cw - ImGui::CalcTextSize(buf).x) * 0.5f);
         vText(arrowW, kPrGold, buf);
         ImGui::SameLine(kMargin + cw - arrowW);
-        if (ImGui::ArrowButton("##pr_next", ImGuiDir_Right))
+        if (PrGwArrow(dev, "##pr_next", true, kArrow))
         {
             int idx = -1;
             if (cur != list.end()) { if (cur + 1 != list.end()) idx = *(cur + 1); }
@@ -1078,10 +1293,10 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     // ── Title: SPIKE, its time, the player who took it ──
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddText(font, 15.f, p, ImGui::ColorConvertFloat4ToU32(kPrSpike), "SPIKE");
-        ImGui::Dummy(ImVec2(1.f, 15.f));
+        dl->AddText(font, font->FontSize, p, ImGui::ColorConvertFloat4ToU32(kPrSpike), "SPIKE");
+        ImGui::Dummy(ImVec2(1.f, font->FontSize));
         PrClock(sp.firstHit, buf, sizeof(buf));
-        rightText(15.f, kPrGold, buf);
+        rightText(font->FontSize, kPrGold, buf);
         ImGui::TextColored(kPrDim, "on");
         ImGui::SameLine(0.f, 6.f);
         who(sp.target, iconSz);
@@ -1090,7 +1305,8 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     // ── Four facts in boxes ──
     {
         ImGui::Dummy(ImVec2(1.f, 2.f));
-        constexpr float kGap = 6.f, kBoxH = 52.f;
+        constexpr float kGap = 6.f;
+        const float kBoxH = std::round(font->FontSize * 2.f + 16.f);
         const float boxW = std::floor((cw - 3.f * kGap) / 4.f);
         const ImVec2 b0 = ImGui::GetCursorScreenPos();
         struct Fact { const char* label; const char* help; std::string value; ImVec4 col; float bar; };
@@ -1117,8 +1333,8 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
             ImGui::PopID();
             const bool hov = ImGui::IsItemHovered();
             dl->AddRectFilled(r0, r1, hov ? IM_COL32(255, 255, 255, 22) : IM_COL32(255, 255, 255, 10), 3.f);
-            dl->AddText(font, 13.f, ImVec2(r0.x + 7.f, r0.y + 4.f), ImGui::ColorConvertFloat4ToU32(kPrDim), f.label);
-            dl->AddText(font, 19.f, ImVec2(r0.x + 7.f, r0.y + 20.f), ImGui::ColorConvertFloat4ToU32(f.col), f.value.c_str());
+            dl->AddText(font, font->FontSize, ImVec2(r0.x + 7.f, r0.y + 4.f), ImGui::ColorConvertFloat4ToU32(kPrDim), f.label);
+            dl->AddText(font, font->FontSize, ImVec2(r0.x + 7.f, r0.y + 6.f + font->FontSize), ImGui::ColorConvertFloat4ToU32(f.col), f.value.c_str());
             if (f.bar >= 0.f)
             {
                 const float by = r1.y - 6.f;
@@ -1163,7 +1379,10 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     };
 
     // ── Hits ──
-    section("HITS", nullptr, "hits at");
+    char hitsTitle[48];
+    if (damageKnown) snprintf(hitsTitle, sizeof(hitsTitle), "HITS   %d damage in total", spikeDamage);
+    else             snprintf(hitsTitle, sizeof(hitsTitle), "HITS");
+    section(hitsTitle, nullptr, "hits at");
     {
         const ImVec2 h0 = ImGui::GetCursorScreenPos();
         for (size_t i = 0; i < sp.hits.size(); ++i)
@@ -1250,8 +1469,8 @@ void ReplayWindow::DrawPianoRollMonkCards()
         const float colW = std::round(w * 0.5f) - 20.f;
 
         snprintf(buf, sizeof(buf), "MONKS  %s", guild.empty() ? (side == 0 ? "Blue Team" : "Red Team") : guild.c_str());
-        dl->AddText(font, 14.f, ImVec2(x0, p0.y + 6.f), TeamColour(team, 0xFF), buf);
-        ImGui::SetCursorScreenPos(ImVec2(x0 + font->CalcTextSizeA(14.f, FLT_MAX, 0.f, buf).x + 6.f, p0.y + 5.f));
+        dl->AddText(font, font->FontSize, ImVec2(x0, p0.y + 6.f), TeamColour(team, 0xFF), buf);
+        ImGui::SetCursorScreenPos(ImVec2(x0 + font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, buf).x + 6.f, p0.y + 5.f));
         ImGui::PushID(side);
         // The (?) as a short legend: one line per number on the card.
         ImGui::TextDisabled("(?)");
@@ -1284,13 +1503,13 @@ void ReplayWindow::DrawPianoRollMonkCards()
         for (int id : ids) if (const auto* a = agentOf(id); a && a->primaryProf == 3) monks.push_back(id);
         if (monks.empty())
         {
-            dl->AddText(font, 12.f, ImVec2(x0, p0.y + 30.f), ImGui::ColorConvertFloat4ToU32(kPrDim), "No Monk on this team.");
+            dl->AddText(font, font->FontSize, ImVec2(x0, p0.y + 30.f), ImGui::ColorConvertFloat4ToU32(kPrDim), "No Monk on this team.");
             ImGui::PopID();
             continue;
         }
 
         constexpr float kGap = 8.f;
-        const float cardH = std::min(86.f, h - 34.f);
+        const float cardH = std::min(std::round(font->FontSize * 3.f + 36.f), h - 34.f);
         const float cardW = std::min(250.f, (colW - kGap * (monks.size() - 1)) / monks.size());
         for (size_t mi = 0; mi < monks.size(); ++mi)
         {
@@ -1328,7 +1547,7 @@ void ReplayWindow::DrawPianoRollMonkCards()
             ImGui::PopID();
             const bool hov = ImGui::IsItemHovered(), sel = m_pianoRollMonkSel == monkId;
             dl->AddRectFilled(r0, r1, hov ? IM_COL32(255, 255, 255, 22) : IM_COL32(255, 255, 255, 9), 3.f);
-            if (sel) dl->AddRect(r0, r1, IM_COL32(0xF0, 0xC8, 0x50, 0xFF), 3.f, 0, 1.5f);
+            if (sel) dl->AddRect(r0, r1, IM_COL32(0xE1, 0xBE, 0x50, 0xFF), 3.f, 0, 1.5f);
 
             dl->PushClipRect(r0, r1, true);
             // Name
@@ -1338,19 +1557,19 @@ void ReplayWindow::DrawPianoRollMonkCards()
                 dl->AddImage(prof, ImVec2(tx, r0.y + 6.f), ImVec2(tx + 18.f, r0.y + 24.f));
                 tx += 22.f;
             }
-            dl->AddText(font, 15.f, ImVec2(tx, r0.y + 7.f), ImGui::ColorConvertFloat4ToU32(PrTeamText(team)), m->playerName.c_str());
+            dl->AddText(font, font->FontSize, ImVec2(tx, r0.y + 6.f), IM_COL32(216, 220, 226, 255), m->playerName.c_str());
             // Covered bar
             snprintf(buf, sizeof(buf), "%d / %d", covered, static_cast<int>(mine.size()));
-            const float numW = font->CalcTextSizeA(14.f, FLT_MAX, 0.f, buf).x;
-            const float by = r0.y + 33.f, barR = std::max(r1.x - 14.f - numW, r0.x + 27.f);
+            const float numW = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, buf).x;
+            const float by = r0.y + 14.f + font->FontSize, barR = std::max(r1.x - 14.f - numW, r0.x + 27.f);
             dl->AddRectFilled(ImVec2(r0.x + 7.f, by), ImVec2(barR, by + 5.f), IM_COL32(255, 255, 255, 22), 2.5f);
             if (!mine.empty() && covered > 0)
                 dl->AddRectFilled(ImVec2(r0.x + 7.f, by), ImVec2(r0.x + 7.f + (barR - r0.x - 7.f) * covered / mine.size(), by + 5.f), TeamColour(team, 0xD0), 2.5f);
-            dl->AddText(font, 14.f, ImVec2(r1.x - 7.f - numW, by - 5.f), IM_COL32(0xEA, 0xEA, 0xEA, 0xFF), buf);
+            dl->AddText(font, font->FontSize, ImVec2(r1.x - 7.f - numW, by - 5.f), IM_COL32(216, 220, 226, 255), buf);
             // first / reaction / heal time
             // Narrow cards (many Monks on a team) keep one number, the timing; the rest is in the hover.
             const bool compact = cardW < 170.f;
-            const float colStep = compact ? cardW - 14.f : (cardW - 14.f) / 3.f, ly = r0.y + 46.f;
+            const float colStep = compact ? cardW - 14.f : (cardW - 14.f) / 3.f, ly = by + 11.f;
             const char* labels[3] = { "first", "timing", "reaction" };
             char vals[3][16];
             snprintf(vals[0], sizeof(vals[0]), "%d", first);
@@ -1360,9 +1579,9 @@ void ReplayWindow::DrawPianoRollMonkCards()
             for (int c = compact ? 1 : 0; c < (compact ? 2 : 3); ++c)
             {
                 const float cx = r0.x + 7.f + (compact ? 0.f : c * colStep);
-                dl->AddText(font, 12.f, ImVec2(cx, ly), ImGui::ColorConvertFloat4ToU32(kPrDim), labels[c]);
-                dl->AddText(font, 15.f, ImVec2(cx, ly + 15.f),
-                            c == 0 ? IM_COL32(0xEA, 0xEA, 0xEA, 0xFF) : ImGui::ColorConvertFloat4ToU32(kPrGold), vals[c]);
+                dl->AddText(font, font->FontSize, ImVec2(cx, ly), ImGui::ColorConvertFloat4ToU32(kPrDim), labels[c]);
+                dl->AddText(font, font->FontSize, ImVec2(cx, ly + font->FontSize),
+                            c == 0 ? IM_COL32(216, 220, 226, 255) : ImGui::ColorConvertFloat4ToU32(kPrGold), vals[c]);
             }
             dl->PopClipRect();
 
@@ -1460,15 +1679,15 @@ void ReplayWindow::DrawPianoRollMonkCards()
                         {
                             char lbl[8];
                             snprintf(lbl, sizeof(lbl), "%+d", static_cast<int>(std::round(g)));
-                            const float tw = font->CalcTextSizeA(11.f, FLT_MAX, 0.f, lbl).x;
-                            tdl->AddText(font, 11.f, ImVec2(ax(g) - tw * 0.5f, cy + 6.f), ImGui::ColorConvertFloat4ToU32(kPrDim), lbl);
+                            const float tw = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, lbl).x;
+                            tdl->AddText(font, font->FontSize, ImVec2(ax(g) - tw * 0.5f, cy + 6.f), ImGui::ColorConvertFloat4ToU32(kPrDim), lbl);
                         }
                     }
                     tdl->AddLine(ImVec2(ax(0.f), cy - 7.f), ImVec2(ax(0.f), cy + 4.f), IM_COL32(0xFF, 0x8A, 0x80, 0xC0), 1.f);
                     for (float r : timings)
                         tdl->AddCircleFilled(ImVec2(ax(r), cy), 3.f, TeamColour(team, 0x90));
                     const float med = ax(PrMedian(timings));
-                    tdl->AddRectFilled(ImVec2(med - 1.f, cy - 7.f), ImVec2(med + 1.f, cy + 7.f), IM_COL32(0xF0, 0xC8, 0x50, 0xFF));
+                    tdl->AddRectFilled(ImVec2(med - 1.f, cy - 7.f), ImVec2(med + 1.f, cy + 7.f), IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
                     ImGui::TextColored(kPrDim, "0 = the first hit. Left of 0: up before the damage. Gold = their usual timing.");
                 }
 
