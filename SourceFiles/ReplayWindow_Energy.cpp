@@ -315,6 +315,11 @@ void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
             Icon(texEnergy);
             Txt(kTipPlain, " estimated from the spirit's refill");
             break;
+        case DoubtKind::UnseenGain:
+            Txt(kTipPlain, "A gain paid on an event the recording does not show: ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " may be higher");
+            break;
         }
         Br();
     }
