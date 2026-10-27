@@ -803,7 +803,8 @@ inline uint32_t LookupGuildNpcMaxHealth(uint32_t modelId)
 {
     switch (modelId) {
     case 170: return 1680; // Guild Lord
-    case 172: return 480;  // Bodyguard
+    case 172: return 521;  // Bodyguard - the wiki says 480, but every packet on him since Oct 15, 2026
+                           // (3,403 in 54 matches) is a whole share of 521, all match long
     case 173: return 480;  // Footman
     case 174: return 480;  // Knight
     case 175:
