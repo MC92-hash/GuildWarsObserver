@@ -57,10 +57,6 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     if (snaps.empty()) return 0;
     const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
     if (s && s->max_hp > 0) return s->max_hp;
-    auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
-        [](const AgentSnapshot& a, float b) { return a.time < b; });
-    for (; sit != snaps.end(); ++sit)
-        if (sit->max_hp > 0) return sit->max_hp;
     // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
     // never looked at it. Without this a Guild Lord fell through to the player-only solver,
     // which returns 0 for an NPC, and his damage numbers were dropped for want of a
@@ -71,9 +67,15 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     // A henchman's maximum is modelled (level health, morale, Deep Wound) and never recorded.
     if (IsHenchmanAgent(it->second))
         return ResolveMaxHp(it->second, t).value;
-    // Recorded value first (it is the effective max HP); solved per
-    // weapon set only when the recording carries none.
-    return it->second.solvedMaxHpAtTime(t);
+    // Solved per weapon set when the recording carries none.
+    if (uint32_t solved = it->second.solvedMaxHpAtTime(t)) return solved;
+    // Last of all a later recorded value. Never before the others: it can come from after a death
+    // and resurrection (a Paragon dead at 1:34 had no value until 1:38, and read 553 for 525).
+    auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
+        [](const AgentSnapshot& a, float b) { return a.time < b; });
+    for (; sit != snaps.end(); ++sit)
+        if (sit->max_hp > 0) return sit->max_hp;
+    return 0;
 }
 
 uint32_t ReplayWindow::PacketMaxHp(int agentId, float t, float fraction) const
@@ -95,7 +97,49 @@ uint32_t ReplayWindow::PacketMaxHp(int agentId, float t, float fraction) const
     if (!woundOn && !woundOver)
         if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end())
             if (const AgentSnapshot* s = FindSnapshotAtTime(it->second, t)) woundOver = s->has_deep_wound;
-    return CorrectMaxHpForWoundedPacket(recorded, fraction, woundOn, woundOn ? false : woundOver);
+    auto whole = [f = std::fabs((double)fraction)](uint32_t m) {
+        const double x = f * (double)m;
+        return m > 0 && x >= 0.5 && std::fabs(x - std::round(x)) <= 0.0015;
+    };
+    // Wounded while the recorded value does not show it yet (it reads as before the wound): the cut
+    // value first, even when the uncut one also fits. A round fraction fits both - Pendulus' Energy
+    // Burn was 0.2 of 405 (81, nine energy at Domination 14), read 0.2 of 505 = 101 (2026-10-17).
+    if (woundOn)
+        if (auto ait = m_replayCtx.agents.find(agentId); ait != m_replayCtx.agents.end())
+        {
+            const uint32_t before = ait->second.maxHpBeforeDeepWound(t);
+            const uint32_t cut = AgentReplayData::ApplyDeepWound(recorded);
+            if ((before == 0 || recorded == before) && whole(cut)) return cut;
+        }
+    const uint32_t corrected = CorrectMaxHpForWoundedPacket(recorded, fraction, woundOn, woundOn ? false : woundOver);
+    if (whole(corrected)) return corrected;
+
+    // Still no whole number: the recorded value lags a weapon swap. Try the player's own recorded
+    // maxima from this match (one per weapon set), and each under Deep Wound while one is on him. A
+    // Paragon recorded at 563 had his 625 set out: his Word of Censure hits are 137/625, and 137/525
+    // once Augury of Death wounded him (2026-10-17 Crew vs Men).
+    static std::unordered_map<int, std::vector<uint32_t>> sSets;
+    static std::string sSetsMatch;
+    if (sSetsMatch != m_replayCtx.matchFolderPath.string())
+    {
+        sSets.clear();
+        sSetsMatch = m_replayCtx.matchFolderPath.string();
+    }
+    auto sit = sSets.find(agentId);
+    if (sit == sSets.end())
+    {
+        std::vector<uint32_t> seen;
+        if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end())
+            for (const AgentSnapshot& s : it->second.snapshots)
+                if (s.max_hp > 0 && std::find(seen.begin(), seen.end(), s.max_hp) == seen.end()) seen.push_back(s.max_hp);
+        sit = sSets.emplace(agentId, std::move(seen)).first;
+    }
+    for (uint32_t m : sit->second)
+    {
+        if (whole(m)) return m;
+        if (woundOn && whole(AgentReplayData::ApplyDeepWound(m))) return AgentReplayData::ApplyDeepWound(m);
+    }
+    return corrected;
 }
 
 std::string ReplayWindow::FloaterPopLabel(int agentId, const DamagePop& pop) const

@@ -1290,6 +1290,36 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     for (const CastRef& a : sp.answers)
         answerHeal.push_back(isHeal(a.ev->skillId) ? amountOf(a, true, HitTime(*a.ev) - 0.05f, HitTime(*a.ev) + 0.5f) : -1);
 
+    // The rest of the enemy damage while the spike ran (first enemy cast to last hit): weapon hits
+    // apart, then everything else (another skill, a condition). Part of the spike's total.
+    int weaponDamage = 0, weaponHits = 0, otherDamage = 0;
+    {
+        auto tit = m_replayCtx.agents.find(sp.target);
+        const uint8_t team = tit != m_replayCtx.agents.end() ? tit->second.teamId : 0;
+        int lastCaster = -1;
+        float lastTime = -1.f;
+        for (size_t i = 0; i < pops.size(); ++i)
+        {
+            const DamagePop& q = pops[i];
+            if (q.time < sp.cue - 0.02f) continue;
+            if (q.time > sp.lastHit + 0.05f) break;
+            if (popUsed[i] || q.heal) continue;
+            auto cit = m_replayCtx.agents.find(q.casterId);
+            if (cit == m_replayCtx.agents.end() || cit->second.teamId == team) continue;
+            popUsed[i] = 1;
+            const int amount = popAmount(q);
+            if (q.weaponHit)
+            {
+                weaponDamage += amount;
+                if (!(q.casterId == lastCaster && q.time - lastTime < 0.03f)) ++weaponHits;   // one hit, its vampiric part
+                lastCaster = q.casterId;
+                lastTime = q.time;
+            }
+            else otherDamage += amount;
+        }
+        if (weaponDamage + otherDamage > 0) { spikeDamage += weaponDamage + otherDamage; damageKnown = true; }
+    }
+
     // ── Title: SPIKE, its time, the player who took it ──
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1320,7 +1350,7 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         const Fact facts[4] = {
             { "Skills",    "How many enemy skills hit the player. 3 or more within 1.5 seconds is a spike.", v1, ImVec4(0.92f, 0.92f, 0.92f, 1.f), -1.f },
             { "Hit in",    "How close together the hits landed. The smaller the number, the harder the spike is to stop.", v2, kPrGold, -1.f },
-            { "Damage",    "The damage the spike's skills did, added up.", v4, ImVec4(1.f, 0.45f, 0.40f, 1.f), -1.f },
+            { "Damage",    "All the enemy damage the player took during the spike:\nthe skills, weapon hits and the rest.", v4, ImVec4(1.f, 0.45f, 0.40f, 1.f), -1.f },
             { "Lowest HP", "How low the player's health went. 0% means they died.", v3, ImVec4(0.92f, 0.92f, 0.92f, 1.f), std::max(0.f, sp.lowHp) },
         };
         for (int i = 0; i < 4; ++i)
@@ -1392,6 +1422,20 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
             PrClock(HitTime(*sp.hits[i].ev), buf, sizeof(buf));
             castLine(sp.hits[i], hitDamage[i] >= 0 ? dmg : nullptr, buf, kPrGold, nullptr, ImVec4(1.f, 0.45f, 0.40f, 1.f));
         }
+        // Weapon hits and the rest during the spike, one line each.
+        auto restLine = [&](const char* label, int amount) {
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + iconSz + 6.f);
+            ImGui::TextColored(ImVec4(216 / 255.f, 220 / 255.f, 226 / 255.f, 1.f), "%s", label);
+            ImGui::SameLine(0.f, 6.f);
+            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.40f, 1.f), "-%d", amount);
+        };
+        if (weaponDamage > 0)
+        {
+            char lbl[48];
+            snprintf(lbl, sizeof(lbl), "Weapon attacks (%d hit%s)", weaponHits, weaponHits == 1 ? "" : "s");
+            restLine(lbl, weaponDamage);
+        }
+        if (otherDamage > 0) restLine("Other damage", otherDamage);
         if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(h0, ImVec2(h0.x + cw, ImGui::GetCursorScreenPos().y)))
         {
             snprintf(buf, sizeof(buf), "Spike: %d damage skills hit in %.2f s", static_cast<int>(sp.hits.size()), sp.lastHit - sp.firstHit);
