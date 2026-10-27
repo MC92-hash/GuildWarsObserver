@@ -496,7 +496,20 @@ void ReplayWindow::DrawPartyWindows()
         const float energyRowsH = m_showPartyEnergy ? nPlayers * (kEnergyH + kEnergyGap) : 0.f;
         float playersH = nPlayers * kBarHeight + energyRowsH + (nPlayers - 1) * kBarSpacing;
         float alliesHeaderH = hasNpcs ? treeNodeH + kBarSpacing : 0.f;
-        float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + 4.f;
+
+        // The Guild Lord and Bodyguards stay on show under the Allies header; only the
+        // rest (knights, archers, footmen, pets, spirits, minions) fold away.
+        std::vector<int> pinnedNpcIds, foldNpcIds;
+        for (int id : npcIds)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            const bool pinned = it != m_replayCtx.agents.end() &&
+                (it->second.categoryName == "Guild Lord" || it->second.categoryName == "Bodyguard");
+            (pinned ? pinnedNpcIds : foldNpcIds).push_back(id);
+        }
+        const int nPinned = CountVisibleNpcs(pinnedNpcIds);
+        const float pinnedH = nPinned * (kNpcBarHeight + kBarSpacing);
+        float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + pinnedH + 4.f;
 
         if (!m_partyWindowsPositioned)
         {
@@ -752,7 +765,7 @@ void ReplayWindow::DrawPartyWindows()
                     *prevAlliesOpen = alliesOpen;
                     if (alliesOpen)
                     {
-                        int visNpcs = CountVisibleNpcs(npcIds);
+                        int visNpcs = CountVisibleNpcs(foldNpcIds);
                         float npcsH = visNpcs * kNpcBarHeight + std::max(0, visNpcs - 1) * kBarSpacing;
                         float expandedH = collapsedH + npcsH + kBarSpacing;
                         ImGui::SetWindowSize(ImVec2(wSize.x, expandedH));
@@ -763,9 +776,12 @@ void ReplayWindow::DrawPartyWindows()
                     }
                 }
 
-                if (alliesOpen)
+                if (!pinnedNpcIds.empty())
+                    DrawBars(dl, availW, pinnedNpcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                             teamTotalDmg, teamTotalHeal);
+                if (alliesOpen && !foldNpcIds.empty())
                 {
-                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                    DrawBars(dl, availW, foldNpcIds, kNpcBarHeight, true, leftSide, maxBarW,
                              teamTotalDmg, teamTotalHeal);
                 }
             }
