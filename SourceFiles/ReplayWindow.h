@@ -2085,6 +2085,11 @@ private:
     void DrawPianoRollSpikeBar(float winStart, float winEnd, int cardSpike);
     void DrawPianoRollSpikeCard(int cardSpike);
     void DrawPianoRollMonkCards();
+    // What one prot did while it was up on the player: the enemy hits it was there for, and the
+    // Health its own heal packets gave back (Spirit Bond, Reversal of Fortune, Life Sheath, Shielding
+    // Hands' end). isProt is false for a cast that put no effect on the player (a plain heal).
+    struct ProtUse { bool isProt = false; int hits = 0; int healedBack = 0; float start = 0.f, end = 0.f; };
+    ProtUse PianoRollProtUse(const CastRef& answer, int target) const;
 
     void DrawPianoRollPanel();
 

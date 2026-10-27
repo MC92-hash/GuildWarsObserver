@@ -69,13 +69,14 @@ bool ReplayWindow::IsSpikeDamageSkill(int skillId) const
     return false;
 }
 
-// Prots and heals: the Monk's protection, healing and Divine Favor lines, Restoration Magic, and any
-// other skill whose description heals.
+// Prots and heals: the Monk's protection, healing and Divine Favor lines, and any other skill whose
+// description heals. Restoration Magic only where it heals: its resurrections (Flesh of My Flesh,
+// Death Pact Signet) are neither (owner, 2026-10-27).
 bool ReplayWindow::IsSpikeAnswerSkill(int skillId) const
 {
     const SkillInfo* si = m_skillView.IsLoaded() ? m_skillView.Get(skillId) : nullptr;
     if (!si) return false;
-    if (si->attribute == 13 || si->attribute == 15 || si->attribute == 16 || si->attribute == 33) return true;
+    if (si->attribute == 13 || si->attribute == 15 || si->attribute == 16) return true;
     for (const auto& sc : si->scales)
         if (sc.kind == SkillScaleKind::Heal) return true;
     return false;
@@ -670,12 +671,89 @@ namespace
         return starts.size() > 1 ? starts[1] : starts.empty() ? 0.f : starts[0];
     }
 
+    constexpr const char* kHelpTiming =
+        "When their help took effect.\n0 = the first hit. Below 0 = it was up before the damage.\nTheir own cast time is included.";
+    constexpr const char* kHelpReaction =
+        "How fast they started casting,\nfrom the moment a second enemy started on the player.\nTheir own cast time is not included.";
+    constexpr const char* kHelpCovered = "Spikes on their team they helped on\n(a prot or heal on the player).";
+    constexpr const char* kHelpFirst   = "Times they were the first teammate to help.";
+    constexpr const char* kHelpProtUse =
+        "While this prot was up:\nhits = enemy hits the player took.\nhealed back = Health the prot itself gave back.";
+
+    void PrTip(const char* text)
+    {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(text);
+        ImGui::EndTooltip();
+    }
+
     float PrMedian(std::vector<float> v)
     {
         if (v.empty()) return NAN;
         std::sort(v.begin(), v.end());
         return v[v.size() / 2];
     }
+}
+
+// What one prot did: the effect timeline says when it was up on the player; the hits are the enemy damage
+// numbers in that window (a weapon hit and its vampiric part in one tick count once), the Health given
+// back is the prot's own heal packets from its caster (the attribution names their skill). No per-skill
+// rule: anything that puts an effect on the player counts. Cached per cast for the match.
+ReplayWindow::ProtUse ReplayWindow::PianoRollProtUse(const CastRef& answer, int target) const
+{
+    static std::unordered_map<const SkillUseEvent*, ProtUse> sCache;
+    static const void* sOwner = nullptr;
+    static bool sWithRanks = false;
+    const EffectTimeline::Table* fx = EffectTimelineTable();
+    if (sOwner != m_spikes.data() || sWithRanks != m_effectTimelineUsedAttributes)
+    {
+        sCache.clear();
+        sOwner = m_spikes.data();
+        sWithRanks = m_effectTimelineUsedAttributes;
+    }
+    if (auto it = sCache.find(answer.ev); it != sCache.end()) return it->second;
+
+    ProtUse r;
+    const float land = HitTime(*answer.ev);
+    if (fx)
+        if (auto bit = fx->byAgent.find(target); bit != fx->byAgent.end())
+            for (const auto& e : bit->second)
+            {
+                if (e.skillId != answer.ev->skillId || (e.caster != 0 && e.caster != answer.casterId)) continue;
+                if (e.start < land - 0.5f || e.start > land + 1.f) continue;
+                r.isProt = true;
+                r.start = e.start;
+                r.end = std::max(e.end, e.start);
+                break;
+            }
+    if (r.isProt)
+    {
+        auto tit = m_replayCtx.agents.find(target);
+        const uint8_t team = tit != m_replayCtx.agents.end() ? tit->second.teamId : 0;
+        int lastCaster = -1;
+        float lastTime = -1.f;
+        for (const DamagePop& pop : DamagePopsOn(target))
+        {
+            if (pop.time < r.start - 0.02f) continue;
+            if (pop.time > r.end + 0.05f) break;
+            const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix : PacketMaxHp(target, pop.time, pop.value);
+            const int amount = mhp > 0 ? static_cast<int>(std::lround(std::fabs(pop.value) * mhp)) : 0;
+            if (pop.heal)
+            {
+                if (pop.skillId == answer.ev->skillId && pop.casterId == answer.casterId) r.healedBack += amount;
+                continue;
+            }
+            if (pop.time > r.end + 0.02f) continue;
+            auto cit = m_replayCtx.agents.find(pop.casterId);
+            if (cit == m_replayCtx.agents.end() || cit->second.teamId == team) continue;
+            if (pop.casterId == lastCaster && pop.time - lastTime < 0.03f) continue;
+            lastCaster = pop.casterId;
+            lastTime = pop.time;
+            ++r.hits;
+        }
+    }
+    sCache[answer.ev] = r;
+    return r;
 }
 
 // The spike the card shows: the one picked with the arrows or the bar while the playhead is near it,
@@ -849,6 +927,7 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     auto isHeal = [&](int skillId) {
         const SkillInfo* si = m_skillView.IsLoaded() ? m_skillView.Get(skillId) : nullptr;
         if (!si || si->attribute == 15) return false;
+        if (si->attribute == 13) return true;   // Healing Prayers: Infuse Health heals without a Heal scale
         for (const auto& sc : si->scales)
             if (sc.kind == SkillScaleKind::Heal) return true;
         return false;
@@ -873,11 +952,22 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         }
         vText(sz, PrTeamText(a->teamId), a->playerName.c_str());
     };
-    auto section = [&](const char* title, const char* help, const char* right) {
+    auto section = [&](const char* title, const char* help, const char* right, const char* rightHelp = nullptr) {
         ImGui::Dummy(ImVec2(1.f, 2.f));
         ImGui::TextColored(kPrDim, "%s", title);
         if (help) { ImGui::SameLine(0.f, 4.f); PrHelp(help); }
-        if (right) { ImGui::SameLine(kMargin + cw - ImGui::CalcTextSize(right).x); ImGui::TextColored(kPrDim, "%s", right); }
+        if (right)
+        {
+            const float qW = rightHelp ? ImGui::CalcTextSize("(?)").x + 4.f : 0.f;
+            ImGui::SameLine(kMargin + cw - ImGui::CalcTextSize(right).x - qW);
+            ImGui::TextColored(kPrDim, "%s", right);
+            if (rightHelp)
+            {
+                ImGui::SameLine(0.f, 4.f);
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered()) PrTip(rightHelp);
+            }
+        }
         const ImVec2 p = ImGui::GetCursorScreenPos();
         dl->AddLine(ImVec2(p.x, p.y - 1.f), ImVec2(p.x + cw, p.y - 1.f), kPrRule);
         ImGui::Dummy(ImVec2(1.f, 2.f));
@@ -938,6 +1028,53 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     }
     const SpikeInfo& sp = m_spikes[cardSpike];
 
+    // The numbers the casts put on the player, from the recorded damage and heal packets: a hit takes
+    // its caster's damage numbers with its skill (from its start until 3 s after its cast end - a
+    // projectile lands later); failing that, the caster's numbers in the tick nearest its end. A heal
+    // takes its caster's heal numbers with its skill near its end, plus a Divine Favor bonus (no skill)
+    // in the same tick. Each number is used once.
+    const std::vector<DamagePop>& pops = DamagePopsOn(sp.target);
+    std::vector<char> popUsed(pops.size(), 0);
+    auto popAmount = [&](const DamagePop& pop) {
+        const uint32_t mhp = pop.maxHpFix ? pop.maxHpFix : PacketMaxHp(sp.target, pop.time, pop.value);
+        return mhp > 0 ? static_cast<int>(std::lround(std::fabs(pop.value) * mhp)) : 0;
+    };
+    auto amountOf = [&](const CastRef& c, bool heal, float from, float to) -> int {
+        auto first = std::lower_bound(pops.begin(), pops.end(), from, [](const DamagePop& p, float t) { return p.time < t; });
+        int pick = -1;
+        float best = FLT_MAX;
+        for (auto it = first; it != pops.end() && it->time <= to; ++it)
+        {
+            const size_t i = static_cast<size_t>(it - pops.begin());
+            if (popUsed[i] || it->heal != heal || it->casterId != c.casterId) continue;
+            const float d = std::fabs(it->time - HitTime(*c.ev)) - (it->skillId == c.ev->skillId ? 100.f : 0.f);
+            if (d < best) { best = d; pick = static_cast<int>(i); }
+        }
+        if (pick < 0) return -1;
+        int total = 0;
+        const float tick = pops[pick].time;
+        const int skill = pops[pick].skillId;
+        for (size_t i = 0; i < pops.size(); ++i)
+        {
+            const DamagePop& q = pops[i];
+            if (popUsed[i] || q.heal != heal || q.casterId != c.casterId || std::fabs(q.time - tick) > 0.03f) continue;
+            if (static_cast<int>(i) != pick && q.skillId != skill && q.skillId != 0) continue;
+            popUsed[i] = 1;
+            total += popAmount(q);
+        }
+        return total;
+    };
+    std::vector<int> hitDamage, answerHeal;
+    int spikeDamage = 0;
+    bool damageKnown = false;
+    for (const CastRef& h : sp.hits)
+    {
+        hitDamage.push_back(amountOf(h, false, h.ev->startTime, HitTime(*h.ev) + 3.f));
+        if (hitDamage.back() >= 0) { spikeDamage += hitDamage.back(); damageKnown = true; }
+    }
+    for (const CastRef& a : sp.answers)
+        answerHeal.push_back(isHeal(a.ev->skillId) ? amountOf(a, true, HitTime(*a.ev) - 0.05f, HitTime(*a.ev) + 0.5f) : -1);
+
     // ── Title: SPIKE, its time, the player who took it ──
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -950,25 +1087,27 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         who(sp.target, iconSz);
     }
 
-    // ── Three facts in boxes ──
+    // ── Four facts in boxes ──
     {
         ImGui::Dummy(ImVec2(1.f, 2.f));
         constexpr float kGap = 6.f, kBoxH = 52.f;
-        const float boxW = std::floor((cw - 2.f * kGap) / 3.f);
+        const float boxW = std::floor((cw - 3.f * kGap) / 4.f);
         const ImVec2 b0 = ImGui::GetCursorScreenPos();
         struct Fact { const char* label; const char* help; std::string value; ImVec4 col; float bar; };
-        char v1[16], v2[16], v3[16];
+        char v1[16], v2[16], v3[16], v4[16];
+        if (damageKnown) snprintf(v4, sizeof(v4), "%d", spikeDamage); else snprintf(v4, sizeof(v4), "-");
         snprintf(v1, sizeof(v1), "%d", static_cast<int>(sp.hits.size()));
         snprintf(v2, sizeof(v2), "%.2f s", sp.lastHit - sp.firstHit);
         if (sp.lowHp < 0.f)       snprintf(v3, sizeof(v3), "-");
         else if (sp.lowHp <= 0.f) snprintf(v3, sizeof(v3), "died");
         else                      snprintf(v3, sizeof(v3), "%d%%", static_cast<int>(std::round(sp.lowHp * 100.f)));
-        const Fact facts[3] = {
+        const Fact facts[4] = {
             { "Skills",    "How many enemy skills hit the player. 3 or more within 1.5 seconds is a spike.", v1, ImVec4(0.92f, 0.92f, 0.92f, 1.f), -1.f },
             { "Hit in",    "How close together the hits landed. The smaller the number, the harder the spike is to stop.", v2, kPrGold, -1.f },
+            { "Damage",    "The damage the spike's skills did, added up.", v4, ImVec4(1.f, 0.45f, 0.40f, 1.f), -1.f },
             { "Lowest HP", "How low the player's health went. 0% means they died.", v3, ImVec4(0.92f, 0.92f, 0.92f, 1.f), std::max(0.f, sp.lowHp) },
         };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
             const Fact& f = facts[i];
             const ImVec2 r0(b0.x + i * (boxW + kGap), b0.y), r1(r0.x + boxW, r0.y + kBoxH);
@@ -1000,20 +1139,26 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     }
 
     // One line per cast: icon + skill, a value on the right, "by" + caster under it.
-    auto castLine = [&](const CastRef& c, const char* tag, const char* right, const ImVec4& rightCol, const char* extra = nullptr) {
+    auto castLine = [&](const CastRef& c, const char* tag, const char* right, const ImVec4& rightCol, const char* extra = nullptr,
+                        const ImVec4& tagCol = kPrDim) {
         if (ImTextureID tex = LoadSkillIcon(this, dev, c.ev->skillId, m_skillIconIndex, m_skillIconCache))
             ImGui::Image(tex, ImVec2(iconSz, iconSz));
         else
             ImGui::Dummy(ImVec2(iconSz, iconSz));
         ImGui::SameLine(0.f, 6.f);
         vText(iconSz, ImVec4(1.f, 1.f, 1.f, 1.f), GetSkillDisplayName(c.ev->skillId).c_str());
-        if (tag) { ImGui::SameLine(0.f, 6.f); vText(iconSz, kPrDim, tag); }
+        if (tag) { ImGui::SameLine(0.f, 6.f); vText(iconSz, tagCol, tag); }
         rightText(iconSz, rightCol, right);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + iconSz + 6.f);
         ImGui::TextColored(kPrDim, "by");
         ImGui::SameLine(0.f, 5.f);
         who(c.casterId, lineH);
-        if (extra) { ImGui::SameLine(0.f, 8.f); vText(lineH, kPrDim, extra); }
+        if (extra)
+        {
+            ImGui::SameLine(0.f, 8.f);
+            vText(lineH, kPrDim, extra);
+            if (ImGui::IsItemHovered()) PrTip(kHelpReaction);
+        }
         ImGui::Dummy(ImVec2(1.f, 2.f));
     };
 
@@ -1021,10 +1166,12 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     section("HITS", nullptr, "hits at");
     {
         const ImVec2 h0 = ImGui::GetCursorScreenPos();
-        for (const CastRef& h : sp.hits)
+        for (size_t i = 0; i < sp.hits.size(); ++i)
         {
-            PrClock(HitTime(*h.ev), buf, sizeof(buf));
-            castLine(h, nullptr, buf, kPrGold);
+            char dmg[16];
+            if (hitDamage[i] >= 0) snprintf(dmg, sizeof(dmg), "-%d", hitDamage[i]);
+            PrClock(HitTime(*sp.hits[i].ev), buf, sizeof(buf));
+            castLine(sp.hits[i], hitDamage[i] >= 0 ? dmg : nullptr, buf, kPrGold, nullptr, ImVec4(1.f, 0.45f, 0.40f, 1.f));
         }
         if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(h0, ImVec2(h0.x + cw, ImGui::GetCursorScreenPos().y)))
         {
@@ -1034,18 +1181,33 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     }
 
     // ── Answers ──
-    section("ANSWERS", "Prots and heals from teammates.\n"
-                       "Timing: when it landed. 0 = the first hit, below 0 = up before the damage.\n"
-                       "Reaction: how fast they started casting.", "timing");
+    section("ANSWERS", "Prots and heals from teammates on the player.", "timing", kHelpTiming);
     if (sp.answers.empty())
         ImGui::TextColored(kPrDim, "No prot or heal on the player.");
     const float call = PrCall(sp.hits);
-    for (const CastRef& a : sp.answers)
+    for (size_t ai = 0; ai < sp.answers.size(); ++ai)
     {
-        char extra[48];
+        const CastRef& a = sp.answers[ai];
+        char extra[48], tag[24];
         snprintf(buf, sizeof(buf), "%+.2f s", HitTime(*a.ev) - sp.firstHit);
         snprintf(extra, sizeof(extra), "reaction %+.2f s", a.ev->startTime - call);
-        castLine(a, isHeal(a.ev->skillId) ? "heal" : "prot", buf, kPrGold, extra);
+        const bool heal = isHeal(a.ev->skillId);
+        if (heal && answerHeal[ai] >= 0) snprintf(tag, sizeof(tag), "+%d", answerHeal[ai]);
+        else                             snprintf(tag, sizeof(tag), "%s", heal ? "heal" : "prot");
+        castLine(a, tag, buf, kPrGold, extra, heal && answerHeal[ai] >= 0 ? ImVec4(0.55f, 0.90f, 0.50f, 1.f) : kPrDim);
+        const ProtUse pu = PianoRollProtUse(a, sp.target);
+        if (pu.isProt)
+        {
+            char note[96];
+            if (pu.healedBack > 0)
+                snprintf(note, sizeof(note), "%d hit%s  \xc2\xb7  %d healed back", pu.hits, pu.hits == 1 ? "" : "s", pu.healedBack);
+            else
+                snprintf(note, sizeof(note), "%d hit%s", pu.hits, pu.hits == 1 ? "" : "s");
+            ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + iconSz + 6.f, ImGui::GetCursorPosY() - 2.f));
+            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%s", note);
+            if (ImGui::IsItemHovered()) PrTip(kHelpProtUse);
+            ImGui::Dummy(ImVec2(1.f, 2.f));
+        }
     }
     ImGui::Dummy(ImVec2(1.f, 8.f));
     ImGui::Unindent(kMargin);
@@ -1073,6 +1235,7 @@ void ReplayWindow::DrawPianoRollMonkCards()
     auto isHeal = [&](int skillId) {
         const SkillInfo* si = m_skillView.IsLoaded() ? m_skillView.Get(skillId) : nullptr;
         if (!si || si->attribute == 15) return false;
+        if (si->attribute == 13) return true;   // Healing Prayers: Infuse Health heals without a Heal scale
         for (const auto& sc : si->scales)
             if (sc.kind == SkillScaleKind::Heal) return true;
         return false;
@@ -1106,9 +1269,12 @@ void ReplayWindow::DrawPianoRollMonkCards()
             };
             row("covered",  "Spikes they helped on.");
             row("first",    "Times they helped first.");
-            row("timing",   "When their help landed. 0 = the first hit.");
-            row("",         "Below 0 = it was up before the damage.");
+            row("timing",   "When their help took effect. 0 = the first hit.");
+            row("",         "Includes their own cast time.");
             row("reaction", "How fast they started casting.");
+            row("",         "Does not include their cast time.");
+            ImGui::Spacing();
+            ImGui::TextColored(kPrDim, "Hover a number on a card for more.");
             ImGui::Spacing();
             ImGui::TextColored(kPrDim, "Click a card to see their spikes on the bar.");
             ImGui::EndTooltip();
@@ -1176,22 +1342,24 @@ void ReplayWindow::DrawPianoRollMonkCards()
             // Covered bar
             snprintf(buf, sizeof(buf), "%d / %d", covered, static_cast<int>(mine.size()));
             const float numW = font->CalcTextSizeA(14.f, FLT_MAX, 0.f, buf).x;
-            const float by = r0.y + 33.f, barR = r1.x - 14.f - numW;
+            const float by = r0.y + 33.f, barR = std::max(r1.x - 14.f - numW, r0.x + 27.f);
             dl->AddRectFilled(ImVec2(r0.x + 7.f, by), ImVec2(barR, by + 5.f), IM_COL32(255, 255, 255, 22), 2.5f);
             if (!mine.empty() && covered > 0)
                 dl->AddRectFilled(ImVec2(r0.x + 7.f, by), ImVec2(r0.x + 7.f + (barR - r0.x - 7.f) * covered / mine.size(), by + 5.f), TeamColour(team, 0xD0), 2.5f);
             dl->AddText(font, 14.f, ImVec2(r1.x - 7.f - numW, by - 5.f), IM_COL32(0xEA, 0xEA, 0xEA, 0xFF), buf);
             // first / reaction / heal time
-            const float colStep = (cardW - 14.f) / 3.f, ly = r0.y + 46.f;
+            // Narrow cards (many Monks on a team) keep one number, the timing; the rest is in the hover.
+            const bool compact = cardW < 170.f;
+            const float colStep = compact ? cardW - 14.f : (cardW - 14.f) / 3.f, ly = r0.y + 46.f;
             const char* labels[3] = { "first", "timing", "reaction" };
             char vals[3][16];
             snprintf(vals[0], sizeof(vals[0]), "%d", first);
             const float tMed = PrMedian(timings), rMed = PrMedian(reactions);
             if (std::isnan(tMed)) snprintf(vals[1], sizeof(vals[1]), "-"); else snprintf(vals[1], sizeof(vals[1]), "%+.2f s", tMed);
             if (std::isnan(rMed)) snprintf(vals[2], sizeof(vals[2]), "-"); else snprintf(vals[2], sizeof(vals[2]), "%+.2f s", rMed);
-            for (int c = 0; c < 3; ++c)
+            for (int c = compact ? 1 : 0; c < (compact ? 2 : 3); ++c)
             {
-                const float cx = r0.x + 7.f + c * colStep;
+                const float cx = r0.x + 7.f + (compact ? 0.f : c * colStep);
                 dl->AddText(font, 12.f, ImVec2(cx, ly), ImGui::ColorConvertFloat4ToU32(kPrDim), labels[c]);
                 dl->AddText(font, 15.f, ImVec2(cx, ly + 15.f),
                             c == 0 ? IM_COL32(0xEA, 0xEA, 0xEA, 0xFF) : ImGui::ColorConvertFloat4ToU32(kPrGold), vals[c]);
@@ -1200,7 +1368,19 @@ void ReplayWindow::DrawPianoRollMonkCards()
 
             // Hover: a short summary - how often they answered, how fast (each spike as a dot on a
             // small axis), and what they answered with. The spike-by-spike view is the spike bar.
-            if (hov && !mine.empty())
+            int hovNum = -1;   // 0..2 = first / timing / reaction, 3 = the covered bar
+            if (hov)
+            {
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                if (mp.y >= ly - 2.f) hovNum = compact ? 1 : std::clamp(static_cast<int>((mp.x - r0.x - 7.f) / colStep), 0, 2);
+                else if (mp.y >= by - 7.f && mp.y <= by + 12.f) hovNum = 3;
+            }
+            if (hovNum >= 0)
+            {
+                const char* help[4] = { kHelpFirst, kHelpTiming, kHelpReaction, kHelpCovered };
+                PrTip(help[hovNum]);
+            }
+            else if (hov && !mine.empty())
             {
                 ImGui::BeginTooltip();
                 ImGui::TextColored(PrTeamText(team), "%s", m->playerName.c_str());
@@ -1221,13 +1401,41 @@ void ReplayWindow::DrawPianoRollMonkCards()
                 {
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(timings));
                     line("Usual timing", kPrGold, buf);
+                    ImGui::SameLine(0.f, 8.f); ImGui::TextColored(kPrDim, "(with their cast)");
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(reactions));
                     line("Usual reaction", kPrGold, buf);
+                    ImGui::SameLine(0.f, 8.f); ImGui::TextColored(kPrDim, "(before their cast)");
                 }
                 if (!healTimes.empty())
                 {
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(healTimes));
                     line("Usual heal time", kPrGold, buf);
+                }
+
+                // Their prots, each cast once (one cast can answer two spikes).
+                std::unordered_set<const SkillUseEvent*> seen;
+                std::unordered_map<int, int> backBySkill;
+                int prots = 0, protsHit = 0, back = 0;
+                for (const SpikeInfo* sp : mine)
+                    for (const auto& a : sp->answers)
+                    {
+                        if (a.casterId != monkId || !seen.insert(a.ev).second) continue;
+                        const ProtUse pu = PianoRollProtUse(a, sp->target);
+                        if (!pu.isProt) continue;
+                        ++prots;
+                        if (pu.hits > 0) ++protsHit;
+                        back += pu.healedBack;
+                        backBySkill[a.ev->skillId] += pu.healedBack;
+                    }
+                if (prots > 0)
+                {
+                    snprintf(buf, sizeof(buf), "%d of %d (%d%%)", protsHit, prots, static_cast<int>(std::round(100.f * protsHit / prots)));
+                    line("Prots that took a hit", kWhite, buf);
+                    if (back > 0)
+                    {
+                        snprintf(buf, sizeof(buf), "%d Health", back);
+                        line("Healed back by prots", kWhite, buf);
+                    }
                 }
 
                 // Every timing as a dot on one axis, from 2 s before the first hit to 3 s after.
@@ -1266,9 +1474,10 @@ void ReplayWindow::DrawPianoRollMonkCards()
 
                 // What they answered with, most used first.
                 std::vector<std::pair<int, int>> used;   // skill, count
+                std::unordered_set<const SkillUseEvent*> counted;
                 for (const SpikeInfo* sp : mine)
                     for (const auto& a : sp->answers)
-                        if (a.casterId == monkId)
+                        if (a.casterId == monkId && counted.insert(a.ev).second)
                         {
                             auto it = std::find_if(used.begin(), used.end(), [&](const auto& u) { return u.first == a.ev->skillId; });
                             if (it == used.end()) used.push_back({ a.ev->skillId, 1 }); else ++it->second;
@@ -1292,6 +1501,11 @@ void ReplayWindow::DrawPianoRollMonkCards()
                         ImGui::TextColored(kPrDim, "x%d", used[u].second);
                         ImGui::SameLine(0.f, 6.f);
                         ImGui::TextColored(kPrDim, "%s", isHeal(used[u].first) ? "heal" : "prot");
+                        if (const auto bit = backBySkill.find(used[u].first); bit != backBySkill.end() && bit->second > 0)
+                        {
+                            ImGui::SameLine(0.f, 10.f);
+                            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%d healed back", bit->second);
+                        }
                     }
                 }
                 ImGui::Spacing();
