@@ -631,6 +631,18 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         g_map_browser->Initialize(hwnd, rc.right - rc.left, rc.bottom - rc.top);
     }
 
+    // THE FRAME LIMIT. Nothing else paces this loop: the replay windows present without vsync and
+    // the main window's own vsync only applies while it is in front, so with a replay or OBS in
+    // front the app used to render as fast as the GPU allowed. Between frames the loop now sleeps
+    // on a high-resolution waitable timer, woken early by any window message so input stays
+    // immediate. Loading screens and the clip export's fixed-clock render are never held back.
+    HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                               TIMER_ALL_ACCESS);
+    if (!frameTimer)
+        frameTimer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+    LARGE_INTEGER qpcFreq{}, nextFrame{};
+    QueryPerformanceFrequency(&qpcFreq);
+
     // Main message loop
     MSG msg = {};
     while (WM_QUIT != msg.message)
@@ -642,6 +654,31 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
         else
         {
+            const int fpsLimit = GuiGlobalConstants::frame_limit_fps;
+            if (fpsLimit > 0 && frameTimer && !g_AppBusy && !GuiGlobalConstants::frame_limit_bypass)
+            {
+                LARGE_INTEGER now;
+                QueryPerformanceCounter(&now);
+                const LONGLONG period = qpcFreq.QuadPart / fpsLimit;
+                if (now.QuadPart < nextFrame.QuadPart)
+                {
+                    // Relative due time, in 100 ns units.
+                    LARGE_INTEGER due;
+                    due.QuadPart = -static_cast<LONGLONG>(
+                        (nextFrame.QuadPart - now.QuadPart) * 10000000.0 / qpcFreq.QuadPart);
+                    if (due.QuadPart < 0 && SetWaitableTimer(frameTimer, &due, 0, nullptr, nullptr, FALSE))
+                    {
+                        MsgWaitForMultipleObjectsEx(1, &frameTimer, INFINITE, QS_ALLINPUT,
+                                                    MWMO_INPUTAVAILABLE);
+                        continue;
+                    }
+                }
+                // Keep a steady cadence, but never try to catch up on frames a slow PC missed.
+                nextFrame.QuadPart = (now.QuadPart - nextFrame.QuadPart > period)
+                    ? now.QuadPart + period
+                    : nextFrame.QuadPart + period;
+            }
+
             // A C++ exception escaping a frame reaches the unhandled exception
             // filter as code 0xE06D7363, where the reported call stack is
             // unsymbolised and useless. Catch it here while the message is
@@ -662,6 +699,9 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
     }
 
     g_map_browser.reset();
+
+    if (frameTimer)
+        CloseHandle(frameTimer);
 
     CoUninitialize();
 

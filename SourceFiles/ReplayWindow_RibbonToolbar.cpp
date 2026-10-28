@@ -1220,6 +1220,8 @@ void ReplayWindow::DrawRibbonToolbar()
                         m_ribbonMoreOpen = true;
                         if (ImGui::MenuItem("Interface Preferences"))
                             m_showInterfacePrefs = true;
+                        if (ImGui::MenuItem("Graphics"))
+                            m_showGraphicsPrefs = true;
                         if (ImGui::MenuItem("Shortcuts"))
                             m_showShortcutPreferences = true;
                         ImGui::EndPopup();

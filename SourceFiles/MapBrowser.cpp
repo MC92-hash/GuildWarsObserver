@@ -657,20 +657,39 @@ void MapBrowser::Tick()
                 if (rw && rw->IsAlive() && rw->IsLoading()) { busy = true; break; }
         }
         g_AppBusy = busy;
+
+        // A clip export renders its frames on a fixed clock; the frame limit would only slow it.
+        bool clipRendering = false;
+        for (const auto& rw : m_replay_windows)
+            if (rw && rw->IsAlive() && rw->IsExportingClip()) { clipRendering = true; break; }
+        GuiGlobalConstants::frame_limit_bypass = clipRendering;
     }
 
-    // Check if cloud sync has new data
+    // Check if cloud sync has new data. The rescan parses every match folder - 300 ms for 250
+    // matches on a fast PC, seconds on a slow disk - and full_cache sync reports new data after
+    // EVERY downloaded match, so done here it froze replay playback for the whole sync. It runs
+    // on a worker instead and only the merge happens on this thread, when it lands. Acknowledged
+    // BEFORE asking, so data the sync reports meanwhile raises the flag again and queues a rerun.
     if (m_syncEngine && m_syncEngine->HasNewData())
     {
-        int added = m_replay_library.RescanDiff();
-        RunLog::Line("library: the sync reported new data; rescan added %d, total %d match(es)",
-                     added, m_replay_library.GetMatchCount());
-        if (added > 0)
-        {
-            g_invalidateFilters = true;
-            g_refreshHint = true;
-        }
         m_syncEngine->AcknowledgeNewData();
+        m_replay_library.RequestRescanAsync();
+        m_syncRescanPending = true;
+    }
+    {
+        int added = 0;
+        if (m_replay_library.PollRescanAsync(added) && m_syncRescanPending)
+        {
+            // Kept while a queued rerun is still to land - it carries the later request.
+            m_syncRescanPending = m_replay_library.IsRescanAsyncBusy();
+            RunLog::Line("library: the sync reported new data; rescan added %d, total %d match(es)",
+                         added, m_replay_library.GetMatchCount());
+            if (added > 0)
+            {
+                g_invalidateFilters = true;
+                g_refreshHint = true;
+            }
+        }
     }
 
     // Handle manual refresh request from replay browser

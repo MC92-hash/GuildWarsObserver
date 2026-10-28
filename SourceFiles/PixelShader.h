@@ -39,6 +39,10 @@ enum class PixelShaderType
 class PixelShader
 {
 public:
+    // The main sampler's anisotropy, read when a shader is initialised. A replay window sets its
+    // Texture filtering setting here for the shaders it builds, then puts 16 back.
+    inline static UINT s_max_anisotropy = 16;
+
     PixelShader(ID3D11Device* device, ID3D11DeviceContext* deviceContext)
         : m_device(device)
         , m_deviceContext(deviceContext)
@@ -176,8 +180,8 @@ public:
         shadowSamplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
 
         D3D11_SAMPLER_DESC samplerDesc = {};
-        samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
-        samplerDesc.MaxAnisotropy = 16;
+        samplerDesc.Filter = s_max_anisotropy > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        samplerDesc.MaxAnisotropy = std::clamp<UINT>(s_max_anisotropy, 1, 16);
         samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
         samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
         samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;

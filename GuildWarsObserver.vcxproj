@@ -660,6 +660,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Notepad.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_RibbonToolbar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Bloom.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_RenderScale.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FogOfWar.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Shadows.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_PropOcclusion.cpp" />

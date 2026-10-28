@@ -10,6 +10,7 @@
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
+#include "GraphicsSettingsUI.h"
 #include "MapBrowser.h"
 #include "TextureCache.h"
 #include "CursorSystem.h"
@@ -996,4 +997,44 @@ void ReplayWindow::ApplyReplayCameraFovFromSettings()
         return;
     m_mapRenderer->SetPerspectiveFovDegrees(
         GuiGlobalConstants::ClampReplayCameraFovDegrees(GuiGlobalConstants::replay_camera_fov_degrees));
+}
+
+// The replay's Graphics preferences: the same Performance controls as the main Settings window,
+// one click from the toolbar for whoever needs a lighter picture mid-match.
+void ReplayWindow::DrawGraphicsPreferences()
+{
+    if (!m_showGraphicsPrefs) return;
+
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float cardW = std::max(380.f, std::min(460.f, display.x - 80.f));
+    ImGui::SetNextWindowPos(ImVec2((display.x - cardW) * 0.5f, display.y * 0.25f), ImGuiCond_Once);
+    ImGui::SetNextWindowSize(ImVec2(cardW, 0.f), ImGuiCond_Once);
+
+    PushPrefsModalChrome();
+    if (!ImGui::Begin("Graphics Preferences", &m_showGraphicsPrefs,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
+                      ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::End();
+        PopPrefsModalChrome();
+        return;
+    }
+
+    DrawPrefsModalTitle(" -  Graphics");
+    DrawPrefsSectionHeader("PERFORMANCE");
+    ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.55f), "(applies to all open replay windows)");
+    ImGui::Dummy(ImVec2(0, 6.f));
+
+    PushPrefsFrameStyle();
+    DrawGraphicsSettingsControls();
+    PopPrefsFrameStyle();
+
+    ImGui::Dummy(ImVec2(0, 10.f));
+    PushPrefsSecondaryButtonStyle();
+    if (ImGui::Button("Close", ImVec2(120.f, 34.f)))
+        m_showGraphicsPrefs = false;
+    PopPrefsSecondaryButtonStyle();
+
+    ImGui::End();
+    PopPrefsModalChrome();
 }
