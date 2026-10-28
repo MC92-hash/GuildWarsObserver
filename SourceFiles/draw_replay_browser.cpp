@@ -1181,7 +1181,7 @@ struct BrowserState
     float detailChartAnchor  = -1.0f;  // where a drag across the timeline chart began
     float detailPlayhead     = 0.0f;   // Map tab, seconds on the match clock
     bool  detailPlaying      = false;
-    float detailPlaySpeed    = 4.0f;
+    float detailPlaySpeed    = 1.0f;
     bool  detailShowTrails   = false;
     bool  detailShowNames    = false;
     float detailMapZoom      = 1.0f;   // Map tab view: 1 = whole map, up to 8
@@ -6273,17 +6273,85 @@ static void FilterBySearchTerm(const std::string& term)
     s_state.lastSearchEditTime = -1.0f;
 }
 
-static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
-                                const GuildLabel& guild, bool isWinner,
-                                const ResponsiveSizes& sz)
+// The skill data as it was on the day of the match.
+static const SkillDatabaseView& GetMatchSkillView(const MatchMeta& m)
 {
-    // Use skill data matching this match's date
     static std::unordered_map<int, SkillDatabaseView> s_matchViewCache;
     int dateKey = m.year * 10000 + m.month * 100 + m.day;
     auto [cacheIt, inserted] = s_matchViewCache.try_emplace(dateKey);
     if (inserted)
         cacheIt->second = GetSkillDatabase().GetView(m.year, m.month, m.day);
-    const auto& matchView = cacheIt->second;
+    return cacheIt->second;
+}
+
+// A player's bar, as the Overview shows it: hover for the skill, click to filter by it.
+static void DrawPlayerSkillRow(const PlayerMeta& p, const SkillDatabaseView& matchView, float skillIconSize)
+{
+    if (p.used_skills.empty()) return;
+    auto sortedSkills = matchView.SortSkillsForDisplay(p.used_skills, p.primary, p.secondary);
+    for (int ski = 0; ski < (int)sortedSkills.size(); ski++)
+    {
+        if (ski > 0) ImGui::SameLine(0, 2);
+        int skillId = sortedSkills[ski];
+        ImTextureID skillTex = GetSkillIcon(skillId, &matchView);
+        if (skillTex)
+        {
+            ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
+            const bool picked = s_state.selectedSkills.count(skillId) > 0;
+            if (picked)
+            {
+                // Already in the filter: ring it so the panel and this list
+                // agree about what is selected.
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                    ImGui::GetColorU32(kColorAccent), 2.0f, 0, 2.0f);
+            }
+
+            if (ImGui::IsItemHovered())
+            {
+                // Lift the hovered icon a little. Drawn on the foreground
+                // list because the grown edges would otherwise be clipped
+                // by the table cell the row of icons sits in.
+                const float grow = skillIconSize * 0.16f;
+                const ImVec2 mn = ImGui::GetItemRectMin();
+                const ImVec2 mx = ImGui::GetItemRectMax();
+                ImGui::GetForegroundDrawList()->AddImage(
+                    skillTex,
+                    ImVec2(mn.x - grow, mn.y - grow),
+                    ImVec2(mx.x + grow, mx.y + grow));
+
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                DrawSkillTooltip(skillId, &matchView);
+
+                // Toggle, not just add: without it the only way to undo a
+                // mis-click is to go and find the chip in the filter panel.
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    if (picked) s_state.selectedSkills.erase(skillId);
+                    else        s_state.selectedSkills.insert(skillId);
+                }
+            }
+        }
+        else
+        {
+            ImVec2 pos = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(pos,
+                ImVec2(pos.x + skillIconSize, pos.y + skillIconSize),
+                IM_COL32(42, 42, 46, 255), 2.f);
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(pos.x + skillIconSize * 0.3f, pos.y),
+                IM_COL32(180, 180, 180, 255), "?");
+            ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
+            if (ImGui::IsItemHovered()) DrawSkillTooltip(skillId, &matchView);
+        }
+    }
+}
+
+static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
+                                const GuildLabel& guild, bool isWinner,
+                                const ResponsiveSizes& sz)
+{
+    const auto& matchView = GetMatchSkillView(m);
 
     const float iconSize = sz.profIcon;
     const float skillIconSize = sz.skillIcon;
@@ -6599,67 +6667,7 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
             if (showSkills)
             {
                 ImGui::TableNextColumn();
-                if (!p.used_skills.empty())
-                {
-                    auto sortedSkills = matchView.SortSkillsForDisplay(
-                        p.used_skills, p.primary, p.secondary);
-                    for (int ski = 0; ski < (int)sortedSkills.size(); ski++)
-                    {
-                        if (ski > 0) ImGui::SameLine(0, 2);
-                        int skillId = sortedSkills[ski];
-                        ImTextureID skillTex = GetSkillIcon(skillId, &matchView);
-                        if (skillTex)
-                        {
-                            ImGui::Image(skillTex, ImVec2(skillIconSize, skillIconSize));
-                            const bool picked = s_state.selectedSkills.count(skillId) > 0;
-                            if (picked)
-                            {
-                                // Already in the filter: ring it so the panel and this list
-                                // agree about what is selected.
-                                ImGui::GetWindowDrawList()->AddRect(
-                                    ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                                    ImGui::GetColorU32(kColorAccent), 2.0f, 0, 2.0f);
-                            }
-
-                            if (ImGui::IsItemHovered())
-                            {
-                                // Lift the hovered icon a little. Drawn on the foreground
-                                // list because the grown edges would otherwise be clipped
-                                // by the table cell the row of icons sits in.
-                                const float grow = skillIconSize * 0.16f;
-                                const ImVec2 mn = ImGui::GetItemRectMin();
-                                const ImVec2 mx = ImGui::GetItemRectMax();
-                                ImGui::GetForegroundDrawList()->AddImage(
-                                    skillTex,
-                                    ImVec2(mn.x - grow, mn.y - grow),
-                                    ImVec2(mx.x + grow, mx.y + grow));
-
-                                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                                DrawSkillTooltip(skillId, &matchView);
-
-                                // Toggle, not just add: without it the only way to undo a
-                                // mis-click is to go and find the chip in the filter panel.
-                                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                                {
-                                    if (picked) s_state.selectedSkills.erase(skillId);
-                                    else        s_state.selectedSkills.insert(skillId);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            ImVec2 pos = ImGui::GetCursorScreenPos();
-                            ImGui::GetWindowDrawList()->AddRectFilled(pos,
-                                ImVec2(pos.x + skillIconSize, pos.y + skillIconSize),
-                                IM_COL32(42, 42, 46, 255), 2.f);
-                            ImGui::GetWindowDrawList()->AddText(
-                                ImVec2(pos.x + skillIconSize * 0.3f, pos.y),
-                                IM_COL32(180, 180, 180, 255), "?");
-                            ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
-                            if (ImGui::IsItemHovered()) DrawSkillTooltip(skillId, &matchView);
-                        }
-                    }
-                }
+                DrawPlayerSkillRow(p, matchView, skillIconSize);
             }
 
             // Copy template button column
@@ -7766,6 +7774,9 @@ static void DrawDetailTimeline(const MatchMeta& m, float height)
     {
         const float xp = xAt((s_state.detailPlayhead + pre) / span);
         dl->AddLine(ImVec2(xp, chartY0), ImVec2(xp, chartY1 + trackH * 0.5f), IM_COL32(255, 215, 100, 220), 2.0f);
+        // A knob on top, as on the replay's scrub track, so the line reads as something to grab.
+        dl->AddCircleFilled(ImVec2(xp, chartY0 + 4.0f), 5.0f, IM_COL32(226, 194, 106, 255));
+        dl->AddCircle(ImVec2(xp, chartY0 + 4.0f), 5.0f, IM_COL32(255, 255, 220, 100), 0, 1.5f);
     }
 
     // ── Track + clock ──
@@ -7797,20 +7808,42 @@ static void DrawDetailTimeline(const MatchMeta& m, float height)
     const float minSpan = duration > 0 ? std::min(1.0f, 5.0f / span) : 0.01f;
     const float mouseFrac = std::clamp((mouse.x - x0) / chartW, 0.0f, 1.0f);
 
-    // Drag across the chart: a new interval from the press to the mouse.
+    // Drag across the chart: a new interval from the press to the mouse. On the Map tab the
+    // chart is also the scrubber: a click puts the playhead there, and the playhead line itself
+    // can be dragged.
+    const bool scrubs = s_state.detailTab == DetailTab_Map && ready && duration > 0;
+    const float xPlay = xAt((s_state.detailPlayhead + pre) / span);
+    static bool s_chartDragged = false, s_playheadDrag = false;
+    auto setPlayhead = [&](float frac) {
+        s_state.detailPlayhead = std::clamp(frac, from, to) * span - pre;
+    };
     ImGui::SetCursorScreenPos(ImVec2(x0, chartY0));
     ImGui::InvisibleButton("##detail_chart", ImVec2(chartW, chartH));
     if (ImGui::IsItemActivated())
-        s_state.detailChartAnchor = mouseFrac;
-    if (ImGui::IsItemActive() && s_state.detailChartAnchor >= 0.0f
-        && std::fabs(mouseFrac - s_state.detailChartAnchor) * chartW > 3.0f)
     {
+        s_state.detailChartAnchor = mouseFrac;
+        s_chartDragged = false;
+        s_playheadDrag = scrubs && std::fabs(mouse.x - xPlay) <= 5.0f;
+    }
+    if (ImGui::IsItemActive() && s_playheadDrag)
+        setPlayhead(mouseFrac);
+    else if (ImGui::IsItemActive() && s_state.detailChartAnchor >= 0.0f
+        && (s_chartDragged || std::fabs(mouseFrac - s_state.detailChartAnchor) * chartW > 3.0f))
+    {
+        s_chartDragged = true;
         from = std::min(s_state.detailChartAnchor, mouseFrac);
         to   = std::max(std::max(s_state.detailChartAnchor, mouseFrac), from + minSpan);
         to   = std::min(1.0f, to);
     }
     if (ImGui::IsItemDeactivated())
+    {
+        if (scrubs && !s_chartDragged && !s_playheadDrag)
+            setPlayhead(mouseFrac);
         s_state.detailChartAnchor = -1.0f;
+        s_playheadDrag = false;
+    }
+    if (scrubs && (s_playheadDrag || (ImGui::IsItemHovered() && std::fabs(mouse.x - xPlay) <= 5.0f)))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     const bool chartActive = ImGui::IsItemActive();
     const bool chartHovered = ImGui::IsItemHovered();
 
@@ -7830,7 +7863,13 @@ static void DrawDetailTimeline(const MatchMeta& m, float height)
     const bool trackHovered = ImGui::IsItemHovered();
 
     // ── Tooltips ──
-    if (chartActive || trackActive)
+    if (chartActive && s_playheadDrag)
+    {
+        char clock[16];
+        FormatClock((int)std::floor(s_state.detailPlayhead), clock, sizeof(clock));
+        ImGui::SetTooltip("%s", clock);
+    }
+    else if ((chartActive && s_chartDragged) || trackActive)
         ImGui::SetTooltip("%s - %s  (%s)", fromBuf, toBuf, lenBuf);
     else if (hovered)
     {
@@ -7851,7 +7890,8 @@ static void DrawDetailTimeline(const MatchMeta& m, float height)
     {
         char clock[16];
         FormatClock((int)std::lround(mouseFrac * span) - pre, clock, sizeof(clock));
-        ImGui::SetTooltip("%s\nDrag to select a fight", clock);
+        ImGui::SetTooltip(scrubs ? "%s\nClick to move the playhead, drag to select a fight"
+                                 : "%s\nDrag to select a fight", clock);
     }
     else if (trackHovered)
         ImGui::SetTooltip("Drag a handle to move the start or the end");
@@ -7966,6 +8006,343 @@ static void HandleMapTabHotkeys(float fromT, float toT)
     }
 }
 
+// The Map tab's play bar: the replay window's transport row (ReplayWindow_TimelineController.cpp),
+// its glass panel and buttons, over the interval. The timeline under it is the scrub track.
+static constexpr float kMapPlayBarH = 44.0f;
+
+static void DrawMapPlayBar(ImVec2 pos, float width, float fromT, float toT, float& t)
+{
+    const float barH = kMapPlayBarH, PAD = 12.f;
+    const float BTN_H = 30.f, PLAY_SZ = 36.f, BGAP = 2.f, GDIV = 10.f;
+    const float d2r = IM_PI / 180.f;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float fs = font->FontSize;
+    const float fsSm = fs * 0.82f;
+
+    // The replay bar's dark-glass gold palette.
+    const ImU32 cGlass      = IM_COL32( 18,  16,  10, 150);
+    const ImU32 cBorder     = IM_COL32(160, 120,  40,  46);
+    const ImU32 cBorderHi   = IM_COL32(200, 168,  75,  82);
+    const ImU32 cBorderGlow = IM_COL32(200, 168,  75, 140);
+    const ImU32 cGold       = IM_COL32(200, 168,  75, 255);
+    const ImU32 cGoldBright = IM_COL32(226, 194, 106, 255);
+    const ImU32 cGoldFill   = IM_COL32(200, 168,  75,  20);
+    const ImU32 cText       = IM_COL32(232, 223, 200, 255);
+    const ImU32 cTextMid    = IM_COL32(154, 138, 104, 255);
+    const ImU32 cTextDim    = IM_COL32(120, 108,  80, 255);
+    const ImU32 cDanger     = IM_COL32(192,  80,  74, 255);
+    const ImU32 cGreen      = IM_COL32( 90, 170, 120, 255);
+    const ImU32 cGreenDim   = IM_COL32( 90, 170, 120,  80);
+
+    const float px = pos.x, py = pos.y, pw = width, ph = barH;
+    dl->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + ph), IM_COL32(8, 9, 12, 140), 8.f);
+    dl->AddRectFilled(ImVec2(px, py), ImVec2(px + pw, py + ph), cGlass, 8.f);
+    dl->AddRect(ImVec2(px, py), ImVec2(px + pw, py + ph), cBorderHi, 8.f);
+    {
+        const float sx = px + 12.f, sw = pw - 24.f, mx = sx + sw * 0.5f;
+        dl->AddRectFilledMultiColor(ImVec2(sx, py), ImVec2(mx, py + 1.f),
+            IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100), IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0));
+        dl->AddRectFilledMultiColor(ImVec2(mx, py), ImVec2(sx + sw, py + 1.f),
+            IM_COL32(200,168,75,100), IM_COL32(200,168,75, 0), IM_COL32(200,168,75, 0), IM_COL32(200,168,75,100));
+    }
+
+    const float x0 = px + PAD;
+    bool& playing = s_state.detailPlaying;
+
+    // ── One row: status chip and clock left, transport centred, toggles after it, speed right ──
+    const float cy = py + (barH - BTN_H) * 0.5f;
+    {
+        char curBuf[16], totBuf[16];
+        FormatClock((int)std::floor(t), curBuf, sizeof(curBuf));
+        FormatClock((int)std::floor(toT), totBuf, sizeof(totBuf));
+        const float cx0 = x0 + 66.f + 10.f;
+        const float ty = cy + (BTN_H - fs) * 0.5f;
+        dl->AddText(font, fs, ImVec2(cx0, ty), cText, curBuf);
+        const float curW = font->CalcTextSizeA(fs, FLT_MAX, 0.f, curBuf).x;
+        const float sepY = ty + (fs - fsSm) * 0.5f;
+        dl->AddText(font, fsSm, ImVec2(cx0 + curW + 2.f, sepY), cBorderHi, " / ");
+        const float sepW = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, " / ").x;
+        dl->AddText(font, fsSm, ImVec2(cx0 + curW + 2.f + sepW, sepY), cTextMid, totBuf);
+    }
+    auto FillBtn = [&](float bx, float by, float bw, float bh, bool hov, ImU32 bg0, ImU32 bdr0) {
+        const ImU32 bg = hov ? cGoldFill : bg0;
+        const ImU32 bdr = hov ? cBorderHi : bdr0;
+        if ((bg >> 24) > 0) dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bg, 5.f);
+        if ((bdr >> 24) > 0) dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bdr, 5.f);
+    };
+    auto Divider = [&](float dx) {
+        dl->AddLine(ImVec2(dx, cy + 3.f), ImVec2(dx, cy + BTN_H - 3.f), cBorder);
+    };
+
+    {
+        const float chipW = 66.f;
+        dl->AddRectFilled(ImVec2(x0, cy), ImVec2(x0 + chipW, cy + BTN_H), IM_COL32(0,0,0,76), 5.f);
+        dl->AddRect(ImVec2(x0, cy), ImVec2(x0 + chipW, cy + BTN_H), cBorder, 5.f);
+        const bool blinkOn = ((int)(ImGui::GetTime() / 0.65) % 2 == 0);
+        dl->AddCircleFilled(ImVec2(x0 + 8.f, cy + BTN_H * 0.5f), 2.5f,
+                            playing ? (blinkOn ? cGreen : cGreenDim) : cDanger);
+        dl->PushClipRect(ImVec2(x0, cy), ImVec2(x0 + chipW, cy + BTN_H), true);
+        dl->AddText(font, fsSm, ImVec2(x0 + 16.f, cy + (BTN_H - fsSm) * 0.5f), cTextDim,
+                    playing ? "PLAYING" : "STOPPED");
+        dl->PopClipRect();
+    }
+
+    const float bk30W = 40.f, stepW = 34.f, stopW = 24.f, toggleW = 58.f;
+    const float transportW = bk30W + BGAP + stepW + BGAP + stepW + GDIV + PLAY_SZ + BGAP + stopW
+                           + GDIV + stepW + BGAP + stepW + BGAP + bk30W;
+    float cx = std::max(x0 + 180.f, px + (pw - transportW) * 0.5f);
+
+    auto DrawStepBtn = [&](const char* id, float bw, const char* label, float stepSec, bool forward) {
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton(id, ImVec2(bw, BTN_H));
+        const bool hov = ImGui::IsItemHovered();
+        FillBtn(cx, cy, bw, BTN_H, hov, 0, 0);
+        const ImU32 fg = hov ? cGoldBright : cTextMid;
+        const float thick = 1.3f, rad = 4.f;
+        if (!forward)
+        {
+            const float icx = cx + bw - 10.f, icy = cy + BTN_H * 0.5f;
+            dl->PathArcTo(ImVec2(icx, icy), rad, 270.f * d2r, (270.f + 300.f) * d2r, 24);
+            dl->PathStroke(fg, false, thick);
+            const float tipX = icx + rad - 0.5f, tipY = icy - 1.f;
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX - 2.5f, tipY - 2.f), fg, thick);
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX + 0.8f, tipY - 2.5f), fg, thick);
+            dl->AddText(font, fsSm, ImVec2(cx + 4.f, cy + (BTN_H - fsSm) * 0.5f), fg, label);
+        }
+        else
+        {
+            const float icx = cx + 10.f, icy = cy + BTN_H * 0.5f;
+            dl->PathArcTo(ImVec2(icx, icy), rad, 30.f * d2r, (30.f + 300.f) * d2r, 24);
+            dl->PathStroke(fg, false, thick);
+            const float tipX = icx - rad + 0.5f, tipY = icy - 1.f;
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX + 2.5f, tipY - 2.f), fg, thick);
+            dl->AddLine(ImVec2(tipX, tipY), ImVec2(tipX - 0.8f, tipY - 2.5f), fg, thick);
+            dl->AddText(font, fsSm, ImVec2(cx + 16.f, cy + (BTN_H - fsSm) * 0.5f), fg, label);
+        }
+        if (ImGui::IsItemClicked()) t = std::clamp(t + stepSec, fromT, toT);
+        if (hov) ImGui::SetTooltip(forward ? "Forward %s" : "Back %s", label);
+        cx += bw + BGAP;
+    };
+
+    DrawStepBtn("##map_bk30", bk30W, "30s", -30.f, false);
+    DrawStepBtn("##map_bk5",  stepW, "5s",  -5.f,  false);
+    DrawStepBtn("##map_bk1",  stepW, "1s",  -1.f,  false);
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+
+    {
+        const float plaY = cy - (PLAY_SZ - BTN_H) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(cx, plaY));
+        ImGui::InvisibleButton("##map_play", ImVec2(PLAY_SZ, PLAY_SZ));
+        const bool hov = ImGui::IsItemHovered();
+        dl->AddRectFilled(ImVec2(cx, plaY), ImVec2(cx + PLAY_SZ, plaY + PLAY_SZ),
+                          hov ? IM_COL32(200,168,75, 33) : IM_COL32(200,168,75, 18), 6.f);
+        dl->AddRect(ImVec2(cx, plaY), ImVec2(cx + PLAY_SZ, plaY + PLAY_SZ), hov ? cBorderGlow : cBorderHi, 6.f);
+        const ImU32 fg = hov ? cGoldBright : cGold;
+        const float pcx = cx + PLAY_SZ * 0.5f, pcy = plaY + PLAY_SZ * 0.5f;
+        if (!playing)
+            dl->AddTriangleFilled(ImVec2(pcx - 4.f, pcy - 5.f), ImVec2(pcx + 5.f, pcy), ImVec2(pcx - 4.f, pcy + 5.f), fg);
+        else
+        {
+            dl->AddRectFilled(ImVec2(pcx - 4.5f, pcy - 5.f), ImVec2(pcx - 1.5f, pcy + 5.f), fg);
+            dl->AddRectFilled(ImVec2(pcx + 1.5f, pcy - 5.f), ImVec2(pcx + 4.5f, pcy + 5.f), fg);
+        }
+        if (ImGui::IsItemClicked())
+        {
+            if (!playing && t >= toT - 0.01f) t = fromT;
+            playing = !playing;
+        }
+        if (hov) ImGui::SetTooltip(playing ? "Pause" : "Play");
+        cx += PLAY_SZ + BGAP;
+    }
+    {
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton("##map_stop", ImVec2(stopW, BTN_H));
+        const bool hov = ImGui::IsItemHovered();
+        FillBtn(cx, cy, stopW, BTN_H, hov, 0, hov ? IM_COL32(192,80,74,100) : IM_COL32(0,0,0,0));
+        const float sq = 8.f;
+        const float scx = cx + (stopW - sq) * 0.5f, scy = cy + (BTN_H - sq) * 0.5f;
+        dl->AddRectFilled(ImVec2(scx, scy), ImVec2(scx + sq, scy + sq), hov ? cDanger : cTextMid);
+        if (ImGui::IsItemClicked()) { t = fromT; playing = false; }
+        if (hov) ImGui::SetTooltip("Stop (back to the start of the interval)");
+        cx += stopW + BGAP;
+    }
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+
+    DrawStepBtn("##map_fw1",  stepW, "1s",  +1.f,  true);
+    DrawStepBtn("##map_fw5",  stepW, "5s",  +5.f,  true);
+    DrawStepBtn("##map_fw30", bk30W, "30s", +30.f, true);
+
+    // Trails and Names: toggles in the Loop button's style.
+    auto DrawToggle = [&](const char* id, const char* label, bool& on, const char* tip) {
+        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
+        ImGui::InvisibleButton(id, ImVec2(toggleW, BTN_H));
+        const bool hov = ImGui::IsItemHovered();
+        FillBtn(cx, cy, toggleW, BTN_H, hov, on ? cGoldFill : 0, on ? cBorderHi : 0);
+        const ImU32 fg = (hov || on) ? cGoldBright : cTextMid;
+        dl->AddCircleFilled(ImVec2(cx + 9.f, cy + BTN_H * 0.5f), 3.f, on ? cGreen : cTextDim);
+        dl->AddText(font, fsSm, ImVec2(cx + 17.f, cy + (BTN_H - fsSm) * 0.5f), fg, label);
+        if (ImGui::IsItemClicked()) on = !on;
+        if (hov) ImGui::SetTooltip("%s: %s", tip, on ? "ON" : "OFF");
+        cx += toggleW + BGAP;
+    };
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    DrawToggle("##map_trails", "Trails", s_state.detailShowTrails, "Where each player went since the start of the interval");
+    DrawToggle("##map_names",  "Names",  s_state.detailShowNames,  "Player names on the map");
+
+    // ── Speed (right-aligned) ──
+    {
+        const float speedW = 54.f;
+        const float speedX = px + pw - PAD - speedW;
+        dl->AddText(font, fsSm, ImVec2(speedX - 8.f - font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x,
+                                       cy + (BTN_H - fsSm) * 0.5f + 1.f), cTextDim, "SPEED");
+        ImGui::SetCursorScreenPos(ImVec2(speedX, cy));
+        ImGui::InvisibleButton("##map_speed", ImVec2(speedW, BTN_H));
+        const bool hov = ImGui::IsItemHovered();
+        FillBtn(speedX, cy, speedW, BTN_H, hov, 0, cBorderHi);
+        const ImU32 sfg = hov ? cGoldBright : cTextMid;
+        char sLbl[8];
+        snprintf(sLbl, sizeof(sLbl), "%dx", (int)s_state.detailPlaySpeed);
+        const ImVec2 tsz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, sLbl);
+        const float tx = speedX + (speedW - tsz.x - 8.f) * 0.5f, ty = cy + (BTN_H - fs) * 0.5f;
+        dl->AddText(font, fs, ImVec2(tx, ty), sfg, sLbl);
+        const float arX = tx + tsz.x + 3.f, arY = ty + fs * 0.35f;
+        dl->AddTriangleFilled(ImVec2(arX, arY), ImVec2(arX + 4.f, arY), ImVec2(arX + 2.f, arY + 3.f), sfg);
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##map_speed_menu");
+
+        const int speedCount = (int)std::size(kMapPlaySpeeds);
+        const float popupH = speedCount * ImGui::GetFrameHeightWithSpacing() + 8.f;
+        ImGui::SetNextWindowPos(ImVec2(speedX, cy - popupH));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(speedW, 0), ImVec2(speedW * 2.f, FLT_MAX));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.07f, 0.06f, 0.04f, 0.97f));
+        ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0.78f, 0.66f, 0.29f, 0.08f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.78f, 0.66f, 0.29f, 0.20f));
+        if (ImGui::BeginPopup("##map_speed_menu"))
+        {
+            // Fastest first, as in the replay: the menu opens upwards.
+            for (int i = speedCount - 1; i >= 0; --i)
+            {
+                char l[8];
+                snprintf(l, sizeof(l), "%dx", kMapPlaySpeeds[i]);
+                if (ImGui::Selectable(l, (int)s_state.detailPlaySpeed == kMapPlaySpeeds[i]))
+                    s_state.detailPlaySpeed = (float)kMapPlaySpeeds[i];
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor(3);
+        if (hov) ImGui::SetTooltip("Playback speed");
+    }
+}
+
+// The team columns beside the map: the guild line, then a row per player this far apart.
+static constexpr float kMapTeamRowGap = 3.0f;
+static float MapTeamHeaderH() { return ImGui::GetTextLineHeight() + 10.0f; }
+
+// The widest player name of the match, for the name column beside the map.
+static float MapTeamNameWidth(const MatchMeta& m)
+{
+    float w = 0.0f;
+    for (const auto& [id, party] : m.parties)
+        for (const auto& p : party.players)
+            w = std::max(w, ImGui::CalcTextSize(
+                (p.encoded_name.empty() ? std::string("(unnamed)") : SanitizePlayerName(p.encoded_name)).c_str()).x);
+    return w;
+}
+
+// One team beside the map: its guild, then one row per player - professions, name, then the
+// bar as the Overview shows it. A player dead at the playhead is dimmed.
+static void DrawMapTeamColumn(const MatchMeta& m, const char* partyId, ImVec2 pos, ImVec2 size,
+                              float skillSz, float nameW, float t)
+{
+    auto pit = m.parties.find(partyId);
+    if (pit == m.parties.end()) return;
+    std::vector<const PlayerMeta*> sorted;
+    for (const auto& p : pit->second.players) sorted.push_back(&p);
+    std::sort(sorted.begin(), sorted.end(),
+        [](const PlayerMeta* a, const PlayerMeta* b) { return a->player_number < b->player_number; });
+    const auto& matchView = GetMatchSkillView(m);
+    const bool red = std::string(partyId) == "2";
+
+    ImGui::SetCursorScreenPos(pos);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    if (ImGui::BeginChild(red ? "##map_team_red" : "##map_team_blue", size, false, ImGuiWindowFlags_NoScrollbar))
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float lineH = ImGui::GetTextLineHeight();
+
+        // Header: the side's ribbon, the cup for the winner, the guild.
+        {
+            std::string ft1, ft2;
+            ParseFolderTags(m.folder_name, ft1, ft2);
+            const GuildLabel guild = GetPartyGuild(m, partyId, red ? ft2 : ft1);
+            const bool won = m.winner_party_id == (red ? 2 : 1);
+            TeamRibbonItem(lineH + 2.0f, red ? 1 : 0, true);
+            ImGui::SameLine(0, 8);
+            if (won)
+                if (ImTextureID cup = GetCupIcon())
+                {
+                    ImGui::Image(cup, ImVec2((lineH + 2.0f) * (64.0f / 109.0f), lineH + 2.0f));
+                    ImGui::SameLine(0, 6);
+                }
+            ImFont* bold = GuiGlobalConstants::boldFont;
+            if (bold) ImGui::PushFont(bold);
+            ImGui::TextColored(won ? kColorAccent : kColorText, "%s", guild.display.c_str());
+            if (bold) ImGui::PopFont();
+        }
+        // Rows at fixed offsets, the ones DrawMapTab sizes the icons by: the item spacing of the
+        // normal flow would add up to half a row over eight players.
+        ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + MapTeamHeaderH()));
+
+        for (const auto* pp : sorted)
+        {
+            const auto& p = *pp;
+            const std::string name = p.encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p.encoded_name);
+
+            // Dead at the playhead, by the analysis' position track.
+            bool dead = false;
+            for (const auto& ap : s_analysis.players)
+                if (ap.name == name)
+                {
+                    const int idx = (int)std::floor(t) + s_analysis.gateSeconds;
+                    if (idx >= 0 && (size_t)idx * 4 + 3 < ap.pos.size()) dead = ap.pos[(size_t)idx * 4 + 3] == 1;
+                    break;
+                }
+
+            // One row, everything centred on the bar's height.
+            const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+            const float rowH = std::max(skillSz, lineH);
+            const float profSz = std::min(lineH, rowH);
+            const float profY = rowMin.y + (rowH - profSz) * 0.5f;
+            ImGui::SetCursorScreenPos(ImVec2(rowMin.x, profY));
+            if (ImTextureID pri = GetProfessionIcon(p.primary)) ImGui::Image(pri, ImVec2(profSz, profSz));
+            else ImGui::Dummy(ImVec2(profSz, profSz));
+            ImGui::SetCursorScreenPos(ImVec2(rowMin.x + profSz + 1.0f, profY));
+            if (ImTextureID sec = GetProfessionIcon(p.secondary)) ImGui::Image(sec, ImVec2(profSz, profSz));
+            else ImGui::Dummy(ImVec2(profSz, profSz));
+            const float nameX = rowMin.x + 2.0f * profSz + 7.0f;
+            ImGui::SetCursorScreenPos(ImVec2(nameX, rowMin.y + (rowH - lineH) * 0.5f));
+            ImGui::TextColored(dead ? kColorTextDim : kColorText, "%s", name.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s / %s%s", GetProfessionName(p.primary), GetProfessionName(p.secondary),
+                                  dead ? "\nDead at this moment" : "");
+            ImGui::SetCursorScreenPos(ImVec2(nameX + nameW + 10.0f, rowMin.y + (rowH - skillSz) * 0.5f));
+            DrawPlayerSkillRow(p, matchView, skillSz);
+            if (dead)
+                dl->AddRectFilled(rowMin, ImVec2(rowMin.x + size.x, rowMin.y + rowH), IM_COL32(0, 0, 0, 120));
+            ImGui::SetCursorScreenPos(ImVec2(rowMin.x, rowMin.y + rowH + kMapTeamRowGap));
+        }
+        ImGui::Dummy(ImVec2(0, 0));   // an item after the last SetCursorScreenPos, as ImGui asks
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
 static void DrawMapTab(const MatchMeta& m)
 {
     const auto& job = s_analysis;
@@ -7989,53 +8366,46 @@ static void DrawMapTab(const MatchMeta& m)
         if (t >= toT) { t = toT; s_state.detailPlaying = false; }
     }
 
-    // ── Controls: play, speed, playhead, then what to show ──
-    {
-        auto toggle = [](const char* label, bool on) {
-            if (on) ImGui::PushStyleColor(ImGuiCol_Button, s_themeColors.replayBtnBg);
-            if (on) ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
-            const bool clicked = ImGui::Button(label);
-            if (on) ImGui::PopStyleColor(2);
-            return clicked;
-        };
-        if (ImGui::Button(s_state.detailPlaying ? "Pause" : "Play", ImVec2(70.0f, 0.0f)))
-        {
-            if (!s_state.detailPlaying && t >= toT - 0.01f) t = fromT;
-            s_state.detailPlaying = !s_state.detailPlaying;
-        }
-        for (int sp : kMapPlaySpeeds)
-        {
-            ImGui::SameLine(0, 4.0f);
-            char label[8];
-            snprintf(label, sizeof(label), "%dx", sp);
-            if (toggle(label, (int)s_state.detailPlaySpeed == sp)) s_state.detailPlaySpeed = (float)sp;
-        }
-        ImGui::SameLine(0, 12.0f);
-        char clock[16];
-        FormatClock((int)t, clock, sizeof(clock));
-        ImGui::SetNextItemWidth(std::min(420.0f, std::max(120.0f, ImGui::GetContentRegionAvail().x - 200.0f)));
-        ImGui::SliderFloat("##map_playhead", &t, fromT, std::max(fromT + 0.1f, toT), clock,
-                           ImGuiSliderFlags_NoInput);
-        ImGui::SameLine(0, 16.0f);
-        if (toggle("Trails", s_state.detailShowTrails)) s_state.detailShowTrails = !s_state.detailShowTrails;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where each player went since the start of the interval");
-        ImGui::SameLine(0, 4.0f);
-        if (toggle("Names", s_state.detailShowNames)) s_state.detailShowNames = !s_state.detailShowNames;
-    }
-
-    // ── The map area: the picture's own shape, as large as the tab allows ──
+    // ── The map area: the picture's own shape, as large as the tab allows above the play bar ──
     EnsureTextureBasePath();
     const MapPicture& pic = GetMapPicture(job.mapId >= 0 ? job.mapId : m.map_id);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float aspect = pic.loaded ? pic.aspect : 1.0f;
-    float drawH = std::max(80.0f, avail.y - 4.0f);
+    const float areaH = std::max(80.0f, avail.y - 4.0f - kMapPlayBarH - 4.0f);
+    // Each team's bars beside the map, Blue on the left and Red on the right, when there is
+    // room for them and a map of a useful size.
+    // One row per player: the bar's icons are as large as eight rows under the guild allow, then
+    // smaller if the width runs short; below 16 px the columns are left out.
+    const float lineH = ImGui::GetTextLineHeight();
+    const float nameW = MapTeamNameWidth(m);
+    const float colGap = 16.0f, mapMinW = 300.0f;
+    const float rowFixedW = 2.0f * lineH + 7.0f + nameW + 10.0f;
+    float skillSz = std::clamp((areaH - MapTeamHeaderH()) / 8.0f - kMapTeamRowGap, 16.0f, 40.0f);
+    const float skillByWidth = ((avail.x - mapMinW) * 0.5f - colGap - rowFixedW) / 8.0f - 2.0f;
+    skillSz = std::floor(std::min(skillSz, skillByWidth));
+    const bool showTeams = skillSz >= 16.0f;
+    const float colW = rowFixedW + 8.0f * (skillSz + 2.0f);
+    const float mapMaxW = showTeams ? avail.x - 2.0f * (colW + colGap) : avail.x;
+    float drawH = areaH;
     float drawW = drawH * aspect;
-    if (drawW > avail.x) { drawW = avail.x; drawH = drawW / aspect; }
-    const ImVec2 o(ImGui::GetCursorScreenPos().x + std::max(0.0f, (avail.x - drawW) * 0.5f),
-                   ImGui::GetCursorScreenPos().y + 2.0f);
+    if (drawW > mapMaxW) { drawW = mapMaxW; drawH = drawW / aspect; }
+    const ImVec2 areaAt = ImGui::GetCursorScreenPos();
+    const ImVec2 o(areaAt.x + std::max(0.0f, (avail.x - drawW) * 0.5f), areaAt.y + 2.0f);
     const ImVec2 e(o.x + drawW, o.y + drawH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::Dummy(ImVec2(avail.x, drawH + 4.0f));
+    if (showTeams)
+    {
+        DrawMapTeamColumn(m, "1", ImVec2(o.x - colGap - colW, o.y), ImVec2(colW, areaH), skillSz, nameW, t);
+        DrawMapTeamColumn(m, "2", ImVec2(e.x + colGap, o.y), ImVec2(colW, areaH), skillSz, nameW, t);
+        ImGui::SetCursorScreenPos(areaAt);
+    }
+    ImGui::Dummy(ImVec2(avail.x, std::max(drawH, showTeams ? areaH : 0.0f) + 4.0f));
+    {
+        const ImVec2 barAt = ImGui::GetCursorScreenPos();
+        DrawMapPlayBar(ImVec2(barAt.x, barAt.y + 4.0f), avail.x, fromT, toT, t);
+        ImGui::SetCursorScreenPos(barAt);
+        ImGui::Dummy(ImVec2(avail.x, kMapPlayBarH + 4.0f));
+    }
     const ImVec2 afterMap = ImGui::GetCursorScreenPos();
 
     // Zoom and pan. The view is the part of the picture between uv0 and uv1.
