@@ -221,7 +221,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 5;
+    static constexpr int kVersion = 6;
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
@@ -503,6 +503,44 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
                               { "z", (int)std::lround(s0.z) } });
     }
 
+    // The Damage & Healing ledger (ReplayWindow_BattleLedger.cpp), for the Library's Stats tab: its
+    // lines, interrupt attempts and the players' skill uses, times in milliseconds on the displayed
+    // clock, and every agent they name. Flat arrays: a match holds tens of thousands of lines.
+    if (!m_ledgerBuilt || (!m_ledgerUsedAttributes && m_attributesDeduced)) BuildBattleLedger();
+    nlohmann::json ledger = nlohmann::json::object();
+    {
+        const BattleLedger::Data& d = m_ledgerData;
+        auto ms = [&](float t) { return (int)std::lround((t - dispOff) * 1000.f); };
+        std::unordered_set<int> named(d.players.begin(), d.players.end());
+        nlohmann::json lines = nlohmann::json::array();
+        for (const auto& ln : d.lines)
+        {
+            lines.push_back({ ms(ln.t), (int)ln.kind, ln.src, ln.dst, ln.amount, ln.skillId, ln.rowKey,
+                              (ln.weaponHit ? 1 : 0) | (ln.estimated ? 2 : 0), ln.count, (int)ln.preventGroup });
+            named.insert(ln.src); named.insert(ln.dst);
+        }
+        nlohmann::json ints = nlohmann::json::array();
+        for (const auto& li : d.ints)
+        {
+            ints.push_back({ ms(li.t), li.src, li.dst, li.skillId, (int)li.outcome, li.lostSkill, li.afterMs, li.reflexMs });
+            named.insert(li.src); named.insert(li.dst);
+        }
+        nlohmann::json uses = nlohmann::json::array();
+        for (const auto& [pid, list] : d.uses)
+            for (const auto& u : list)
+            {
+                uses.push_back({ pid, ms(u.start), ms(u.end), u.skillId, u.target, (u.interrupted ? 1 : 0) | (u.cancelled ? 2 : 0) });
+                named.insert(u.target);
+            }
+        nlohmann::json agents = nlohmann::json::array();
+        for (int id : named)
+            if (auto it = d.agents.find(id); it != d.agents.end())
+                agents.push_back({ id, it->second.name, it->second.team, it->second.prof, it->second.sec, it->second.lord ? 1 : 0 });
+        ledger = { { "players", d.players }, { "agents", std::move(agents) }, { "lines", std::move(lines) },
+                   { "ints", std::move(ints) }, { "uses", std::move(uses) },
+                   { "guilds", { d.guild[0], d.guild[1] } }, { "tags", { d.tag[0], d.tag[1] } } };
+    }
+
     nlohmann::json root = {
         { "version",        kVersion },
         { "display_offset", m_displayTimeOffset },
@@ -516,6 +554,7 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         { "npcs",           std::move(npcs) },
         { "landmarks",      std::move(landmarks) },
         { "objects",        std::move(objects) },
+        { "ledger",         std::move(ledger) },
     };
 
     // Written beside and renamed over, so a reader never sees half a file.

@@ -11,12 +11,15 @@
 #include "TeamColors.h"
 #include "ReplayHotkeys.h"
 #include "CatapultLeverState.h"
+#include "BattleLedger.h"
+#include "BitmapFont.h"
 #include "Net/HttpClient.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
 #include <thread>
 #include <fstream>
+#include <array>
 #include <json.hpp>
 
 #include "ui/ui_kit.h"
@@ -7213,7 +7216,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 5;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 6;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7223,11 +7226,13 @@ struct MatchAnalysisEvent
     AnalysisEvent type = AnalysisEvent::Death;
     int team = 0;          // 1 or 2; 0 when the event names no team
     int prof = 0;          // the dead player's primary profession, for deaths
+    int agent = 0;         // the agent it is about (the dead player)
     std::string label;
 };
 
 struct MatchAnalysisPlayer
 {
+    int agent = 0;
     int team = 0;
     int prof = 0;
     std::string name;
@@ -7280,6 +7285,7 @@ struct MatchAnalysisJob
     std::vector<MatchAnalysisPlayer> players;
     std::vector<MatchAnalysisLandmark> landmarks;
     int mapId = -1;
+    BattleLedger::Data ledger;    // the Damage & Healing lines, times on the match clock
 };
 
 static MatchAnalysisJob s_analysis;
@@ -7293,6 +7299,59 @@ static void StopAnalysisProcess()
         TerminateProcess(s_analysis.process, 1);
     CloseHandle(s_analysis.process);
     s_analysis.process = nullptr;
+}
+
+// The ledger section (ReplayWindow::ExportMatchAnalysis): flat arrays, times in milliseconds on
+// the match clock. Player names are the recording's own, not the party bar's.
+static void ReadLedger(const nlohmann::json& lj, MatchAnalysisJob& job)
+{
+    BattleLedger::Data& d = job.ledger;
+    d = BattleLedger::Data();
+    auto I = [](const nlohmann::json& a, size_t i) { return i < a.size() && a[i].is_number() ? a[i].get<int>() : 0; };
+    auto T = [&](const nlohmann::json& a, size_t i) { return (float)I(a, i) / 1000.0f; };
+    for (const auto& v : lj.value("players", nlohmann::json::array()))
+        if (v.is_number()) d.players.push_back(v.get<int>());
+    for (const auto& a : lj.value("agents", nlohmann::json::array()))
+    {
+        if (!a.is_array() || a.size() < 6) continue;
+        BattleLedger::Agent ag;
+        ag.name = a[1].is_string() ? a[1].get<std::string>() : std::string();
+        ag.team = I(a, 2); ag.prof = I(a, 3); ag.sec = I(a, 4); ag.lord = I(a, 5) != 0;
+        d.agents[I(a, 0)] = std::move(ag);
+    }
+    for (const auto& pl : job.players)
+        if (auto it = d.agents.find(pl.agent); it != d.agents.end() && !pl.name.empty())
+            it->second.name = SanitizePlayerName(pl.name);
+    for (const auto& a : lj.value("lines", nlohmann::json::array()))
+    {
+        if (!a.is_array() || a.size() < 10) continue;
+        BattleLedger::Line ln;
+        ln.t = T(a, 0); ln.kind = (BattleLedger::Kind)I(a, 1); ln.src = I(a, 2); ln.dst = I(a, 3);
+        ln.amount = I(a, 4); ln.skillId = I(a, 5); ln.rowKey = I(a, 6);
+        ln.weaponHit = (I(a, 7) & 1) != 0; ln.estimated = (I(a, 7) & 2) != 0;
+        ln.count = I(a, 8); ln.preventGroup = (uint8_t)I(a, 9);
+        d.lines.push_back(ln);
+    }
+    for (const auto& a : lj.value("ints", nlohmann::json::array()))
+    {
+        if (!a.is_array() || a.size() < 8) continue;
+        BattleLedger::Interrupt li;
+        li.t = T(a, 0); li.src = I(a, 1); li.dst = I(a, 2); li.skillId = I(a, 3);
+        li.outcome = (BattleLedger::Interrupt::Outcome)I(a, 4); li.lostSkill = I(a, 5);
+        li.afterMs = I(a, 6); li.reflexMs = I(a, 7);
+        d.ints.push_back(li);
+    }
+    for (const auto& a : lj.value("uses", nlohmann::json::array()))
+    {
+        if (!a.is_array() || a.size() < 6) continue;
+        d.uses[I(a, 0)].push_back({ I(a, 3), I(a, 4), T(a, 1), T(a, 2), (I(a, 5) & 1) != 0, (I(a, 5) & 2) != 0 });
+    }
+    const auto guilds = lj.value("guilds", nlohmann::json::array()), tags = lj.value("tags", nlohmann::json::array());
+    for (int i = 0; i < 2; ++i)
+    {
+        if (i < (int)guilds.size() && guilds[i].is_string()) d.guild[i] = guilds[i].get<std::string>();
+        if (i < (int)tags.size() && tags[i].is_string()) d.tag[i] = tags[i].get<std::string>();
+    }
 }
 
 static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJob& job)
@@ -7326,6 +7385,7 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
         for (const auto& pj : root.value(key, nlohmann::json::array()))
         {
             MatchAnalysisPlayer pl;
+            pl.agent = pj.value("agent", 0);
             pl.team = pj.value("team", 0);
             pl.prof = pj.value("prof", 0);
             pl.lord = pj.value("lord", false);
@@ -7388,6 +7448,7 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
         lm.z = lj.value("z", 0.0f);
         job.landmarks.push_back(std::move(lm));
     }
+    ReadLedger(root.value("ledger", nlohmann::json::object()), job);
     for (const auto& e : root.value("events", nlohmann::json::array()))
     {
         const std::string type = e.value("type", std::string());
@@ -7401,6 +7462,7 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
             ev.type = kind;
             ev.team = e.value("team", 0);
             ev.prof = e.value("prof", 0);
+            ev.agent = e.value("agent", 0);
             ev.label = e.value("label", std::string());
             out.push_back(std::move(ev));
             break;
@@ -8343,6 +8405,395 @@ static void DrawMapTeamColumn(const MatchMeta& m, const char* partyId, ImVec2 po
     ImGui::PopStyleVar();
 }
 
+// ─── Stats tab ───────────────────────────────────────────────────────────────
+// Two views of the same numbers over the timeline's interval, swapped with the VIEW pills:
+// Table, every player against the columns picked, and Bars, the replay's Damage & Healing panel
+// (BattleLedgerView.cpp) drawn from the ledger match_analysis.json carries. Clicking a table cell
+// opens Bars on that player and the cell's tab.
+
+std::filesystem::path FindTexturesDDSDir();   // ReplayWindow.cpp
+
+namespace
+{
+    enum StatCol { SC_Dealt, SC_Taken, SC_Healed, SC_Received, SC_Prevented, SC_Kills, SC_Deaths, SC_Ints,
+                   SC_IntsRecv, SC_Skills, SC_Cancelled, SC_Dead, SC_Distance, SC_Count };
+    struct StatColInfo { const char* label; const char* head; int ledgerTab; const char* help; };
+    const StatColInfo kStatCols[SC_Count] = {
+        { "Damage dealt",        "Damage",     BattleLedger::kDealt,     "Damage dealt to foes, as the overhead numbers showed it." },
+        { "Damage taken",        "Taken",      BattleLedger::kTaken,     "Damage taken, from foes, the map and the player's own sacrifices." },
+        { "Healing done",        "Healing",    BattleLedger::kHealed,    "Healing given, the player's own included." },
+        { "Healing received",    "Healed",     BattleLedger::kReceived,  "Healing received, from anyone and the map." },
+        { "Damage prevented",    "Prevented",  BattleLedger::kPrevented, "Damage the player's protections spared, some of it estimated." },
+        { "Kills",               "Kills",      BattleLedger::kDealt,     "Foes whose last hit before dying (within 5 s) was this player's." },
+        { "Deaths",              "Deaths",     BattleLedger::kTaken,     "Times the player died." },
+        { "Interrupts landed",   "Interrupts", BattleLedger::kInts,      "Interrupt attempts that stopped a foe's cast." },
+        { "Interrupts received", "Rupted",     BattleLedger::kIntsRecv,  "Casts of this player that a foe interrupted." },
+        { "Skills used",         "Skills",     BattleLedger::kDealt,     "Skills used, interrupted ones included, cancelled ones left out." },
+        { "Skills cancelled",    "Cancelled",  BattleLedger::kIntsRecv,  "Casts the player stopped themselves." },
+        { "Time dead",           "Dead",       BattleLedger::kTaken,     "Seconds spent dead. Per minute: the share of the interval." },
+        { "Distance",            "Distance",   BattleLedger::kDealt,     "Ground covered while alive, in game units." },
+    };
+
+    struct StatsTabState
+    {
+        bool bars = false;
+        bool perMinute = false;
+        bool on[SC_Count] = { true, true, true, true, true, true, true, true, false, true, false, false, false };
+        int  sort = SC_Dealt;
+        BattleLedger::ViewState view;
+        std::string folder;               // the match the view state belongs to
+    };
+    StatsTabState s_stats;
+
+    // The Library's icons and digits for the shared view (the main window's device).
+    class LibraryLedgerHost : public BattleLedger::Host
+    {
+    public:
+        explicit LibraryLedgerHost(const SkillDatabaseView& view) : m_view(view) {}
+        ImTextureID SkillIcon(int skillId) override { return GetSkillIcon(skillId, &m_view); }
+        ImTextureID ProfIcon(int prof) override { return GetProfessionIcon(prof); }
+        ImTextureID UiIcon(const char* file) override
+        {
+            EnsureTextureBasePath();
+            return GetTextureCache().GetTexture(ui::TextureBasePath() + "\\Textures\\Others_UI\\" + file);
+        }
+        std::string SkillName(int skillId) override
+        {
+            const SkillInfo* si = m_view.Get(skillId);
+            return si ? si->name : "Skill " + std::to_string(skillId);
+        }
+        const BitmapFont* Digits(int m) override
+        {
+            static BitmapFont dmg, heal, energy;
+            if (!dmg.loaded && GetTextureCache().Device())
+            {
+                const auto dir = FindTexturesDDSDir();
+                if (!dir.empty())
+                {
+                    dmg.Load(GetTextureCache().Device(), (dir / L"GW.EXE_0x753F0FB5.dds").c_str());
+                    heal.Load(GetTextureCache().Device(), (dir / L"GW.EXE_0xA0629E7F.dds").c_str());
+                    energy.Load(GetTextureCache().Device(), (dir / L"texture_265569.dds").c_str());
+                }
+                dmg.loaded = heal.loaded = energy.loaded = true;
+            }
+            using namespace BattleLedger;
+            const BitmapFont* f = m == kDealt || m == kTaken ? &dmg : m == kInts || m == kIntsRecv ? &energy : &heal;
+            return f->srv.Get() ? f : nullptr;
+        }
+    private:
+        const SkillDatabaseView& m_view;
+    };
+
+    // Every column's number per player over [r0, r1] on the match clock.
+    std::unordered_map<int, std::array<double, SC_Count>> StatValues(const MatchAnalysisJob& job, float r0, float r1)
+    {
+        const BattleLedger::Data& d = job.ledger;
+        std::unordered_map<int, std::array<double, SC_Count>> out;
+        for (int pid : d.players) out[pid].fill(0.0);
+        const auto tot = BattleLedger::SumTotals(d, r0, r1);
+        for (auto& [pid, v] : out)
+        {
+            auto it = tot.find(pid);
+            if (it == tot.end()) continue;
+            const auto& t = it->second.v;
+            v[SC_Dealt]     = (double)t[BattleLedger::kDealt];
+            v[SC_Taken]     = (double)t[BattleLedger::kTaken];
+            v[SC_Healed]    = (double)t[BattleLedger::kHealed];
+            v[SC_Received]  = (double)t[BattleLedger::kReceived];
+            v[SC_Prevented] = (double)t[BattleLedger::kPrevented];
+            v[SC_Ints]      = (double)t[BattleLedger::kInts];
+            v[SC_IntsRecv]  = (double)t[BattleLedger::kIntsRecv];
+        }
+        // Deaths, and the kill: the last foe player's hit within 5 s before it.
+        auto teamOf = [&](int id) { auto it = d.agents.find(id); return it == d.agents.end() ? 0 : it->second.team; };
+        for (const auto& e : job.events)
+        {
+            if (e.type != AnalysisEvent::Death || e.t < r0 || e.t > r1 || !out.count(e.agent)) continue;
+            out[e.agent][SC_Deaths] += 1.0;
+            int killer = 0;
+            for (const auto& ln : d.lines)
+            {
+                if (ln.t > e.t) break;
+                if (ln.t < e.t - 5.0f || ln.dst != e.agent || ln.kind != BattleLedger::Kind::Damage) continue;
+                killer = ln.src;
+            }
+            if (killer && out.count(killer) && teamOf(killer) != teamOf(e.agent)) out[killer][SC_Kills] += 1.0;
+        }
+        for (const auto& [pid, uses] : d.uses)
+        {
+            auto it = out.find(pid);
+            if (it == out.end()) continue;
+            for (const auto& u : uses)
+            {
+                if (u.start < r0 || u.start > r1) continue;
+                if (u.cancelled && !u.interrupted) it->second[SC_Cancelled] += 1.0;
+                else it->second[SC_Skills] += 1.0;
+            }
+        }
+        // Time dead and distance from the per-second track, which starts gateSeconds before 0:00.
+        const int pre = job.gateSeconds;
+        for (const auto& pl : job.players)
+        {
+            auto it = out.find(pl.agent);
+            if (it == out.end()) continue;
+            const int n = (int)pl.pos.size() / 4;
+            if (n == 0) continue;
+            const int a = std::clamp((int)std::ceil(r0) + pre, 0, n - 1), b = std::clamp((int)std::floor(r1) + pre, 0, n - 1);
+            for (int i = a; i <= b; ++i)
+            {
+                if (pl.pos[i * 4 + 3] == 1) it->second[SC_Dead] += 1.0;
+                if (i > a && pl.pos[i * 4 + 3] == 0 && pl.pos[(i - 1) * 4 + 3] == 0)
+                {
+                    const double dx = pl.pos[i * 4] - pl.pos[(i - 1) * 4], dy = pl.pos[i * 4 + 1] - pl.pos[(i - 1) * 4 + 1];
+                    it->second[SC_Distance] += std::sqrt(dx * dx + dy * dy);
+                }
+            }
+        }
+        return out;
+    }
+
+    bool IsCountCol(int col)
+    {
+        return col == SC_Kills || col == SC_Deaths || col == SC_Ints || col == SC_IntsRecv || col == SC_Skills || col == SC_Cancelled;
+    }
+
+    std::string StatText(double v, int col, bool perMinute)
+    {
+        char b[32];
+        if (col == SC_Dead && perMinute) { if (v < 0.5) return "-"; snprintf(b, sizeof b, "%d%%", (int)std::lround(v)); return b; }
+        if (v < 0.05) return "-";
+        if (col == SC_Dead) { snprintf(b, sizeof b, "%d s", (int)std::lround(v)); return b; }
+        if (perMinute && IsCountCol(col)) { snprintf(b, sizeof b, "%.1f", v); return b; }
+        const long long n = std::llround(v);
+        std::string raw = std::to_string(n), s;
+        for (int i = (int)raw.size() - 1, k = 0; i >= 0; --i, ++k)
+        {
+            if (k && k % 3 == 0) s.insert(s.begin(), ',');
+            s.insert(s.begin(), raw[i]);
+        }
+        return s;
+    }
+}
+
+static void DrawStatsTable(float r0, float r1)
+{
+    const MatchAnalysisJob& job = s_analysis;
+    const BattleLedger::Data& d = job.ledger;
+    const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
+    auto raw = StatValues(job, r0, r1);
+    auto shown = [&](int pid, int c) {
+        const double v = raw[pid][c];
+        if (!s_stats.perMinute) return v;
+        return c == SC_Dead ? v / std::max(1.0f, r1 - r0) * 100.0 : v / minutes;
+    };
+    std::vector<int> cols;
+    for (int c = 0; c < SC_Count; ++c) if (s_stats.on[c]) cols.push_back(c);
+    if (std::find(cols.begin(), cols.end(), s_stats.sort) == cols.end() && !cols.empty()) s_stats.sort = cols.front();
+
+    const float lineH = ImGui::GetTextLineHeight();
+    const float rowH = std::max(lineH + 8.0f, 24.0f), iconS = lineH + 2.0f;
+    float nameW = 120.0f;
+    for (int pid : d.players)
+        if (auto it = d.agents.find(pid); it != d.agents.end())
+            nameW = std::max(nameW, ImGui::CalcTextSize(it->second.name.c_str()).x);
+    const float nameColW = iconS * 2.0f + 10.0f + nameW + 16.0f;
+    float colW = 70.0f;
+    for (int c : cols) colW = std::max(colW, ImGui::CalcTextSize(kStatCols[c].head).x + 26.0f);
+    const float tableW = nameColW + colW * cols.size();
+
+    double top[SC_Count] = {};
+    for (int pid : d.players) for (int c : cols) top[c] = std::max(top[c], shown(pid, c));
+
+    ImGui::BeginChild("##stats_table", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 cDim = IM_COL32(150, 156, 165, 255), cGold = IM_COL32(225, 190, 80, 255);
+    const ImVec2 o = ImGui::GetCursorScreenPos();
+    float y = o.y;
+
+    // Header: click a column to sort both teams by it.
+    dl->AddText(ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), cDim, "PLAYER");
+    for (size_t k = 0; k < cols.size(); ++k)
+    {
+        const int c = cols[k];
+        const float x = o.x + nameColW + colW * k;
+        ImGui::SetCursorScreenPos(ImVec2(x, y));
+        ImGui::PushID(c);
+        if (ImGui::InvisibleButton("##sort", ImVec2(colW - 2.0f, rowH))) s_stats.sort = c;
+        const bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        if (hov) ImGui::SetTooltip("%s\n%s\nClick to sort.", kStatCols[c].label, kStatCols[c].help);
+        const bool sorted = s_stats.sort == c;
+        const float tw = ImGui::CalcTextSize(kStatCols[c].head).x;
+        const float tx = x + colW - 10.0f - tw;
+        dl->AddText(ImVec2(tx, y + (rowH - lineH) * 0.5f), sorted ? cGold : hov ? IM_COL32(216, 220, 226, 255) : cDim, kStatCols[c].head);
+        if (sorted)
+        {
+            const float cy = y + rowH * 0.5f;     // a small down triangle before the name
+            dl->AddTriangleFilled(ImVec2(tx - 11.0f, cy - 2.0f), ImVec2(tx - 4.0f, cy - 2.0f), ImVec2(tx - 7.5f, cy + 2.5f), cGold);
+            dl->AddLine(ImVec2(x + 4.0f, y + rowH - 1.0f), ImVec2(x + colW - 6.0f, y + rowH - 1.0f), cGold, 1.5f);
+        }
+    }
+    y += rowH + 2.0f;
+
+    for (int side = 0; side < 2; ++side)
+    {
+        const uint8_t team = Team::FromIndex01(side);
+        const ImU32 teamCol = Team::IsBlue(team) ? IM_COL32(74, 200, 255, 255) : IM_COL32(255, 107, 107, 255);
+        std::vector<int> rows;
+        for (int pid : d.players)
+            if (auto it = d.agents.find(pid); it != d.agents.end() && it->second.team == team) rows.push_back(pid);
+        std::stable_sort(rows.begin(), rows.end(), [&](int a, int b) { return shown(a, s_stats.sort) > shown(b, s_stats.sort); });
+
+        // Team heading over a team-coloured rule.
+        dl->AddLine(ImVec2(o.x, y), ImVec2(o.x + tableW, y), (teamCol & 0x00FFFFFF) | 0xB0000000, 2.0f);
+        const std::string guild = !d.guild[side].empty() ? d.guild[side] : Team::IsBlue(team) ? "Blue team" : "Red team";
+        ImFont* bold = GuiGlobalConstants::boldFont;
+        dl->AddText(bold ? bold : ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), teamCol, guild.c_str());
+        y += rowH;
+
+        for (int pid : rows)
+        {
+            const BattleLedger::Agent& ag = d.agents.at(pid);
+            float x = o.x + 6.0f;
+            if (ImTextureID t = ag.prof ? GetProfessionIcon(ag.prof) : nullptr)
+                dl->AddImage(t, ImVec2(x, y + (rowH - iconS) * 0.5f), ImVec2(x + iconS, y + (rowH + iconS) * 0.5f));
+            x += iconS + 2.0f;
+            if (ImTextureID t = ag.sec ? GetProfessionIcon(ag.sec) : nullptr)
+                dl->AddImage(t, ImVec2(x, y + (rowH - iconS) * 0.5f), ImVec2(x + iconS, y + (rowH + iconS) * 0.5f),
+                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 170));
+            x += iconS + 8.0f;
+            dl->AddText(ImVec2(x, y + (rowH - lineH) * 0.5f), teamCol, ag.name.c_str());
+            for (size_t k = 0; k < cols.size(); ++k)
+            {
+                const int c = cols[k];
+                const double v = shown(pid, c);
+                const ImVec2 a(o.x + nameColW + colW * k, y + 1.0f), b(a.x + colW - 2.0f, y + rowH - 1.0f);
+                ImGui::SetCursorScreenPos(a);
+                ImGui::PushID(pid * 32 + c);
+                const bool clicked = ImGui::InvisibleButton("##cell", ImVec2(b.x - a.x, b.y - a.y));
+                const bool hov = ImGui::IsItemHovered();
+                ImGui::PopID();
+                // Gold, stronger for the larger numbers of the column.
+                const float share = top[c] > 0.0 ? (float)(v / top[c]) : 0.0f;
+                const int alpha = v > 0.0 ? 14 + (int)(86.0f * share) : 0;
+                dl->AddRectFilled(a, b, alpha ? IM_COL32(200, 168, 75, alpha) : IM_COL32(255, 255, 255, 6), 2.0f);
+                if (hov) dl->AddRect(a, b, IM_COL32(225, 190, 80, 220), 2.0f);
+                const std::string s = StatText(v, c, s_stats.perMinute);
+                const float tw = ImGui::CalcTextSize(s.c_str()).x;
+                dl->AddText(ImVec2(b.x - 8.0f - tw, y + (rowH - lineH) * 0.5f),
+                            s == "-" ? IM_COL32(111, 106, 94, 255) : IM_COL32(232, 236, 242, 255), s.c_str());
+                if (hov) ImGui::SetTooltip("%s - %s: %s\nClick for the breakdown (Bars, %s).", ag.name.c_str(), kStatCols[c].label,
+                                           s.c_str(), BattleLedger::MetricName(kStatCols[c].ledgerTab));
+                if (clicked)
+                {
+                    s_stats.bars = true;
+                    s_stats.view.metric = kStatCols[c].ledgerTab;
+                    s_stats.view.selPlayer = pid;
+                    s_stats.view.matrix = false;
+                    s_stats.view.openRows.clear();
+                }
+            }
+            dl->AddLine(ImVec2(o.x, y + rowH), ImVec2(o.x + tableW, y + rowH), IM_COL32(255, 255, 255, 8));
+            y += rowH;
+        }
+        // Team total (time dead per minute: the team's average share).
+        dl->AddText(ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), cGold, "Team total");
+        for (size_t k = 0; k < cols.size(); ++k)
+        {
+            const int c = cols[k];
+            double sum = 0.0;
+            for (int pid : rows) sum += shown(pid, c);
+            if (c == SC_Dead && s_stats.perMinute && !rows.empty()) sum /= rows.size();
+            const std::string s = StatText(sum, c, s_stats.perMinute);
+            const float tw = ImGui::CalcTextSize(s.c_str()).x;
+            dl->AddText(ImVec2(o.x + nameColW + colW * (k + 1) - 10.0f - tw, y + (rowH - lineH) * 0.5f), cGold, s.c_str());
+        }
+        y += rowH + 10.0f;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(o.x, y));
+    ImGui::Dummy(ImVec2(tableW, 0.0f));
+    ImGui::EndChild();
+}
+
+static void DrawStatsTab(const MatchMeta& m)
+{
+    const MatchAnalysisJob& job = s_analysis;
+    if (s_stats.folder != m.folder_name) { s_stats.view = BattleLedger::ViewState(); s_stats.folder = m.folder_name; }
+
+    // The interval on the match clock, as the Map tab reads it.
+    const int pre = job.gateSeconds;
+    const int seconds = job.players.empty() ? 0 : (int)(job.players.front().pos.size() / 4) - 1;
+    const int duration = std::max(1, ParseDurationSeconds(m.match_duration) > 0
+                                     ? ParseDurationSeconds(m.match_duration) : seconds - pre);
+    const int span = duration + pre;
+    const float r0 = s_state.detailIntervalFrom * span - pre;
+    const float r1 = s_state.detailIntervalTo * span - pre;
+    char a[16], b[16];
+    FormatClock((int)std::floor(r0), a, sizeof a);
+    FormatClock((int)std::ceil(r1), b, sizeof b);
+    const bool full = s_state.detailIntervalFrom <= 0.0f && s_state.detailIntervalTo >= 1.0f;
+    const std::string stretch = std::string(full ? "Full match " : "Selection ") + a + " - " + b;
+
+    if (job.ledger.players.empty())
+    {
+        ImGui::TextColored(kColorText, "This match file has no Damage & Healing data.");
+        return;
+    }
+
+    // ── VIEW pills, then the view's own choices ──
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "VIEW");
+    ImGui::SameLine(0.0f, 8.0f);
+    if (BattleLedger::Pill("Table", !s_stats.bars)) s_stats.bars = false;
+    ImGui::SameLine(0.0f, 4.0f);
+    if (BattleLedger::Pill("Bars", s_stats.bars)) s_stats.bars = true;
+    if (!s_stats.bars)
+    {
+        // Columns, wrapping onto more lines when the panel is narrow; Total / Per minute at the right.
+        const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        const float segW = ImGui::CalcTextSize("Total").x + ImGui::CalcTextSize("Per minute").x + 52.0f;
+        ImGui::SameLine(0.0f, 18.0f);
+        const ImVec2 first = ImGui::GetCursorScreenPos();
+        const float x0 = first.x;
+        float rowY = first.y;
+        for (int c = 0; c < SC_Count; ++c)
+        {
+            const float w = ImGui::CalcTextSize(kStatCols[c].label).x + 22.0f;
+            if (c > 0)
+            {
+                ImGui::SameLine(0.0f, 4.0f);
+                if (ImGui::GetCursorScreenPos().x + w > right - segW - 12.0f)
+                {
+                    rowY = ImGui::GetItemRectMax().y + 4.0f;
+                    ImGui::SetCursorScreenPos(ImVec2(x0, rowY));
+                }
+            }
+            ImGui::PushID(c);
+            if (BattleLedger::Pill(kStatCols[c].label, s_stats.on[c])) s_stats.on[c] = !s_stats.on[c];
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kStatCols[c].help);
+            ImGui::PopID();
+        }
+        const float bottom = ImGui::GetItemRectMax().y;
+        ImGui::SetCursorScreenPos(ImVec2(right - segW, first.y));
+        if (BattleLedger::Pill("Total", !s_stats.perMinute)) s_stats.perMinute = false;
+        ImGui::SameLine(0.0f, 4.0f);
+        if (BattleLedger::Pill("Per minute", s_stats.perMinute)) s_stats.perMinute = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Divided by the interval's length.");
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, bottom + 8.0f));
+        DrawStatsTable(r0, r1);
+        return;
+    }
+
+    LibraryLedgerHost host(GetMatchSkillView(m));
+    ImGui::SameLine(0.0f, 18.0f);
+    ImGui::TextColored(ImVec4(0.67f, 0.69f, 0.72f, 1.0f), "Counting %s, the timeline's interval", stretch.c_str());
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    BattleLedger::DrawMetricTabs(host, s_stats.view);
+    ImGui::BeginChild("##stats_bars", ImVec2(0, 0), false);
+    BattleLedger::DrawBody(job.ledger, host, s_stats.view, r0, r1, stretch);
+    ImGui::EndChild();
+}
+
 static void DrawMapTab(const MatchMeta& m)
 {
     const auto& job = s_analysis;
@@ -8966,9 +9417,11 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         UpdateMatchAnalysis(m);
         const float timelineH = std::max(140.0f, ImGui::GetTextLineHeight() * 8.5f);
         ImGui::BeginChild("##detail_tab_body", ImVec2(0, -timelineH));
-        if (s_state.detailTab == DetailTab_Map && s_analysis.state == MatchAnalysisJob::State::Ready
-            && s_analysis.folderName == m.folder_name)
+        const bool analysed = s_analysis.state == MatchAnalysisJob::State::Ready && s_analysis.folderName == m.folder_name;
+        if (s_state.detailTab == DetailTab_Map && analysed)
             DrawMapTab(m);
+        else if (s_state.detailTab == DetailTab_Stats && analysed)
+            DrawStatsTab(m);
         else
             DrawDetailTabPlaceholder(s_state.detailTab);
         ImGui::EndChild();
