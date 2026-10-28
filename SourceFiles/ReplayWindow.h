@@ -147,6 +147,14 @@ public:
     // Write the sealed Iris pack (the in-game HUD's data for this match, ReplayWindow_IrisPack.cpp).
     // False when the analysis left nothing to export or the file could not be written.
     bool ExportIrisPack(const std::filesystem::path& outPath) const;
+
+    // The event timeline has been built (deaths, flag captures, morale boosts, victory...).
+    // ... and the passes the match analysis also reads (flags, seeds, kits, catapults).
+    bool TimelineBuilt() const { return m_timeline.computed && m_flagTimelineBuilt && m_bundleCarryBuilt; }
+
+    // Write the match events the Library's analysis tabs read (match_analysis.json), with times
+    // on the displayed match clock. False when the file could not be written.
+    bool ExportMatchAnalysis(const std::filesystem::path& outPath) const;
     // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
     // damage/healing over time, bundles), appended to the open JSON object.
     void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
@@ -174,6 +182,9 @@ public:
 
     // DEV TOOL: set by the attribute batch so its windows open minimised without taking focus.
     static inline bool s_openWithoutFocus = false;
+    // DEV TOOL (GWO_MAP_PICTURES): write map pictures here, the folder that ships them,
+    // even when the map already has one.
+    static inline std::filesystem::path s_mapPictureOutDir;
 
     // DEV TOOL (GWO_CLIP_SELFTEST, with GWO_ATTR_BATCH): each window the batch opens renders one
     // GIF clip through the real export path, without a dialog, and the batch waits for it. The
@@ -845,6 +856,10 @@ private:
 
     // --- Door animation state tracking (per door type, not per object) ---
     static constexpr int kDoorTypeCount = 32;
+    // Which door types are open at replay time t (the rule UpdateDoorAnimations animates by,
+    // also read by the match analysis export).
+    void DoorStatesAt(float t, bool* open) const;
+    int   m_mapImageReadyFrames = 0;   // frames rendered since Ready, for CaptureTopDownMapImage
     bool  m_doorTypeOpen[kDoorTypeCount] = {};    // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors, index 5/6 = Burning Isle doors (0x1F23F / 0x1F247), index 7 = Uncharted Isle door 0x3C163, index 8 = Uncharted Isle door 0x32F3A, index 9 = Uncharted Isle slide gate 0x32F0C, index 10 = Uncharted Isle slide gate 0x336BB, index 11 = Nomad's Isle doors (0x19750/0x197A9), index 12 = Nomad's Isle looping doors (0x22143), index 13 = Isle of Wurms doors (0x330F7/0x331A4), index 14 = Isle of Jade doors (0x285E7/0x265B5), index 15 = Isle of the Dead doors (0x1F294/0x1F291/0x1F281/0x1E820), index 16 = Isle of Solitude doors (0x33CD5/0x3323B), index 17 = Isle of the Weeping Stone auto-open doors (0x2858E/0x28578), index 18 = Isle of the Weeping Stone event gates (0x1EAFB, ids 147/9305/30563/4417), index 19 = Isle of the Weeping Stone lever door (0x1EAFB nearest the flag stand, object 122), index 20 = Frozen Isle doors (0x1F251/0x1F252), index 21 = Frozen Isle lever gate door 1 (0x255BE, obj 61318, red side), index 22 = Frozen Isle lever gate door 2 (0x255BE, obj 11692, blue side), index 23 = Frozen Isle lever gate door 3 (0x57B57, obj 56526, red side), index 24 = Frozen Isle lever gate door 4 (0x57B57, obj 12669, blue side), index 25 = Corrupted Isle doors (0x330EA/0x32F5C), index 26 = Druid's Isle vine bridge nearest the red lord (obj 39278), index 27 = Druid's Isle vine bridge nearest the blue lord (obj 51238), index 28 = Warrior's Isle base gates (objs 11692/12669/56526/61318, all four open together one minute in)
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
@@ -2164,6 +2179,12 @@ private:
     void InitMinimapResources();
     void RenderMinimap();
     void DrawMinimapPanel();
+    // Saves the whole map from above once per map, for the Library's Map tab.
+    void CaptureTopDownMapImage();
+    bool m_mapImageCaptureTried = false;
+public:
+    bool MapImageCaptureTried() const { return m_mapImageCaptureTried; }
+private:
 
     // --- Picture-in-Picture (Split Camera) ---
     bool  m_pipEnabled       = false;

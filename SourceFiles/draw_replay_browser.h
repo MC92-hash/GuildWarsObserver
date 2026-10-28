@@ -6,6 +6,9 @@ struct PendingReplayRequest
 {
     bool requested = false;
     MatchMeta match;
+    // False: only make the match local (download it if it is cloud-only) and open no replay.
+    // The Library's analysis tabs ask for this.
+    bool openReplay = true;
 };
 
 inline PendingReplayRequest g_pendingReplay;

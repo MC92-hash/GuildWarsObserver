@@ -7190,6 +7190,14 @@ void ReplayWindow::Render()
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
 
+    // A moment after Ready: the lever gates, Meditation gates and vine bridges the picture
+    // records are resolved in the first frames after loading.
+    // The Weeping Stone lever door waits for the flag stand; give it up to ~10 s more.
+    if (!m_mapImageCaptureTried && m_loadingPhase == LoadingPhase::Ready && m_calibrationLoaded
+        && ++m_mapImageReadyFrames > 90
+        && (m_replayCtx.datMapId != 0x2661F || m_weepingLeverResolved || m_mapImageReadyFrames > 600))
+        CaptureTopDownMapImage();
+
     if (m_minimapEnabled && m_minimapResourcesReady)
         RenderMinimap();
 

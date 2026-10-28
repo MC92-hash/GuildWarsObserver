@@ -9,11 +9,15 @@
 #include "MatchRatings.h"
 #include "MatchNotes.h"
 #include "TeamColors.h"
+#include "ReplayHotkeys.h"
+#include "CatapultLeverState.h"
 #include "Net/HttpClient.h"
 #include <algorithm>
 #include <set>
 #include <unordered_map>
 #include <thread>
+#include <fstream>
+#include <json.hpp>
 
 #include "ui/ui_kit.h"
 
@@ -1166,6 +1170,24 @@ struct BrowserState
     std::vector<std::string> allTags;
 
     int  selectedMatchIndex = -1;
+
+    // Match Details tabs. The tab is kept when another match is selected, so a reader
+    // comparing several matches in Stats stays in Stats.
+    int   detailTab = 0;               // DetailTab
+    bool  detailMaximised = false;     // detail panel takes the whole Library
+    float detailIntervalFrom = 0.0f;   // shared interval, as fractions of the match
+    float detailIntervalTo   = 1.0f;
+    int   detailIntervalDrag = -1;     // 0 = start handle, 1 = end handle
+    float detailChartAnchor  = -1.0f;  // where a drag across the timeline chart began
+    float detailPlayhead     = 0.0f;   // Map tab, seconds on the match clock
+    bool  detailPlaying      = false;
+    float detailPlaySpeed    = 4.0f;
+    bool  detailShowTrails   = false;
+    bool  detailShowNames    = false;
+    float detailMapZoom      = 1.0f;   // Map tab view: 1 = whole map, up to 8
+    float detailMapCenterU   = 0.5f;   // centre of the view, 0..1 across the picture
+    float detailMapCenterV   = 0.5f;
+
     int  sortColumn = 0;
     bool sortAscending = false;
 
@@ -6794,188 +6816,11 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
 
 // ─── Bottom match detail panel ───────────────────────────────────────────────
 
-static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
+// The Overview tab: today's panel - map, match facts, notes, lord damage, both teams.
+static void DrawMatchOverview(const MatchMeta& m)
 {
-    const auto mode = s_state.layout;
-    const auto sz = GetSizes(mode);
+    const auto sz = GetSizes(s_state.layout);
     const float sp = sz.spacing;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(sp + 4, sp + 2));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, s_themeColors.detailPanelBg);
-    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
-
-    ImVec2 detailSize = fillRemaining ? ImVec2(0, 0) : ImVec2(0, 0);
-    ImGui::BeginChild("##match_detail", detailSize, ImGuiChildFlags_Border);
-
-    // Header
-    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
-    ImGui::TextUnformatted("MATCH DETAILS");
-    ImGui::PopStyleColor();
-
-    float contentMaxX = ImGui::GetWindowContentRegionMax().x + ImGui::GetWindowPos().x;
-    float contentW = contentMaxX - (ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowPos().x);
-    float lineY = ImGui::GetCursorScreenPos().y - ImGui::GetTextLineHeightWithSpacing();
-    bool narrowHeader = (contentW < 320.0f);
-
-    // Replay Match button (left of close)
-    {
-        ImFont* semibold = GuiGlobalConstants::boldFont;
-        if (semibold) ImGui::PushFont(semibold);
-
-        const char* playIcon = "\xE2\x96\xB6";  // UTF-8 U+25B6 (▶)
-        float fontSize = ImGui::GetFontSize();
-        float iconFontSz = fontSize * 1.6f;
-
-        float padX = 10.0f, padY = 6.0f;
-        float iconW = fontSize * 1.2f;
-
-        float btnW, btnH;
-        if (narrowHeader)
-        {
-            btnW = iconW + padX * 2.0f;
-        }
-        else
-        {
-            ImVec2 labelSz = ImGui::CalcTextSize("REPLAY MATCH");
-            btnW = iconW + 4.0f + labelSz.x + padX * 2.0f;
-        }
-        btnH = fontSize + padY * 2.0f;
-
-        // Grown on hover. Safe to grow the frame itself here, unlike the refresh badge:
-        // this button is placed absolutely against the panel's right edge, so nothing sits
-        // beside it to be pushed around. Hover is last frame's, which at this size and
-        // frame rate is not perceptible.
-        static bool s_replayHot = false;
-        if (s_replayHot) { btnW *= 1.06f; btnH *= 1.06f; }
-
-        float closeW = 24.0f;
-        float gap = 22.0f;
-        float btnX = contentMaxX - closeW - gap - btnW;
-        float btnY = lineY + (ImGui::GetTextLineHeightWithSpacing() - btnH) * 0.5f;
-
-        ImGui::SameLine();
-        ImGui::SetCursorScreenPos(ImVec2(btnX, btnY));
-
-        const ImVec4 colBtnBg      = s_themeColors.replayBtnBg;
-        const ImVec4 colBtnHover   = s_themeColors.replayBtnHov;
-        const ImVec4 colBtnActive  = s_themeColors.replayBtnAct;
-        const ImVec4 colBorder     = kColorAccent;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, padY));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
-        ImGui::PushStyleColor(ImGuiCol_Button,        colBtnBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  colBtnHover);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   colBtnActive);
-        ImGui::PushStyleColor(ImGuiCol_Border,         colBorder);
-        ImGui::PushStyleColor(ImGuiCol_Text,           kColorText);
-
-        if (g_cloudDownloadInProgress)
-        {
-            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
-            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
-            ImGui::PopStyleVar();
-        }
-        else
-        {
-            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
-        }
-        bool clicked = ImGui::IsItemClicked() && !g_cloudDownloadInProgress;
-        bool hovered = ImGui::IsItemHovered();
-        bool active  = ImGui::IsItemActive();
-
-        if (clicked)
-        {
-            g_pendingReplay.requested = true;
-            g_pendingReplay.match = m;
-        }
-
-        s_replayHot = hovered;
-
-        ImVec2 rMin = ImGui::GetItemRectMin();
-        ImVec2 rMax = ImGui::GetItemRectMax();
-
-        ImGui::PopStyleColor(5);
-        ImGui::PopStyleVar(3);
-
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImFont* drawFont = semibold ? semibold : ImGui::GetFont();
-
-        // Held back while a download has the button disabled: pulsing there would be
-        // advertising an action that cannot currently be taken.
-        if (!g_cloudDownloadInProgress)
-            DrawPulseGlow(dl, rMin, rMax, ImGui::GetColorU32(kColorAccent), 5.0f);
-
-        // Visual states: icon and text colors react to hover/press
-        ImVec4 colGreen    (0.0f,  1.0f, 0.4f, 1.0f);
-        ImVec4 colTextDraw = kColorText;
-
-        if (active)
-        {
-            colGreen    = ImVec4(0.0f, 0.85f, 0.35f, 1.0f);
-            colTextDraw = ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
-        }
-        else if (hovered)
-        {
-            colGreen    = ImVec4(0.15f, 1.0f, 0.55f, 1.0f);
-            colTextDraw = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-        }
-
-        // Content offset: slight push on press
-        float pushY = active ? 1.0f : 0.0f;
-
-        // Draw ▶ icon
-        {
-            float iconX = rMin.x + padX;
-            float iconY = rMin.y + (btnH - iconFontSz) * 0.5f + pushY;
-            dl->AddText(drawFont, iconFontSz,
-                ImVec2(iconX, iconY),
-                ImGui::GetColorU32(colGreen),
-                playIcon);
-        }
-
-        // Draw "REPLAY MATCH" text
-        if (!narrowHeader)
-        {
-            float textX = rMin.x + padX + iconW + 4.0f;
-            float textY = rMin.y + (btnH - fontSize) * 0.5f + pushY;
-            dl->AddText(drawFont, fontSize,
-                ImVec2(textX, textY),
-                ImGui::GetColorU32(colTextDraw),
-                "REPLAY MATCH");
-        }
-
-        if (semibold) ImGui::PopFont();
-
-        // Hover: subtle accent glow border
-        if (hovered && !active)
-        {
-            ImU32 glowCol = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.45f));
-            dl->AddRect(rMin, rMax, glowCol, 5.0f, 0, 1.5f);
-        }
-
-        // Pressed: bright accent border
-        if (active)
-        {
-            ImU32 brightGold = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.90f));
-            dl->AddRect(rMin, rMax, brightGold, 5.0f, 0, 2.5f);
-        }
-
-        if (narrowHeader && hovered)
-            ImGui::SetTooltip("Replay Match");
-    }
-
-    // Close button (rightmost)
-    ImGui::SameLine();
-    ImGui::SetCursorScreenPos(ImVec2(contentMaxX - 20.0f, lineY + 1.0f));
-    if (ImGui::SmallButton("X"))
-    {
-        s_state.selectedMatchIndex = -1;
-        s_state.mobileShowDetail = false;
-    }
-    ImGui::Separator();
-    ImGui::Spacing();
 
     std::string ft1, ft2;
     ParseFolderTags(m.folder_name, ft1, ft2);
@@ -7235,6 +7080,1530 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
         DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz);
         ImGui::EndChild();
     }
+}
+
+// ─── Match detail tabs ───────────────────────────────────────────────────────
+// Overview is today's panel. Stats, Graph and Map share one interval, picked on the
+// timeline strip along the bottom of the panel. Their content is not built yet: the
+// shell exists first so the navigation can be judged on its own.
+
+enum DetailTab { DetailTab_Overview, DetailTab_Stats, DetailTab_Graph, DetailTab_Map, DetailTab_Count };
+
+static const char* const kDetailTabNames[DetailTab_Count] = { "Overview", "Stats", "Graph", "Map" };
+
+// "mm:ss" or "h:mm:ss" -> seconds; 0 when the field is empty or unreadable.
+static int ParseDurationSeconds(const std::string& text)
+{
+    int total = 0, part = 0;
+    bool any = false;
+    for (char c : text)
+    {
+        if (c >= '0' && c <= '9') { part = part * 10 + (c - '0'); any = true; }
+        else if (c == ':') { total = total * 60 + part; part = 0; }
+        else return 0;
+    }
+    return any ? total * 60 + part : 0;
+}
+
+static void FormatClock(int seconds, char* buf, size_t n)
+{
+    const int a = std::abs(seconds);
+    snprintf(buf, n, "%s%d:%02d", seconds < 0 ? "-" : "", a / 60, a % 60);
+}
+
+// Framed buttons on the header line. The frame is drawn a few pixels outside the item,
+// so the buttons read as buttons without making the header line taller.
+static constexpr float kDetailBtnPadX = 10.0f;
+static constexpr float kDetailBtnPadY = 3.0f;
+
+static float DetailHeaderButtonWidth(const char* label, float leadW)
+{
+    ImFont* bold = GuiGlobalConstants::boldFont;
+    if (bold) ImGui::PushFont(bold);
+    const float textW = ImGui::CalcTextSize(label).x;
+    if (bold) ImGui::PopFont();
+    return leadW + textW + kDetailBtnPadX * 2.0f;
+}
+
+// leadW reserves room left of the label for an icon the caller draws.
+static bool DetailHeaderButton(const char* id, const char* label, bool selected, float leadW = 0.0f)
+{
+    ImFont* bold = GuiGlobalConstants::boldFont;
+    const float w = DetailHeaderButtonWidth(label, leadW);
+    const float h = ImGui::GetTextLineHeight();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active  = ImGui::IsItemActive();
+
+    const ImVec4 bg = selected ? s_themeColors.replayBtnBg
+                    : active   ? s_themeColors.replayBtnAct
+                    : hovered  ? s_themeColors.replayBtnHov
+                               : ImVec4(kColorPanel.x, kColorPanel.y, kColorPanel.z, 0.90f);
+    const ImVec4 border = selected ? kColorAccent
+                        : hovered  ? ImVec4(kColorAccent.x, kColorAccent.y, kColorAccent.z, 0.60f)
+                                   : kColorBorder;
+    const ImVec4 text = selected ? kColorAccent : (hovered ? ImVec4(1, 1, 1, 1) : kColorText);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 a(pos.x, pos.y - kDetailBtnPadY), b(pos.x + w, pos.y + h + kDetailBtnPadY);
+    dl->AddRectFilled(a, b, ImGui::GetColorU32(bg), 4.0f);
+    dl->AddRect(a, b, ImGui::GetColorU32(border), 4.0f, 0, selected ? 1.5f : 1.0f);
+    dl->AddText(bold ? bold : ImGui::GetFont(), ImGui::GetFontSize(),
+                ImVec2(pos.x + kDetailBtnPadX + leadW, pos.y + (active ? 1.0f : 0.0f)),
+                ImGui::GetColorU32(text), label);
+    return clicked;
+}
+
+static void DrawDetailTabs()
+{
+    for (int t = 0; t < DetailTab_Count; ++t)
+    {
+        ImGui::SameLine(0, t == 0 ? 24.0f : 6.0f);
+        ImGui::PushID(t);
+        if (DetailHeaderButton("##detail_tab", kDetailTabNames[t], s_state.detailTab == t))
+            s_state.detailTab = t;
+        ImGui::PopID();
+    }
+}
+
+static const char* DetailMaximiseLabel()
+{
+    return s_state.detailMaximised ? "Show list" : "Expand";
+}
+
+// Expand gives the details the whole Library; Show list brings the filters and the match
+// list back. The chevron points the way the panel's top edge moves.
+static void DrawDetailMaximiseButton(ImVec2 pos)
+{
+    const float chevW = 10.0f;
+    ImGui::SetCursorScreenPos(pos);
+    const bool clicked = DetailHeaderButton("##detail_maximise", DetailMaximiseLabel(), false, chevW + 6.0f);
+    const bool hovered = ImGui::IsItemHovered();
+    if (clicked)
+        s_state.detailMaximised = !s_state.detailMaximised;
+    if (hovered)
+        ImGui::SetTooltip(s_state.detailMaximised
+            ? "Bring back the filters and the match list"
+            : "Hide the match list and give these details the whole Library");
+
+    const ImVec2 r = ImGui::GetItemRectMin();
+    const float h = ImGui::GetTextLineHeight();
+    const float cx = r.x + kDetailBtnPadX + chevW * 0.5f;
+    const float cy = r.y + h * 0.5f;
+    const float dy = (s_state.detailMaximised ? 1.0f : -1.0f) * chevW * 0.25f;
+    const ImU32 col = ImGui::GetColorU32(hovered ? ImVec4(1, 1, 1, 1) : kColorText);
+    const ImVec2 pts[3] = { ImVec2(cx - chevW * 0.5f, cy - dy), ImVec2(cx, cy + dy),
+                            ImVec2(cx + chevW * 0.5f, cy - dy) };
+    ImGui::GetWindowDrawList()->AddPolyline(pts, 3, col, 0, 2.0f);
+}
+
+// ─── Match analysis job ──────────────────────────────────────────────────────
+// What the analysis tabs read about the selected match. Opening one of them on a match makes it
+// local (downloading it when it is cloud-only, through the replay button's own download), then
+// runs `GuildWarsObserver.exe --export-match-analysis` on it in the background. The export
+// writes match_analysis.json beside the recording, so a second visit reads that file at once.
+// One match at a time: selecting another one stops the export still running for the last.
+
+static constexpr int kMatchAnalysisVersion = 5;   // ReplayWindow::ExportMatchAnalysis kVersion
+
+enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
+
+struct MatchAnalysisEvent
+{
+    float t = 0.0f;        // seconds on the displayed match clock
+    AnalysisEvent type = AnalysisEvent::Death;
+    int team = 0;          // 1 or 2; 0 when the event names no team
+    int prof = 0;          // the dead player's primary profession, for deaths
+    std::string label;
+};
+
+struct MatchAnalysisPlayer
+{
+    int team = 0;
+    int prof = 0;
+    std::string name;
+    std::vector<int> pos;   // per second of the recording: recorded x, y, z, state (0 alive, 1 dead, 2 absent)
+    bool lord = false;      // NPCs: a guild lord
+};
+
+struct MatchAnalysisLandmark
+{
+    std::string kind;       // "lord", "flag_stand", "obelisk_stand"
+    int team = 0;
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+};
+
+// A state that changes over the match, as [clock time, value] changes in time order.
+struct MatchAnalysisSteps
+{
+    std::vector<std::pair<float, int>> steps;
+    int At(float t, int fallback = 0) const
+    {
+        int v = fallback;
+        for (const auto& [st, sv] : steps) { if (st > t) break; v = sv; }
+        return v;
+    }
+};
+
+struct MatchAnalysisObjects
+{
+    MatchAnalysisSteps standOwner, obeliskOwner, shrineOwner;   // 0 none, 1 blue, 2 red
+    bool hasStand = false, hasObelisk = false, hasShrine = false;
+    std::vector<MatchAnalysisPlayer> flags;     // team, pos (state 0 on a stand, 1 carried, 2 loose)
+    std::vector<MatchAnalysisPlayer> bundles;   // name "seed" / "kit", pos as flags
+    std::vector<std::pair<float, std::pair<int, int>>> doors;   // time, (door type, open)
+    struct Catapult { float x = 0, y = 0, z = 0, repaired = 0; MatchAnalysisSteps state; };
+    std::vector<Catapult> catapults;
+};
+
+struct MatchAnalysisJob
+{
+    enum class State { Idle, Downloading, Analysing, Ready, Failed };
+    State state = State::Idle;
+    std::string folderName;
+    HANDLE process = nullptr;
+    std::string error;
+    std::vector<MatchAnalysisEvent> events;
+    std::vector<unsigned char> healthTeam1, healthTeam2;   // percent, per second of the recording
+    int gateSeconds = 0;   // recording seconds before the gate opens (0:00); shown as -1:00 .. 0:00
+    std::vector<MatchAnalysisPlayer> npcs;                 // team, name, pos as for players
+    MatchAnalysisObjects objects;
+    std::vector<MatchAnalysisPlayer> players;
+    std::vector<MatchAnalysisLandmark> landmarks;
+    int mapId = -1;
+};
+
+static MatchAnalysisJob s_analysis;
+
+static void StopAnalysisProcess()
+{
+    if (!s_analysis.process) return;
+    // Still running means its match is no longer selected. Its output would be valid, but a
+    // reader clicking through the list would otherwise leave one export per match behind.
+    if (WaitForSingleObject(s_analysis.process, 0) == WAIT_TIMEOUT)
+        TerminateProcess(s_analysis.process, 1);
+    CloseHandle(s_analysis.process);
+    s_analysis.process = nullptr;
+}
+
+static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJob& job)
+{
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return false;
+    const auto root = nlohmann::json::parse(f, nullptr, false);
+    if (root.is_discarded() || root.value("version", 0) != kMatchAnalysisVersion) return false;
+
+    static const std::pair<const char*, AnalysisEvent> kTypes[] = {
+        { "death",           AnalysisEvent::Death },
+        { "flag_capture",    AnalysisEvent::FlagCapture },
+        { "morale_boost",    AnalysisEvent::MoraleBoost },
+        { "victory",         AnalysisEvent::Victory },
+        { "shrine_captured", AnalysisEvent::ShrineCaptured },
+        { "obelisk_capture", AnalysisEvent::ObeliskCapture },
+    };
+    auto& out = job.events;
+    out.clear();
+    auto readCurve = [&](const char* key, std::vector<unsigned char>& curve) {
+        curve.clear();
+        for (const auto& v : root.value(key, nlohmann::json::array()))
+            curve.push_back((unsigned char)std::clamp(v.is_number() ? v.get<int>() : 0, 0, 100));
+    };
+    readCurve("health_team1", job.healthTeam1);
+    readCurve("health_team2", job.healthTeam2);
+    job.mapId = root.value("map_id", -1);
+    job.gateSeconds = std::max(0, root.value("gate_seconds", 0));
+    auto readAgents = [&](const char* key, std::vector<MatchAnalysisPlayer>& out) {
+        out.clear();
+        for (const auto& pj : root.value(key, nlohmann::json::array()))
+        {
+            MatchAnalysisPlayer pl;
+            pl.team = pj.value("team", 0);
+            pl.prof = pj.value("prof", 0);
+            pl.lord = pj.value("lord", false);
+            pl.name = pj.value("name", std::string());
+            for (const auto& v : pj.value("pos", nlohmann::json::array()))
+                pl.pos.push_back(v.is_number() ? v.get<int>() : 0);
+            out.push_back(std::move(pl));
+        }
+    };
+    readAgents("players", job.players);
+    readAgents("npcs", job.npcs);
+
+    auto& ob = job.objects;
+    ob = MatchAnalysisObjects();
+    const auto objs = root.value("objects", nlohmann::json::object());
+    auto readSteps = [&](const char* key, MatchAnalysisSteps& out) {
+        if (!objs.contains(key)) return false;
+        for (const auto& st : objs[key])
+            if (st.is_array() && st.size() == 2)
+                out.steps.push_back({ st[0].get<float>(), st[1].get<int>() });
+        return true;
+    };
+    ob.hasStand   = readSteps("stand_owner", ob.standOwner);
+    ob.hasObelisk = readSteps("obelisk_owner", ob.obeliskOwner);
+    ob.hasShrine  = readSteps("shrine_owner", ob.shrineOwner);
+    auto readTracks = [&](const char* key, std::vector<MatchAnalysisPlayer>& out) {
+        for (const auto& fj : objs.value(key, nlohmann::json::array()))
+        {
+            MatchAnalysisPlayer f;
+            f.team = fj.value("team", 0);
+            f.name = fj.value("type", std::string());
+            for (const auto& v : fj.value("pos", nlohmann::json::array()))
+                f.pos.push_back(v.is_number() ? v.get<int>() : 0);
+            out.push_back(std::move(f));
+        }
+    };
+    readTracks("flags", ob.flags);
+    readTracks("bundles", ob.bundles);
+    for (const auto& d : objs.value("doors", nlohmann::json::array()))
+        if (d.is_array() && d.size() == 3)
+            ob.doors.push_back({ d[0].get<float>(), { d[1].get<int>(), d[2].get<int>() } });
+    for (const auto& cj : objs.value("catapults", nlohmann::json::array()))
+    {
+        MatchAnalysisObjects::Catapult c;
+        c.x = cj.value("x", 0.0f); c.y = cj.value("y", 0.0f); c.z = cj.value("z", 0.0f);
+        c.repaired = cj.value("repaired", 0.0f);
+        for (const auto& st : cj.value("states", nlohmann::json::array()))
+            if (st.is_array() && st.size() == 2)
+                c.state.steps.push_back({ st[0].get<float>(), st[1].get<int>() });
+        ob.catapults.push_back(std::move(c));
+    }
+    job.landmarks.clear();
+    for (const auto& lj : root.value("landmarks", nlohmann::json::array()))
+    {
+        MatchAnalysisLandmark lm;
+        lm.kind = lj.value("kind", std::string());
+        lm.team = lj.value("team", 0);
+        lm.x = lj.value("x", 0.0f);
+        lm.y = lj.value("y", 0.0f);
+        lm.z = lj.value("z", 0.0f);
+        job.landmarks.push_back(std::move(lm));
+    }
+    for (const auto& e : root.value("events", nlohmann::json::array()))
+    {
+        const std::string type = e.value("type", std::string());
+        // Resurrections, lord alarms, flag returns and catapult shots are left out: on a strip
+        // this small they would bury the deaths and captures a reader picks a fight by.
+        for (const auto& [name, kind] : kTypes)
+        {
+            if (type != name) continue;
+            MatchAnalysisEvent ev;
+            ev.t = e.value("t", 0.0f);
+            ev.type = kind;
+            ev.team = e.value("team", 0);
+            ev.prof = e.value("prof", 0);
+            ev.label = e.value("label", std::string());
+            out.push_back(std::move(ev));
+            break;
+        }
+    }
+    return true;
+}
+
+static bool StartAnalysisProcess(const std::filesystem::path& folder)
+{
+    wchar_t exePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0) return false;
+
+    std::wstring cmd = L"\"" + std::wstring(exePath) + L"\" --export-match-analysis \""
+                     + folder.wstring() + L"\"";
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+                        nullptr, std::filesystem::path(exePath).parent_path().c_str(), &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    s_analysis.process = pi.hProcess;
+    return true;
+}
+
+static void ForgetMapPicture();   // Map tab, below
+
+// Advances the job for the selected match by one step. Called every frame an analysis tab
+// is showing.
+static void UpdateMatchAnalysis(const MatchMeta& m)
+{
+    using State = MatchAnalysisJob::State;
+    if (s_analysis.folderName != m.folder_name)
+    {
+        StopAnalysisProcess();
+        s_analysis = MatchAnalysisJob();
+        s_analysis.folderName = m.folder_name;
+        ForgetMapPicture();
+        s_state.detailPlaying = false;
+    }
+
+    switch (s_analysis.state)
+    {
+    case State::Idle:
+    {
+        if (m.is_cloud_only)
+        {
+            // The replay button's download is single-slot: wait for one already running.
+            if (g_cloudDownloadInProgress || g_pendingReplay.requested) return;
+            g_pendingReplay.requested = true;
+            g_pendingReplay.match = m;
+            g_pendingReplay.openReplay = false;
+            s_analysis.state = State::Downloading;
+            return;
+        }
+        const std::filesystem::path folder(m.folder_path);
+        if (LoadMatchAnalysis(folder / "match_analysis.json", s_analysis))
+        {
+            s_analysis.state = State::Ready;
+            return;
+        }
+        if (StartAnalysisProcess(folder))
+            s_analysis.state = State::Analysing;
+        else
+        {
+            s_analysis.error = "Could not start the match reader.";
+            s_analysis.state = State::Failed;
+        }
+        return;
+    }
+    case State::Downloading:
+        // The rescan after the download replaces this match's entry with the local one.
+        if (!m.is_cloud_only)
+            s_analysis.state = State::Idle;
+        else if (!g_cloudDownloadInProgress && !g_pendingReplay.requested)
+        {
+            s_analysis.error = "The download did not complete.";
+            s_analysis.state = State::Failed;
+        }
+        return;
+    case State::Analysing:
+    {
+        if (WaitForSingleObject(s_analysis.process, 0) == WAIT_TIMEOUT) return;
+        DWORD code = 1;
+        GetExitCodeProcess(s_analysis.process, &code);
+        CloseHandle(s_analysis.process);
+        s_analysis.process = nullptr;
+        if (code == 0 && LoadMatchAnalysis(std::filesystem::path(m.folder_path) / "match_analysis.json",
+                                           s_analysis))
+            s_analysis.state = State::Ready;
+        else
+        {
+            RunLog::Line("library: match analysis failed for %s (exit code %lu)",
+                         m.folder_name.c_str(), code);
+            s_analysis.error = code == 5 ? "This recording holds no combat to read."
+                                         : "The match could not be read.";
+            s_analysis.state = State::Failed;
+        }
+        return;
+    }
+    case State::Ready:
+    case State::Failed:
+        return;
+    }
+}
+
+static void DrawDetailTabPlaceholder(int tab)
+{
+    static const char* const kWhat[DetailTab_Count] = {
+        "",
+        "Every player against the stats you pick, for the selected interval.",
+        "One stat over time: a line per player, per skill or per team.",
+        "The replay minimap, played over the selected interval.",
+    };
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImFont* bold = GuiGlobalConstants::boldFont;
+
+    if (bold) ImGui::PushFont(bold);
+    const ImVec2 titleSz = ImGui::CalcTextSize(kDetailTabNames[tab]);
+    if (bold) ImGui::PopFont();
+    const ImVec2 lineSz = ImGui::CalcTextSize(kWhat[tab]);
+
+    // Where the match data stands; the tab itself is not built yet.
+    using State = MatchAnalysisJob::State;
+    char note[160];
+    switch (s_analysis.state)
+    {
+    case State::Downloading: snprintf(note, sizeof(note), "Downloading the match..."); break;
+    case State::Analysing:   snprintf(note, sizeof(note), "Reading the match..."); break;
+    case State::Ready:       snprintf(note, sizeof(note), "%d match events read. Not built yet.",
+                                      (int)s_analysis.events.size()); break;
+    case State::Failed:      snprintf(note, sizeof(note), "%s", s_analysis.error.c_str()); break;
+    default:                 snprintf(note, sizeof(note), "Not built yet."); break;
+    }
+    const ImVec2 noteSz = ImGui::CalcTextSize(note);
+    const bool failed = (s_analysis.state == State::Failed);
+    const float blockH = titleSz.y + lineSz.y + noteSz.y + 8.0f + (failed ? noteSz.y + 10.0f : 0.0f);
+
+    const ImVec2 origin = ImGui::GetCursorPos();
+    const float top = origin.y + std::max(0.0f, (avail.y - blockH) * 0.5f);
+
+    ImGui::SetCursorPos(ImVec2(origin.x + std::max(0.0f, (avail.x - titleSz.x) * 0.5f), top));
+    if (bold) ImGui::PushFont(bold);
+    ImGui::TextColored(kColorAccent, "%s", kDetailTabNames[tab]);
+    if (bold) ImGui::PopFont();
+    ImGui::SetCursorPosX(origin.x + std::max(0.0f, (avail.x - lineSz.x) * 0.5f));
+    ImGui::TextColored(kColorText, "%s", kWhat[tab]);
+    ImGui::SetCursorPosX(origin.x + std::max(0.0f, (avail.x - noteSz.x) * 0.5f));
+    ImGui::TextColored(failed ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f) : kColorTextDim, "%s", note);
+    if (failed)
+    {
+        const float retryW = ImGui::CalcTextSize("Retry").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImGui::SetCursorPosX(origin.x + std::max(0.0f, (avail.x - retryW) * 0.5f));
+        if (ImGui::Button("Retry"))
+            s_analysis.state = State::Idle;
+    }
+}
+
+static ImTextureID GetOthersUiIcon(const char* file)
+{
+    EnsureTextureBasePath();
+    return GetTextureCache().GetTexture(ui::TextureBasePath() + "\\Textures\\Others_UI\\" + file);
+}
+
+// The interval every analysis tab reads, on a small copy of the replay's Event Timeline: both
+// teams' health over the match, deaths as profession icons on their team's curve, flag captures,
+// morale boosts and the victory in a row along the bottom. Drag across the chart to pick a fight,
+// or move the green (start) and red (end) handles on the track under it. Outside the interval
+// the chart is dimmed.
+static void DrawDetailTimeline(const MatchMeta& m, float height)
+{
+    using State = MatchAnalysisJob::State;
+    const bool ready = s_analysis.state == State::Ready && s_analysis.folderName == m.folder_name;
+    // The span runs from the start of the recording (-1:00, the minute before the gate opens)
+    // to the end of the match; the interval handles are fractions of it.
+    const int pre = ready ? s_analysis.gateSeconds : 0;
+    int duration = ParseDurationSeconds(m.match_duration);
+    if (duration <= 0 && ready)
+        duration = (int)std::max(s_analysis.healthTeam1.size(), s_analysis.healthTeam2.size()) - pre;
+    const int span = std::max(1, duration + pre);
+    float& from = s_state.detailIntervalFrom;
+    float& to   = s_state.detailIntervalTo;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    ImFont* bold = GuiGlobalConstants::boldFont;
+    const float fs = ImGui::GetFontSize();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+
+    // Same palette as the replay's Event Timeline.
+    const ImU32 cChartBg  = IM_COL32( 10,  14,  18, 166);
+    const ImU32 cBorderHi = IM_COL32(200, 168,  75,  82);
+    const ImU32 cGrid     = IM_COL32(255, 255, 255,   8);
+    const ImU32 cTextDim  = IM_COL32(120, 108,  80, 255);
+    const ImU32 cBlue     = IM_COL32( 74, 144, 216, 255);
+    const ImU32 cBlueFill = IM_COL32( 74, 144, 216,  18);
+    const ImU32 cRed      = IM_COL32(208,  72,  72, 255);
+    const ImU32 cRedFill  = IM_COL32(208,  72,  72,  18);
+    const ImU32 cStart    = IM_COL32( 64, 200,  96, 255);
+    const ImU32 cEnd      = IM_COL32(220,  72,  72, 255);
+
+    // ── Layout: controls on the left, chart + track + clock on the right ──
+    const float leftW   = 150.0f;
+    const float x0      = p0.x + leftW;
+    const float x1      = p0.x + w - 4.0f;
+    const float chartW  = std::max(40.0f, x1 - x0);
+    const float labelFs = fs * 0.75f;
+    const float chartY0 = p0.y + 6.0f;
+    const float trackH  = 16.0f;
+    const float chartY1 = p0.y + height - trackH - labelFs - 4.0f;
+    const float chartH  = std::max(20.0f, chartY1 - chartY0);
+    const float trackY  = chartY1 + trackH * 0.5f;
+    auto xAt = [&](float frac) { return x0 + chartW * std::clamp(frac, 0.0f, 1.0f); };
+
+    // ── Left column: title, interval, Full match ──
+    char fromBuf[16], toBuf[16], lenBuf[16];
+    const int fromS = (int)std::lround(from * span) - pre;
+    const int toS   = (int)std::lround(to * span) - pre;
+    FormatClock(fromS, fromBuf, sizeof(fromBuf));
+    FormatClock(toS, toBuf, sizeof(toBuf));
+    FormatClock(toS - fromS, lenBuf, sizeof(lenBuf));
+    {
+        float y = chartY0;
+        if (bold) ImGui::PushFont(bold);
+        dl->AddText(ImVec2(p0.x, y), ImGui::GetColorU32(kColorAccent), "TIMELINE");
+        if (bold) ImGui::PopFont();
+        y += fs + 8.0f;
+        if (duration > 0)
+        {
+            char span[48];
+            snprintf(span, sizeof(span), "%s - %s", fromBuf, toBuf);
+            dl->AddText(ImVec2(p0.x, y), ImGui::GetColorU32(kColorText), span);
+            y += fs + 2.0f;
+            char len[32];
+            snprintf(len, sizeof(len), "%s selected", lenBuf);
+            dl->AddText(ImVec2(p0.x, y), ImGui::GetColorU32(kColorTextDim), len);
+            y += fs + 8.0f;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(p0.x, y));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
+        if (ImGui::Button("Full match")) { from = 0.0f; to = 1.0f; }
+        ImGui::PopStyleVar();
+    }
+
+    // ── Chart background, grid ──
+    dl->AddRectFilled(ImVec2(x0, chartY0), ImVec2(x1, chartY1), cChartBg, 4.0f);
+    dl->AddRect(ImVec2(x0, chartY0), ImVec2(x1, chartY1), cBorderHi, 4.0f);
+    for (int pct = 25; pct < 100; pct += 25)
+    {
+        const float y = chartY1 - pct / 100.0f * chartH;
+        dl->AddLine(ImVec2(x0, y), ImVec2(x1, y), cGrid);
+    }
+
+    if (!ready || duration <= 0)
+    {
+        const char* msg = s_analysis.state == State::Downloading ? "Downloading the match..."
+                        : s_analysis.state == State::Analysing   ? "Reading the match..."
+                        : s_analysis.state == State::Failed      ? s_analysis.error.c_str()
+                        : duration <= 0                          ? "Match length unknown"
+                                                                 : "";
+        const ImVec2 ts = ImGui::CalcTextSize(msg);
+        dl->AddText(ImVec2(x0 + (chartW - ts.x) * 0.5f, chartY0 + (chartH - ts.y) * 0.5f), cTextDim, msg);
+    }
+
+    // ── Health curves ──
+    dl->PushClipRect(ImVec2(x0, chartY0), ImVec2(x1, chartY1), true);
+    auto healthY = [&](const std::vector<unsigned char>& curve, float t) {
+        if (curve.empty()) return chartY1 - chartH * 0.5f;
+        const int s = std::clamp((int)(t + pre), 0, (int)curve.size() - 1);
+        return chartY1 - curve[s] / 100.0f * chartH;
+    };
+    if (ready && duration > 0)
+    {
+        auto drawCurve = [&](const std::vector<unsigned char>& curve, ImU32 line, ImU32 fill) {
+            for (size_t s = 0; s + 1 < curve.size(); ++s)
+            {
+                const float ax = xAt((float)s / span), bx = xAt((float)(s + 1) / span);
+                const float ay = chartY1 - curve[s] / 100.0f * chartH;
+                const float by = chartY1 - curve[s + 1] / 100.0f * chartH;
+                const ImVec2 quad[4] = { ImVec2(ax, ay), ImVec2(bx, by), ImVec2(bx, chartY1), ImVec2(ax, chartY1) };
+                dl->AddConvexPolyFilled(quad, 4, fill);
+                dl->AddLine(ImVec2(ax, ay), ImVec2(bx, by), line, 1.0f);
+            }
+        };
+        drawCurve(s_analysis.healthTeam2, cRed, cRedFill);
+        drawCurve(s_analysis.healthTeam1, cBlue, cBlueFill);
+    }
+
+    // ── Event markers ──
+    const float iconSz = std::clamp(chartH * 0.22f, 14.0f, 22.0f);
+    const float bottomRowY = chartY1 - iconSz * 0.5f - 2.0f;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const MatchAnalysisEvent* hovered = nullptr;
+    if (ready && duration > 0)
+    {
+        struct Placed { const MatchAnalysisEvent* e; float x, y; };
+        std::vector<Placed> placed;
+        placed.reserve(s_analysis.events.size());
+        for (const auto& e : s_analysis.events)
+        {
+            const float x = xAt((e.t + pre) / span);
+            float y = bottomRowY;
+            if (e.type == AnalysisEvent::Death)
+            {
+                // On the curve of the team that lost the player; deaths that would overlap
+                // stack downwards, as in the replay.
+                y = healthY(e.team == 2 ? s_analysis.healthTeam2 : s_analysis.healthTeam1, e.t);
+                y = std::max(y, chartY0 + iconSz * 0.5f + 1.0f);
+                int stack = 0;
+                for (const auto& p : placed)
+                    if (p.e->type == AnalysisEvent::Death && std::fabs(p.x - x) < iconSz + 2.0f) stack++;
+                y = std::min(y + stack * (iconSz + 2.0f), bottomRowY - iconSz - 2.0f);
+            }
+            else if (e.type == AnalysisEvent::MoraleBoost)
+            {
+                // Lifted when a capture shares its spot on the bottom row.
+                for (const auto& p : placed)
+                    if (p.e->type != AnalysisEvent::Death && std::fabs(p.x - x) < iconSz) { y -= iconSz + 2.0f; break; }
+            }
+            placed.push_back({ &e, x, y });
+        }
+
+        for (const auto& p : placed)
+        {
+            const auto& e = *p.e;
+            float half = iconSz * 0.5f;
+            const bool over = std::fabs(mouse.x - p.x) <= half + 2.0f && std::fabs(mouse.y - p.y) <= half + 2.0f;
+            if (over) { hovered = &e; half *= 1.3f; }
+            const ImVec2 a(p.x - half, p.y - half), b(p.x + half, p.y + half);
+            const ImU32 teamCol = e.team == 2 ? cRed : cBlue;
+
+            ImTextureID tex = nullptr;
+            switch (e.type)
+            {
+            case AnalysisEvent::Death:
+                dl->AddRectFilled(a, b, IM_COL32(10, 10, 10, 230), 2.0f);
+                if (ImTextureID prof = GetProfessionIcon(e.prof)) dl->AddImage(prof, a, b);
+                dl->AddLine(ImVec2(a.x + 2, a.y + 2), ImVec2(b.x - 2, b.y - 2), IM_COL32(220, 40, 40, 120), 1.5f);
+                dl->AddLine(ImVec2(b.x - 2, a.y + 2), ImVec2(a.x + 2, b.y - 2), IM_COL32(220, 40, 40, 120), 1.5f);
+                dl->AddRect(a, b, teamCol, 2.0f, 0, 2.0f);
+                continue;
+            case AnalysisEvent::FlagCapture:
+                tex = GetOthersUiIcon(e.team == 2 ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png"); break;
+            case AnalysisEvent::MoraleBoost:
+                tex = GetOthersUiIcon(e.team == 2 ? "redmorale.png" : "bluemorale.png"); break;
+            case AnalysisEvent::Victory:
+                tex = GetOthersUiIcon("cup.webp"); break;
+            case AnalysisEvent::ShrineCaptured:
+                tex = GetOthersUiIcon("Health_Shrine_Bonus.jpg"); break;
+            case AnalysisEvent::ObeliskCapture:
+                tex = GetOthersUiIcon("Obelisk_Lightning.jpg"); break;
+            }
+            if (tex) dl->AddImage(tex, a, b);
+            else     dl->AddCircleFilled(ImVec2(p.x, p.y), half * 0.6f, teamCol);
+            if (e.type == AnalysisEvent::ShrineCaptured || e.type == AnalysisEvent::ObeliskCapture)
+                dl->AddRect(a, b, teamCol, 2.0f, 0, 1.5f);
+        }
+    }
+
+    // ── The interval: dim outside it, mark its edges ──
+    const float xFrom = xAt(from), xTo = xAt(to);
+    const ImU32 cDim = IM_COL32(0, 0, 0, 120);
+    if (xFrom > x0) dl->AddRectFilled(ImVec2(x0, chartY0), ImVec2(xFrom, chartY1), cDim);
+    if (xTo < x1)   dl->AddRectFilled(ImVec2(xTo, chartY0), ImVec2(x1, chartY1), cDim);
+    dl->PopClipRect();
+    if (from > 0.0f) dl->AddLine(ImVec2(xFrom, chartY0), ImVec2(xFrom, chartY1), cStart, 1.5f);
+    if (to < 1.0f)   dl->AddLine(ImVec2(xTo, chartY0), ImVec2(xTo, chartY1), cEnd, 1.5f);
+    if (s_state.detailTab == DetailTab_Map && ready && duration > 0)
+    {
+        const float xp = xAt((s_state.detailPlayhead + pre) / span);
+        dl->AddLine(ImVec2(xp, chartY0), ImVec2(xp, chartY1 + trackH * 0.5f), IM_COL32(255, 215, 100, 220), 2.0f);
+    }
+
+    // ── Track + clock ──
+    dl->AddRectFilled(ImVec2(x0, trackY - 2.0f), ImVec2(x1, trackY + 2.0f),
+                      ImGui::GetColorU32(ImVec4(kColorPanel.x, kColorPanel.y, kColorPanel.z, 1.0f)), 2.0f);
+    dl->AddRectFilled(ImVec2(xFrom, trackY - 3.0f), ImVec2(xTo, trackY + 3.0f),
+                      ImGui::GetColorU32(ImVec4(kColorAccent.x, kColorAccent.y, kColorAccent.z, 0.70f)), 2.0f);
+    if (duration > 0)
+    {
+        const int step = duration < 600 ? 60 : duration < 1500 ? 120 : 300;
+        for (int s = pre > 0 ? -pre : 0; s <= duration; s = s < 0 ? 0 : s + step)
+        {
+            const float x = xAt((float)(s + pre) / span);
+            char clock[16];
+            FormatClock(s, clock, sizeof(clock));
+            const ImVec2 ts = font->CalcTextSizeA(labelFs, FLT_MAX, 0.0f, clock);
+            const float lx = std::clamp(x - ts.x * 0.5f, x0, x1 - ts.x);
+            dl->AddText(font, labelFs, ImVec2(lx, chartY1 + trackH + 1.0f), cTextDim, clock);
+        }
+    }
+    auto drawHandle = [&](float x, ImU32 col) {
+        dl->AddTriangleFilled(ImVec2(x - 6.0f, trackY - 8.0f), ImVec2(x + 6.0f, trackY - 8.0f),
+                              ImVec2(x, trackY + 1.0f), col);
+    };
+    drawHandle(xFrom, cStart);
+    drawHandle(xTo, cEnd);
+
+    // ── Input ──
+    const float minSpan = duration > 0 ? std::min(1.0f, 5.0f / span) : 0.01f;
+    const float mouseFrac = std::clamp((mouse.x - x0) / chartW, 0.0f, 1.0f);
+
+    // Drag across the chart: a new interval from the press to the mouse.
+    ImGui::SetCursorScreenPos(ImVec2(x0, chartY0));
+    ImGui::InvisibleButton("##detail_chart", ImVec2(chartW, chartH));
+    if (ImGui::IsItemActivated())
+        s_state.detailChartAnchor = mouseFrac;
+    if (ImGui::IsItemActive() && s_state.detailChartAnchor >= 0.0f
+        && std::fabs(mouseFrac - s_state.detailChartAnchor) * chartW > 3.0f)
+    {
+        from = std::min(s_state.detailChartAnchor, mouseFrac);
+        to   = std::max(std::max(s_state.detailChartAnchor, mouseFrac), from + minSpan);
+        to   = std::min(1.0f, to);
+    }
+    if (ImGui::IsItemDeactivated())
+        s_state.detailChartAnchor = -1.0f;
+    const bool chartActive = ImGui::IsItemActive();
+    const bool chartHovered = ImGui::IsItemHovered();
+
+    // The track: a press picks the nearer handle, which then follows the mouse.
+    ImGui::SetCursorScreenPos(ImVec2(x0 - 8.0f, chartY1));
+    ImGui::InvisibleButton("##detail_interval", ImVec2(chartW + 16.0f, trackH));
+    if (ImGui::IsItemActivated())
+        s_state.detailIntervalDrag = (std::fabs(mouseFrac - from) <= std::fabs(mouseFrac - to)) ? 0 : 1;
+    if (ImGui::IsItemActive() && s_state.detailIntervalDrag >= 0)
+    {
+        if (s_state.detailIntervalDrag == 0) from = std::max(0.0f, std::min(mouseFrac, to - minSpan));
+        else                                 to   = std::min(1.0f, std::max(mouseFrac, from + minSpan));
+    }
+    if (ImGui::IsItemDeactivated())
+        s_state.detailIntervalDrag = -1;
+    const bool trackActive = ImGui::IsItemActive();
+    const bool trackHovered = ImGui::IsItemHovered();
+
+    // ── Tooltips ──
+    if (chartActive || trackActive)
+        ImGui::SetTooltip("%s - %s  (%s)", fromBuf, toBuf, lenBuf);
+    else if (hovered)
+    {
+        char clock[16];
+        FormatClock((int)hovered->t, clock, sizeof(clock));
+        const ImVec4 col = hovered->team == 2 ? ImVec4(1.00f, 0.42f, 0.42f, 1.0f)
+                         : hovered->team == 1 ? ImVec4(0.45f, 0.70f, 1.00f, 1.0f) : kColorAccent;
+        ImGui::BeginTooltip();
+        ImGui::TextColored(kColorTextDim, "%s", clock);
+        ImGui::SameLine();
+        if (hovered->type == AnalysisEvent::Death)
+            ImGui::TextColored(col, "%s died", hovered->label.c_str());
+        else
+            ImGui::TextColored(col, "%s", hovered->label.c_str());
+        ImGui::EndTooltip();
+    }
+    else if (chartHovered && duration > 0)
+    {
+        char clock[16];
+        FormatClock((int)std::lround(mouseFrac * span) - pre, clock, sizeof(clock));
+        ImGui::SetTooltip("%s\nDrag to select a fight", clock);
+    }
+    else if (trackHovered)
+        ImGui::SetTooltip("Drag a handle to move the start or the end");
+
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + height));
+}
+
+
+// ─── Map tab ─────────────────────────────────────────────────────────────────
+// The match from above over the selected interval: the map's top-down picture (shipped in
+// Textures/Map_Pictures, made with the GWO_MAP_PICTURES batch and cropped to the map; a map
+// missing from that set is captured into the user folder by the first replay of it -
+// ReplayWindow::CaptureTopDownMapImage), every player drawn as the replay minimap draws them,
+// with the path they took since the start of the interval, guild lords and flag stands.
+// Plays inside the interval, on the replay's own keys (ReplayHotkeys); the playhead shows on
+// the timeline too.
+
+struct MapPicture
+{
+    int mapId = -1;
+    bool loaded = false;           // the picture and its placement were read
+    double checkedAt = 0.0;        // when a missing picture was last looked for
+    std::string png;
+    float u[4] = {}, v[4] = {};    // recorded position -> 0..1 across the picture
+    float aspect = 1.0f;           // width / height
+    struct Gate { int door = 0; float u = 0, v = 0; bool bridge = false; };
+    std::vector<Gate> gates;       // lever gates, Meditation gates, vine bridges
+};
+
+static MapPicture s_mapPicture;
+
+static const MapPicture& GetMapPicture(int mapId)
+{
+    // A missing picture is looked for again every few seconds: a replay opened meanwhile may
+    // have just captured it.
+    const double now = ImGui::GetTime();
+    if (s_mapPicture.mapId == mapId && (s_mapPicture.loaded || now - s_mapPicture.checkedAt < 2.0))
+        return s_mapPicture;
+    s_mapPicture = MapPicture();
+    s_mapPicture.mapId = mapId;
+    s_mapPicture.checkedAt = now;
+
+    // Shipped pictures are JPEG (the batch's PNGs, converted to keep the download small); a
+    // picture captured on the user's machine stays PNG.
+    const std::string name = std::to_string(mapId);
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(ui::TextureBasePath()) / L"Textures" / L"Map_Pictures";
+    std::filesystem::path png = dir / (name + ".jpg");
+    if (!std::filesystem::exists(png, ec))
+    {
+        dir = GuiGlobalConstants::GetUserDataDir() / L"MapImages";
+        png = dir / (name + ".png");
+    }
+    std::ifstream f(dir / (name + ".json"), std::ios::binary);
+    if (!f || !std::filesystem::exists(png, ec)) return s_mapPicture;
+    const auto j = nlohmann::json::parse(f, nullptr, false);
+    if (j.is_discarded() || !j.contains("u") || !j.contains("v")) return s_mapPicture;
+    for (int i = 0; i < 4; ++i)
+    {
+        s_mapPicture.u[i] = j["u"][i].get<float>();
+        s_mapPicture.v[i] = j["v"][i].get<float>();
+    }
+    for (const auto& g : j.value("gates", nlohmann::json::array()))
+        s_mapPicture.gates.push_back({ g.value("door", 0), g.value("u", 0.0f), g.value("v", 0.0f),
+                                       g.value("kind", std::string()) == "bridge" });
+    const float w = j.value("width", 1024.0f), h = j.value("height", 1024.0f);
+    s_mapPicture.aspect = h > 0.0f ? w / h : 1.0f;
+    s_mapPicture.png = png.string();
+    s_mapPicture.loaded = true;
+    return s_mapPicture;
+}
+
+// Forget the cached lookup, so a picture captured since (by a replay) is found.
+static void ForgetMapPicture() { s_mapPicture.mapId = -1; }
+
+static constexpr int kMapPlaySpeeds[] = { 1, 2, 4, 8, 16 };
+
+// The replay's transport keys, read from the same bindings (Preferences > Hotkeys).
+static void HandleMapTabHotkeys(float fromT, float toT)
+{
+    if (ImGui::GetIO().WantTextInput) return;
+    if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) return;
+
+    const auto& hk = ReplayHotkeys::Get();
+    float& t = s_state.detailPlayhead;
+    auto pressed = [](int key, bool repeat = false) {
+        return key > 0 && ImGui::IsKeyPressed((ImGuiKey)key, repeat);
+    };
+
+    if (pressed(hk.playPause))
+    {
+        if (!s_state.detailPlaying && t >= toT - 0.01f) t = fromT;
+        s_state.detailPlaying = !s_state.detailPlaying;
+    }
+
+    // As in the replay: the 5 s keys, unless bound to an arrow; arrows step 1 s and repeat.
+    const bool rewIsArrow = hk.rewind5s == ImGuiKey_LeftArrow || hk.rewind5s == ImGuiKey_RightArrow;
+    const bool fwdIsArrow = hk.forward5s == ImGuiKey_LeftArrow || hk.forward5s == ImGuiKey_RightArrow;
+    if (!rewIsArrow && pressed(hk.rewind5s))  t -= 5.0f;
+    if (!fwdIsArrow && pressed(hk.forward5s)) t += 5.0f;
+    if (pressed(ImGuiKey_LeftArrow, true))  t -= 1.0f;
+    if (pressed(ImGuiKey_RightArrow, true)) t += 1.0f;
+    t = std::clamp(t, fromT, toT);
+
+    const int step = (pressed(hk.speedUp) ? 1 : 0) - (pressed(hk.speedDown) ? 1 : 0);
+    if (step != 0)
+    {
+        const int n = (int)std::size(kMapPlaySpeeds);
+        int i = 0;
+        while (i < n - 1 && kMapPlaySpeeds[i] < (int)s_state.detailPlaySpeed) ++i;
+        s_state.detailPlaySpeed = (float)kMapPlaySpeeds[std::clamp(i + step, 0, n - 1)];
+    }
+}
+
+static void DrawMapTab(const MatchMeta& m)
+{
+    const auto& job = s_analysis;
+    const int pre = job.gateSeconds;
+    const int seconds = job.players.empty() ? 0 : (int)(job.players.front().pos.size() / 4) - 1;
+    const int duration = std::max(1, ParseDurationSeconds(m.match_duration) > 0
+                                     ? ParseDurationSeconds(m.match_duration) : seconds - pre);
+    const int span = duration + pre;
+    // Seconds on the match clock (negative before the gate); positions are stored per second of
+    // the recording, so the index of clock time c is c + pre.
+    const float fromT = s_state.detailIntervalFrom * span - pre;
+    const float toT   = s_state.detailIntervalTo * span - pre;
+    float& t = s_state.detailPlayhead;
+
+    // Playback inside the interval; a playhead left outside it (the interval moved) starts over.
+    if (t < fromT || t > toT) t = fromT;
+    HandleMapTabHotkeys(fromT, toT);
+    if (s_state.detailPlaying)
+    {
+        t += ImGui::GetIO().DeltaTime * s_state.detailPlaySpeed;
+        if (t >= toT) { t = toT; s_state.detailPlaying = false; }
+    }
+
+    // ── Controls: play, speed, playhead, then what to show ──
+    {
+        auto toggle = [](const char* label, bool on) {
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, s_themeColors.replayBtnBg);
+            if (on) ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+            const bool clicked = ImGui::Button(label);
+            if (on) ImGui::PopStyleColor(2);
+            return clicked;
+        };
+        if (ImGui::Button(s_state.detailPlaying ? "Pause" : "Play", ImVec2(70.0f, 0.0f)))
+        {
+            if (!s_state.detailPlaying && t >= toT - 0.01f) t = fromT;
+            s_state.detailPlaying = !s_state.detailPlaying;
+        }
+        for (int sp : kMapPlaySpeeds)
+        {
+            ImGui::SameLine(0, 4.0f);
+            char label[8];
+            snprintf(label, sizeof(label), "%dx", sp);
+            if (toggle(label, (int)s_state.detailPlaySpeed == sp)) s_state.detailPlaySpeed = (float)sp;
+        }
+        ImGui::SameLine(0, 12.0f);
+        char clock[16];
+        FormatClock((int)t, clock, sizeof(clock));
+        ImGui::SetNextItemWidth(std::min(420.0f, std::max(120.0f, ImGui::GetContentRegionAvail().x - 200.0f)));
+        ImGui::SliderFloat("##map_playhead", &t, fromT, std::max(fromT + 0.1f, toT), clock,
+                           ImGuiSliderFlags_NoInput);
+        ImGui::SameLine(0, 16.0f);
+        if (toggle("Trails", s_state.detailShowTrails)) s_state.detailShowTrails = !s_state.detailShowTrails;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where each player went since the start of the interval");
+        ImGui::SameLine(0, 4.0f);
+        if (toggle("Names", s_state.detailShowNames)) s_state.detailShowNames = !s_state.detailShowNames;
+    }
+
+    // ── The map area: the picture's own shape, as large as the tab allows ──
+    EnsureTextureBasePath();
+    const MapPicture& pic = GetMapPicture(job.mapId >= 0 ? job.mapId : m.map_id);
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float aspect = pic.loaded ? pic.aspect : 1.0f;
+    float drawH = std::max(80.0f, avail.y - 4.0f);
+    float drawW = drawH * aspect;
+    if (drawW > avail.x) { drawW = avail.x; drawH = drawW / aspect; }
+    const ImVec2 o(ImGui::GetCursorScreenPos().x + std::max(0.0f, (avail.x - drawW) * 0.5f),
+                   ImGui::GetCursorScreenPos().y + 2.0f);
+    const ImVec2 e(o.x + drawW, o.y + drawH);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::Dummy(ImVec2(avail.x, drawH + 4.0f));
+    const ImVec2 afterMap = ImGui::GetCursorScreenPos();
+
+    // Zoom and pan. The view is the part of the picture between uv0 and uv1.
+    float& zoom = s_state.detailMapZoom;
+    float& cu = s_state.detailMapCenterU;
+    float& cv = s_state.detailMapCenterV;
+    ImGui::SetCursorScreenPos(o);
+    ImGui::InvisibleButton("##map_view", ImVec2(drawW, drawH));
+    const bool viewHovered = ImGui::IsItemHovered();
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const float halfU = 0.5f / zoom, halfV = 0.5f / zoom;
+        if (viewHovered && io.MouseWheel != 0.0f)
+        {
+            // Keep the point under the cursor where it is.
+            const float mu = cu - halfU + (io.MousePos.x - o.x) / drawW * 2.0f * halfU;
+            const float mv = cv - halfV + (io.MousePos.y - o.y) / drawH * 2.0f * halfV;
+            const float newZoom = std::clamp(zoom * (io.MouseWheel > 0.0f ? 1.25f : 0.8f), 1.0f, 8.0f);
+            cu = mu + (cu - mu) * zoom / newZoom;
+            cv = mv + (cv - mv) * zoom / newZoom;
+            zoom = newZoom;
+        }
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f))
+        {
+            cu -= io.MouseDelta.x / drawW / zoom;
+            cv -= io.MouseDelta.y / drawH / zoom;
+        }
+        if (viewHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        {
+            zoom = 1.0f; cu = 0.5f; cv = 0.5f;
+        }
+        const float h = 0.5f / zoom;
+        cu = std::clamp(cu, h, 1.0f - h);
+        cv = std::clamp(cv, h, 1.0f - h);
+    }
+    const ImVec2 uv0(cu - 0.5f / zoom, cv - 0.5f / zoom), uv1(cu + 0.5f / zoom, cv + 0.5f / zoom);
+    ImGui::SetCursorScreenPos(afterMap);
+
+    if (pic.loaded)
+    {
+        if (ImTextureID tex = GetTextureCache().GetTexture(pic.png))
+            dl->AddImage(tex, o, e, uv0, uv1);
+    }
+    else
+        dl->AddRect(o, e, ImGui::GetColorU32(kColorBorder), 4.0f);
+
+    // Without a picture the positions still show, fitted to the area the players covered, on
+    // the two widest axes of the recording.
+    float fitMin[3] = { FLT_MAX, FLT_MAX, FLT_MAX }, fitMax[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    int axisA = 0, axisB = 2;
+    if (!pic.loaded)
+    {
+        for (const auto& p : job.players)
+            for (size_t i = 0; i + 3 < p.pos.size(); i += 4)
+                for (int a = 0; a < 3; ++a)
+                {
+                    fitMin[a] = std::min(fitMin[a], (float)p.pos[i + a]);
+                    fitMax[a] = std::max(fitMax[a], (float)p.pos[i + a]);
+                }
+        int order[3] = { 0, 1, 2 };
+        std::sort(order, order + 3, [&](int a, int b) { return fitMax[a] - fitMin[a] > fitMax[b] - fitMin[b]; });
+        axisA = std::min(order[0], order[1]);
+        axisB = std::max(order[0], order[1]);
+        const char* note = "No picture of this map yet: opening one replay on it captures one.";
+        dl->AddText(ImVec2(o.x + 8.0f, o.y + 6.0f), ImGui::GetColorU32(kColorTextDim), note);
+    }
+    auto place = [&](float x, float y, float z) -> ImVec2 {
+        float u, v;
+        if (pic.loaded)
+        {
+            u = pic.u[0] * x + pic.u[1] * y + pic.u[2] * z + pic.u[3];
+            v = pic.v[0] * x + pic.v[1] * y + pic.v[2] * z + pic.v[3];
+        }
+        else
+        {
+            const float c[3] = { x, y, z };
+            const float span = std::max(fitMax[axisA] - fitMin[axisA], fitMax[axisB] - fitMin[axisB]) * 1.1f;
+            u = 0.5f + (c[axisA] - (fitMin[axisA] + fitMax[axisA]) * 0.5f) / std::max(1.0f, span);
+            v = 0.5f - (c[axisB] - (fitMin[axisB] + fitMax[axisB]) * 0.5f) / std::max(1.0f, span);
+        }
+        return ImVec2(o.x + (u - uv0.x) / (uv1.x - uv0.x) * drawW,
+                      o.y + (v - uv0.y) / (uv1.y - uv0.y) * drawH);
+    };
+
+    // The replay minimap's colours and marker sizes (ReplayWindow_Minimap.cpp).
+    const ImU32 kBlueTeam = IM_COL32(0x99, 0xCB, 0xFD, 0xFF);
+    const ImU32 kRedTeam  = IM_COL32(0xFF, 0x99, 0x9A, 0xFF);
+    const ImU32 kGold     = IM_COL32(230, 195, 50, 255);
+    const float playerR   = 8.0f;    // max(dotRadius + 3.5, 8) for a player
+    ImFont* font = ImGui::GetFont();
+    const float labelFs = font->FontSize * 0.85f;
+
+    dl->PushClipRect(o, e, true);
+
+    // ── Map objects, by the replay minimap's rules (ReplayWindow_Minimap.cpp) ──
+    const auto& ob = job.objects;
+    std::string objectHover;            // label of the object under the cursor
+    ImVec2 objectHoverAt;
+    float objectHoverD2 = FLT_MAX;
+    auto npcIcon = [](const char* file) {
+        return GetTextureCache().GetTexture(ui::TextureBasePath() + "\\Textures\\NPC\\" + file);
+    };
+    auto hoverTest = [&](ImVec2 c, float pick, const std::string& label) {
+        const ImVec2 mp = ImGui::GetIO().MousePos;
+        const float d2 = (mp.x - c.x) * (mp.x - c.x) + (mp.y - c.y) * (mp.y - c.y);
+        if (d2 <= pick * pick && d2 < objectHoverD2) { objectHoverD2 = d2; objectHover = label; objectHoverAt = c; }
+    };
+    auto iconAt = [&](ImTextureID tex, ImVec2 c, float half) {
+        if (tex) dl->AddImage(tex, ImVec2(c.x - half, c.y - half), ImVec2(c.x + half, c.y + half));
+        else
+        {
+            dl->AddCircleFilled(c, half * 0.5f + 1.0f, IM_COL32(0, 0, 0, 180));
+            dl->AddCircleFilled(c, half * 0.5f, kGold);
+        }
+    };
+    auto ownerFile = [](int owner, const char* red, const char* blue, const char* grey) {
+        return owner == 2 ? red : owner == 1 ? blue : grey;
+    };
+    for (const auto& lm : job.landmarks)
+    {
+        if (lm.kind == "lord") continue;   // drawn with the NPCs
+        const ImVec2 c = place(lm.x, lm.y, lm.z);
+        if (lm.kind == "flag_stand" || lm.kind == "obelisk_stand")
+        {
+            // The stand shows who holds it: a red, blue or grey flag.
+            const bool obelisk = lm.kind == "obelisk_stand";
+            const int owner = obelisk ? ob.obeliskOwner.At(t) : ob.standOwner.At(t);
+            iconAt(npcIcon(ownerFile(owner, "RedFlag.png", "BlueFlag.png", "GreyFlag.png")), c, 11.0f);
+            hoverTest(c, 15.0f, obelisk ? "Obelisk Flag Stand" : "Tower Flag Stand");
+        }
+        else if (lm.kind == "health_shrine")
+        {
+            const int owner = ob.shrineOwner.At(t);
+            iconAt(npcIcon(ownerFile(owner, "RedAnkh.png", "BlueAnkh.png", "GreyAnkh.png")), c, 11.0f);
+            hoverTest(c, 15.0f, "Southern Health Shrine");
+        }
+        else if (lm.kind == "res_shrine")
+        {
+            const ImU32 col = lm.team == 2 ? kRedTeam : lm.team == 1 ? kBlueTeam : kGold;
+            dl->AddCircleFilled(c, 4.5f, IM_COL32(0, 0, 0, 180));
+            dl->AddCircleFilled(c, 3.5f, col);
+            hoverTest(c, 12.0f, "Resurrection Shrine");
+        }
+    }
+
+    // Gates and vine bridges: the open or grown marker, the closed marker otherwise.
+    if (pic.loaded)
+    {
+        bool open[32] = {};
+        for (const auto& [dt, door] : ob.doors)
+        {
+            if (dt > t) break;
+            if (door.first > 0 && door.first < 32) open[door.first] = door.second != 0;
+        }
+        for (const auto& g : pic.gates)
+        {
+            const ImVec2 c(o.x + (g.u - uv0.x) / (uv1.x - uv0.x) * drawW,
+                           o.y + (g.v - uv0.y) / (uv1.y - uv0.y) * drawH);
+            const bool isOpen = g.door > 0 && g.door < 32 && open[g.door];
+            iconAt(npcIcon(isOpen ? "texture_193320.dds" : "texture_191464.dds"), c, 16.0f);
+            hoverTest(c, 18.0f, g.bridge ? (isOpen ? "Vine Bridge (Grown)" : "Vine Bridge") : "Gate");
+        }
+    }
+
+    // Catapult levers (Warrior's Isle): once repaired, the border follows the firing cycle.
+    for (const auto& cp : ob.catapults)
+    {
+        if (t < cp.repaired) continue;
+        const ImVec2 c = place(cp.x, cp.y, cp.z);
+        const CatapultState st = (CatapultState)cp.state.At(t, (int)CatapultState::Repaired);
+        const float lh = 14.0f, bw = 2.0f;
+        const ImVec2 outMin(c.x - lh, c.y - lh), outMax(c.x + lh, c.y + lh);
+        const ImVec2 inMin(outMin.x + bw, outMin.y + bw), inMax(outMax.x - bw, outMax.y - bw);
+        dl->AddRectFilled(outMin, outMax, CatapultStateBorderColor(st), 3.0f);
+        dl->AddRectFilled(inMin, inMax, IM_COL32(10, 10, 10, 220), 2.0f);
+        if (ImTextureID lever = npcIcon("Lever.png")) dl->AddImage(lever, inMin, inMax);
+        hoverTest(c, 16.0f, std::string("Catapult - ") + CatapultStateName(st));
+    }
+
+    // ── NPCs: the minimap's small team dots, the guild lords larger; the dead not shown ──
+    const ImVec2 mouseNpc = ImGui::GetIO().MousePos;
+    const MatchAnalysisPlayer* hoveredNpc = nullptr;
+    ImVec2 hoveredNpcAt;
+    float hoveredNpcD2 = 8.0f * 8.0f;
+    for (const auto& npc : job.npcs)
+    {
+        const int n = (int)npc.pos.size() / 4;
+        if (n == 0) continue;
+        const int s = std::clamp((int)std::lround(t + pre), 0, n - 1);
+        if (npc.pos[s * 4 + 3] != 0) continue;
+        const ImVec2 c = place((float)npc.pos[s * 4], (float)npc.pos[s * 4 + 1], (float)npc.pos[s * 4 + 2]);
+        const float r = npc.lord ? 6.0f : 3.0f;
+        const ImU32 col = npc.team == 2 ? kRedTeam : npc.team == 1 ? kBlueTeam : IM_COL32(255, 220, 100, 200);
+        dl->AddCircleFilled(c, r + 1.0f, IM_COL32(0, 0, 0, 180));
+        dl->AddCircleFilled(c, r, col);
+        const float d2 = (mouseNpc.x - c.x) * (mouseNpc.x - c.x) + (mouseNpc.y - c.y) * (mouseNpc.y - c.y);
+        if (d2 < hoveredNpcD2) { hoveredNpcD2 = d2; hoveredNpc = &npc; hoveredNpcAt = c; }
+    }
+
+    // ── Trails ──
+    if (s_state.detailShowTrails)
+    {
+        for (const auto& p : job.players)
+        {
+            const int n = (int)p.pos.size() / 4;
+            if (n == 0) continue;
+            auto at = [&](int s) { s = std::clamp(s, 0, n - 1); return place((float)p.pos[s * 4], (float)p.pos[s * 4 + 1], (float)p.pos[s * 4 + 2]); };
+            const ImU32 col = p.team == 2 ? kRedTeam : kBlueTeam;
+            const int s0 = std::clamp((int)(fromT + pre), 0, n - 1);
+            const int s1 = std::clamp((int)(t + pre), 0, n - 1);
+            ImVec2 prev = at(s0);
+            for (int s = s0 + 1; s <= s1; ++s)
+            {
+                const ImVec2 cur = at(s);
+                // Older stretches fade, so where they are heading reads first.
+                const float age = (float)(s1 - s) / std::max(1.0f, (float)(s1 - s0));
+                const int alpha = (int)(170 - 120 * age);
+                dl->AddLine(prev, cur, (col & ~IM_COL32_A_MASK) | ((ImU32)alpha << IM_COL32_A_SHIFT), 2.0f);
+                prev = cur;
+            }
+        }
+    }
+
+    // ── Players: profession icon on a black disc with a team ring; the dead greyed ──
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const MatchAnalysisPlayer* hovered = nullptr;
+    ImVec2 hoveredAt;
+    float hoveredD2 = 12.0f * 12.0f;
+    for (int pass = 0; pass < 2; ++pass)   // the dead first, so the living draw over them
+    {
+        for (const auto& p : job.players)
+        {
+            const int n = (int)p.pos.size() / 4;
+            if (n == 0) continue;
+            auto at = [&](int s) { s = std::clamp(s, 0, n - 1); return place((float)p.pos[s * 4], (float)p.pos[s * 4 + 1], (float)p.pos[s * 4 + 2]); };
+
+            // Between two recorded seconds the marker moves in a straight line.
+            const float tp = t + pre;
+            const int sa = std::clamp((int)std::floor(tp), 0, n - 1), sb = std::min(sa + 1, n - 1);
+            const float f = std::clamp(tp - (float)sa, 0.0f, 1.0f);
+            const ImVec2 a = at(sa), b = at(sb);
+            const ImVec2 c(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+            const bool dead = p.pos[sa * 4 + 3] != 0;
+            if (dead != (pass == 0)) continue;
+
+            const ImU32 teamCol = p.team == 2 ? kRedTeam : kBlueTeam;
+            ImTextureID prof = GetProfessionIcon(p.prof);
+            const ImVec2 i0(c.x - playerR, c.y - playerR), i1(c.x + playerR, c.y + playerR);
+            if (dead)
+            {
+                if (prof)
+                {
+                    dl->AddCircleFilled(c, playerR + 1.5f, IM_COL32(0, 0, 0, 205));
+                    dl->AddImage(prof, i0, i1, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(130, 130, 130, 180));
+                    dl->AddCircle(c, playerR + 1.5f, p.team == 2 ? IM_COL32(140, 90, 90, 200)
+                                                                 : IM_COL32(90, 110, 140, 200), 0, 1.6f);
+                }
+                else
+                {
+                    const float cr = 4.0f;
+                    dl->AddLine(ImVec2(c.x - cr, c.y - cr), ImVec2(c.x + cr, c.y + cr), IM_COL32(0, 0, 0, 180), 2.5f);
+                    dl->AddLine(ImVec2(c.x + cr, c.y - cr), ImVec2(c.x - cr, c.y + cr), IM_COL32(0, 0, 0, 180), 2.5f);
+                    dl->AddLine(ImVec2(c.x - cr, c.y - cr), ImVec2(c.x + cr, c.y + cr), teamCol, 1.6f);
+                    dl->AddLine(ImVec2(c.x + cr, c.y - cr), ImVec2(c.x - cr, c.y + cr), teamCol, 1.6f);
+                }
+            }
+            else if (prof)
+            {
+                dl->AddCircleFilled(c, playerR + 1.5f, IM_COL32(0, 0, 0, 205));
+                dl->AddImage(prof, i0, i1);
+                dl->AddCircle(c, playerR + 1.5f, teamCol, 0, 1.6f);
+            }
+            else
+            {
+                dl->AddCircleFilled(c, 5.5f, IM_COL32(0, 0, 0, 180));
+                dl->AddCircleFilled(c, 4.5f, teamCol);
+            }
+
+            if (s_state.detailShowNames)
+            {
+                const ImVec2 ts = font->CalcTextSizeA(labelFs, FLT_MAX, 0.0f, p.name.c_str());
+                const ImVec2 lp(c.x - ts.x * 0.5f, c.y + playerR + 2.0f);
+                const ImU32 labelCol = (teamCol & ~IM_COL32_A_MASK) | (0xE6u << IM_COL32_A_SHIFT);
+                dl->AddText(font, labelFs, ImVec2(lp.x + 1.0f, lp.y + 1.0f), IM_COL32(0, 0, 0, 200), p.name.c_str());
+                dl->AddText(font, labelFs, lp, labelCol, p.name.c_str());
+            }
+
+            const float d2 = (mouse.x - c.x) * (mouse.x - c.x) + (mouse.y - c.y) * (mouse.y - c.y);
+            if (d2 < hoveredD2) { hoveredD2 = d2; hovered = &p; hoveredAt = c; }
+        }
+    }
+
+    // ── Each team's flag off its stand, vine seeds and repair kits ──
+    {
+        const int s = std::max(0, (int)std::lround(t + pre));
+        auto drawTrack = [&](const MatchAnalysisPlayer& tr, ImTextureID tex, ImU32 fallback) {
+            const int n = (int)tr.pos.size() / 4;
+            if (n == 0) return;
+            const int i = std::min(s, n - 1);
+            const int state = tr.pos[i * 4 + 3];
+            if (state == 0) return;
+            ImVec2 c = place((float)tr.pos[i * 4], (float)tr.pos[i * 4 + 1], (float)tr.pos[i * 4 + 2]);
+            // Beside the carrier's marker when carried.
+            if (state == 1) { c.x += 8.0f; c.y -= 8.0f; }
+            const float h = 9.0f;
+            if (tex) dl->AddImage(tex, ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h));
+            else
+            {
+                dl->AddCircleFilled(c, 4.0f, IM_COL32(0, 0, 0, 180));
+                dl->AddCircleFilled(c, 3.0f, fallback);
+            }
+        };
+        for (const auto& f : ob.flags)
+            drawTrack(f, GetOthersUiIcon(f.team == 2 ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png"),
+                      f.team == 2 ? kRedTeam : kBlueTeam);
+        for (const auto& b : ob.bundles)
+        {
+            const bool seed = b.name == "seed";
+            drawTrack(b, npcIcon(seed ? "Vine Seed.png" : "RepairKit.png"),
+                      seed ? IM_COL32(0x7C, 0xC8, 0x4A, 255) : IM_COL32(0xD2, 0xB4, 0x78, 255));
+        }
+    }
+
+    if (!hovered && !hoveredNpc && !objectHover.empty() && ImGui::IsMouseHoveringRect(o, e))
+    {
+        const ImVec2 ts = font->CalcTextSizeA(labelFs, FLT_MAX, 0.0f, objectHover.c_str());
+        const ImVec2 lp(objectHoverAt.x - ts.x * 0.5f, objectHoverAt.y + 14.0f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f), ImVec2(lp.x + ts.x + 4.0f, lp.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 200), 3.0f);
+        dl->AddText(font, labelFs, lp, IM_COL32(255, 255, 255, 240), objectHover.c_str());
+    }
+
+    // Hover label, as on the minimap: the name under the marker. NPCs always; players when the
+    // names are hidden.
+    if (!hovered && hoveredNpc && ImGui::IsMouseHoveringRect(o, e))
+    {
+        const ImVec2 ts = font->CalcTextSizeA(labelFs, FLT_MAX, 0.0f, hoveredNpc->name.c_str());
+        const ImVec2 lp(hoveredNpcAt.x - ts.x * 0.5f, hoveredNpcAt.y + 8.0f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f), ImVec2(lp.x + ts.x + 4.0f, lp.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 200), 3.0f);
+        dl->AddText(font, labelFs, lp, IM_COL32(255, 255, 255, 240), hoveredNpc->name.c_str());
+    }
+    if (hovered && !s_state.detailShowNames && ImGui::IsMouseHoveringRect(o, e))
+    {
+        const ImU32 teamCol = hovered->team == 2 ? kRedTeam : kBlueTeam;
+        const ImVec2 ts = font->CalcTextSizeA(labelFs, FLT_MAX, 0.0f, hovered->name.c_str());
+        const ImVec2 lp(hoveredAt.x - ts.x * 0.5f, hoveredAt.y + playerR + 3.0f);
+        dl->AddRectFilled(ImVec2(lp.x - 4.0f, lp.y - 2.0f), ImVec2(lp.x + ts.x + 4.0f, lp.y + ts.y + 2.0f),
+                          IM_COL32(0, 0, 0, 200), 3.0f);
+        dl->AddText(font, labelFs, lp, teamCol, hovered->name.c_str());
+    }
+    dl->PopClipRect();
+}
+
+static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
+{
+    const auto mode = s_state.layout;
+    const auto sz = GetSizes(mode);
+    const float sp = sz.spacing;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(sp + 4, sp + 2));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, s_themeColors.detailPanelBg);
+    ImGui::PushStyleColor(ImGuiCol_Border, kColorBorder);
+
+    ImVec2 detailSize = fillRemaining ? ImVec2(0, 0) : ImVec2(0, 0);
+    ImGui::BeginChild("##match_detail", detailSize, ImGuiChildFlags_Border);
+
+    // Header
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("MATCH DETAILS");
+    ImGui::PopStyleColor();
+    DrawDetailTabs();
+
+    float contentMaxX = ImGui::GetWindowContentRegionMax().x + ImGui::GetWindowPos().x;
+    float contentW = contentMaxX - (ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowPos().x);
+    float lineY = ImGui::GetCursorScreenPos().y - ImGui::GetTextLineHeightWithSpacing();
+    bool narrowHeader = (contentW < 320.0f);
+    float replayBtnX = contentMaxX;
+
+    // Replay Match button (left of close)
+    {
+        ImFont* semibold = GuiGlobalConstants::boldFont;
+        if (semibold) ImGui::PushFont(semibold);
+
+        const char* playIcon = "\xE2\x96\xB6";  // UTF-8 U+25B6 (▶)
+        float fontSize = ImGui::GetFontSize();
+        float iconFontSz = fontSize * 1.6f;
+
+        float padX = 10.0f, padY = 6.0f;
+        float iconW = fontSize * 1.2f;
+
+        float btnW, btnH;
+        if (narrowHeader)
+        {
+            btnW = iconW + padX * 2.0f;
+        }
+        else
+        {
+            ImVec2 labelSz = ImGui::CalcTextSize("REPLAY MATCH");
+            btnW = iconW + 4.0f + labelSz.x + padX * 2.0f;
+        }
+        btnH = fontSize + padY * 2.0f;
+
+        // Grown on hover. Safe to grow the frame itself here, unlike the refresh badge:
+        // this button is placed absolutely against the panel's right edge, so nothing sits
+        // beside it to be pushed around. Hover is last frame's, which at this size and
+        // frame rate is not perceptible.
+        static bool s_replayHot = false;
+        if (s_replayHot) { btnW *= 1.06f; btnH *= 1.06f; }
+
+        float closeW = 24.0f;
+        float gap = 22.0f;
+        float btnX = contentMaxX - closeW - gap - btnW;
+        float btnY = lineY + (ImGui::GetTextLineHeightWithSpacing() - btnH) * 0.5f;
+        replayBtnX = btnX;
+
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(btnX, btnY));
+
+        const ImVec4 colBtnBg      = s_themeColors.replayBtnBg;
+        const ImVec4 colBtnHover   = s_themeColors.replayBtnHov;
+        const ImVec4 colBtnActive  = s_themeColors.replayBtnAct;
+        const ImVec4 colBorder     = kColorAccent;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, padY));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+        ImGui::PushStyleColor(ImGuiCol_Button,        colBtnBg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  colBtnHover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   colBtnActive);
+        ImGui::PushStyleColor(ImGuiCol_Border,         colBorder);
+        ImGui::PushStyleColor(ImGuiCol_Text,           kColorText);
+
+        if (g_cloudDownloadInProgress)
+        {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
+            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+            ImGui::PopStyleVar();
+        }
+        else
+        {
+            ImGui::Button("###replay_btn", ImVec2(btnW, btnH));
+        }
+        bool clicked = ImGui::IsItemClicked() && !g_cloudDownloadInProgress;
+        bool hovered = ImGui::IsItemHovered();
+        bool active  = ImGui::IsItemActive();
+
+        if (clicked)
+        {
+            g_pendingReplay.requested = true;
+            g_pendingReplay.match = m;
+        }
+
+        s_replayHot = hovered;
+
+        ImVec2 rMin = ImGui::GetItemRectMin();
+        ImVec2 rMax = ImGui::GetItemRectMax();
+
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar(3);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImFont* drawFont = semibold ? semibold : ImGui::GetFont();
+
+        // Held back while a download has the button disabled: pulsing there would be
+        // advertising an action that cannot currently be taken.
+        if (!g_cloudDownloadInProgress)
+            DrawPulseGlow(dl, rMin, rMax, ImGui::GetColorU32(kColorAccent), 5.0f);
+
+        // Visual states: icon and text colors react to hover/press
+        ImVec4 colGreen    (0.0f,  1.0f, 0.4f, 1.0f);
+        ImVec4 colTextDraw = kColorText;
+
+        if (active)
+        {
+            colGreen    = ImVec4(0.0f, 0.85f, 0.35f, 1.0f);
+            colTextDraw = ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+        }
+        else if (hovered)
+        {
+            colGreen    = ImVec4(0.15f, 1.0f, 0.55f, 1.0f);
+            colTextDraw = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        }
+
+        // Content offset: slight push on press
+        float pushY = active ? 1.0f : 0.0f;
+
+        // Draw ▶ icon
+        {
+            float iconX = rMin.x + padX;
+            float iconY = rMin.y + (btnH - iconFontSz) * 0.5f + pushY;
+            dl->AddText(drawFont, iconFontSz,
+                ImVec2(iconX, iconY),
+                ImGui::GetColorU32(colGreen),
+                playIcon);
+        }
+
+        // Draw "REPLAY MATCH" text
+        if (!narrowHeader)
+        {
+            float textX = rMin.x + padX + iconW + 4.0f;
+            float textY = rMin.y + (btnH - fontSize) * 0.5f + pushY;
+            dl->AddText(drawFont, fontSize,
+                ImVec2(textX, textY),
+                ImGui::GetColorU32(colTextDraw),
+                "REPLAY MATCH");
+        }
+
+        if (semibold) ImGui::PopFont();
+
+        // Hover: subtle accent glow border
+        if (hovered && !active)
+        {
+            ImU32 glowCol = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.45f));
+            dl->AddRect(rMin, rMax, glowCol, 5.0f, 0, 1.5f);
+        }
+
+        // Pressed: bright accent border
+        if (active)
+        {
+            ImU32 brightGold = ImGui::GetColorU32(ImVec4(0.847f, 0.659f, 0.290f, 0.90f));
+            dl->AddRect(rMin, rMax, brightGold, 5.0f, 0, 2.5f);
+        }
+
+        if (narrowHeader && hovered)
+            ImGui::SetTooltip("Replay Match");
+    }
+
+    // Close button (rightmost)
+    ImGui::SameLine();
+    ImGui::SetCursorScreenPos(ImVec2(contentMaxX - 20.0f, lineY + 1.0f));
+    if (ImGui::SmallButton("X"))
+    {
+        s_state.selectedMatchIndex = -1;
+        s_state.mobileShowDetail = false;
+        s_state.detailMaximised = false;
+    }
+
+    // Maximise (left of Replay Match). Not offered on mobile, where the details
+    // already replace the list.
+    if (s_state.layout != LayoutMode::Mobile)
+    {
+        const float w = DetailHeaderButtonWidth(DetailMaximiseLabel(), 16.0f);
+        DrawDetailMaximiseButton(ImVec2(replayBtnX - 16.0f - w, lineY));
+    }
+    ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowPos().x,
+                                     lineY + ImGui::GetTextLineHeightWithSpacing()));
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (s_state.detailTab == DetailTab_Overview)
+    {
+        DrawMatchOverview(m);
+    }
+    else
+    {
+        UpdateMatchAnalysis(m);
+        const float timelineH = std::max(140.0f, ImGui::GetTextLineHeight() * 8.5f);
+        ImGui::BeginChild("##detail_tab_body", ImVec2(0, -timelineH));
+        if (s_state.detailTab == DetailTab_Map && s_analysis.state == MatchAnalysisJob::State::Ready
+            && s_analysis.folderName == m.folder_name)
+            DrawMapTab(m);
+        else
+            DrawDetailTabPlaceholder(s_state.detailTab);
+        ImGui::EndChild();
+        DrawDetailTimeline(m, timelineH);
+    }
 
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
@@ -7412,6 +8781,12 @@ void draw_replay_browser(ReplayLibrary& library)
                 DrawMatchDetailPanel(matches[s_state.selectedMatchIndex], true);
         }
         ImGui::EndGroup();
+    }
+    else if (s_state.detailMaximised && validSelection() && !s_state.cardGalleryMode
+             && !s_state.tournamentMode)
+    {
+        // Maximised: the details take the whole Library until restored or closed.
+        DrawMatchDetailPanel(matches[s_state.selectedMatchIndex], true);
     }
     else
     {

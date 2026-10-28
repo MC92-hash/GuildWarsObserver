@@ -4,6 +4,9 @@
 #include "ReplayWindow_Internal.h"
 #include "GuiGlobalConstants.h"
 #include "DXMathHelpers.h"
+#include "RunLog.h"
+#include <fstream>
+#include <json.hpp>
 
 // ---------------------------------------------------------------------------
 // Extracted from ReplayWindow.cpp (partial-class split). These remain
@@ -1218,4 +1221,149 @@ void ReplayWindow::DrawMinimapPanel()
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(5);
+}
+
+
+// ---------------------------------------------------------------------------
+// Top-down map picture for the Library's Map tab
+//
+// The Library has no 3D map. The first time a replay of a map finishes loading, the minimap
+// camera renders the whole map once more, larger, and the picture is kept in the user data
+// folder (MapImages/<map id>.png) with the formula that places a RECORDED position (a raw
+// agent snapshot, before the map transform) on it: u = a.x + b.y + c.z + d, v likewise, both
+// 0..1 across the picture. The match analysis export stores raw positions, so the Library
+// needs nothing else to draw players where they stood.
+// ---------------------------------------------------------------------------
+
+static std::filesystem::path TopDownMapImageDir()
+{
+    return GuiGlobalConstants::GetUserDataDir() / L"MapImages";
+}
+
+void ReplayWindow::CaptureTopDownMapImage()
+{
+    m_mapImageCaptureTried = true;
+    // Nothing to picture without terrain, and a blank picture would be kept for good.
+    if (!m_mapRenderer || !m_mapRenderer->GetTerrain() || !m_mapRenderer->GetCamera()) return;
+
+    const std::string name = std::to_string(m_replayCtx.mapId);
+    std::error_code ec;
+    // The app ships a picture of every guild hall (Textures/Map_Pictures); the user's own
+    // folder only fills in a map that set lacks.
+    if (s_mapPictureOutDir.empty()
+        && std::filesystem::exists(GuiGlobalConstants::GetExeDir() / L"Textures" / L"Map_Pictures" / (name + ".jpg"), ec))
+        return;
+    const std::filesystem::path dir = s_mapPictureOutDir.empty() ? TopDownMapImageDir() : s_mapPictureOutDir;
+    const std::filesystem::path png = dir / (name + ".png");
+    const std::filesystem::path meta = dir / (name + ".json");
+    if (s_mapPictureOutDir.empty() && std::filesystem::exists(png, ec) && std::filesystem::exists(meta, ec)) return;
+    std::filesystem::create_directories(dir, ec);
+
+    // Borrow the minimap's own render at full extent and a larger size, then put it back.
+    const int savedW = m_minimapWidth, savedH = m_minimapHeight;
+    const float savedZoom = m_minimapZoom, savedPanX = m_minimapPanX, savedPanZ = m_minimapPanZ;
+    const XMFLOAT4X4 savedViewProj = m_minimapViewProj;
+    m_minimapWidth = m_minimapHeight = 1024;
+    m_minimapZoom = 1.f;
+    m_minimapPanX = m_minimapPanZ = 0.f;
+
+    bool saved = false;
+    InitMinimapResources();
+    if (m_minimapResourcesReady)
+    {
+        RenderMinimap();
+
+        DirectX::ScratchImage shot;
+        if (SUCCEEDED(DirectX::CaptureTexture(m_deviceResources->GetD3DDevice(),
+                                              m_deviceResources->GetD3DDeviceContext(),
+                                              m_minimapTexture.Get(), shot)))
+        {
+            // Blending can leave alpha below one; the picture is opaque.
+            const DirectX::Image* img = shot.GetImage(0, 0, 0);
+            if (img && DirectX::BitsPerPixel(img->format) == 32)
+                for (size_t y = 0; y < img->height; ++y)
+                    for (size_t x = 0; x < img->width; ++x)
+                        img->pixels[y * img->rowPitch + x * 4 + 3] = 0xFF;
+
+            if (img && SUCCEEDED(DirectX::SaveToWICFile(*img, DirectX::WIC_FLAGS_NONE,
+                                                        DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG),
+                                                        png.c_str())))
+            {
+                // Four raw points through the map transform and the camera give the affine
+                // map from a recorded position to the picture.
+                const XMMATRIX vp = XMLoadFloat4x4(&m_minimapViewProj);
+                auto toUv = [&](float x, float y, float z, float& u, float& v) {
+                    const XMFLOAT3 w = ApplyMapTransformToPos(x, y, z, m_replayCtx.mapTransform);
+                    const XMVECTOR c = XMVector4Transform(XMVectorSet(w.x, w.y, w.z, 1.f), vp);
+                    const float cw = std::max(1e-4f, XMVectorGetW(c));
+                    u = (XMVectorGetX(c) / cw) * 0.5f + 0.5f;
+                    v = (1.f - XMVectorGetY(c) / cw) * 0.5f;
+                };
+                const float k = 1000.f;
+                float u0, v0, ux, vx, uy, vy, uz, vz;
+                toUv(0, 0, 0, u0, v0);
+                toUv(k, 0, 0, ux, vx);
+                toUv(0, k, 0, uy, vy);
+                toUv(0, 0, k, uz, vz);
+                // The gates and bridges the minimap marks, with the door type whose state they
+                // show (the match analysis carries the states). Their places come from the map's
+                // props, which only a loaded map has.
+                auto worldToUv = [&](const XMFLOAT3& w, float& u, float& v) {
+                    const XMVECTOR c = XMVector4Transform(XMVectorSet(w.x, w.y, w.z, 1.f), vp);
+                    const float cw = std::max(1e-4f, XMVectorGetW(c));
+                    u = (XMVectorGetX(c) / cw) * 0.5f + 0.5f;
+                    v = (1.f - XMVectorGetY(c) / cw) * 0.5f;
+                };
+                nlohmann::json gates = nlohmann::json::array();
+                auto addGate = [&](int door, float u, float v, const char* kind) {
+                    gates.push_back({ { "door", door }, { "u", u }, { "v", v }, { "kind", kind } });
+                };
+                float gu, gv;
+                if (m_weepingLeverHasDoor)
+                {
+                    worldToUv(m_weepingLeverWorldPos, gu, gv);
+                    addGate(19, gu, gv, "gate");
+                }
+                if (m_replayCtx.datMapId == 0x1F265)
+                    for (const auto& [doorType, worldPos] : m_frozenGateIcons)
+                    {
+                        worldToUv(worldPos, gu, gv);
+                        addGate(doorType, gu, gv, "gate");
+                    }
+                if (m_replayCtx.datMapId == 0x28784)
+                    for (const auto& worldPos : m_meditationGateIcons)
+                    {
+                        worldToUv(worldPos, gu, gv);
+                        addGate(2, gu, gv, "gate");
+                    }
+                if (m_replayCtx.datMapId == 0x1F27A)
+                    for (const auto& [doorType, gamePos] : m_druidBridgeIcons)
+                    {
+                        toUv(gamePos.x, gamePos.y, gamePos.z, gu, gv);
+                        addGate(doorType, gu, gv, "bridge");
+                    }
+
+                nlohmann::json j = {
+                    { "version", 2 },
+                    { "map_id",  m_replayCtx.mapId },
+                    { "u", { (ux - u0) / k, (uy - u0) / k, (uz - u0) / k, u0 } },
+                    { "v", { (vx - v0) / k, (vy - v0) / k, (vz - v0) / k, v0 } },
+                    { "gates", std::move(gates) },
+                };
+                std::ofstream f(meta, std::ios::binary | std::ios::trunc);
+                f << j.dump(1);
+                saved = static_cast<bool>(f);
+            }
+        }
+    }
+
+    m_minimapWidth = savedW;
+    m_minimapHeight = savedH;
+    m_minimapZoom = savedZoom;
+    m_minimapPanX = savedPanX;
+    m_minimapPanZ = savedPanZ;
+    m_minimapViewProj = savedViewProj;
+    InitMinimapResources();
+
+    RunLog::Line("map image: %s for map %d", saved ? "captured" : "capture failed", m_replayCtx.mapId);
 }
