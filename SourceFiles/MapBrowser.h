@@ -137,6 +137,8 @@ private:
     std::unique_ptr<CloudReplayProvider> m_cloudProvider;
     std::unique_ptr<SyncEngine> m_syncEngine;
     std::string m_cloudBucket;
+    // A background library rescan was asked for by the sync (logged + filters refreshed on landing).
+    bool m_syncRescanPending = false;
 
     // Update checker
     UpdateChecker m_updateChecker;

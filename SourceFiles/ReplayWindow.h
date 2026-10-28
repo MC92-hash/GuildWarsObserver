@@ -150,6 +150,8 @@ public:
 
     void Tick();
     bool IsAlive() const { return m_alive; }
+    // A clip export rendering its frames: the app's frame limit lets it run at full speed.
+    bool IsExportingClip() const { return IsClipRendering(); }
     HWND GetHWND() const { return m_hwnd; }
 
     // Still building the map: the window is not interactive yet.
@@ -1007,6 +1009,8 @@ private:
     uint64_t ComputePanelStateHash() const;
 
     void DrawInterfacePreferences();
+    bool m_showGraphicsPrefs = false;
+    void DrawGraphicsPreferences();
     void SaveUILayout();
     void LoadUILayout();
     bool HandleOverlayDrag(int elementIdx, float* fracX, float* fracY,
@@ -1157,6 +1161,40 @@ public:
     bool EnsureBloomTargets(int width, int height);
     void DrawSceneBloom();
     void ReleaseBloomResources();
+
+    // ---- RENDER SCALE (ReplayWindow_RenderScale.cpp) ------------------------------------------
+    // Below 100 % the 3D scene draws into a smaller target of its own, stretched over the back
+    // buffer before the interface, which keeps full resolution. Every scene pass takes its target
+    // and viewport from Scene*(); at 100 % those are the back buffer's own.
+    bool m_sceneScaleActive = false;
+    int  m_sceneScaleW = 0;
+    int  m_sceneScaleH = 0;
+    D3D11_VIEWPORT m_sceneScaleViewport = {};
+    bool m_sceneScaleShadersTried = false;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_sceneScaleTex;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_sceneScaleRTV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_sceneScaleSRV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_sceneScaleDepth;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView>   m_sceneScaleDSV;
+    Microsoft::WRL::ComPtr<ID3D11VertexShader>       m_sceneScaleVS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader>        m_sceneScalePS;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_sceneScaleSampler;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState>    m_sceneScaleRS;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState>  m_sceneScaleDSS;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>         m_sceneScaleBS;
+
+    void BeginSceneScale();
+    void ResolveSceneScale();
+    void ReleaseSceneScaleResources();
+    ID3D11RenderTargetView* SceneRTV() const;
+    ID3D11DepthStencilView* SceneDSV() const;
+    D3D11_VIEWPORT SceneViewport() const;
+
+    // The performance settings that act on this window's renderer every frame (map detail, map
+    // shadows, character shadows).
+    void ApplyGraphicsSettings();
+    int  m_appliedMapShadows = -1;
+    int  m_appliedSilhouetteShadows = -1;
 
     void InitFogRenderer();
     void DrawFogOfWar();
@@ -1719,6 +1757,7 @@ private:
                            const DirectX::XMFLOAT4X4& characterWorld,
                            const DirectX::XMFLOAT3& position, float heading);
     void StepAgentEffects(float dt);
+    void StepEffectsWithoutModels();
     void DrawAgentEffects(const DirectX::XMMATRIX& view);
     void ReleaseAgentEffects();   // match teardown
     std::shared_ptr<AgentEffects::Player> m_agentEffects;

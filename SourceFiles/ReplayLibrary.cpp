@@ -6,6 +6,8 @@
 #include <sstream>
 #include <unordered_set>
 #include <algorithm>
+#include <chrono>
+#include <system_error>
 
 #define MINIZ_NO_STDIO
 #define MINIZ_NO_ARCHIVE_APIS
@@ -500,12 +502,16 @@ ReplayLibrary::ReplayLibrary()
 void ReplayLibrary::SetProvider(std::unique_ptr<IReplayProvider> provider)
 {
     if (provider)
+    {
         m_provider = std::move(provider);
+        m_scanEpoch++;
+    }
 }
 
 void ReplayLibrary::SetMatchDataFolder(const std::string& path)
 {
     m_folder_path = path;
+    m_scanEpoch++;
     // SetFolder is only available on LocalReplayProvider
     if (auto* local = dynamic_cast<LocalReplayProvider*>(m_provider.get()))
         local->SetFolder(path);
@@ -515,6 +521,7 @@ void ReplayLibrary::ScanFolder()
 {
     m_matches.clear();
     m_loaded = false;
+    m_scanEpoch++;
 
     if (m_folder_path.empty()) return;
 
@@ -535,10 +542,95 @@ void ReplayLibrary::ScanFolder()
 
 int ReplayLibrary::RescanDiff()
 {
-    m_newMatchFolders.clear();
-    if (m_folder_path.empty()) return 0;
+    // A background scan started before this one saw the disk earlier - drop it when it lands.
+    m_scanEpoch++;
+    if (m_folder_path.empty())
+    {
+        m_newMatchFolders.clear();
+        return 0;
+    }
+    return ApplyScan(m_provider->GetAvailableReplays());
+}
 
-    auto fresh = m_provider->GetAvailableReplays();
+void ReplayLibrary::RequestRescanAsync()
+{
+    if (m_folder_path.empty()) return;
+    if (m_rescanJob.valid())
+    {
+        m_rescanQueued = true;
+        return;
+    }
+    StartRescanWorker();
+}
+
+void ReplayLibrary::StartRescanWorker()
+{
+    m_rescanJobEpoch = m_scanEpoch;
+    try
+    {
+        // The worker must never read anything the main thread can change under it. A local
+        // provider is rebuilt from a copy of the folder (SetMatchDataFolder rewrites the live
+        // one's path); any other provider is held by its shared_ptr and only read - the cloud
+        // provider's cache path and mode are fixed at Configure, its index read under its mutex.
+        if (dynamic_cast<LocalReplayProvider*>(m_provider.get()))
+        {
+            m_rescanJob = std::async(std::launch::async, [folder = m_folder_path]
+            {
+                LocalReplayProvider provider;
+                provider.SetFolder(folder);
+                return provider.GetAvailableReplays();
+            });
+        }
+        else
+        {
+            m_rescanJob = std::async(std::launch::async, [provider = m_provider]
+            {
+                return provider->GetAvailableReplays();
+            });
+        }
+    }
+    catch (const std::system_error&)
+    {
+        // No thread to be had: fall back to the blocking scan rather than lose the request.
+        RescanDiff();
+    }
+}
+
+bool ReplayLibrary::PollRescanAsync(int& added)
+{
+    added = 0;
+    if (!m_rescanJob.valid() ||
+        m_rescanJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return false;
+
+    bool applied = false;
+    try
+    {
+        auto fresh = m_rescanJob.get();
+        if (m_rescanJobEpoch == m_scanEpoch)
+        {
+            added = ApplyScan(std::move(fresh));
+            applied = true;
+        }
+    }
+    catch (const std::exception&)
+    {
+        // A filesystem error mid-scan: keep the library as it is rather than merge a partial
+        // list (which would remove every match it missed).
+    }
+
+    if (m_rescanQueued)
+    {
+        m_rescanQueued = false;
+        StartRescanWorker();
+    }
+    return applied;
+}
+
+// The merge half of RescanDiff: cheap (sets + one sort), always on the main thread.
+int ReplayLibrary::ApplyScan(std::vector<MatchMeta> fresh)
+{
+    m_newMatchFolders.clear();
 
     // Build set of existing folder_path values for fast lookup
     std::unordered_set<std::string> existingSet;
@@ -602,6 +694,7 @@ int ReplayLibrary::RescanDiff()
 
 void ReplayLibrary::Clear()
 {
+    m_scanEpoch++;
     m_matches.clear();
     m_loaded = false;
     m_folder_path.clear();

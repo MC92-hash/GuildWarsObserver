@@ -939,8 +939,18 @@ bool ReplayWindow::InitGraphics()
         m_deviceResources->GetD3DDevice(),
         m_deviceResources->GetD3DDeviceContext(),
         m_inputManager.get());
+    // The two performance settings read at load: the filtering the map's programs are built with,
+    // and how many top levels every texture of this window drops.
+    PixelShader::s_max_anisotropy = static_cast<UINT>(GuiGlobalConstants::texture_anisotropy);
     m_mapRenderer->Initialize(static_cast<float>(width), static_cast<float>(height),
         GuiGlobalConstants::ClampReplayCameraFovDegrees(GuiGlobalConstants::replay_camera_fov_degrees));
+    PixelShader::s_max_anisotropy = 16;
+    m_mapRenderer->GetTextureManager()->SetMipSkip(GuiGlobalConstants::texture_quality);
+    RunLog::Line("replay: graphics quality %d - render scale %d%%, texture quality %d, anisotropy %d,"
+                 " map shadows %d, frame limit %d",
+                 GuiGlobalConstants::graphics_quality, GuiGlobalConstants::render_scale_percent,
+                 GuiGlobalConstants::texture_quality, GuiGlobalConstants::texture_anisotropy,
+                 GuiGlobalConstants::map_shadows ? 1 : 0, GuiGlobalConstants::frame_limit_fps);
 
     // WHICH DEVICE THIS WINDOW BUILT. Two of these lines with two different addresses, and only one
     // line elsewhere in the log saying a program or a resource was created, is a complete account
@@ -6921,7 +6931,10 @@ void ReplayWindow::Tick()
     case LoadingPhase::Ready:
         ProgressiveAgentModelPump();
         ProgressiveWeaponModelPump();
-        Render();
+        // Minimised, nobody can see the frame (and OBS cannot capture it): keep the replay's
+        // clock and sound running, draw nothing.
+        if (!IsIconic(m_hwnd) || IsClipRendering())
+            Render();
         break;
 
     case LoadingPhase::Error:
@@ -7175,12 +7188,18 @@ void ReplayWindow::Update(double elapsedMs)
 void ReplayWindow::Render()
 {
     ++m_frameCount;
+    ApplyGraphicsSettings();
+    // From here to ResolveSceneScale() the scene draws at the render scale (Scene*()).
+    BeginSceneScale();
     RenderTerrainShadows();
 
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
 
-    if (m_minimapEnabled && m_minimapResourcesReady)
+    // The minimap redraws the whole map from above; at the reduced rate it keeps its last picture
+    // between redraws (about 10 a second at 60 FPS).
+    if (m_minimapEnabled && m_minimapResourcesReady &&
+        (!GuiGlobalConstants::minimap_reduced_rate || m_frameCount % 6 == 0))
         RenderMinimap();
 
     Clear();
@@ -7195,10 +7214,7 @@ void ReplayWindow::Render()
     m_mapRenderer->SetWaterDrawnByHost(true);
     // The see-through props wait too (RenderGhostMeshes below), for everything behind them.
     m_mapRenderer->GetMeshManager()->SetSkipGhostMeshes(true);
-    m_mapRenderer->Render(
-        m_deviceResources->GetRenderTargetView(),
-        pickingRTV,
-        m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->Render(SceneRTV(), pickingRTV, SceneDSV());
     m_mapRenderer->GetMeshManager()->SetSkipGhostMeshes(false);
     m_mapRenderer->SetWaterDrawnByHost(false);
 
@@ -7243,9 +7259,7 @@ void ReplayWindow::Render()
     // submerged body show through, tinted, under the reflection. Before it, the water's depth
     // cut every player off at the surface. The particles come after it, since they write no
     // depth and the water would otherwise be blended over the ones above the surface.
-    m_mapRenderer->RenderWater(
-        m_deviceResources->GetRenderTargetView(),
-        m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->RenderWater(SceneRTV(), SceneDSV());
     // ...and the particles their headpieces carry, after the character so the head is already in
     // the depth buffer to hide the ones behind it.
     if (Camera* camera = m_mapRenderer->GetCamera())
@@ -7257,16 +7271,15 @@ void ReplayWindow::Render()
 
     // The animated props' additive glow (the teleporter rings): after the characters, so a
     // player inside a ring is lit by its near wall rather than drawn over it.
-    m_mapRenderer->RenderAnimatedPropGlow(
-        m_deviceResources->GetRenderTargetView(),
-        m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->RenderAnimatedPropGlow(SceneRTV(), SceneDSV());
 
     // The props between the camera and the fight, over everything the frame has drawn so far.
-    m_mapRenderer->RenderGhostMeshes(
-        m_deviceResources->GetRenderTargetView(),
-        m_deviceResources->GetDepthStencilView());
+    m_mapRenderer->RenderGhostMeshes(SceneRTV(), SceneDSV());
 
     DrawAgentCylinders();
+
+    // The scene is finished: stretch it over the back buffer when it was drawn smaller.
+    ResolveSceneScale();
 
     // THE GAME'S OWN POST-PROCESS, and it goes here on purpose: after the world and after the
     // characters, because the game applies it to the finished frame, and before the interface,
@@ -7325,6 +7338,8 @@ void ReplayWindow::DrawImGuiOverlay()
                     m_showShortcutPreferences = true;
                 if (ImGui::MenuItem("Interface"))
                     m_showInterfacePrefs = true;
+                if (ImGui::MenuItem("Graphics"))
+                    m_showGraphicsPrefs = true;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Rate Match"))
@@ -7562,6 +7577,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawShortcutPreferences();
 
     DrawInterfacePreferences();
+    DrawGraphicsPreferences();
 
     DrawPartyWindows();
     DrawPlayerContextMenu();
@@ -10511,15 +10527,15 @@ const char* JumboPartyLabel(int partyValue)
 void ReplayWindow::Clear()
 {
     auto* context = m_deviceResources->GetD3DDeviceContext();
-    auto* rtv     = m_deviceResources->GetRenderTargetView();
-    auto* dsv     = m_deviceResources->GetDepthStencilView();
+    auto* rtv     = SceneRTV();
+    auto* dsv     = SceneDSV();
 
     const auto& clearColor = m_mapRenderer->GetClearColor();
     float color[4] = { clearColor.x, clearColor.y, clearColor.z, clearColor.w };
     context->ClearRenderTargetView(rtv, color);
     context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
 
-    auto vp = m_deviceResources->GetScreenViewport();
+    auto vp = SceneViewport();
     context->RSSetViewports(1, &vp);
 }
 
@@ -10586,6 +10602,7 @@ void ReplayWindow::OnDeviceLost()
     // and three textures, it depends on nothing that was loaded, and it re-creates itself on the
     // first frame after this. So it is dropped and re-armed rather than disabled.
     ReleaseBloomResources();
+    ReleaseSceneScaleResources();
     ReleaseCharacterPortraits();
 
     RunLog::Line("device: the replay window dropped %zu animated agent(s) and its composed"

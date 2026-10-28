@@ -350,6 +350,53 @@ public:
 	inline static bool replay_lasting_visuals = true;
 	// The cast effects and the area visuals the game draws by itself (persisted, default on).
 	inline static bool replay_cast_effects = true;
+	// ---- PERFORMANCE (persisted) ---------------------------------------------------------------
+	//
+	// FRAME LIMIT, in frames per second; 0 = no limit. The replay used to render uncapped, which
+	// on a weak laptop starved OBS of the GPU it streams with. Independent of the quality preset.
+	inline static int frame_limit_fps = 60;
+	// Not persisted: set for the frames the limit must not hold back (a clip export's render).
+	inline static bool frame_limit_bypass = false;
+
+	// GRAPHICS QUALITY: a preset over the settings below. High is the picture as it has always
+	// been drawn; Balanced and Low trade picture for frame rate; Custom is whatever the user set
+	// by hand under it. The values are replay-only and most of them apply live; the two that are
+	// read at load (texture quality, filtering) apply to the next match opened.
+	enum GraphicsQuality : int { kGraphicsHigh = 0, kGraphicsBalanced = 1, kGraphicsLow = 2, kGraphicsCustom = 3 };
+	inline static int graphics_quality = kGraphicsHigh;
+	inline static int render_scale_percent = 100;     // the 3D scene's resolution; the interface stays sharp
+	inline static int texture_quality = 0;            // 0 full, 1 half, 2 quarter (top mip levels dropped)
+	inline static int texture_anisotropy = 16;        // 16, 4 or 1 (plain trilinear)
+	inline static bool map_shadows = true;            // the map's terrain and prop shadow map
+	inline static bool character_silhouette_shadows = true; // false = the round blob under each character
+	inline static int map_detail = 0;                 // 0 high, 1 medium (the props' own lower-detail meshes)
+	inline static bool minimap_reduced_rate = false;  // redraw the minimap's scene ~10 times a second
+
+	static void ApplyGraphicsPreset(int preset)
+	{
+		graphics_quality = preset;
+		switch (preset)
+		{
+		case kGraphicsHigh:
+			render_scale_percent = 100; texture_quality = 0; texture_anisotropy = 16;
+			map_shadows = true; character_silhouette_shadows = true; map_detail = 0;
+			minimap_reduced_rate = false;
+			break;
+		case kGraphicsBalanced:
+			render_scale_percent = 85; texture_quality = 0; texture_anisotropy = 4;
+			map_shadows = true; character_silhouette_shadows = false; map_detail = 0;
+			minimap_reduced_rate = true;
+			break;
+		case kGraphicsLow:
+			render_scale_percent = 60; texture_quality = 1; texture_anisotropy = 1;
+			map_shadows = false; character_silhouette_shadows = false; map_detail = 1;
+			minimap_reduced_rate = true;
+			break;
+		default:
+			break;
+		}
+	}
+
 	// The toolbar's Skill Icons and Skill Lasers (the skill arrows), as the user last left them (persisted, default on).
 	inline static bool replay_show_skill_icons = true;
 	inline static bool replay_show_skill_lasers = true;
@@ -725,6 +772,15 @@ public:
 		file << "replay_packet_bursts=" << (replay_packet_bursts ? 1 : 0) << "\n";
 		file << "replay_lasting_visuals=" << (replay_lasting_visuals ? 1 : 0) << "\n";
 		file << "replay_cast_effects=" << (replay_cast_effects ? 1 : 0) << "\n";
+		file << "frame_limit_fps=" << frame_limit_fps << "\n";
+		file << "graphics_quality=" << graphics_quality << "\n";
+		file << "render_scale_percent=" << render_scale_percent << "\n";
+		file << "texture_quality=" << texture_quality << "\n";
+		file << "texture_anisotropy=" << texture_anisotropy << "\n";
+		file << "map_shadows=" << (map_shadows ? 1 : 0) << "\n";
+		file << "character_silhouette_shadows=" << (character_silhouette_shadows ? 1 : 0) << "\n";
+		file << "map_detail=" << map_detail << "\n";
+		file << "minimap_reduced_rate=" << (minimap_reduced_rate ? 1 : 0) << "\n";
 		file << "replay_show_skill_icons=" << (replay_show_skill_icons ? 1 : 0) << "\n";
 		file << "replay_show_skill_lasers=" << (replay_show_skill_lasers ? 1 : 0) << "\n";
 
@@ -902,6 +958,15 @@ public:
 			else if (key == "replay_packet_bursts") replay_packet_bursts = (value != 0);
 			else if (key == "replay_lasting_visuals") replay_lasting_visuals = (value != 0);
 			else if (key == "replay_cast_effects") replay_cast_effects = (value != 0);
+			else if (key == "frame_limit_fps") frame_limit_fps = std::clamp(value, 0, 1000);
+			else if (key == "graphics_quality") graphics_quality = std::clamp(value, 0, 3);
+			else if (key == "render_scale_percent") render_scale_percent = std::clamp(value, 25, 100);
+			else if (key == "texture_quality") texture_quality = std::clamp(value, 0, 2);
+			else if (key == "texture_anisotropy") texture_anisotropy = std::clamp(value, 1, 16);
+			else if (key == "map_shadows") map_shadows = (value != 0);
+			else if (key == "character_silhouette_shadows") character_silhouette_shadows = (value != 0);
+			else if (key == "map_detail") map_detail = std::clamp(value, 0, 1);
+			else if (key == "minimap_reduced_rate") minimap_reduced_rate = (value != 0);
 			else if (key == "replay_show_skill_icons") replay_show_skill_icons = (value != 0);
 			else if (key == "replay_show_skill_lasers") replay_show_skill_lasers = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -

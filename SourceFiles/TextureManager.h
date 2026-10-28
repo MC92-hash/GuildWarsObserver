@@ -106,6 +106,7 @@ public:
 		if (FAILED(hr)) { return -1; }
 
 		if (autoGenerateMipMaps) { m_deviceContext->GenerateMips(shaderResourceView.Get()); }
+		if (auto smaller = DropTopMips(texture2D.Get(), false)) shaderResourceView = smaller;
 
 		int textureID = m_nextTextureID++;
 		m_textures[textureID] = shaderResourceView;
@@ -181,6 +182,7 @@ public:
         // Ensure we have a valid shader resource view
         m_deviceContext->GenerateMips(shaderResourceView.Get());
     }
+		if (auto smaller = DropTopMips(texture2D.Get(), true)) shaderResourceView = smaller;
 
 		int textureID = m_nextTextureID++;
 		m_textures[textureID] = shaderResourceView;
@@ -275,6 +277,7 @@ public:
 		if (FAILED(hr)) { return -1; }
 
 		if (!has_authored_chain) { m_deviceContext->GenerateMips(shaderResourceView.Get()); }
+		if (auto smaller = DropTopMips(texture2D.Get(), false)) shaderResourceView = smaller;
 
 		int textureID = m_nextTextureID++;
 		m_textures[textureID] = shaderResourceView;
@@ -309,6 +312,12 @@ public:
 
 	// The id the next texture will get. Two marks around a load bracket every texture it minted.
 	int NextTextureId() const { return m_nextTextureID; }
+
+	// TEXTURE QUALITY (the replay's performance setting): every texture uploaded after this drops
+	// its top `skip` mip levels on the GPU, halving its size per level - a quarter of the video
+	// memory at 1, a sixteenth at 2. Small textures keep their size (see DropTopMips). The level-0
+	// CPU copies are untouched, so nothing that reads a texture on the CPU sees a difference.
+	void SetMipSkip(int skip) { m_mipSkip = std::clamp(skip, 0, 2); }
 
 	// Retire every texture minted in [first, end) - both halves, and its cache entry, as
 	// RemoveTextureByHash does - for a caller that loaded a whole scene between two marks and is
@@ -435,6 +444,53 @@ private:
 	ID3D11Device* m_device;
 	ID3D11DeviceContext* m_deviceContext;
 	int m_nextTextureID = 0;
+	int m_mipSkip = 0;
+
+	// The finished texture without its top levels, or null when it keeps them all (no skip set,
+	// or a texture whose short side would fall under 64 texels). Copies level k + skip of the
+	// source into level k of a smaller texture, slice by slice, then the source is let go.
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> DropTopMips(ID3D11Texture2D* source, bool isArray)
+	{
+		if (m_mipSkip <= 0 || !source) return nullptr;
+		D3D11_TEXTURE2D_DESC d = {};
+		source->GetDesc(&d);
+		UINT skip = 0;
+		while (skip < static_cast<UINT>(m_mipSkip) && skip + 1 < d.MipLevels &&
+		       (std::min(d.Width, d.Height) >> (skip + 1)) >= 64)
+			++skip;
+		if (skip == 0) return nullptr;
+
+		D3D11_TEXTURE2D_DESC s = d;
+		s.Width = std::max(1u, d.Width >> skip);
+		s.Height = std::max(1u, d.Height >> skip);
+		s.MipLevels = d.MipLevels - skip;
+		s.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		s.MiscFlags = 0;
+		Microsoft::WRL::ComPtr<ID3D11Texture2D> smaller;
+		if (FAILED(m_device->CreateTexture2D(&s, nullptr, smaller.GetAddressOf()))) return nullptr;
+		for (UINT a = 0; a < d.ArraySize; ++a)
+			for (UINT m = 0; m < s.MipLevels; ++m)
+				m_deviceContext->CopySubresourceRegion(smaller.Get(), D3D11CalcSubresource(m, a, s.MipLevels),
+				                                       0, 0, 0, source,
+				                                       D3D11CalcSubresource(m + skip, a, d.MipLevels), nullptr);
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC v = {};
+		v.Format = s.Format;
+		if (isArray)
+		{
+			v.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+			v.Texture2DArray.MipLevels = s.MipLevels;
+			v.Texture2DArray.ArraySize = s.ArraySize;
+		}
+		else
+		{
+			v.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			v.Texture2D.MipLevels = s.MipLevels;
+		}
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+		if (FAILED(m_device->CreateShaderResourceView(smaller.Get(), &v, view.GetAddressOf()))) return nullptr;
+		return view;
+	}
 	std::unordered_map<int, TextureData> cached_textures;
 
 	// Keyed by the texture id THIS manager minted - see SetTextureType().

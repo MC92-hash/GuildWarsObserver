@@ -126,7 +126,7 @@ void ReplayWindow::RenderTerrainShadows()
         for(int id:ids) if(auto mesh=meshes->GetMesh(id)) mesh->SetTextures({srv},0);
     m_mapRenderer->UploadRenderCamera(savedCamera);
     meshes->SetViewProjMatrix(m_mapRenderer->GetCamera()->GetView()*m_mapRenderer->GetCamera()->GetProj());
-    auto viewport=m_deviceResources->GetScreenViewport(); ctx->RSSetViewports(1,&viewport);
+    auto viewport=SceneViewport(); ctx->RSSetViewports(1,&viewport);
     m_mapRenderer->SetShouldRerenderShadows(false);
     m_mapRenderer->Update(0);
 }

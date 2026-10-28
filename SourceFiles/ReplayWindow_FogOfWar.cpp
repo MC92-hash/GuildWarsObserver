@@ -177,7 +177,7 @@ void ReplayWindow::DrawFogOfWar()
     if (!cam) return;
     XMMATRIX viewProj = cam->GetView() * cam->GetProj();
 
-    auto dvp = m_deviceResources->GetScreenViewport();
+    auto dvp = SceneViewport();   // the scene target, which the render scale may have shrunk
     float vpW = dvp.Width;
     float vpH = dvp.Height;
 

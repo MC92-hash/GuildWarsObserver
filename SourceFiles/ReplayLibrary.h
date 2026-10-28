@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <filesystem>
+#include <future>
 
 struct CapeData
 {
@@ -168,6 +169,18 @@ public:
 
     // Diff-based rescan: adds new matches, removes deleted ones, returns count of new matches added.
     int RescanDiff();
+
+    // The same rescan without blocking a frame: the folder parsing (hundreds of ms for a few
+    // hundred matches, seconds on a slow disk) runs on a worker thread that only fills its own
+    // vector; PollRescanAsync, called every frame on the main thread, merges a finished result
+    // exactly as RescanDiff does. One scan at a time - a request made while one runs queues one
+    // more, started when it lands. A result started before SetMatchDataFolder / SetProvider /
+    // ScanFolder / RescanDiff / Clear is dropped: the library has moved on since.
+    void RequestRescanAsync();
+    // True when a result was merged this call; `added` = new matches, as RescanDiff returns.
+    bool PollRescanAsync(int& added);
+    bool IsRescanAsyncBusy() const { return m_rescanJob.valid(); }
+
     const std::vector<std::string>& GetNewMatchFolders() const { return m_newMatchFolders; }
     void ClearNewMatchFolders() { m_newMatchFolders.clear(); }
 
@@ -178,10 +191,21 @@ public:
     int GetGeneration() const { return m_generation; }
 
 private:
-    std::unique_ptr<IReplayProvider> m_provider;
+    int ApplyScan(std::vector<MatchMeta> fresh);
+    void StartRescanWorker();
+
+    // Shared so a background scan keeps the provider it started with alive across SetProvider.
+    std::shared_ptr<IReplayProvider> m_provider;
     std::vector<MatchMeta> m_matches;
     std::string m_folder_path;
     bool m_loaded = false;
     int m_generation = 0;
     std::vector<std::string> m_newMatchFolders;
+
+    // Declared last so it is destroyed first: a std::async future blocks in its destructor until
+    // the worker returns, so shutdown waits for a scan in flight (the worker owns all it touches).
+    int m_scanEpoch = 0;
+    int m_rescanJobEpoch = 0;
+    bool m_rescanQueued = false;
+    std::future<std::vector<MatchMeta>> m_rescanJob;
 };

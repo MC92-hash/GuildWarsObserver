@@ -16,6 +16,7 @@
 // switch that reaches it, and nothing else about it.
 #include "WardrobeApp.h"
 #include "GuiGlobalConstants.h"
+#include "GraphicsSettingsUI.h"
 #include "ui/ui_kit.h"
 #include "ui/app_navigation.h"
 #include "TextureCache.h"
@@ -240,6 +241,11 @@ static void draw_settings_window()
 		ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.3f, 1.f),
 		                   "Restart the application to apply changes.");
 	}
+
+	// ──── Performance Section ───────────────────────────────────
+	ImGui::Spacing();
+	ImGui::SeparatorText("Performance");
+	DrawGraphicsSettingsControls();
 
 	// ──── File Paths Section ────────────────────────────────────
 	ImGui::Spacing();
@@ -1052,9 +1058,10 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		draw_dat_load_progress_bar(dat_files_read, dat_total_files);
 	}
 
-	// Check folder watcher for new match files
+	// Check folder watcher for new match files. Rescanned off the main thread (the scan parses
+	// every match folder); MapBrowser::Tick merges the result when it lands.
 	if (folder_watcher.HasPendingRefresh() && replay_library.IsLoaded())
-		replay_library.RescanDiff();
+		replay_library.RequestRescanAsync();
 
 	// THE RIBBON [2026-09-30], and the tool it asks for. The Wardrobe is never switched off from
 	// outside: it is asked to leave, closes its visit itself (drafts written, scene released) and

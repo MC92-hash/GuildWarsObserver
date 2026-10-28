@@ -1636,11 +1636,64 @@ float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
 // Per-frame: update agent model world transforms and visibility
 // ---------------------------------------------------------------------------
 
+// CYLINDERS, AND THE SKILL EFFECTS STILL PLAY. With the 3D models off there is no skeleton to hang
+// an effect on, so each agent's effects hang where its cylinder stands: the effects' own fallback
+// link height over its position, and its heading. Before this the models-off path returned before
+// the effects were placed or stepped, so a match opened with cylinders showed no effects at all and
+// one switched to cylinders mid-match froze the last frame's effects in place.
+void ReplayWindow::StepEffectsWithoutModels()
+{
+    ClearHeadpieceAttachments();
+    ClearAgentEffectAttachments();
+    if (!m_showAgentOverlay || !m_agentsClassified || m_replayCtx.agents.empty()) return;
+    if (m_lastAnimUpdateFrame == m_frameCount) return;
+    m_lastAnimUpdateFrame = m_frameCount;
+
+    const MapTransform& mt = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    Terrain* terrain = m_mapRenderer->GetTerrain();
+    const AgentModelInstance standIn{};
+    const std::vector<XMFLOAT4X4> noBones;
+
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+        if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId) && !m_fogGhostMode)
+            continue;
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
+        XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
+        if (terrain) {
+            pos.x = std::clamp(pos.x, terrain->m_bounds.map_min_x, terrain->m_bounds.map_max_x);
+            pos.z = std::clamp(pos.z, terrain->m_bounds.map_min_z, terrain->m_bounds.map_max_z);
+        }
+        const float rotRad = ard.snapshots[FindSnapshotIndex(ard.snapshots, m_debugTimeline)].rotation;
+        XMFLOAT4X4 worldF{};
+        XMStoreFloat4x4(&worldF, XMMatrixTranslation(pos.x, pos.y, pos.z));
+        AgentEffectsPlace(agentId, standIn, noBones, worldF, pos, rotRad);
+    }
+
+    const float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
+    StepAgentEffects(m_replayCtx.isPlaying ? frameDt * m_replayCtx.playbackSpeed : 0.f);
+}
+
 void ReplayWindow::DrawAgentModels()
 {
     m_shadowCasters.clear();
-    if (!m_useAgentModels) return;
-    if (!m_showAgentOverlay) return;
+    if (!m_useAgentModels)
+    {
+        StepEffectsWithoutModels();
+        return;
+    }
+    if (!m_showAgentOverlay)
+    {
+        // Nothing drawn, so nothing to hang on: last frame's attachments must not stay.
+        ClearHeadpieceAttachments();
+        ClearAgentEffectAttachments();
+        return;
+    }
     if (!m_agentsClassified || m_replayCtx.agents.empty()) return;
 
     auto* meshMgr = m_mapRenderer->GetMeshManager();
