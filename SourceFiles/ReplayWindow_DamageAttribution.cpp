@@ -127,6 +127,7 @@ void ReplayWindow::BuildDamageAttribution() const
     m_damageAttribution = Build(in);
     m_damagePops.clear();
     m_damageAttributionBuilt = true;
+    m_damageAttributionUsedAttributes = m_attributesDeduced;
 
     // Developer dump, the way the energy model writes its own: %TEMP%\gwo_damage_<match>.txt
     // whenever GWO_DAMAGE_DEBUG is set. One line per damage or heal packet.
@@ -189,7 +190,8 @@ void ReplayWindow::WriteCombatLogValueDump() const
 const DamageAttribution::Table* ReplayWindow::DamageAttributionTable() const
 {
     if (!m_replayCtx.stocLoaded || !m_skillUseTimelineBuilt) return nullptr;
-    if (!m_damageAttributionBuilt) BuildDamageAttribution();
+    // Rebuilt once the attributes are solved: rules read the solved ranks ("Brace Yourself!", the steals).
+    if (!m_damageAttributionBuilt || (!m_damageAttributionUsedAttributes && m_attributesDeduced)) BuildDamageAttribution();
     return &m_damageAttribution;
 }
 

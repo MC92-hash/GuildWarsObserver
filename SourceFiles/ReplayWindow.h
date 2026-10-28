@@ -552,6 +552,7 @@ private:
     void WriteCombatLogValueDump() const;   // GWO_DAMAGE_DEBUG: the combat log's damage and heal values
     mutable DamageAttribution::Table m_damageAttribution;
     mutable bool m_damageAttributionBuilt = false;
+    mutable bool m_damageAttributionUsedAttributes = false;   // built with the solved ranks (rules read them)
 
     // The skill effects on each player and when each ends (EffectTimeline, private), from the
     // recording's visual effects, the casts, the combat packets and the attack-speed snapshots.
