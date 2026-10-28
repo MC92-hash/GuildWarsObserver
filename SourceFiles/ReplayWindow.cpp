@@ -10298,26 +10298,28 @@ void DrawPartyHealthBar(
             iconX -= iconSz;
             dl->AddImage(flagTex, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
         }
+    }
 
-        // Absolute HP display (right-aligned, avoiding icon region)
-        if (absMaxHp > 0)
-        {
-            uint32_t displayHp = (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
-            char hpStr[32];
-            if (hpEstimated)
-                snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
-            else
-                snprintf(hpStr, sizeof(hpStr), "%u/%u", displayHp, absMaxHp);
+    // Absolute HP display (right-aligned, avoiding icon region). A dead player reads 0/N, N being
+    // the maximum he will stand up with: the morale fold takes the death penalty at the death.
+    if (absMaxHp > 0)
+    {
+        const float iconSz = std::min(innerH - 2.f, 18.f);
+        uint32_t displayHp = isDead ? 0u : (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
+        char hpStr[32];
+        if (hpEstimated)
+            snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
+        else
+            snprintf(hpStr, sizeof(hpStr), "%u/%u", displayHp, absMaxHp);
 
-            ImVec2 hpSize = ImGui::CalcTextSize(hpStr);
-            float hpTextX = std::min(innerBR.x - iconSz * 6.f - 4.f, innerBR.x - hpSize.x - 4.f);
-            float hpTextY = innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f;
+        ImVec2 hpSize = ImGui::CalcTextSize(hpStr);
+        float hpTextX = std::min(innerBR.x - iconSz * 6.f - 4.f, innerBR.x - hpSize.x - 4.f);
+        float hpTextY = innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f;
 
-            ImU32 hpTextCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-            ImU32 hpShadowCol = IM_COL32(0, 0, 0, 0xCC);
-            dl->AddText(ImVec2(hpTextX + 1, hpTextY + 1), hpShadowCol, hpStr);
-            dl->AddText(ImVec2(hpTextX, hpTextY), hpTextCol, hpStr);
-        }
+        ImU32 hpTextCol = isDead ? IM_COL32(0xA0, 0xA0, 0xA0, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+        ImU32 hpShadowCol = IM_COL32(0, 0, 0, 0xCC);
+        dl->AddText(ImVec2(hpTextX + 1, hpTextY + 1), hpShadowCol, hpStr);
+        dl->AddText(ImVec2(hpTextX, hpTextY), hpTextCol, hpStr);
     }
 }
 

@@ -4,6 +4,8 @@
 #include <wrl/client.h>
 #include <unordered_map>
 #include <string>
+#include <vector>
+#include <utility>
 #include <cmath>
 #include <cstring>
 #include <DirectXTex.h>
@@ -19,7 +21,8 @@ struct BitmapFont {
     float refHeight = 23.f;
     bool loaded = false;
 
-    bool Load(ID3D11Device* device, const wchar_t* ddsPath)
+    // swapRedBlue: for an extract stored with its red and blue channels exchanged.
+    bool Load(ID3D11Device* device, const wchar_t* ddsPath, bool swapRedBlue = false)
     {
         if (loaded) return srv.Get() != nullptr;
 
@@ -53,6 +56,17 @@ struct BitmapFont {
         const DirectX::Image* src = (converted.GetImageCount() > 0)
                                         ? converted.GetImages()
                                         : image.GetImages();
+        std::vector<uint8_t> swapped;
+        if (swapRedBlue)
+        {
+            swapped.assign(src->pixels, src->pixels + src->rowPitch * src->height);
+            for (size_t y = 0; y < src->height; ++y)
+                for (size_t x = 0; x < src->width; ++x)
+                {
+                    uint8_t* px = swapped.data() + y * src->rowPitch + x * 4;
+                    std::swap(px[0], px[2]);
+                }
+        }
 
         D3D11_TEXTURE2D_DESC td = {};
         td.Width  = static_cast<UINT>(src->width);
@@ -65,7 +79,7 @@ struct BitmapFont {
         td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
         D3D11_SUBRESOURCE_DATA sd = {};
-        sd.pSysMem     = src->pixels;
+        sd.pSysMem     = swapped.empty() ? static_cast<const void*>(src->pixels) : swapped.data();
         sd.SysMemPitch  = static_cast<UINT>(src->rowPitch);
 
         Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;

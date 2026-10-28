@@ -2455,6 +2455,7 @@ private:
         float           boxWidth    = 0.f;
         float           baseScale   = 1.f;
         OverheadFloaters::Motion motion = OverheadFloaters::Motion::Loss;
+        bool            dealt       = false;   // damage the followed player dealt: the yellow digits
     };
     static constexpr float kEffectLifetime  = OverheadFloaters::kLifetime;
     std::vector<IncomingEffect> m_incomingEffects;
@@ -2482,6 +2483,7 @@ private:
     BitmapFont m_damageBitmapFont;
     BitmapFont m_healBitmapFont;
     BitmapFont m_energyBitmapFont;   // the client's purple digits (texture 265569), energy gains
+    BitmapFont m_dealtBitmapFont;    // the client's yellow digits (texture 265568), damage the followed player deals
     void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();

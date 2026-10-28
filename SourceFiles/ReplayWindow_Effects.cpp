@@ -303,7 +303,8 @@ void ReplayWindow::ScanIncomingEffects(int agentId, float from, float to, std::v
 
 void ReplayWindow::EnsureBitmapFontsLoaded()
 {
-    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded && m_energyBitmapFont.loaded) return;
+    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded && m_energyBitmapFont.loaded
+        && m_dealtBitmapFont.loaded) return;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     auto ddsDir = FindTexturesDDSDir();
@@ -315,6 +316,10 @@ void ReplayWindow::EnsureBitmapFontsLoaded()
         m_healBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0xA0629E7F.dds").c_str());
     if (!m_energyBitmapFont.loaded)
         m_energyBitmapFont.Load(dev, (ddsDir / L"texture_265569.dds").c_str());
+    // The client's damage atlas for a non-enemy cause (gw_overhead_numbers.md section 2). The extract
+    // reads cyan, (62,154,159) on average: red and blue exchanged, it is the client's yellow.
+    if (!m_dealtBitmapFont.loaded)
+        m_dealtBitmapFont.Load(dev, (ddsDir / L"texture_265568.dds").c_str(), true);
 }
 
 
@@ -435,6 +440,7 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
     {
         const BitmapFont* font = (e.type == IncomingEffectType::Heal)   ? &m_healBitmapFont
                                : (e.type == IncomingEffectType::Energy) ? &m_energyBitmapFont
+                               : (e.dealt && m_dealtBitmapFont.srv.Get()) ? &m_dealtBitmapFont
                                                                         : &m_damageBitmapFont;
         if (font->srv.Get())
         {
@@ -1020,8 +1026,9 @@ void ReplayWindow::DrawFollowedAgentHUD()
 
 // Energy gains and drains over every player but the followed one, in the client's purple digits and
 // with the client's floater layout - the energy model knows them for everyone. With them, the heals
-// the followed player GAVE, over each player he healed, as the client shows a healer his heals (the
-// heals he receives stay over him, UpdateIncomingEffects). Damage stays on the followed player.
+// the followed player GAVE, over each player he healed, and the damage he dealt, over each agent he
+// hit (a Guild Lord, a spirit and a pet too), as the client shows a player his own numbers. What
+// he receives stays over him (UpdateIncomingEffects).
 void ReplayWindow::RenderEnergyPopsOverPlayers()
 {
     if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
@@ -1038,14 +1045,27 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     std::vector<IncomingEffect> live, batch;
 
-    // One player's pops in time order: his energy changes and the followed player's heals on him.
-    // `draw` is false for a pop that only links the run (a zero or followed-only energy change).
+    // One agent's pops in time order: his energy changes and the followed player's heals and damage
+    // on him. `draw` is false for a pop that only links the run (a zero or followed-only energy change).
     struct Pop { float time; bool draw; IncomingEffect eff; };
     std::vector<Pop> run;
     constexpr float kRunLookback = 60.f;   // how far back a run of overlapping pops is replayed
     const int healer = m_focusedAgentId;
 
-    for (int pid : m_playerIds)
+    // The players, and any other agent the followed player has hit in the last lifetime.
+    std::vector<int> targets(m_playerIds.begin(), m_playerIds.end());
+    if (healer >= 0)
+    {
+        const auto& combat = m_replayCtx.stocData.combat;
+        for (auto c = std::upper_bound(combat.begin(), combat.end(), now - kEffectLifetime,
+                                       [](float v, const CombatEvent& x) { return v < x.time; });
+             c != combat.end() && c->time <= now; ++c)
+            if (c->caster_id == healer && c->IsDamageOrHeal()
+                && std::find(targets.begin(), targets.end(), c->target_id) == targets.end())
+                targets.push_back(c->target_id);
+    }
+
+    for (int pid : targets)
     {
         if (pid == m_focusedAgentId) continue;
         const EnergyModel::Track* track = EnergyTrackFor(pid);
@@ -1064,7 +1084,7 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
             for (auto h = std::upper_bound(pops.begin(), pops.end(), now - kEffectLifetime,
                                            [](float v, const DamagePop& x) { return v < x.time; });
                  h != pops.end() && h->time <= now; ++h)
-                if (h->heal && h->casterId == healer) { any = true; break; }
+                if (h->casterId == healer) { any = true; break; }
         if (!any) continue;
 
         auto it = m_replayCtx.agents.find(pid);
@@ -1099,11 +1119,14 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
                                        [](const DamagePop& x, float v) { return x.time < v; });
              h != pops.end() && h->time <= now; ++h)
         {
-            if (!h->heal || h->casterId != healer) continue;
+            if (h->casterId != healer) continue;
             Pop p{ h->time, true, {} };
             p.eff.spawnTime = h->time;
             p.eff.skillId = h->skillId;
-            p.eff.type = IncomingEffectType::Heal;
+            p.eff.type = h->weaponHit ? IncomingEffectType::BasicAttack
+                       : h->heal      ? IncomingEffectType::Heal
+                                      : IncomingEffectType::Damage;
+            p.eff.dealt = !h->heal;
             p.eff.label = FloaterPopLabel(pid, *h);
             run.push_back(std::move(p));
         }

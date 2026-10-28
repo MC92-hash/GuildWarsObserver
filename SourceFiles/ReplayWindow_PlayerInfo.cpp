@@ -712,8 +712,10 @@ void ReplayWindow::DrawPlayerInfoPanel()
             float dy = innerTL.y + (innerH - 11.f) * 0.5f;
             dl->AddText(nullptr, 11.f, ImVec2(dx + 1, dy + 1), IM_COL32(0, 0, 0, 0xCC), deadLabel);
             dl->AddText(nullptr, 11.f, ImVec2(dx, dy), IM_COL32(255, 255, 255, 255), deadLabel);
+            // Still 0 / N beside it: N is the maximum he stands up with (the death penalty is taken
+            // at the death).
+            hpPct = 0.f;
         }
-        else
         {
             // HP text with shadow (inside bar, left-aligned)
             char hpBuf[32];
