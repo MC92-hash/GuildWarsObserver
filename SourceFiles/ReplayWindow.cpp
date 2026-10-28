@@ -222,7 +222,7 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("skill_lasers",    "Skill Lasers",         &m_showLaserPanel,       false, true);
     m_panelLayout.RegisterPanel("auto_camera",     "Auto Camera",          &m_showAutoCameraPanel,  false, true);
     m_panelLayout.RegisterPanel("combat_log",      "Combat Log",           &m_showCombatLog,        false, true);
-    m_panelLayout.RegisterPanel("skill_analytics", "Skill Analytics",      &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("skill_analytics", "Damage & Healing",     &m_showSkillAnalytics,   false, true);
     m_panelLayout.RegisterPanel("piano_roll",      "Piano Roll",           &m_showPianoRoll,        false, true);
     m_panelLayout.RegisterPanel("heatmap",         "Heatmap",              &m_heatmapSettings.show, false, true);
     m_panelLayout.RegisterPanel("agent_names",     "Agent Names",          &m_showNameFilterPanel,  false, true);
@@ -6745,7 +6745,10 @@ void ReplayWindow::Tick()
         // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.
         char damageFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_DAMAGE_DEBUG", damageFlag, (DWORD)sizeof(damageFlag)) != 0)
+        {
             (void)DamageAttributionTable();
+            BuildBattleLedger();      // writes its own dump beside it (gwo_ledger_<match>.txt)
+        }
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
@@ -7584,8 +7587,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawPartyWindows();
     DrawPlayerContextMenu();
     DrawCombatLog();
-    DrawSkillAnalyticsPanel();
-    DrawSkillAnalyticsPlayerPopups();
+    DrawBattleLedgerPanel();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
     DrawNotepad();

@@ -63,7 +63,16 @@ void ReplayWindow::BuildDamageAttribution() const
     for (const ProjectileEvent& s : stoc.projectiles)
         in.shots.push_back({ s.time, s.sourceId, s.flight });
     for (const LifecycleEvent& l : stoc.lifecycle)
-        if (l.isAdd) in.spawns.push_back({ l.time, l.agent_type });
+    {
+        // The lifecycle carries the agent's incarnation (a reused id split into a synthetic one,
+        // SplitRecycledAgents); the combat packets carry the recorded id. Give the rules the
+        // recorded one: a spawn's removal is then the first of that id after it.
+        int raw = l.agent_id;
+        if (auto ait = m_replayCtx.agents.find(l.agent_id); ait != m_replayCtx.agents.end() && ait->second.originalAgentId >= 0)
+            raw = ait->second.originalAgentId;
+        if (l.isAdd) in.spawns.push_back({ l.time, l.agent_type, raw });
+        else         in.removes.push_back({ l.time, raw });
+    }
     // The recording names the flux when the recorder saw it; the month decides otherwise.
     AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
     if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
@@ -76,8 +85,38 @@ void ReplayWindow::BuildDamageAttribution() const
         if (it != facts.end()) return &it->second;
         const SkillInfo* si = m_skillView.Get(skillId);
         if (!si) return nullptr;
-        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->name, si->description, si->sacrifice }).first->second;
+        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->name, si->description, si->sacrifice, si->attribute }).first->second;
     };
+
+    // Agents by their recorded id (combat packets use it): a reused id's incarnations share it.
+    std::unordered_map<int, int> teamOfRaw;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        const int raw = ard.originalAgentId >= 0 ? ard.originalAgentId : id;
+        if (ard.teamId) teamOfRaw[raw] = ard.teamId;
+    }
+    in.team = [teamOfRaw](int agent) -> int {
+        auto it = teamOfRaw.find(agent);
+        return it == teamOfRaw.end() ? 0 : it->second;
+    };
+    in.rank = [this](int agentId, int attribute) -> int {
+        auto it = m_attrProfiles.find(agentId);
+        if (it == m_attrProfiles.end()) return -1;
+        const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
+        return a ? a->best : -1;
+    };
+    // When each agent died: his snapshot turning dead or to 0 Health.
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        const int raw = ard.originalAgentId >= 0 ? ard.originalAgentId : id;
+        bool wasDead = true;
+        for (const AgentSnapshot& sn : ard.snapshots)
+        {
+            const bool dead = sn.is_dead || sn.health_pct <= 0.f;
+            if (dead && !wasDead) in.deaths.push_back({ sn.time, raw });
+            wasDead = dead;
+        }
+    }
 
     const EffectTimeline::Table* effects = EffectTimelineTable();
     if (effects)
@@ -113,6 +152,7 @@ void ReplayWindow::BuildDamageAttribution() const
                          : r.skillId == kSpikedCoral      ? "Spiked Coral"
                          : r.skillId == kAcidTrap         ? "Acid Trap"
                          : r.skillId == kMinionApocalypse ? "Minion Apocalypse"
+                         : r.skillId == 657               ? "Life Draining"
                          : r.skillId ? "?" : "-";
         fprintf(f, "%zu\t%.3f\t%s\t%d\t%d\t%.6f\t%d\t%d\t%s\t%s\t%d\t%d\t%u\t%d\n", i, ce.time, ce.type.c_str(),
                 ce.caster_id, ce.target_id, ce.value, ce.damage_type, r.skillId,

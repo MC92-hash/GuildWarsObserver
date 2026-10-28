@@ -970,9 +970,9 @@ void ReplayWindow::DrawRibbonToolbar()
               "and attacks from the replay. Damage and heals are matched to "
               "skill casts when the timing fits. Category toggles in the "
               "panel control what is listed."),
-            T(Ico::BarChart, "Skill Analytics", m_showSkillAnalytics,
+            T(Ico::BarChart, "Damage & Healing", m_showSkillAnalytics,
               kArtSkillAnalytics,
-              "Open skill usage analytics for the match (beta)."),
+              "Who dealt, took, healed and prevented how much, and who interrupted whom, for the full match, up to the playhead, the last 60 s or a stretch you drag on the time strip. The totals are the overhead numbers added up."),
             T(Ico::Gradient, "Heatmap", m_heatmapSettings.show,
               kArtHeatmap,
               "Accumulate player movement into a density overlay on the map. "

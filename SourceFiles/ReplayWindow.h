@@ -2383,6 +2383,64 @@ private:
     void DrawSkillAnalyticsPanel();
     void DrawSkillAnalyticsPlayerPopups();
 
+public:
+    // --- Damage & Healing panel (the Battle Ledger, ReplayWindow_BattleLedger.cpp) ---
+    // One line per damage / heal / prevention packet, with the number its floater showed and the
+    // skill the damage attribution named, and one per interrupt attempt. Built once per match.
+    enum class LedgerKind : uint8_t { Damage, SelfCost, Heal, DivineFavor, Prevented };
+    struct LedgerLine
+    {
+        float t = 0.f;
+        int   src = 0, dst = 0;
+        int   amount = 0;
+        int   skillId = 0;            // resolved PvP id; 0 none (a weapon hit when weaponHit)
+        LedgerKind kind = LedgerKind::Damage;
+        bool  weaponHit = false;
+        // Nonzero: the detail table's row instead of the skill's (kLedgerRowMinions,
+        // kLedgerRowDegenUnknown, or LedgerDegenRow(condition, cause)); skillId then names the
+        // icon - the Animate skill, the condition's cause.
+        int   rowKey = 0;
+        // Prevented: an estimate (a capped hit, a blocked or failed attack) rather than a number
+        // the recording proves, and how many hits it stands for (capped / blocked counts).
+        bool  estimated = false;
+        int   count = 0;
+        uint8_t preventGroup = 0;     // Prevented without a heal: 1 + DamageAttribution::PreventGroup
+    };
+    static constexpr int kLedgerRowMinions      = -4;
+    static constexpr int kLedgerRowDegenUnknown = -5;
+    // Map effects: never a player's (src 0), shown on the board's MAP EFFECTS strip and in a
+    // victim's "hit by" / "healed by" under their own name.
+    static constexpr int kLedgerRowCatapult = -6;
+    static constexpr int kLedgerRowCoral    = -7;
+    static constexpr int kLedgerRowAcid     = -8;
+    static constexpr int kLedgerRowFlux     = -9;
+    static constexpr int kLedgerRowMiasma   = -10;
+    static constexpr int kLedgerRowWater    = -11;
+    static constexpr bool IsLedgerMapRow(int key) { return key <= -6 && key >= -11; }
+    // A condition's degeneration from one cause: -(1,000,000 + condition x 10,000 + cause skill).
+    static constexpr int LedgerDegenRow(int condition, int cause) { return -(1000000 + condition * 10000 + cause); }
+    static constexpr bool IsLedgerDegenRow(int key) { return key <= -1000000; }
+    static constexpr int LedgerDegenCondition(int key) { return (-key - 1000000) / 10000; }
+    static constexpr int LedgerDegenCause(int key) { return (-key - 1000000) % 10000; }
+    struct LedgerInterrupt
+    {
+        enum Outcome : uint8_t { Landed, Faked, Missed };
+        float t = 0.f;                // when it landed (or would have)
+        int   src = 0, dst = 0;
+        int   skillId = 0;            // the interrupting skill
+        Outcome outcome = Missed;
+        int   lostSkill = 0;          // the cast it stopped (landed) or the one cancelled (faked)
+        int   afterMs = -1;           // landed: how far into that cast
+        int   reflexMs = -1;          // landed: interrupter's activation minus that cast's start
+    };
+private:
+    void BuildBattleLedger() const;
+    void DrawBattleLedgerPanel();
+    mutable std::vector<LedgerLine> m_ledger;
+    mutable std::vector<LedgerInterrupt> m_ledgerInts;
+    mutable bool m_ledgerBuilt = false;
+    mutable bool m_ledgerUsedAttributes = false;
+
     // --- Incoming effect display ---
     enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex, BasicAttack, Energy };
     struct IncomingEffect {
