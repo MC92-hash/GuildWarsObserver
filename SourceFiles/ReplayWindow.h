@@ -40,6 +40,8 @@
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
 #include "LordAggressiveness.h"
+
+namespace MatchStats { struct Inputs; }
 #include "EchoSlots.h"
 #include "ThieverySlots.h"
 #include "OverheadFloaters.h"
@@ -156,6 +158,9 @@ public:
     // Write the match events the Library's analysis tabs read (match_analysis.json), with times
     // on the displayed match clock. False when the file could not be written.
     bool ExportMatchAnalysis(const std::filesystem::path& outPath) const;
+    // The Library Stats tab's extra columns: the replay's models for MatchStats::Build
+    // (ReplayWindow_MatchStats.cpp). MatchStats.h stays out of this header on purpose.
+    void FillMatchStatsInputs(MatchStats::Inputs& in) const;
     // The Combat Log panel's entries as text (--export-combat-log), for checking them on the archive.
     bool CombatLogBuilt() const { return m_combatLogBuilt; }
     bool ExportCombatLogView(const std::filesystem::path& outPath);

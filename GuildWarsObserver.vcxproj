@@ -371,6 +371,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\LordAggressiveness.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Highlights.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MatchStats.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\ProtEfficiency.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.h" />
@@ -691,6 +692,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_AutoCamera.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Heatmap.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Highlights.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_MatchStats.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Audio.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Shrine.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_RangeRings.cpp" />
@@ -724,6 +726,12 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\DamageAttribution.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\LordAggressiveness.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Highlights.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats_Knockdowns.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats_Conditions.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats_Energy.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats_Activity.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MatchStats_Interrupts.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\ProtEfficiency.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EffectTimeline.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\OverheadFloaters.cpp" />

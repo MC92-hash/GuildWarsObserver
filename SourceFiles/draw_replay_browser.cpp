@@ -23,6 +23,7 @@
 #include <map>
 #include <unordered_set>
 #include <json.hpp>
+#include "MatchStats.h"
 
 #include "ui/ui_kit.h"
 
@@ -7219,7 +7220,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 6;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 7;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7289,6 +7290,7 @@ struct MatchAnalysisJob
     std::vector<MatchAnalysisLandmark> landmarks;
     int mapId = -1;
     BattleLedger::Data ledger;    // the Damage & Healing lines, times on the match clock
+    MatchStats::Records stats;    // the Stats tab's extra columns, times on the match clock
 };
 
 static MatchAnalysisJob s_analysis;
@@ -7452,6 +7454,22 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
         job.landmarks.push_back(std::move(lm));
     }
     ReadLedger(root.value("ledger", nlohmann::json::object()), job);
+    // The extra columns (ReplayWindow::ExportMatchAnalysis "stats"): [ms, agent, value, dur ms, other, skill, flag].
+    // Held in a variable: items() over value()'s temporary would iterate a destroyed copy.
+    job.stats.clear();
+    const nlohmann::json statsJson = root.value("stats", nlohmann::json::object());
+    for (const auto& [key, list] : statsJson.items())
+    {
+        auto& recs = job.stats[key];
+        for (const auto& a : list)
+        {
+            if (!a.is_array() || a.size() < 7) continue;
+            MatchStats::Record r;
+            r.t = a[0].get<float>() / 1000.0f; r.agent = a[1].get<int>(); r.value = a[2].get<float>();
+            r.dur = a[3].get<float>() / 1000.0f; r.other = a[4].get<int>(); r.skill = a[5].get<int>(); r.flag = a[6].get<int>();
+            recs.push_back(r);
+        }
+    }
     for (const auto& e : root.value("events", nlohmann::json::array()))
     {
         const std::string type = e.value("type", std::string());
@@ -8437,11 +8455,25 @@ namespace
         { "Distance",            "Distance",   BattleLedger::kDealt,     "Ground covered while alive, in game units." },
     };
 
+    // A column is one of the fixed ones above (0 .. SC_Count - 1) or a stat of the MatchStats
+    // catalogue (kExtraBase + its index), whose records match_analysis.json carries.
+    constexpr int kExtraBase = 100;
+    const MatchStats::StatDef* ExtraDef(int c)
+    {
+        const auto& cat = MatchStats::Catalog();
+        return c >= kExtraBase && c - kExtraBase < (int)cat.size() ? &cat[c - kExtraBase] : nullptr;
+    }
+    const char* ColLabel(int c) { const auto* d = ExtraDef(c); return d ? d->label : kStatCols[c].label; }
+    const char* ColHead(int c)  { const auto* d = ExtraDef(c); return d ? d->head : kStatCols[c].head; }
+    const char* ColHelp(int c)  { const auto* d = ExtraDef(c); return d ? d->help : kStatCols[c].help; }
+
     struct StatsTabState
     {
         bool bars = false;
         bool perMinute = false;
         bool on[SC_Count] = { true, true, true, true, true, true, true, true, false, true, false, false, false };
+        std::vector<int> extra;           // the catalogue's columns picked, in the order picked (kExtraBase + index)
+        char search[64] = {};             // the More stats picker's keywords
         int  sort = SC_Dealt;
         BattleLedger::ViewState view;
         std::string folder;               // the match the view state belongs to
@@ -8578,19 +8610,270 @@ namespace
     }
 }
 
+namespace
+{
+    // One player's cell of a catalogue column over [r0, r1]: `v` is what sorts and ranks (already
+    // per minute when asked), num / den a ratio's counts, n how many records a median rests on.
+    struct ExtraCell { double v = 0.0, num = 0.0, den = 0.0; int n = 0; };
+
+    double Median(std::vector<float> v)
+    {
+        if (v.empty()) return 0.0;
+        std::sort(v.begin(), v.end());
+        const size_t h = v.size() / 2;
+        return v.size() % 2 ? v[h] : 0.5 * (v[h - 1] + v[h]);
+    }
+
+    std::unordered_map<int, ExtraCell> ExtraValues(const MatchAnalysisJob& job, const MatchStats::StatDef& def,
+                                                   float r0, float r1, bool perMinute)
+    {
+        using MatchStats::Agg;
+        std::unordered_map<int, ExtraCell> out;
+        auto recsOf = [&](const char* key) -> const std::vector<MatchStats::Record>* {
+            if (!key) return nullptr;
+            auto it = job.stats.find(key);
+            return it == job.stats.end() ? nullptr : &it->second;
+        };
+        auto inside = [&](const MatchStats::Record& r) { return r.t >= r0 && r.t <= r1; };
+        const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
+        if (def.agg == Agg::Ratio)
+        {
+            if (const auto* num = recsOf(def.num)) for (const auto& r : *num) if (inside(r)) out[r.agent].num += 1.0;
+            if (const auto* den = recsOf(def.den)) for (const auto& r : *den) if (inside(r)) out[r.agent].den += 1.0;
+            for (auto& [pid, c] : out) c.v = c.den > 0.0 ? c.num / c.den : 0.0;
+            return out;
+        }
+        const auto* recs = recsOf(def.key);
+        if (!recs) return out;
+        std::unordered_map<int, std::vector<float>> values;
+        for (const auto& r : *recs)
+        {
+            if (def.agg == Agg::Time)
+            {
+                const double a = std::max<double>(r.t, r0), b = std::min<double>(r.t + r.dur, r1);
+                if (b > a) out[r.agent].v += b - a;
+                continue;
+            }
+            if (!inside(r)) continue;
+            ExtraCell& c = out[r.agent];
+            ++c.n;
+            if (def.agg == Agg::Count) c.v += 1.0;
+            else if (def.agg == Agg::Sum) c.v += r.value;
+            else values[r.agent].push_back(r.value);
+        }
+        if (def.agg == Agg::Median)
+            for (auto& [pid, list] : values) out[pid].v = Median(list);
+        if (perMinute)
+            for (auto& [pid, c] : out)
+            {
+                if (def.agg == Agg::Time) c.v = c.v / std::max(1.0f, r1 - r0) * 100.0;
+                else if (def.agg == Agg::Count || def.agg == Agg::Sum) c.v /= minutes;
+            }
+        return out;
+    }
+
+    std::string ExtraText(const ExtraCell& c, const MatchStats::StatDef& def, bool perMinute)
+    {
+        using MatchStats::Agg;
+        char b[48];
+        const char* est = def.estimated ? "~" : "";
+        switch (def.agg)
+        {
+        case Agg::Ratio:
+            if (c.den <= 0.0) return "-";
+            snprintf(b, sizeof b, "%d/%d  %d%%", (int)c.num, (int)c.den, (int)std::lround(c.v * 100.0));
+            return b;
+        case Agg::Median:
+            if (c.n == 0) return "-";
+            snprintf(b, sizeof b, "%s%.2f s", est, c.v);
+            return b;
+        case Agg::Time:
+            if (c.v < 0.5) return "-";
+            snprintf(b, sizeof b, perMinute ? "%s%d%%" : "%s%d s", est, (int)std::lround(c.v));
+            return b;
+        case Agg::Count:
+            if (c.v < 0.05) return "-";
+            if (perMinute) { snprintf(b, sizeof b, "%s%.1f", est, c.v); return b; }
+            snprintf(b, sizeof b, "%s%d", est, (int)std::lround(c.v));
+            return b;
+        case Agg::Sum:
+            break;
+        }
+        if (c.v < 0.05) return "-";
+        const long long n = std::llround(c.v);
+        std::string raw = std::to_string(n), s;
+        for (int i = (int)raw.size() - 1, k = 0; i >= 0; --i, ++k)
+        {
+            if (k && k % 3 == 0) s.insert(s.begin(), ',');
+            s.insert(s.begin(), raw[i]);
+        }
+        return est + s;
+    }
+
+    ImU32 ExtraHue(MatchStats::Hue h)
+    {
+        switch (h)
+        {
+        case MatchStats::Hue::Damage:    return IM_COL32(226, 80, 63, 0);
+        case MatchStats::Hue::Healing:   return IM_COL32(108, 196, 86, 0);
+        case MatchStats::Hue::Prevented: return IM_COL32(230, 200, 70, 0);
+        case MatchStats::Hue::Interrupt: return IM_COL32(170, 110, 220, 0);
+        case MatchStats::Hue::Energy:    return IM_COL32(80, 150, 235, 0);
+        case MatchStats::Hue::Control:   return IM_COL32(232, 140, 60, 0);
+        default:                         return IM_COL32(190, 196, 206, 0);
+        }
+    }
+
+    // Favourite stats: starred in the picker, shown as columns every time, kept between sessions in
+    // stats_favourites.txt beside gui_settings.ini (one stat key per line, in the order starred).
+    std::vector<int> s_favs;          // kExtraBase + catalogue index
+    bool s_favsLoaded = false;
+
+    std::filesystem::path FavouritesFile() { return GuiGlobalConstants::GetSettingsFilePath().parent_path() / "stats_favourites.txt"; }
+
+    void LoadFavourites()
+    {
+        if (s_favsLoaded) return;
+        s_favsLoaded = true;
+        std::ifstream f(FavouritesFile());
+        const auto& cat = MatchStats::Catalog();
+        std::string key;
+        while (std::getline(f, key))
+        {
+            while (!key.empty() && (key.back() == '\r' || key.back() == ' ')) key.pop_back();
+            for (size_t i = 0; i < cat.size(); ++i)
+                if (key == cat[i].key && std::find(s_favs.begin(), s_favs.end(), kExtraBase + (int)i) == s_favs.end())
+                    s_favs.push_back(kExtraBase + (int)i);
+        }
+    }
+
+    void SaveFavourites()
+    {
+        std::ofstream f(FavouritesFile(), std::ios::trunc);
+        for (int c : s_favs) if (const auto* d = ExtraDef(c)) f << d->key << "\n";
+    }
+
+    bool IsFavourite(int c) { return std::find(s_favs.begin(), s_favs.end(), c) != s_favs.end(); }
+
+    // Starring keeps the column for good; unstarring leaves it shown for this session.
+    void ToggleFavourite(int c)
+    {
+        auto it = std::find(s_favs.begin(), s_favs.end(), c);
+        auto ex = std::find(s_stats.extra.begin(), s_stats.extra.end(), c);
+        if (it != s_favs.end()) { s_favs.erase(it); if (ex == s_stats.extra.end()) s_stats.extra.push_back(c); }
+        else { s_favs.push_back(c); if (ex != s_stats.extra.end()) s_stats.extra.erase(ex); }
+        SaveFavourites();
+    }
+
+    // The catalogue's columns on screen: the favourites, then this session's picks.
+    std::vector<int> ShownExtras()
+    {
+        std::vector<int> v;
+        for (int c : s_favs) if (ExtraDef(c)) v.push_back(c);
+        for (int c : s_stats.extra) if (ExtraDef(c) && !IsFavourite(c)) v.push_back(c);
+        return v;
+    }
+
+    // A five-pointed star (the app font has no star glyph): filled gold, or an outline.
+    void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool filled, ImU32 col)
+    {
+        ImVec2 pts[10];
+        for (int i = 0; i < 10; ++i)
+        {
+            const float a = -1.5707963f + i * 0.6283185f, rr = (i & 1) ? r * 0.45f : r;
+            pts[i] = ImVec2(c.x + std::cos(a) * rr, c.y + std::sin(a) * rr);
+        }
+        if (filled)
+            for (int i = 0; i < 10; ++i) dl->AddTriangleFilled(c, pts[i], pts[(i + 1) % 10], col);
+        else
+            dl->AddPolyline(pts, 10, col, ImDrawFlags_Closed, 1.2f);
+    }
+
+    // A star button the size of a text line; true when clicked.
+    bool StarButton(bool on)
+    {
+        const float h = ImGui::GetFrameHeight();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool clicked = ImGui::InvisibleButton("##star", ImVec2(h, h));
+        const bool hov = ImGui::IsItemHovered();
+        DrawStar(ImGui::GetWindowDrawList(), ImVec2(p.x + h * 0.5f, p.y + h * 0.5f), h * 0.36f, on || hov,
+                 on ? IM_COL32(240, 200, 80, 255) : hov ? IM_COL32(240, 200, 80, 140) : IM_COL32(150, 156, 165, 200));
+        return clicked;
+    }
+
+    // Every keyword of the picker's search appears in the stat's label, head, group or help.
+    bool MatchesSearch(const MatchStats::StatDef& d, const char* query)
+    {
+        auto lower = [](std::string s) { for (auto& ch : s) ch = (char)std::tolower((unsigned char)ch); return s; };
+        const std::string hay = lower(std::string(d.label) + " " + d.head + " " + d.group + " " + d.help);
+        std::string q = lower(query), word;
+        for (size_t i = 0; i <= q.size(); ++i)
+        {
+            if (i == q.size() || q[i] == ' ')
+            {
+                if (!word.empty() && hay.find(word) == std::string::npos) return false;
+                word.clear();
+            }
+            else word += q[i];
+        }
+        return true;
+    }
+}
+
 static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
 {
     const MatchAnalysisJob& job = s_analysis;
     const BattleLedger::Data& d = job.ledger;
     const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
     auto raw = StatValues(job, r0, r1);
-    auto shown = [&](int pid, int c) {
+    std::vector<int> cols;
+    for (int c = 0; c < SC_Count; ++c) if (s_stats.on[c]) cols.push_back(c);
+    for (int c : ShownExtras()) cols.push_back(c);
+    std::unordered_map<int, std::unordered_map<int, ExtraCell>> extraCells;
+    for (int c : cols)
+        if (const auto* def = ExtraDef(c)) extraCells[c] = ExtraValues(job, *def, r0, r1, s_stats.perMinute);
+    auto shown = [&](int pid, int c) -> double {
+        if (ExtraDef(c))
+        {
+            const auto& cells = extraCells[c];
+            auto it = cells.find(pid);
+            return it == cells.end() ? 0.0 : it->second.v;
+        }
         const double v = raw[pid][c];
         if (!s_stats.perMinute) return v;
         return c == SC_Dead ? v / std::max(1.0f, r1 - r0) * 100.0 : v / minutes;
     };
-    std::vector<int> cols;
-    for (int c = 0; c < SC_Count; ++c) if (s_stats.on[c]) cols.push_back(c);
+    // Whether a player has a value at all in a column (a median with no case, a ratio with no try).
+    auto present = [&](int pid, int c) -> bool {
+        const auto* def = ExtraDef(c);
+        if (!def) return shown(pid, c) > 0.0;
+        const auto& cells = extraCells[c];
+        auto it = cells.find(pid);
+        if (it == cells.end()) return false;
+        if (def->agg == MatchStats::Agg::Median) return it->second.n > 0;
+        if (def->agg == MatchStats::Agg::Ratio) return it->second.den > 0.0;
+        return it->second.v > 0.0;
+    };
+    // Better first: the larger number, but the quicker one for a median (reactions, timings).
+    auto better = [&](int a, int b, int c) {
+        const auto* def = ExtraDef(c);
+        if (def && def->agg == MatchStats::Agg::Median)
+        {
+            const bool pa = present(a, c), pb = present(b, c);
+            if (pa != pb) return pa;
+            return shown(a, c) < shown(b, c);
+        }
+        return shown(a, c) > shown(b, c);
+    };
+    auto cellText = [&](int pid, int c) -> std::string {
+        if (const auto* def = ExtraDef(c))
+        {
+            const auto& cells = extraCells[c];
+            auto it = cells.find(pid);
+            return it == cells.end() ? std::string("-") : ExtraText(it->second, *def, s_stats.perMinute);
+        }
+        return StatText(shown(pid, c), c, s_stats.perMinute);
+    };
     if (std::find(cols.begin(), cols.end(), s_stats.sort) == cols.end() && !cols.empty()) s_stats.sort = cols.front();
 
     const float lineH = ImGui::GetTextLineHeight();
@@ -8601,12 +8884,24 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
             nameW = std::max(nameW, ImGui::CalcTextSize(it->second.name.c_str()).x);
     const float nameColW = iconS * 2.0f + 10.0f + nameW + 16.0f;
     float colW = 70.0f;
-    for (int c : cols) colW = std::max(colW, ImGui::CalcTextSize(kStatCols[c].head).x + 26.0f);
-    const float tableW = nameColW + colW * cols.size();
+    for (int c : cols) colW = std::max(colW, ImGui::CalcTextSize(ColHead(c)).x + 26.0f);
+    // Each column at the common width, a ratio's wider when "123/456  100%" needs it.
+    std::vector<float> colX, colWs;
+    float tableW = nameColW;
+    for (int c : cols)
+    {
+        float w = colW;
+        if (const auto* def = ExtraDef(c); def && def->agg == MatchStats::Agg::Ratio)
+            w = std::max(w, ImGui::CalcTextSize("888/888  100%").x + 18.0f);
+        colX.push_back(tableW);
+        colWs.push_back(w);
+        tableW += w;
+    }
 
     // Each kind of figure in the colours of Bars and the client's digits: damage red, healing
     // green, prevented gold, interrupts purple; counts neutral.
     auto hue = [](int c) -> ImU32 {
+        if (const auto* def = ExtraDef(c)) return ExtraHue(def->hue);
         switch (c)
         {
         case SC_Dealt: case SC_Taken:       return IM_COL32(226, 80, 63, 0);
@@ -8630,22 +8925,22 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
     for (size_t k = 0; k < cols.size(); ++k)
     {
         const int c = cols[k];
-        const float x = o.x + nameColW + colW * k;
+        const float x = o.x + colX[k], cw = colWs[k];
         ImGui::SetCursorScreenPos(ImVec2(x, y));
         ImGui::PushID(c);
-        if (ImGui::InvisibleButton("##sort", ImVec2(colW - 2.0f, rowH))) s_stats.sort = c;
+        if (ImGui::InvisibleButton("##sort", ImVec2(cw - 2.0f, rowH))) s_stats.sort = c;
         const bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (hov) ImGui::SetTooltip("%s\n%s\nClick to sort.", kStatCols[c].label, kStatCols[c].help);
+        if (hov) ImGui::SetTooltip("%s\n%s\nClick to sort.", ColLabel(c), ColHelp(c));
         const bool sorted = s_stats.sort == c;
-        const float tw = ImGui::CalcTextSize(kStatCols[c].head).x;
-        const float tx = x + colW - 10.0f - tw;
-        dl->AddText(ImVec2(tx, y + (rowH - lineH) * 0.5f), sorted ? cGold : hov ? IM_COL32(216, 220, 226, 255) : cDim, kStatCols[c].head);
+        const float tw = ImGui::CalcTextSize(ColHead(c)).x;
+        const float tx = x + cw - 10.0f - tw;
+        dl->AddText(ImVec2(tx, y + (rowH - lineH) * 0.5f), sorted ? cGold : hov ? IM_COL32(216, 220, 226, 255) : cDim, ColHead(c));
         if (sorted)
         {
             const float cy = y + rowH * 0.5f;     // a small down triangle before the name
             dl->AddTriangleFilled(ImVec2(tx - 11.0f, cy - 2.0f), ImVec2(tx - 4.0f, cy - 2.0f), ImVec2(tx - 7.5f, cy + 2.5f), cGold);
-            dl->AddLine(ImVec2(x + 4.0f, y + rowH - 1.0f), ImVec2(x + colW - 6.0f, y + rowH - 1.0f), cGold, 1.5f);
+            dl->AddLine(ImVec2(x + 4.0f, y + rowH - 1.0f), ImVec2(x + cw - 6.0f, y + rowH - 1.0f), cGold, 1.5f);
         }
     }
     y += rowH + 2.0f;
@@ -8657,7 +8952,7 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
         std::vector<int> rows;
         for (int pid : d.players)
             if (auto it = d.agents.find(pid); it != d.agents.end() && it->second.team == team) rows.push_back(pid);
-        std::stable_sort(rows.begin(), rows.end(), [&](int a, int b) { return shown(a, s_stats.sort) > shown(b, s_stats.sort); });
+        std::stable_sort(rows.begin(), rows.end(), [&](int a, int b) { return better(a, b, s_stats.sort); });
 
         // Team heading over a team-coloured rule.
         dl->AddLine(ImVec2(o.x, y), ImVec2(o.x + tableW, y), (teamCol & 0x00FFFFFF) | 0xB0000000, 2.0f);
@@ -8666,12 +8961,12 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
         y += rowH;
 
         // The team's standouts per column: first, second and third (nonzero only, ties share).
-        std::unordered_map<int, int> rank[SC_Count];
+        std::unordered_map<int, std::unordered_map<int, int>> rank;
         for (int c : cols)
         {
             std::vector<int> order;
-            for (int pid : rows) if (shown(pid, c) > 0.0) order.push_back(pid);
-            std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return shown(a, c) > shown(b, c); });
+            for (int pid : rows) if (present(pid, c)) order.push_back(pid);
+            std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return better(a, b, c); });
             for (size_t i = 0; i < order.size() && i < 3; ++i)
                 rank[c][order[i]] = i > 0 && shown(order[i], c) == shown(order[i - 1], c) ? rank[c][order[i - 1]] : (int)i + 1;
         }
@@ -8699,8 +8994,7 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
             for (size_t k = 0; k < cols.size(); ++k)
             {
                 const int c = cols[k];
-                const double v = shown(pid, c);
-                const ImVec2 a(o.x + nameColW + colW * k, y + 1.0f), b(a.x + colW - 2.0f, y + rowH - 1.0f);
+                const ImVec2 a(o.x + colX[k], y + 1.0f), b(a.x + colWs[k] - 2.0f, y + rowH - 1.0f);
                 ImGui::SetCursorScreenPos(a);
                 ImGui::PushID(pid * 32 + c);
                 const bool clicked = ImGui::InvisibleButton("##cell", ImVec2(b.x - a.x, b.y - a.y));
@@ -8712,15 +9006,16 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
                 const int place = rit == rank[c].end() ? 0 : rit->second;
                 if (place) dl->AddRectFilled(a, b, hue(c) | ((ImU32)(place == 1 ? 105 : 38) << 24), 2.0f);
                 if (hov) dl->AddRect(a, b, IM_COL32(225, 190, 80, 220), 2.0f);
-                const std::string s = StatText(v, c, s_stats.perMinute);
+                const std::string s = cellText(pid, c);
                 ImFont* f = place == 1 ? bold : ImGui::GetFont();
                 const float tw = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, s.c_str()).x;
                 dl->AddText(f, fs, ImVec2(b.x - 8.0f - tw, y + (rowH - lineH) * 0.5f),
                             s == "-" ? IM_COL32(90, 88, 82, 255) : place == 1 ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 205, 212, 255),
                             s.c_str());
-                if (hov) ImGui::SetTooltip("%s - %s: %s\nClick for the breakdown (Bars, %s).", ag.name.c_str(), kStatCols[c].label,
-                                           s.c_str(), BattleLedger::MetricName(kStatCols[c].ledgerTab));
-                if (clicked)
+                if (hov && ExtraDef(c)) ImGui::SetTooltip("%s - %s: %s\n%s", ag.name.c_str(), ColLabel(c), s.c_str(), ColHelp(c));
+                else if (hov) ImGui::SetTooltip("%s - %s: %s\nClick for the breakdown (Bars, %s).", ag.name.c_str(), kStatCols[c].label,
+                                                s.c_str(), BattleLedger::MetricName(kStatCols[c].ledgerTab));
+                if (clicked && !ExtraDef(c))
                 {
                     s_stats.bars = true;
                     s_stats.view.metric = kStatCols[c].ledgerTab;
@@ -8740,12 +9035,40 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
         for (size_t k = 0; k < cols.size(); ++k)
         {
             const int c = cols[k];
-            double sum = 0.0;
-            for (int pid : rows) sum += shown(pid, c);
-            if (c == SC_Dead && s_stats.perMinute && !rows.empty()) sum /= rows.size();
-            const std::string s = StatText(sum, c, s_stats.perMinute);
+            std::string s;
+            if (const auto* def = ExtraDef(c))
+            {
+                // The team's own cell: counts and times summed (a time per minute: the average
+                // share), a ratio over the summed tries, a median over every case of the team.
+                ExtraCell tc;
+                const auto& cells = extraCells[c];
+                for (int pid : rows)
+                    if (auto it = cells.find(pid); it != cells.end())
+                    { tc.v += it->second.v; tc.num += it->second.num; tc.den += it->second.den; tc.n += it->second.n; }
+                if (def->agg == MatchStats::Agg::Ratio) tc.v = tc.den > 0.0 ? tc.num / tc.den : 0.0;
+                if (def->agg == MatchStats::Agg::Time && s_stats.perMinute && !rows.empty()) tc.v /= rows.size();
+                if (def->agg == MatchStats::Agg::Median)
+                {
+                    std::vector<float> all;
+                    auto it = job.stats.find(def->key);
+                    std::unordered_set<int> mine(rows.begin(), rows.end());
+                    if (it != job.stats.end())
+                        for (const auto& r : it->second)
+                            if (r.t >= r0 && r.t <= r1 && mine.count(r.agent)) all.push_back(r.value);
+                    tc.n = (int)all.size();
+                    tc.v = Median(std::move(all));
+                }
+                s = ExtraText(tc, *def, s_stats.perMinute);
+            }
+            else
+            {
+                double sum = 0.0;
+                for (int pid : rows) sum += shown(pid, c);
+                if (c == SC_Dead && s_stats.perMinute && !rows.empty()) sum /= rows.size();
+                s = StatText(sum, c, s_stats.perMinute);
+            }
             const float tw = bold->CalcTextSizeA(fs, FLT_MAX, 0.0f, s.c_str()).x;
-            dl->AddText(bold, fs, ImVec2(o.x + nameColW + colW * (k + 1) - 10.0f - tw, y + (rowH - lineH) * 0.5f), cGold, s.c_str());
+            dl->AddText(bold, fs, ImVec2(o.x + colX[k] + colWs[k] - 10.0f - tw, y + (rowH - lineH) * 0.5f), cGold, s.c_str());
         }
         y += rowH;
         // What the map did to this team: already inside the players' Taken and Healed, shown apart
@@ -8792,7 +9115,7 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
                 {
                     const int c = cols[k];
                     if (c != SC_Taken && c != SC_Received) continue;
-                    const ImVec2 a(o.x + nameColW + colW * k, y + 1.0f), b(a.x + colW - 2.0f, y + rowH - 1.0f);
+                    const ImVec2 a(o.x + colX[k], y + 1.0f), b(a.x + colWs[k] - 2.0f, y + rowH - 1.0f);
                     const std::string s = StatText(mapV[c], c, s_stats.perMinute);
                     const float tw = ImGui::GetFont()->CalcTextSizeA(smallFs, FLT_MAX, 0.0f, s.c_str()).x;
                     dl->AddText(ImGui::GetFont(), smallFs, ImVec2(b.x - 8.0f - tw, y + (rowH - smallFs) * 0.5f),
@@ -8855,30 +9178,108 @@ static void DrawStatsTab(const MatchMeta& m)
     if (!s_stats.bars)
     {
         // Columns, wrapping onto more lines when the panel is narrow; Total / Per minute at the right.
+        // Placed by hand (each pill is its text + 22 wide): the fixed columns, the favourites (star),
+        // this session's picks, then "+ More stats".
+        LoadFavourites();
         const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
         const float segW = ImGui::CalcTextSize("Total").x + ImGui::CalcTextSize("Per minute").x + 52.0f;
         ImGui::SameLine(0.0f, 18.0f);
         const ImVec2 first = ImGui::GetCursorScreenPos();
-        const float x0 = first.x;
-        float rowY = first.y;
+        const float x0 = first.x, pillH = ImGui::GetTextLineHeight() + 10.0f, limit = right - segW - 12.0f;
+        float px = x0, py = first.y;
+        auto place = [&](float w) {
+            if (px > x0 && px + w > limit) { px = x0; py += pillH + 4.0f; }
+            ImGui::SetCursorScreenPos(ImVec2(px, py));
+            px += w + 4.0f;
+        };
         for (int c = 0; c < SC_Count; ++c)
         {
-            const float w = ImGui::CalcTextSize(kStatCols[c].label).x + 22.0f;
-            if (c > 0)
-            {
-                ImGui::SameLine(0.0f, 4.0f);
-                if (ImGui::GetCursorScreenPos().x + w > right - segW - 12.0f)
-                {
-                    rowY = ImGui::GetItemRectMax().y + 4.0f;
-                    ImGui::SetCursorScreenPos(ImVec2(x0, rowY));
-                }
-            }
+            place(ImGui::CalcTextSize(kStatCols[c].label).x + 22.0f);
             ImGui::PushID(c);
             if (BattleLedger::Pill(kStatCols[c].label, s_stats.on[c])) s_stats.on[c] = !s_stats.on[c];
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kStatCols[c].help);
             ImGui::PopID();
         }
-        const float bottom = ImGui::GetItemRectMax().y;
+        int dropFav = -1, dropExtra = -1;
+        for (int c : ShownExtras())
+        {
+            const bool fav = IsFavourite(c);
+            // A favourite's pill carries a star in front of its label (spaces leave it room).
+            const std::string label = fav ? std::string("    ") + ColLabel(c) : std::string(ColLabel(c));
+            place(ImGui::CalcTextSize(label.c_str()).x + 22.0f);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::PushID(c);
+            const bool clicked = BattleLedger::Pill(label.c_str(), true);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(fav ? "%s\nFavourite: shown every time. Click to unstar it." : "%s\nClick to remove the column.", ColHelp(c));
+            ImGui::PopID();
+            if (fav) DrawStar(ImGui::GetWindowDrawList(), ImVec2(at.x + 17.0f, at.y + pillH * 0.5f), pillH * 0.27f, true, IM_COL32(240, 200, 80, 255));
+            if (clicked) (fav ? dropFav : dropExtra) = c;
+        }
+        if (dropFav >= 0) ToggleFavourite(dropFav);
+        if (dropExtra >= 0) s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), dropExtra));
+        place(ImGui::CalcTextSize("+ More stats").x + 22.0f);
+        if (BattleLedger::Pill("+ More stats", false)) ImGui::OpenPopup("##stats_picker");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add columns: knockdowns, interrupts, reactions, conditions, energy, objectives...\nStar a stat to show it every time.");
+        const float bottom = py + pillH;
+        if (ImGui::BeginPopup("##stats_picker"))
+        {
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(360.0f);
+            ImGui::InputTextWithHint("##search", "Search stats (kd, energy, flag...)", s_stats.search, sizeof s_stats.search);
+            ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "Tick to show now; star to show every time.");
+            ImGui::Separator();
+            ImGui::BeginChild("##picker_list", ImVec2(460.0f, 460.0f), false);
+            const auto& cat = MatchStats::Catalog();
+            int toggleFav = -1;
+            // One stat's line: star, tick box, label, its short column name dimmed.
+            auto row = [&](int c, const MatchStats::StatDef& d, const char* idSuffix) {
+                ImGui::PushID(c);
+                ImGui::PushID(idSuffix);
+                const bool fav = IsFavourite(c);
+                if (StarButton(fav)) toggleFav = c;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip(fav ? "Favourite: shown every time. Click to unstar." : "Star: show this column every time.");
+                ImGui::SameLine(0.0f, 2.0f);
+                bool on = fav || std::find(s_stats.extra.begin(), s_stats.extra.end(), c) != s_stats.extra.end();
+                if (fav) ImGui::BeginDisabled();
+                if (ImGui::Checkbox(d.label, &on))
+                {
+                    if (on) s_stats.extra.push_back(c);
+                    else s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), c));
+                }
+                if (fav) ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", d.help);
+                ImGui::SameLine(0.0f, 8.0f);
+                ImGui::TextColored(ImVec4(0.45f, 0.47f, 0.50f, 1.0f), "%s", d.head);
+                ImGui::PopID();
+                ImGui::PopID();
+            };
+            const bool searching = s_stats.search[0] != '\0';
+            if (!searching && !s_favs.empty())
+            {
+                ImGui::TextColored(ImVec4(0.94f, 0.78f, 0.31f, 1.0f), "Favourites");
+                for (int c : s_favs) if (const auto* d = ExtraDef(c)) row(c, *d, "fav");
+            }
+            std::string group;
+            bool any = false;
+            for (size_t i = 0; i < cat.size(); ++i)
+            {
+                const auto& d = cat[i];
+                if (!MatchesSearch(d, s_stats.search)) continue;
+                any = true;
+                if (group != d.group)
+                {
+                    group = d.group;
+                    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+                    ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.0f), "%s", group.c_str());
+                }
+                row(kExtraBase + (int)i, d, "all");
+            }
+            if (!any) ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "%s", cat.empty() ? "No extra stats yet." : "No stat matches.");
+            if (toggleFav >= 0) ToggleFavourite(toggleFav);
+            ImGui::EndChild();
+            ImGui::EndPopup();
+        }
         ImGui::SetCursorScreenPos(ImVec2(right - segW, first.y));
         if (BattleLedger::Pill("Total", !s_stats.perMinute)) s_stats.perMinute = false;
         ImGui::SameLine(0.0f, 4.0f);

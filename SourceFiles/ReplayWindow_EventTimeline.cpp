@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "TeamColors.h"
 #include "ReplayWindow.h"
+#include "MatchStats.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
@@ -221,7 +222,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 6;
+    static constexpr int kVersion = 7;
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
@@ -541,6 +542,23 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
                    { "guilds", { d.guild[0], d.guild[1] } }, { "tags", { d.tag[0], d.tag[1] } } };
     }
 
+    // The Stats tab's extra columns (MatchStats): per stat key, its records as flat arrays
+    // [ms, agent, value, dur ms, other, skill, flag], times on the displayed clock.
+    nlohmann::json stats = nlohmann::json::object();
+    {
+        auto ms = [&](float t) { return (int)std::lround((t - dispOff) * 1000.f); };
+        MatchStats::Inputs in;
+        FillMatchStatsInputs(in);
+        for (const auto& [key, recs] : MatchStats::Build(in))
+        {
+            nlohmann::json list = nlohmann::json::array();
+            for (const auto& r : recs)
+                list.push_back({ ms(r.t), r.agent, std::round(r.value * 1000.f) / 1000.f, (int)std::lround(r.dur * 1000.f),
+                                 r.other, r.skill, r.flag });
+            stats[key] = std::move(list);
+        }
+    }
+
     nlohmann::json root = {
         { "version",        kVersion },
         { "display_offset", m_displayTimeOffset },
@@ -555,6 +573,7 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         { "landmarks",      std::move(landmarks) },
         { "objects",        std::move(objects) },
         { "ledger",         std::move(ledger) },
+        { "stats",          std::move(stats) },
     };
 
     // Written beside and renamed over, so a reader never sees half a file.
