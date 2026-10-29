@@ -180,10 +180,7 @@ void ReplayWindow::OpenPlayerCombatLog(int agentId, bool damage)
     m_clFilterHeals     = !damage;
     m_clFilterSkills    = false;
     m_clFilterInterrupt = false;
-    m_clFilterCancel    = false;
     m_clFilterDeaths    = false;
-    m_clFilterAttacks   = false;
-    m_clFilterJumbo     = false;
     m_clSelectedRowIdx  = -1;
     m_clAutoScroll      = true;
     m_clScrollToSelected = true;

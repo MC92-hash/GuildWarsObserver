@@ -261,10 +261,10 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashBool(m_clFilterHeals);
     hashBool(m_clFilterSkills);
     hashBool(m_clFilterInterrupt);
-    hashBool(m_clFilterCancel);
     hashBool(m_clFilterDeaths);
-    hashBool(m_clFilterAttacks);
-    hashBool(m_clFilterJumbo);
+    hashBool(m_clShowCancels);
+    hashInt(m_clTeamFilter);
+    hashBool(m_clFollowCamera);
     hashBool(m_clAutoScroll);
     hashBool(m_tlFilterDeath);
     hashBool(m_tlFilterFlag);
@@ -360,10 +360,10 @@ void ReplayWindow::SaveUILayout()
     ps["clFilterHeals"]     = m_clFilterHeals;
     ps["clFilterSkills"]    = m_clFilterSkills;
     ps["clFilterInterrupt"] = m_clFilterInterrupt;
-    ps["clFilterCancel"]    = m_clFilterCancel;
     ps["clFilterDeaths"]    = m_clFilterDeaths;
-    ps["clFilterAttacks"]   = m_clFilterAttacks;
-    ps["clFilterJumbo"]     = m_clFilterJumbo;
+    ps["clShowCancels"]     = m_clShowCancels;
+    ps["clTeamFilter"]      = m_clTeamFilter;
+    ps["clFollowCamera"]    = m_clFollowCamera;
     ps["clAutoScroll"]      = m_clAutoScroll;
 
     // Event Timeline filters
@@ -492,10 +492,10 @@ void ReplayWindow::LoadUILayout()
             bv("clFilterHeals",     m_clFilterHeals);
             bv("clFilterSkills",    m_clFilterSkills);
             bv("clFilterInterrupt", m_clFilterInterrupt);
-            bv("clFilterCancel",    m_clFilterCancel);
             bv("clFilterDeaths",    m_clFilterDeaths);
-            bv("clFilterAttacks",   m_clFilterAttacks);
-            bv("clFilterJumbo",     m_clFilterJumbo);
+            bv("clShowCancels",     m_clShowCancels);
+            iv("clTeamFilter",      m_clTeamFilter);
+            bv("clFollowCamera",    m_clFollowCamera);
             bv("clAutoScroll",      m_clAutoScroll);
 
             // Event Timeline filters
@@ -6280,6 +6280,7 @@ void ReplayWindow::Tick()
     if (m_skillUseTimelineBuilt && m_replayCtx.stocLoaded && !m_combatLogBuilt)
     {
         m_combatLog.clear();
+        m_combatLogViewBuilt = false;
 
         // Recorded max_hp is the effective value the packet fractions are
         // taken against; the solved per-weapon-set value is the fallback for
@@ -10566,6 +10567,7 @@ std::string GetSkillDisplayName(int skillId)
     // NPC / Guild Lord skills missing from the skill database
     static const std::unordered_map<int, const char*> s_overrides = {
         {3205, "Entourage"},
+        {1304, "Spiked Coral"},   // Isle of Jade hazard
     };
     auto ov = s_overrides.find(skillId);
     if (ov != s_overrides.end()) return ov->second;

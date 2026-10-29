@@ -156,6 +156,9 @@ public:
     // Write the match events the Library's analysis tabs read (match_analysis.json), with times
     // on the displayed match clock. False when the file could not be written.
     bool ExportMatchAnalysis(const std::filesystem::path& outPath) const;
+    // The Combat Log panel's entries as text (--export-combat-log), for checking them on the archive.
+    bool CombatLogBuilt() const { return m_combatLogBuilt; }
+    bool ExportCombatLogView(const std::filesystem::path& outPath);
     // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
     // damage/healing over time, bundles), appended to the open JSON object.
     void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
@@ -693,15 +696,52 @@ private:
     // --- Combat Log ---
     bool m_showCombatLog     = false;
     bool m_combatLogBuilt    = false;
-    std::vector<CombatLogRow> m_combatLog;
+    std::vector<CombatLogRow> m_combatLog;   // raw rows: the attribute solver, max HP, Iris and Skill Analytics read them
+
+    // What the panel shows: one entry per thing that happened, built from the cast history (the
+    // cast bars' own outcome), the damage attribution (each number's skill) and the interrupt
+    // causes (who interrupted). m_combatLog is left as it is for its other readers.
+    enum class CombatLogKind : uint8_t { Cast, Damage, Heal, Interrupt, Cancel, Death, Jumbo };
+    struct CombatLogHit
+    {
+        int   targetId = 0;
+        int   amount   = 0;      // Health, 0 when the victim's maximum is unknown
+        float pct      = 0.f;    // fraction of maximum Health, always positive
+        int   bonus    = 0;      // of `amount`, the Divine Favor bonus heal
+    };
+    struct CombatLogEntry
+    {
+        float time      = 0.f;   // when it happened (a cast: when it completed)
+        float start     = 0.f;   // where a click seeks to (a cast: its start)
+        CombatLogKind kind = CombatLogKind::Cast;
+        int   sourceId  = 0;     // caster / attacker / interrupter (0 unknown) / the agent who died
+        int   targetId  = 0;     // 0 or the source himself for an untargeted use; Interrupt: the victim
+        int   skillId   = 0;     // Interrupt: the interrupter's skill
+        bool  fromCast  = false; // Damage / Heal carried by a cast of `skillId`
+        bool  weaponHit = false;
+        std::vector<CombatLogHit> hits;
+        int   cutSkillId = 0;    // Interrupt: the cast cut short, 0 for an attack or unknown action
+        bool  knockdown  = false;// Interrupt: a knockdown stopped it
+        int   repeat     = 1;    // Cancel: the same skill cancelled N times in a row
+        bool  feint      = false;// Cancel: an enemy interrupt was on its way (a fake cast)
+        int   threatId   = 0, threatSkillId = 0;
+        int   jumboTeam  = 0;
+        std::string jumbo;
+    };
+    std::vector<CombatLogEntry> m_combatLogView;
+    bool m_combatLogViewBuilt = false;
+    bool m_combatLogViewUsedAttributes = false;
+    std::unordered_set<int> m_clExpanded;    // group entries opened to their targets
+    void BuildCombatLogView();
+
     bool m_clFilterDamage     = true;
     bool m_clFilterHeals      = true;
     bool m_clFilterSkills     = true;
     bool m_clFilterInterrupt  = true;
-    bool m_clFilterCancel     = true;
-    bool m_clFilterDeaths     = true;
-    bool m_clFilterAttacks    = false;
-    bool m_clFilterJumbo      = true;
+    bool m_clFilterDeaths     = true;    // deaths and objectives
+    bool m_clShowCancels      = false;   // the Cancels pill: every cancel (fake casts also show under Interrupts)
+    int  m_clTeamFilter       = 0;       // 0 both, 1 blue, 2 red
+    bool m_clFollowCamera     = false;   // only entries involving the followed player
     int  m_clFilterPlayerId   = -1;
     bool m_clAutoScroll       = true;
     int  m_clSelectedRowIdx   = -1;
