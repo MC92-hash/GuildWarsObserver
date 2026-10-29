@@ -20,6 +20,8 @@
 #include <thread>
 #include <fstream>
 #include <array>
+#include <map>
+#include <unordered_set>
 #include <json.hpp>
 
 #include "ui/ui_kit.h"
@@ -7170,6 +7172,7 @@ static void DrawDetailTabs()
 {
     for (int t = 0; t < DetailTab_Count; ++t)
     {
+        if (t == DetailTab_Graph) continue;      // not built yet; hidden until it is
         ImGui::SameLine(0, t == 0 ? 24.0f : 6.0f);
         ImGui::PushID(t);
         if (DetailHeaderButton("##detail_tab", kDetailTabNames[t], s_state.detailTab == t))
@@ -8575,7 +8578,7 @@ namespace
     }
 }
 
-static void DrawStatsTable(float r0, float r1)
+static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
 {
     const MatchAnalysisJob& job = s_analysis;
     const BattleLedger::Data& d = job.ledger;
@@ -8601,8 +8604,20 @@ static void DrawStatsTable(float r0, float r1)
     for (int c : cols) colW = std::max(colW, ImGui::CalcTextSize(kStatCols[c].head).x + 26.0f);
     const float tableW = nameColW + colW * cols.size();
 
-    double top[SC_Count] = {};
-    for (int pid : d.players) for (int c : cols) top[c] = std::max(top[c], shown(pid, c));
+    // Each kind of figure in the colours of Bars and the client's digits: damage red, healing
+    // green, prevented gold, interrupts purple; counts neutral.
+    auto hue = [](int c) -> ImU32 {
+        switch (c)
+        {
+        case SC_Dealt: case SC_Taken:       return IM_COL32(226, 80, 63, 0);
+        case SC_Healed: case SC_Received:   return IM_COL32(108, 196, 86, 0);
+        case SC_Prevented:                  return IM_COL32(230, 200, 70, 0);
+        case SC_Ints: case SC_IntsRecv:     return IM_COL32(170, 110, 220, 0);
+        default:                            return IM_COL32(190, 196, 206, 0);
+        }
+    };
+    ImFont* bold = GuiGlobalConstants::boldFont ? GuiGlobalConstants::boldFont : ImGui::GetFont();
+    const float fs = ImGui::GetFontSize();
 
     ImGui::BeginChild("##stats_table", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -8647,12 +8662,30 @@ static void DrawStatsTable(float r0, float r1)
         // Team heading over a team-coloured rule.
         dl->AddLine(ImVec2(o.x, y), ImVec2(o.x + tableW, y), (teamCol & 0x00FFFFFF) | 0xB0000000, 2.0f);
         const std::string guild = !d.guild[side].empty() ? d.guild[side] : Team::IsBlue(team) ? "Blue team" : "Red team";
-        ImFont* bold = GuiGlobalConstants::boldFont;
-        dl->AddText(bold ? bold : ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), teamCol, guild.c_str());
+        dl->AddText(bold, fs, ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), teamCol, guild.c_str());
         y += rowH;
 
+        // The team's standouts per column: first, second and third (nonzero only, ties share).
+        std::unordered_map<int, int> rank[SC_Count];
+        for (int c : cols)
+        {
+            std::vector<int> order;
+            for (int pid : rows) if (shown(pid, c) > 0.0) order.push_back(pid);
+            std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return shown(a, c) > shown(b, c); });
+            for (size_t i = 0; i < order.size() && i < 3; ++i)
+                rank[c][order[i]] = i > 0 && shown(order[i], c) == shown(order[i - 1], c) ? rank[c][order[i - 1]] : (int)i + 1;
+        }
+
+        int stripe = 0;
         for (int pid : rows)
         {
+            // Faint stripes, and the whole row lit under the mouse to follow one player across.
+            const ImVec2 ra(o.x, y), rb(o.x + tableW, y + rowH);
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ra, rb))
+                dl->AddRectFilled(ra, rb, IM_COL32(255, 255, 255, 16), 2.0f);
+            else if (stripe & 1)
+                dl->AddRectFilled(ra, rb, IM_COL32(255, 255, 255, 6), 2.0f);
+            ++stripe;
             const BattleLedger::Agent& ag = d.agents.at(pid);
             float x = o.x + 6.0f;
             if (ImTextureID t = ag.prof ? GetProfessionIcon(ag.prof) : nullptr)
@@ -8673,15 +8706,18 @@ static void DrawStatsTable(float r0, float r1)
                 const bool clicked = ImGui::InvisibleButton("##cell", ImVec2(b.x - a.x, b.y - a.y));
                 const bool hov = ImGui::IsItemHovered();
                 ImGui::PopID();
-                // Gold, stronger for the larger numbers of the column.
-                const float share = top[c] > 0.0 ? (float)(v / top[c]) : 0.0f;
-                const int alpha = v > 0.0 ? 14 + (int)(86.0f * share) : 0;
-                dl->AddRectFilled(a, b, alpha ? IM_COL32(200, 168, 75, alpha) : IM_COL32(255, 255, 255, 6), 2.0f);
+                // Only the team's standouts are filled, in the column's colour: the first strongly
+                // with a bold number, the second and third lightly; the rest are plain numbers.
+                auto rit = rank[c].find(pid);
+                const int place = rit == rank[c].end() ? 0 : rit->second;
+                if (place) dl->AddRectFilled(a, b, hue(c) | ((ImU32)(place == 1 ? 105 : 38) << 24), 2.0f);
                 if (hov) dl->AddRect(a, b, IM_COL32(225, 190, 80, 220), 2.0f);
                 const std::string s = StatText(v, c, s_stats.perMinute);
-                const float tw = ImGui::CalcTextSize(s.c_str()).x;
-                dl->AddText(ImVec2(b.x - 8.0f - tw, y + (rowH - lineH) * 0.5f),
-                            s == "-" ? IM_COL32(111, 106, 94, 255) : IM_COL32(232, 236, 242, 255), s.c_str());
+                ImFont* f = place == 1 ? bold : ImGui::GetFont();
+                const float tw = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, s.c_str()).x;
+                dl->AddText(f, fs, ImVec2(b.x - 8.0f - tw, y + (rowH - lineH) * 0.5f),
+                            s == "-" ? IM_COL32(90, 88, 82, 255) : place == 1 ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 205, 212, 255),
+                            s.c_str());
                 if (hov) ImGui::SetTooltip("%s - %s: %s\nClick for the breakdown (Bars, %s).", ag.name.c_str(), kStatCols[c].label,
                                            s.c_str(), BattleLedger::MetricName(kStatCols[c].ledgerTab));
                 if (clicked)
@@ -8696,8 +8732,11 @@ static void DrawStatsTable(float r0, float r1)
             dl->AddLine(ImVec2(o.x, y + rowH), ImVec2(o.x + tableW, y + rowH), IM_COL32(255, 255, 255, 8));
             y += rowH;
         }
-        // Team total (time dead per minute: the team's average share).
-        dl->AddText(ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), cGold, "Team total");
+        // Team total (time dead per minute: the team's average share), on a faint band of the
+        // team's colour under a rule.
+        dl->AddRectFilled(ImVec2(o.x, y), ImVec2(o.x + tableW, y + rowH), (teamCol & 0x00FFFFFF) | 0x16000000, 2.0f);
+        dl->AddLine(ImVec2(o.x, y), ImVec2(o.x + tableW, y), (teamCol & 0x00FFFFFF) | 0x60000000, 1.0f);
+        dl->AddText(bold, fs, ImVec2(o.x + 6.0f, y + (rowH - lineH) * 0.5f), cGold, "Team total");
         for (size_t k = 0; k < cols.size(); ++k)
         {
             const int c = cols[k];
@@ -8705,10 +8744,76 @@ static void DrawStatsTable(float r0, float r1)
             for (int pid : rows) sum += shown(pid, c);
             if (c == SC_Dead && s_stats.perMinute && !rows.empty()) sum /= rows.size();
             const std::string s = StatText(sum, c, s_stats.perMinute);
-            const float tw = ImGui::CalcTextSize(s.c_str()).x;
-            dl->AddText(ImVec2(o.x + nameColW + colW * (k + 1) - 10.0f - tw, y + (rowH - lineH) * 0.5f), cGold, s.c_str());
+            const float tw = bold->CalcTextSizeA(fs, FLT_MAX, 0.0f, s.c_str()).x;
+            dl->AddText(bold, fs, ImVec2(o.x + nameColW + colW * (k + 1) - 10.0f - tw, y + (rowH - lineH) * 0.5f), cGold, s.c_str());
         }
-        y += rowH + 10.0f;
+        y += rowH;
+        // What the map did to this team: already inside the players' Taken and Healed, shown apart
+        // on two rows, the map's own effects (catapults, coral, acid, Miasma, the healing water)
+        // and the flux (Minion Apocalypse).
+        for (int group = 0; group < 2; ++group)
+        {
+            const bool fluxRow = group == 1;
+            double mapV[SC_Count] = {};
+            std::map<int, long long> byEffect[2];         // 0 damage taken, 1 healing received
+            std::unordered_set<int> mine(rows.begin(), rows.end());
+            for (const auto& ln : d.lines)
+            {
+                if (ln.t < r0) continue;
+                if (ln.t > r1) break;
+                if (!BattleLedger::IsMapRow(ln.rowKey) || !mine.count(ln.dst)) continue;
+                if ((ln.rowKey == BattleLedger::kRowFlux) != fluxRow) continue;
+                const int m = BattleLedger::LineMetricTaker(ln.kind);
+                if (m == BattleLedger::kTaken)         { mapV[SC_Taken] += ln.amount;    byEffect[0][ln.rowKey] += ln.amount; }
+                else if (m == BattleLedger::kReceived) { mapV[SC_Received] += ln.amount; byEffect[1][ln.rowKey] += ln.amount; }
+            }
+            const bool showTaken = s_stats.on[SC_Taken] && mapV[SC_Taken] > 0.0;
+            const bool showHealed = s_stats.on[SC_Received] && mapV[SC_Received] > 0.0;
+            if (showTaken || showHealed)
+            {
+                if (s_stats.perMinute) { mapV[SC_Taken] /= minutes; mapV[SC_Received] /= minutes; }
+                // One icon per effect that struck (or healed) the team, then the label.
+                LibraryLedgerHost host(GetMatchSkillView(m));
+                std::set<int> keys;
+                for (const auto& list : byEffect) for (const auto& [key, amount] : list) keys.insert(key);
+                float ix = o.x + 6.0f;
+                for (int key : keys)
+                {
+                    const ImVec2 a(ix, y + (rowH - iconS) * 0.5f), b(ix + iconS, y + (rowH + iconS) * 0.5f);
+                    if (ImTextureID ic = BattleLedger::MapRowIcon(host, key))
+                        dl->AddImageRounded(ic, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 2.0f);
+                    if (ImGui::IsMouseHoveringRect(a, b)) ImGui::SetTooltip("%s", BattleLedger::MapRowName(key));
+                    ix += iconS + 2.0f;
+                }
+                const float smallFs = fs * 0.9f;
+                dl->AddText(ImGui::GetFont(), smallFs, ImVec2(ix + 6.0f, y + (rowH - smallFs) * 0.5f), IM_COL32(140, 146, 154, 255),
+                            fluxRow ? "Flux" : "Map effects");
+                for (size_t k = 0; k < cols.size(); ++k)
+                {
+                    const int c = cols[k];
+                    if (c != SC_Taken && c != SC_Received) continue;
+                    const ImVec2 a(o.x + nameColW + colW * k, y + 1.0f), b(a.x + colW - 2.0f, y + rowH - 1.0f);
+                    const std::string s = StatText(mapV[c], c, s_stats.perMinute);
+                    const float tw = ImGui::GetFont()->CalcTextSizeA(smallFs, FLT_MAX, 0.0f, s.c_str()).x;
+                    dl->AddText(ImGui::GetFont(), smallFs, ImVec2(b.x - 8.0f - tw, y + (rowH - smallFs) * 0.5f),
+                                s == "-" ? IM_COL32(90, 88, 82, 255) : IM_COL32(140, 146, 154, 255), s.c_str());
+                    const auto& list = byEffect[c == SC_Taken ? 0 : 1];
+                    if (!list.empty() && ImGui::IsMouseHoveringRect(a, b))
+                    {
+                        ImGui::BeginTooltip();
+                        ImGui::TextUnformatted(fluxRow ? "Damage taken from the flux"
+                                             : c == SC_Taken ? "Damage taken from the map" : "Healing received from the map");
+                        for (const auto& [key, amount] : list)
+                            ImGui::Text("%s  %s", BattleLedger::MapRowName(key),
+                                        StatText(s_stats.perMinute ? amount / minutes : (double)amount, c, s_stats.perMinute).c_str());
+                        ImGui::EndTooltip();
+                    }
+                }
+                dl->AddLine(ImVec2(o.x, y + rowH), ImVec2(o.x + tableW, y + rowH), IM_COL32(255, 255, 255, 8));
+                y += rowH;
+            }
+        }
+        y += 10.0f;
     }
     ImGui::SetCursorScreenPos(ImVec2(o.x, y));
     ImGui::Dummy(ImVec2(tableW, 0.0f));
@@ -8780,7 +8885,7 @@ static void DrawStatsTab(const MatchMeta& m)
         if (BattleLedger::Pill("Per minute", s_stats.perMinute)) s_stats.perMinute = true;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Divided by the interval's length.");
         ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, bottom + 8.0f));
-        DrawStatsTable(r0, r1);
+        DrawStatsTable(m, r0, r1);
         return;
     }
 

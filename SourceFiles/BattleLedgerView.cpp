@@ -335,6 +335,36 @@ namespace
     }
 }
 
+const char* MapRowName(int key)
+{
+    switch (key)
+    {
+    case kRowCatapult: return "Catapult";
+    case kRowCoral:    return "Spiked Coral";
+    case kRowAcid:     return "Acid Trap";
+    case kRowFlux:     return "Minion Apocalypse";
+    case kRowMiasma:   return "Miasma";
+    case kRowWater:    return "Healing water";
+    default:           return "Map";
+    }
+}
+
+ImTextureID MapRowIcon(Host& host, int key)
+{
+    switch (key)
+    {
+    case kRowCatapult: return host.UiIcon(CatapultDangerZone::kHitIconFile);
+    // The two hazards are no player skill: their pictures sit beside the NPC icons, as the
+    // overhead numbers find them (ReplayWindow_AgentOverlay.cpp).
+    case kRowCoral:    return host.UiIcon("../NPC/Spiked_Coral.jpg");
+    case kRowAcid:     return host.UiIcon("../NPC/Acid_Trap.jpg");
+    case kRowFlux:     return host.UiIcon("../Skill_Icons/PvP_Flair.png");   // the flux icon, as the Library shows it
+    case kRowMiasma:   return host.SkillIcon(DamageAttribution::kMiasma);
+    case kRowWater:    return host.SkillIcon(290);   // Mending, as the effect bar shows it
+    default:           return nullptr;
+    }
+}
+
 bool Pill(const char* label, bool active) { return IconTab(label, nullptr, active); }
 
 const char* MetricName(int metric) { return metric >= 0 && metric < kMetricCount ? kMetricName[metric] : ""; }
@@ -639,30 +669,8 @@ void DrawBody(const Data& d, Host& host, ViewState& st, float r0, float r1, cons
     auto GlyphFont = [&](int m) { return host.Digits(m); };
 
     // Map effects (IsMapRow): their names and icons.
-    auto MapName = [](int key) -> const char* {
-        switch (key)
-        {
-        case kRowCatapult: return "Catapult";
-        case kRowCoral:    return "Spiked Coral";
-        case kRowAcid:     return "Acid Trap";
-        case kRowFlux:     return "Minion Apocalypse";
-        case kRowMiasma:   return "Miasma";
-        case kRowWater:    return "Healing water";
-        default:                 return "Map";
-        }
-    };
-    auto MapIcon = [&](int key) -> ImTextureID {
-        switch (key)
-        {
-        case kRowCatapult: return host.UiIcon(CatapultDangerZone::kHitIconFile);
-        case kRowCoral:    return host.SkillIcon(DamageAttribution::kSpikedCoral);
-        case kRowAcid:     return host.SkillIcon(DamageAttribution::kAcidTrap);
-        case kRowFlux:     return host.SkillIcon(DamageAttribution::kMinionApocalypse);
-        case kRowMiasma:   return host.SkillIcon(DamageAttribution::kMiasma);
-        case kRowWater:    return host.SkillIcon(290);   // Mending, as the effect bar shows it
-        default:                 return nullptr;
-        }
-    };
+    auto MapName = [](int key) { return MapRowName(key); };
+    auto MapIcon = [&](int key) { return MapRowIcon(host, key); };
 
     if (!st.matrix)
     {
@@ -1038,16 +1046,27 @@ void DrawBody(const Data& d, Host& host, ViewState& st, float r0, float r1, cons
                     else if (IsMapRow(r->key)) nm = MapName(r->key);
                     else if (IsDegenRow(r->key))
                     {
-                        // "Poison from Apply Poison", or the condition alone when its cause is unknown.
+                        // "Poison from" and the cause's icon (its name on hover), or the condition alone
+                        // when its cause is unknown.
                         const int cond = DegenCondition(r->key), cause = DegenCause(r->key);
                         nm = ConditionName(cond);
-                        if (cause > 0) nm += " from " + host.SkillName(cause);
+                        if (cause > 0) nm += " from";
                     }
                     else nm = r->key == -1 ? "Weapon hits" : r->key == -2 ? "Divine Favor bonus" : r->key == kRowMinions ? "Minions"
                             : r->key == kRowDegenUnknown ? "Degeneration (source unknown)" : "No skill named";
                     int icon = r->icon;
                     if (IsDegenRow(r->key) && host.SkillIcon(DegenCondition(r->key)) != nullptr) icon = DegenCondition(r->key);
                     SkillCell(p, r->key, nm, icon);
+                    if (IsDegenRow(r->key) && DegenCause(r->key) > 0)
+                    {
+                        const int cause = DegenCause(r->key);
+                        const ImVec2 a(p.x + 46.f + ImGui::CalcTextSize(nm.c_str()).x + 6.f, p.y + 4.f), b(a.x + 18.f, a.y + 18.f);
+                        if (ImTextureID ci = host.SkillIcon(cause))
+                            dl->AddImageRounded(ci, a, b, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 2.f);
+                        else
+                            dl->AddText(ImVec2(a.x, p.y + 5.f), kNameText, host.SkillName(cause).c_str());
+                        if (ImGui::IsMouseHoveringRect(a, b)) ImGui::SetTooltip("%s", host.SkillName(cause).c_str());
+                    }
                     if (r->capped || r->blocked)
                     {
                         // An estimate: what the capped hits and stopped attacks would have dealt.

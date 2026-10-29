@@ -50,6 +50,9 @@ namespace BattleLedger
     constexpr int kRowMiasma   = -10;
     constexpr int kRowWater    = -11;
     constexpr bool IsMapRow(int key) { return key <= -6 && key >= -11; }
+    const char* MapRowName(int key);
+    class Host;
+    ImTextureID MapRowIcon(Host& host, int key);
     // A condition's degeneration from one cause: -(1,000,000 + condition x 10,000 + cause skill).
     constexpr int DegenRow(int condition, int cause) { return -(1000000 + condition * 10000 + cause); }
     constexpr bool IsDegenRow(int key) { return key <= -1000000; }
