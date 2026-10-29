@@ -1338,22 +1338,78 @@ float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, flo
         dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, 0xB0), num);
         dl->AddText(font, fs, tp, IM_COL32(255, 238, 187, 255), num);
 
-        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
-            ImGui::BeginTooltip();
-            if (morale > 0) {
-                ImGui::TextUnformatted("Morale Boost");
-                ImGui::Text("Maximum Health and Energy +%d%%.", morale);
-            } else {
-                ImGui::TextUnformatted("Death Penalty");
-                ImGui::Text("Maximum Health and Energy %d%%.", morale);
-            }
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "%d death%s, %d team morale boost%s (calculated)",
-                               deaths, deaths == 1 ? "" : "s", boosts, boosts == 1 ? "" : "s");
-            ImGui::EndTooltip();
-        }
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br))
+            DrawMoraleTooltip(morale, deaths, boosts);
         x += side;
     }
     return x - rowTopLeft.x;
+}
+
+
+void ReplayWindow::DrawMoraleTooltip(int morale, int deaths, int boosts)
+{
+    ImGui::BeginTooltip();
+    if (morale > 0) {
+        ImGui::TextUnformatted("Morale Boost");
+        ImGui::Text("Maximum Health and Energy +%d%%.", morale);
+    } else {
+        ImGui::TextUnformatted("Death Penalty");
+        ImGui::Text("Maximum Health and Energy %d%%.", morale);
+    }
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.f), "%d death%s, %d team morale boost%s (calculated)",
+                       deaths, deaths == 1 ? "" : "s", boosts, boosts == 1 ? "" : "s");
+    ImGui::EndTooltip();
+}
+
+
+void ReplayWindow::DrawEffectIconTooltip(const EffectTimeline::Effect& e, int agentId, bool removed)
+{
+    const SkillInfo* si = m_skillView.Get(e.skillId);
+    const float t = m_debugTimeline;
+    if (si && !e.label) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr, e.start);
+    ImGui::BeginTooltip();
+    if (e.label) {
+        ImGui::TextUnformatted(e.label);
+    } else if (!si) {
+        const char* cond = ConditionName(e.skillId);
+        ImGui::TextUnformatted(cond ? cond : "Effect");
+    }
+    auto nameOf = [&](int id) -> std::string {
+        auto a = m_replayCtx.agents.find(id);
+        return a == m_replayCtx.agents.end() || a->second.playerName.empty() ? std::string("?") : a->second.playerName;
+    };
+    if (e.causeSkill)
+        ImGui::Text("From %s, %s", GetSkillDisplayName(e.causeSkill).c_str(), nameOf(e.caster).c_str());
+    else if (e.caster && e.caster != agentId)
+    {
+        // "Cast by [primary][secondary] Name", the name in the caster's team colour.
+        ImGui::TextUnformatted("Cast by");
+        auto a = m_replayCtx.agents.find(e.caster);
+        const float sz = ImGui::GetTextLineHeight();
+        if (a != m_replayCtx.agents.end())
+        {
+            for (int prof : { a->second.primaryProf, a->second.secondaryProf })
+                if (ImTextureID ico = LoadProfIcon(m_deviceResources->GetD3DDevice(), prof))
+                {
+                    ImGui::SameLine(0.f, 4.f);
+                    ImGui::Image(ico, ImVec2(sz, sz));
+                }
+            ImGui::SameLine(0.f, 4.f);
+            ImGui::PushStyleColor(ImGuiCol_Text, GetAgentTeamColor(a->second.teamId));
+            ImGui::TextUnformatted(nameOf(e.caster).c_str());
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            ImGui::SameLine();
+            ImGui::TextUnformatted("?");
+        }
+    }
+    if (removed)
+        ImGui::Text("Removed by %s, %s", GetSkillDisplayName(e.removedBy).c_str(), nameOf(e.removedByCaster).c_str());
+    else if (e.hasDuration)
+        ImGui::Text("%.1f s left%s", std::max(0.f, e.end - t), e.endExact ? "" : " (estimated)");
+    ImGui::EndTooltip();
 }
 
 
@@ -1477,54 +1533,131 @@ int ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float si
             drawBar(t, opacity);
         }
 
-        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br)) {
-            if (si && !e.label) DrawGameSkillTooltip(e.skillId, e.caster ? e.caster : agentId, nullptr, e.start);
-            ImGui::BeginTooltip();
-            if (e.label) {
-                ImGui::TextUnformatted(e.label);
-            } else if (!si) {
-                const char* cond = ConditionName(e.skillId);
-                ImGui::TextUnformatted(cond ? cond : "Effect");
-            }
-            auto nameOf = [&](int id) -> std::string {
-                auto a = m_replayCtx.agents.find(id);
-                return a == m_replayCtx.agents.end() || a->second.playerName.empty() ? std::string("?") : a->second.playerName;
-            };
-            if (e.causeSkill)
-                ImGui::Text("From %s, %s", GetSkillDisplayName(e.causeSkill).c_str(), nameOf(e.caster).c_str());
-            else if (e.caster && e.caster != agentId)
-            {
-                // "Cast by [primary][secondary] Name", the name in the caster's team colour.
-                ImGui::TextUnformatted("Cast by");
-                auto a = m_replayCtx.agents.find(e.caster);
-                const float sz = ImGui::GetTextLineHeight();
-                if (a != m_replayCtx.agents.end())
-                {
-                    for (int prof : { a->second.primaryProf, a->second.secondaryProf })
-                        if (ImTextureID ico = LoadProfIcon(m_deviceResources->GetD3DDevice(), prof))
-                        {
-                            ImGui::SameLine(0.f, 4.f);
-                            ImGui::Image(ico, ImVec2(sz, sz));
-                        }
-                    ImGui::SameLine(0.f, 4.f);
-                    ImGui::PushStyleColor(ImGuiCol_Text, GetAgentTeamColor(a->second.teamId));
-                    ImGui::TextUnformatted(nameOf(e.caster).c_str());
-                    ImGui::PopStyleColor();
-                }
-                else
-                {
-                    ImGui::SameLine();
-                    ImGui::TextUnformatted("?");
-                }
-            }
-            if (icons[i].removed)
-                ImGui::Text("Removed by %s, %s", GetSkillDisplayName(e.removedBy).c_str(), nameOf(e.removedByCaster).c_str());
-            else if (e.hasDuration)
-                ImGui::Text("%.1f s left%s", std::max(0.f, e.end - t), e.endExact ? "" : " (estimated)");
-            ImGui::EndTooltip();
-        }
+        if (windowHovered && ImGui::IsMouseHoveringRect(tl, br))
+            DrawEffectIconTooltip(e, agentId, icons[i].removed);
     }
     return (fixedCount + static_cast<int>(icons.size()) + perRow - 1) / perRow;
+}
+
+
+// ---------------------------------------------------------------------------
+// Morale + effects beside a party window row - Iris's strip beside GW's own party window
+// (Gwtoolbox-Iris plugins/Iris/Iris.cpp DrawEffectStrips), same size, order and rules: outside the
+// window, one strip per player row; terrain, then morale (its arrow and "+10%"), then the effects
+// in the effect bar's order (EffectSortKey); one icon per skill, timed by its longest instance, a
+// longer refresh moving to the end of its group; 0.95 of the row high (12..26 px), 1 px apart; no
+// frames or kind colours (owner, 2026-10-22), a white duration bar, a thin black outline; "+N"
+// past 8 effects. Timing as the HUD's: the bar and the blink run against the time it was given.
+// ---------------------------------------------------------------------------
+void ReplayWindow::DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft, float rowY, float rowH, float clipY0, float clipY1)
+{
+    auto agentIt = m_replayCtx.agents.find(agentId);
+    if (agentIt == m_replayCtx.agents.end() || clipY1 <= clipY0) return;
+    const AgentReplayData& ard = agentIt->second;
+    const float t = m_debugTimeline;
+    const float side = PartyEffectIconSize(rowH);
+    constexpr float kGap = 1.f;   // GW's icons nearly touch
+
+    struct Icon
+    {
+        const EffectTimeline::Effect* e;   // null = morale
+        float placed;
+        int   key;
+    };
+    std::vector<Icon> icons;
+    int deaths = 0, boosts = 0;
+    const int morale = ComputeAgentMorale(ard, t, &deaths, &boosts);
+    if (morale != 0) icons.push_back({ nullptr, 0.f, 1 });
+    if (const EffectTimeline::Table* table = EffectTimelineTable())
+        if (const auto all = table->byAgent.find(agentId); all != table->byAgent.end())
+            for (const EffectTimeline::Effect& e : all->second) {
+                if (e.start > t) break;
+                if (t >= e.end) continue;
+                auto it = std::find_if(icons.begin(), icons.end(), [&](const Icon& i) { return i.e && i.e->skillId == e.skillId; });
+                if (it == icons.end()) icons.push_back({ &e, e.start, EffectSortKey(e.kind) });
+                else if (e.end > it->e->end) { it->e = &e; it->placed = e.start; }
+            }
+    if (icons.empty()) return;
+    std::stable_sort(icons.begin(), icons.end(), [](const Icon& a, const Icon& b) {
+        return a.key != b.key ? a.key < b.key : a.placed < b.placed;
+    });
+    const size_t cap = kPartyEffectsMax + (morale != 0 ? 1u : 0u);
+    const size_t hidden = icons.size() > cap ? icons.size() - cap : 0;
+    icons.resize(icons.size() - hidden);
+
+    // Under every window, as Iris draws under GW's: whatever covers the strip hides it.
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+    ImFont* font = ImGui::GetFont();
+    const bool canHover = !ImGui::GetIO().WantCaptureMouse;
+    const ImVec2 iconUV0(0.0625f, 0.0625f), iconUV1(0.9375f, 0.9375f);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+
+    auto outlined = [&](float fs, ImVec2 p, ImU32 col, const char* s) {
+        for (const ImVec2 d : { ImVec2(-1, 0), ImVec2(1, 0), ImVec2(0, -1), ImVec2(0, 1) })
+            dl->AddText(font, fs, ImVec2(p.x + d.x, p.y + d.y), IM_COL32(0, 0, 0, 255), s);
+        dl->AddText(font, fs, p, col, s);
+    };
+    float x = anchorX;
+    auto place = [&](float width) {
+        const float at = toLeft ? x - width : x;
+        x = toLeft ? at - kGap : at + width + kGap;
+        return std::round(at);
+    };
+    const float y = std::round(rowY + (rowH - side) * 0.5f);
+    auto hovered = [&](ImVec2 tl, ImVec2 br) {
+        return canHover && ImGui::IsMouseHoveringRect(ImVec2(tl.x, std::max(tl.y, clipY0)),
+                                                      ImVec2(br.x, std::min(br.y, clipY1)), false);
+    };
+
+    dl->PushClipRect(ImVec2(vp->Pos.x, clipY0), ImVec2(vp->Pos.x + vp->Size.x, clipY1), true);
+    for (const Icon& icon : icons) {
+        const ImVec2 tl(place(side), y), br(tl.x + side, tl.y + side);
+        if (!icon.e) {
+            // GW's morale icon, its text centred at the bottom in Friz-gold 0xFFEEBB.
+            if (ImTextureID tex = LoadGameUITexture(dev, morale > 0 ? "Effectbar\\ui_effect_morale_boost.png"
+                                                                    : "Effectbar\\ui_effect_morale_penalty.png"))
+                dl->AddImage(tex, tl, br);
+            char num[16];
+            snprintf(num, sizeof(num), "%+d%%", morale);
+            const float fs = std::clamp(side * 0.5f, 9.f, 14.f);
+            const ImVec2 ext = font->CalcTextSizeA(fs, FLT_MAX, 0.f, num);
+            outlined(fs, ImVec2(std::round(tl.x + (side - ext.x) * 0.5f), std::round(br.y - ext.y)),
+                     IM_COL32(0xFF, 0xEE, 0xBB, 255), num);
+            if (hovered(tl, br)) DrawMoraleTooltip(morale, deaths, boosts);
+            continue;
+        }
+        const EffectTimeline::Effect& e = *icon.e;
+        const float given = e.expectedEnd > e.end ? e.expectedEnd : e.end;
+        const bool blinks = e.hasDuration && (e.natural || given > e.end + 0.01f);
+        const float opacity = blinks ? EffectBlinkOpacity(t - e.start, given - e.start) : 1.f;
+        const int a = static_cast<int>(255.f * opacity);
+        if (ImTextureID tex = LoadSkillIcon(this, dev, e.skillId, m_skillIconIndex, m_skillIconCache))
+            dl->AddImage(tex, tl, br, iconUV0, iconUV1, IM_COL32(255, 255, 255, a));
+        else
+            dl->AddRectFilled(tl, br, IM_COL32(40, 40, 40, static_cast<int>(220.f * opacity)));
+        if (e.hasDuration && given > e.start) {
+            // GW's duration bar: 3 px black, 85% of the icon wide, 2 px above its bottom, a 1 px line.
+            const float w  = std::round(side * 0.85f);
+            const float x0 = tl.x + std::round((side - w) * 0.5f);
+            const float y0 = br.y - 2.f - 3.f;
+            const float frac = std::clamp((given - t) / (given - e.start), 0.f, 1.f);
+            dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + w, y0 + 3.f), IM_COL32(0, 0, 0, a));
+            dl->AddRectFilled(ImVec2(x0 + 1.f, y0 + 1.f), ImVec2(x0 + 1.f + std::round((w - 2.f) * frac), y0 + 2.f),
+                              IM_COL32(255, 255, 255, a));
+        }
+        dl->AddRect(tl, br, IM_COL32(0, 0, 0, 200));
+        if (hovered(tl, br)) DrawEffectIconTooltip(e, agentId, false);
+    }
+    if (hidden) {
+        char more[16];
+        snprintf(more, sizeof(more), "+%zu", hidden);
+        const float fs = std::clamp(side * 0.7f, 10.f, 16.f);
+        const ImVec2 ext = font->CalcTextSizeA(fs, FLT_MAX, 0.f, more);
+        outlined(fs, ImVec2(place(ext.x), std::round(y + (side - ext.y) * 0.5f)), IM_COL32(230, 230, 230, 255), more);
+    }
+    dl->PopClipRect();
 }
 
 

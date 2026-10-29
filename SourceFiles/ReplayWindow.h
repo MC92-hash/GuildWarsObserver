@@ -1068,6 +1068,7 @@ private:
     bool m_showDamageMeter = false;
     bool m_showHealMeter   = false;
     bool m_showPartyEnergy = true;    // calculated energy strips under the players' health bars
+    bool m_showPartyEffects = false;  // morale + effects beside each player row, as in Iris
     bool m_showAbsoluteHp  = true;
 
     struct MeterEntry { int value = 0; };
@@ -2415,6 +2416,16 @@ private:
     int  DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side, float rowWidth);
     int  m_focusHudEffectRows = 1;   // last frame's effect rows: the skill bar window's height
     float DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side);   // returns the width used
+    // The tooltips of an effect icon and of the morale icon, shared by the HUD and the party strip.
+    void DrawEffectIconTooltip(const EffectTimeline::Effect& e, int agentId, bool removed);
+    void DrawMoraleTooltip(int morale, int deaths, int boosts);
+    // Morale + effects beside a party window row, as Iris draws them beside GW's party window: the
+    // icons start at anchorX and run away from the window (leftwards when toLeft), centred on the
+    // row; clipY0..clipY1 is the window's visible band. Icon size and the widest strip below.
+    static float PartyEffectIconSize(float rowH) { return std::round(std::clamp(rowH * 0.95f, 12.f, 26.f)); }
+    static constexpr int kPartyEffectsMax = 8;   // "+N" past this many effects
+    static float PartyEffectStripWidest(float rowH) { return (kPartyEffectsMax + 3) * (PartyEffectIconSize(rowH) + 1.f) + 6.f; }
+    void DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft, float rowY, float rowH, float clipY0, float clipY1);
     // `usedAt`: the instant whose rank the green numbers read (a signet can scale on another
     // attribute for a while); negative = the replay's current time.
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd, float usedAt = -1.f);

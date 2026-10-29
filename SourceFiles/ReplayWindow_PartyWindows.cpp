@@ -275,13 +275,17 @@ void ReplayWindow::DrawPartyWindows()
     };
 
     bool bothMeters = m_showDamageMeter && m_showHealMeter;
+
+    // Where a panel's morale + effects strip starts and which way it runs (DrawPartyEffectStrip).
+    struct EffectStrip { float anchorX; bool toLeft; float clipY0, clipY1; };
     constexpr ImU32 kDmgBarCol  = IM_COL32(0xD0, 0x8C, 0x20, 0x80);
     constexpr ImU32 kHealBarCol = IM_COL32(0x40, 0xA8, 0x40, 0x80);
 
     auto DrawBars = [&](ImDrawList* dl, float availW,
                         const std::vector<int>& ids, float barH,
                         bool filterSpirits, bool leftSide, float maxBarW,
-                        int teamTotalDmg, int teamTotalHeal, bool withEnergy = false)
+                        int teamTotalDmg, int teamTotalHeal, bool withEnergy = false,
+                        const EffectStrip* strip = nullptr)
     {
         int n = static_cast<int>(ids.size());
         for (int i = 0; i < n; ++i)
@@ -382,6 +386,9 @@ void ReplayWindow::DrawPartyWindows()
                 const float ey = cursor.y + barH + kEnergyGap;
                 DrawPartyEnergyBar(dl, ard, ImVec2(cursor.x, ey), ImVec2(cursor.x + availW, ey + kEnergyH));
             }
+
+            if (strip)
+                DrawPartyEffectStrip(agentId, strip->anchorX, strip->toLeft, cursor.y, barH, strip->clipY0, strip->clipY1);
 
             // The "..." menu button over the bar's right end. Always submitted, so Tab reaches it;
             // painted only while the row, the button or the menu for this player has attention.
@@ -646,6 +653,7 @@ void ReplayWindow::DrawPartyWindows()
                 float energyX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
                 float heartX = energyX - iconPad - iconSz;
                 float swordX = heartX - iconPad - iconSz;
+                float effectsX = swordX - iconPad - iconSz;
 
                 dl->PushClipRect(wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y), false);
 
@@ -653,9 +661,9 @@ void ReplayWindow::DrawPartyWindows()
                 ImGuiContext* ctx = ImGui::GetCurrentContext();
                 bool windowHovered = (ctx && ctx->HoveredWindow == ImGui::GetCurrentWindow());
 
-                auto DrawToggleIcon = [&](ImTextureID tex, float ix, bool& toggleRef, const char* tooltip)
+                // `paint(tl, br, tint)` draws the icon multiplied by `tint`.
+                auto DrawToggle = [&](auto&& paint, float ix, bool& toggleRef, const char* tooltip)
                 {
-                    if (!tex) return;
                     ImVec2 tl(ix, iconY);
                     ImVec2 br(ix + iconSz, iconY + iconSz);
 
@@ -665,15 +673,14 @@ void ReplayWindow::DrawPartyWindows()
 
                     if (toggleRef)
                     {
-                        dl->AddImage(tex, tl, br, ImVec2(0,0), ImVec2(1,1),
-                                     IM_COL32(0xFF, 0xD7, 0x00, 0xFF));
+                        paint(tl, br, IM_COL32(0xFF, 0xD7, 0x00, 0xFF));
                         float uy = br.y + 1.f;
                         dl->AddLine(ImVec2(tl.x, uy), ImVec2(br.x, uy),
                                     IM_COL32(0xCB, 0xAA, 0x09, 0xFF), 2.f);
                     }
                     else
                     {
-                        dl->AddImage(tex, tl, br);
+                        paint(tl, br, IM_COL32_WHITE);
                     }
 
                     if (hovered)
@@ -681,8 +688,7 @@ void ReplayWindow::DrawPartyWindows()
                         float expand = iconSz * 0.10f;
                         ImVec2 htl(tl.x - expand, tl.y - expand);
                         ImVec2 hbr(br.x + expand, br.y + expand);
-                        dl->AddImage(tex, htl, hbr, ImVec2(0,0), ImVec2(1,1),
-                                     IM_COL32(0xFF, 0xE0, 0x80, 0xB0));
+                        paint(htl, hbr, IM_COL32(0xFF, 0xE0, 0x80, 0xB0));
 
                         g_CurrentCursor = CursorMode::Clickable;
                         ImGui::SetTooltip("%s", tooltip);
@@ -695,18 +701,66 @@ void ReplayWindow::DrawPartyWindows()
                         }
                     }
                 };
+                auto DrawToggleIcon = [&](ImTextureID tex, float ix, bool& toggleRef, const char* tooltip)
+                {
+                    if (!tex) return;
+                    DrawToggle([&](ImVec2 a, ImVec2 b, ImU32 tint) {
+                        dl->AddImage(tex, a, b, ImVec2(0, 0), ImVec2(1, 1), tint);
+                    }, ix, toggleRef, tooltip);
+                };
+                // The effects toggle: gold sparkles, a big four-point star and two small ones, each
+                // star two thin diamonds crossed.
+                auto PaintSparkles = [&](ImVec2 a, ImVec2 b, ImU32 tint) {
+                    auto mul = [&](int r, int g, int bl) {
+                        return IM_COL32(r * ((tint >> IM_COL32_R_SHIFT) & 0xFF) / 255,
+                                        g * ((tint >> IM_COL32_G_SHIFT) & 0xFF) / 255,
+                                        bl * ((tint >> IM_COL32_B_SHIFT) & 0xFF) / 255,
+                                        (tint >> IM_COL32_A_SHIFT) & 0xFF);
+                    };
+                    const float sz = b.x - a.x;
+                    auto star = [&](float fx, float fy, float fr, ImU32 col) {
+                        const ImVec2 c(a.x + fx * sz, a.y + fy * sz);
+                        const float r = fr * sz, w = r * 0.25f;
+                        const ImVec2 v[4] = { {c.x, c.y - r}, {c.x + w, c.y}, {c.x, c.y + r}, {c.x - w, c.y} };
+                        const ImVec2 h[4] = { {c.x - r, c.y}, {c.x, c.y - w}, {c.x + r, c.y}, {c.x, c.y + w} };
+                        dl->AddConvexPolyFilled(v, 4, col);
+                        dl->AddConvexPolyFilled(h, 4, col);
+                    };
+                    star(0.40f, 0.55f, 0.42f, mul(0xFF, 0xCD, 0x3C));
+                    star(0.80f, 0.22f, 0.20f, mul(0xFF, 0xEB, 0x96));
+                    star(0.80f, 0.82f, 0.13f, mul(0xFF, 0xEB, 0x96));
+                };
 
                 DrawToggleIcon(swordTex, swordX, m_showDamageMeter, "Toggle Damage Meter");
                 DrawToggleIcon(heartTex, heartX, m_showHealMeter, "Toggle Heal Meter");
                 DrawToggleIcon(LoadSkillDescIcon(dev, "energy.png"), energyX,
                                m_showPartyEnergy, "Toggle Energy Bars");
+                DrawToggle(PaintSparkles, effectsX, m_showPartyEffects, "Toggle Effects and Morale");
 
                 dl->PopClipRect();
             }
 
             float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
+            // Morale + effects beside the player rows, as Iris draws them: right of the panel, or left
+            // when the widest strip would leave the screen, one side per panel with hysteresis; past
+            // the meters when they grow on the same side.
+            EffectStrip strip{};
+            if (m_showPartyEffects)
+            {
+                static std::unordered_map<std::string, bool> s_effectsOnLeft;
+                const bool meters = m_showDamageMeter || m_showHealMeter;
+                const float barL = ImGui::GetCursorScreenPos().x, barR = barL + availW;
+                const float rightX = std::max(wPos.x + wSize.x, meters && leftSide ? barR + 2.f + maxBarW : 0.f) + 4.f;
+                const float leftX  = std::min(wPos.x, meters && !leftSide ? barL - 2.f - maxBarW : wPos.x) - 4.f;
+                const float widest = PartyEffectStripWidest(kBarHeight);
+                const float screenR = vp->Pos.x + vpW;
+                bool& onLeft = s_effectsOnLeft[layoutKey];
+                if (!onLeft && rightX + widest > screenR) onLeft = true;
+                else if (onLeft && rightX + widest + 24.f <= screenR) onLeft = false;
+                strip = { onLeft ? leftX : rightX, onLeft, dl->GetClipRectMin().y, dl->GetClipRectMax().y };
+            }
             DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW,
-                     teamTotalDmg, teamTotalHeal, true);
+                     teamTotalDmg, teamTotalHeal, true, m_showPartyEffects ? &strip : nullptr);
 
             if (m_showDamageMeter || m_showHealMeter)
             {
