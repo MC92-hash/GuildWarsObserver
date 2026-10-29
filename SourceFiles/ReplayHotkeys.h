@@ -21,6 +21,9 @@ struct ReplayHotkeys
     int toggleFogOfWar      = ImGuiKey_F;
     int toggleTopView       = ImGuiKey_V;
     int togglePianoRoll     = ImGuiKey_P;
+    int toggleHighlights    = ImGuiKey_J;
+    int nextHighlight       = ImGuiKey_PageDown;
+    int prevHighlight       = ImGuiKey_PageUp;
     int toggleHeatmap       = ImGuiKey_H;
     int toggleMinimap       = ImGuiKey_U;
     int addBookmark         = ImGuiKey_B;

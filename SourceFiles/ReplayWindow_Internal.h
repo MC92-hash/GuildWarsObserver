@@ -104,6 +104,10 @@ int ResolveTarget(int targetId, int casterId);
 ImU32 StoCCategoryColor(StoCCategory cat);
 int StoCCategoryCount(const StoCData& d, StoCCategory cat);
 
+// --- The GIF clip panel's dark-glass gold look (ReplayWindow_Clip.cpp), shared by Highlights ---
+void PushGoldPanelStyle();
+void PopGoldPanelStyle();
+
 // --- Screen projection (shared: EventTimeline, Flags, overlays, ...) ---
 bool ProjectToScreen(XMMATRIX viewProj, float vpW, float vpH,
                      const XMFLOAT3& worldPos, float& scrX, float& scrY);

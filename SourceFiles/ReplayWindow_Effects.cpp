@@ -483,7 +483,7 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
 
 void ReplayWindow::RenderIncomingEffects()
 {
-    if (m_incomingEffects.empty()) return;
+    if (m_incomingEffects.empty() || HighlightsOverheadMode() >= 1) return;   // Highlights: no numbers
     int focused = m_focusedAgentId;
     if (focused < 0) return;
 
@@ -884,7 +884,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ImVec2 barBR(barX + BAR_W, barY + BAR_H);
 
     auto sv = ard.skillVisualAtTime(m_debugTimeline);
-    bool showCast = (sv.skillId > 0 && sv.alpha > 0.f);
+    bool showCast = (sv.skillId > 0 && sv.alpha > 0.f && HighlightsOverheadMode() < 2);
     constexpr float CAST_ICON  = 34.f;
     constexpr float CAST_GAP   = 5.f;
     constexpr float CAST_BAR_H = 18.f;
@@ -1031,7 +1031,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
 // he receives stays over him (UpdateIncomingEffects).
 void ReplayWindow::RenderEnergyPopsOverPlayers()
 {
-    if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
+    if (!m_replayCtx.agentsLoaded || !m_agentsClassified || HighlightsOverheadMode() >= 1) return;
     Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
     if (!cam) return;
     EnsureBitmapFontsLoaded();

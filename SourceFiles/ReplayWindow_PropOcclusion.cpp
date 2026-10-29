@@ -148,6 +148,70 @@ namespace
     }
 }
 
+// Segment a -> b against one prop's own triangles: the bounding sphere first, then each mesh's box
+// in its own space, then the triangles.
+bool ReplayWindow::SegmentHitsOcclusionProp(const OcclusionProp& prop, const DirectX::XMFLOAT3& from,
+                                            const DirectX::XMFLOAT3& to) const
+{
+    using namespace DirectX;
+    if (!SegmentTouchesSphere(Segment{ from, to }, prop.center, prop.radius)) return false;
+    MeshManager* meshes = m_mapRenderer->GetMeshManager();
+    for (const OcclusionMesh& om : prop.meshes)
+    {
+        if (!meshes->GetMeshShouldRender(om.meshId)) continue;
+        const XMMATRIX inv = XMLoadFloat4x4(&om.invWorld);
+        XMFLOAT3 la, lb;
+        XMStoreFloat3(&la, XMVector3TransformCoord(XMLoadFloat3(&from), inv));
+        XMStoreFloat3(&lb, XMVector3TransformCoord(XMLoadFloat3(&to), inv));
+        const float a[3] = { la.x, la.y, la.z };
+        const float d[3] = { lb.x - la.x, lb.y - la.y, lb.z - la.z };
+        const float mn[3] = { om.boxMin.x, om.boxMin.y, om.boxMin.z };
+        const float mx[3] = { om.boxMax.x, om.boxMax.y, om.boxMax.z };
+        if (!SegmentTouchesBox(a, d, mn, mx)) continue;
+
+        auto inst = meshes->GetMesh(om.meshId);
+        if (!inst) continue;
+        const Mesh& mesh = inst->GetMesh();
+        const size_t nv = mesh.vertices.size();
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
+        {
+            const uint32_t i0 = mesh.indices[i], i1 = mesh.indices[i + 1], i2 = mesh.indices[i + 2];
+            if (i0 >= nv || i1 >= nv || i2 >= nv) continue;
+            if (SegmentCrossesTriangle(a, d, mesh.vertices[i0].position, mesh.vertices[i1].position,
+                                       mesh.vertices[i2].position))
+                return true;
+        }
+    }
+    return false;
+}
+
+// How many of the sight lines from the eye to these points are blocked: by any prop - trees and
+// cliffs included, the ones the client never fades - or by the ground between. Highlights' camera
+// looks for its clearest angle with it.
+int ReplayWindow::CountBlockedSightLines(const DirectX::XMFLOAT3& eye, const std::vector<DirectX::XMFLOAT3>& points) const
+{
+    if (!m_mapRenderer) return 0;
+    int blocked = 0;
+    for (const DirectX::XMFLOAT3& p : points)
+    {
+        bool hit = false;
+        for (int k = 1; k < 8 && !hit; ++k)
+        {
+            const float f = k / 8.f;
+            const float x = eye.x + (p.x - eye.x) * f, y = eye.y + (p.y - eye.y) * f, z = eye.z + (p.z - eye.z) * f;
+            float ground = 0.f;
+            if (m_mapRenderer->TryGetGroundHeight(x, z, ground) && ground > y) hit = true;
+        }
+        for (const OcclusionProp& prop : m_occlusionProps)
+        {
+            if (hit) break;
+            hit = SegmentHitsOcclusionProp(prop, eye, p);
+        }
+        if (hit) ++blocked;
+    }
+    return blocked;
+}
+
 void ReplayWindow::ResetPropOcclusion()
 {
     m_occlusionProps.clear();
@@ -338,37 +402,10 @@ void ReplayWindow::UpdatePropOcclusion(float dt)
         {
             if (hit) break;
             if (!s.anyProp && !prop.clientFades) continue;
-            if (!SegmentTouchesSphere(s, prop.center, prop.radius)) continue;
-            for (const OcclusionMesh& om : prop.meshes)
+            if (SegmentHitsOcclusionProp(prop, s.a, s.b))
             {
-                if (!meshes->GetMeshShouldRender(om.meshId)) continue;
-                const XMMATRIX inv = XMLoadFloat4x4(&om.invWorld);
-                XMFLOAT3 la, lb;
-                XMStoreFloat3(&la, XMVector3TransformCoord(XMLoadFloat3(&s.a), inv));
-                XMStoreFloat3(&lb, XMVector3TransformCoord(XMLoadFloat3(&s.b), inv));
-                const float a[3] = { la.x, la.y, la.z };
-                const float d[3] = { lb.x - la.x, lb.y - la.y, lb.z - la.z };
-                const float mn[3] = { om.boxMin.x, om.boxMin.y, om.boxMin.z };
-                const float mx[3] = { om.boxMax.x, om.boxMax.y, om.boxMax.z };
-                if (!SegmentTouchesBox(a, d, mn, mx)) continue;
-
-                auto inst = meshes->GetMesh(om.meshId);
-                if (!inst) continue;
-                const Mesh& mesh = inst->GetMesh();
-                const size_t nv = mesh.vertices.size();
-                for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
-                {
-                    const uint32_t i0 = mesh.indices[i], i1 = mesh.indices[i + 1], i2 = mesh.indices[i + 2];
-                    if (i0 >= nv || i1 >= nv || i2 >= nv) continue;
-                    if (SegmentCrossesTriangle(a, d, mesh.vertices[i0].position,
-                                               mesh.vertices[i1].position, mesh.vertices[i2].position))
-                    {
-                        hit = true;
-                        cameraHit = s.anyProp;
-                        break;
-                    }
-                }
-                if (hit) break;
+                hit = true;
+                cameraHit = s.anyProp;
             }
         }
 

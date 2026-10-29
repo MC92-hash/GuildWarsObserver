@@ -676,6 +676,9 @@ static void draw_settings_window()
 	HotkeyInput("Aggressiveness Panel", &editingKeys.toggleLordDamage);
 	HotkeyInput("Heatmap",             &editingKeys.toggleHeatmap);
 	HotkeyInput("Piano Roll",          &editingKeys.togglePianoRoll);
+	HotkeyInput("Highlights",          &editingKeys.toggleHighlights);
+	HotkeyInput("Next Highlight",      &editingKeys.nextHighlight);
+	HotkeyInput("Previous Highlight",  &editingKeys.prevHighlight);
 	HotkeyInput("Minimap",             &editingKeys.toggleMinimap);
 
 	ImGui::Spacing();
@@ -726,6 +729,7 @@ static void draw_settings_window()
 			editingKeys.toggleEventTimeline, editingKeys.toggleLordDamage,
 			editingKeys.toggleAutoCamera, editingKeys.toggleFogOfWar,
 			editingKeys.toggleTopView, editingKeys.togglePianoRoll,
+			editingKeys.toggleHighlights, editingKeys.nextHighlight, editingKeys.prevHighlight,
 			editingKeys.toggleHeatmap, editingKeys.toggleMinimap,
 			editingKeys.exitFollowMode,
 			editingKeys.camForward, editingKeys.camBackward,

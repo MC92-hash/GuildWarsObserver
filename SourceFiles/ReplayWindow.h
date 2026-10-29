@@ -908,6 +908,8 @@ private:
     size_t m_occlusionPropsBuiltFrom = 0;   // GetPropsMeshIds().size() the list was built from
     void ResetPropOcclusion();
     void UpdatePropOcclusion(float dt);
+    bool SegmentHitsOcclusionProp(const OcclusionProp& prop, const DirectX::XMFLOAT3& from, const DirectX::XMFLOAT3& to) const;
+    int  CountBlockedSightLines(const DirectX::XMFLOAT3& eye, const std::vector<DirectX::XMFLOAT3>& points) const;
 
     // Frozen Isle lever gates (0x255BE = doors 1/2, 0x57B57 = doors 3/4). Each model has
     // two instances that toggle independently from different levers, so each needs its own
@@ -2155,6 +2157,54 @@ private:
 
     void DrawPianoRollPanel();
 
+    // --- Highlights: play only the key moments of the match (ReplayWindow_Highlights.cpp) ---
+    // The state lives in the .cpp; the follow camera reads m_followCenterBias, the playback engine
+    // HighlightsPlaybackSpeed, the agent draws HighlightsHidesAgent.
+    struct HighlightsState;
+    struct HighlightsStateDeleter { void operator()(HighlightsState* p) const; };
+    std::unique_ptr<HighlightsState, HighlightsStateDeleter> m_hl;
+    DirectX::XMFLOAT3 m_followCenterBias{0.f, 0.f, 0.f};   // added to the follow orbit's centre
+    HighlightsState& HL();
+    bool  HighlightsActive() const;
+    float HighlightsMomentSpeed() const;
+    void  LoadHighlightsSettings();
+    void  SaveHighlightsSettings() const;
+    void  BuildHighlights();
+    void  RefreshHighlightsSelection();
+    void  ToggleHighlights();
+    void  HighlightsStep(int dir);
+    void  JumpToHighlight(int index);
+    float HighlightsPlaybackSpeed(float dt);
+    void  UpdateHighlights(float dt);
+    bool  HighlightsHidesAgent(int agentId) const;
+    void  DrawHighlightsFilter();
+    void  BuildHighlightsMask(std::vector<DirectX::XMFLOAT4>& out) const;
+    void  DrawHighlightsButton(float x, float y, float h);
+    void  DrawHighlightsTimelineMarkers(float trackX, float trackW, float trackY, float trackH, float maxT);
+    std::string HighlightsSpeedLabel() const;
+    void  DrawHighlightsCard();
+    void  DrawHighlightsPanel();
+    void  ConfigureClipForHighlight(int index);
+    void  OpenHighlightClip(int index);
+    bool  HighlightsBatchRunning() const;
+    void  StartHighlightsBatch();
+    void  UpdateHighlightsBatch();
+    void  WriteHighlightsDebug();   // GWO_HIGHLIGHTS_DEBUG: %TEMP%\gwo_highlights_<match>.txt
+    struct HighlightShot;
+    bool  FrameHighlight(int index, float t, float refYaw, float aspect, HighlightShot& out) const;
+    void  UpdateHighlightsSecond(float dt, const DirectX::XMFLOAT3& mainTarget, float fullAspect);
+    void  RenderHighlightsSecondView();
+    void  DrawHighlightsSplit();
+    void  ProbeHighlightAngle(int slot, const HighlightShot& shot, float dt);
+    bool  HighlightPlaying(int i, float t) const;
+    bool  HighlightOver(int i, float t) const;
+    bool  HighlightsRelated(int a, int b) const;
+    int   HighlightsOverheadMode() const;
+    bool  HighlightsHidesInterface() const;
+    bool  LeaveHighlightsCleanScreen();
+    void  ApplyHighlightsMouseBlock();
+    void  FilterHighlightsDrawData(ImDrawData* dd);
+
     // Cached from ImGui overlay for use in Update() (suppresses camera keys)
     bool m_imguiWantTextInput = false;
 
@@ -2255,6 +2305,8 @@ private:
 
     void InitPiPResources();
     void RenderPiP();
+    void RenderSecondaryView(const DirectX::XMFLOAT3& camPos, float yaw, float pitch, float fovRad, int width, int height,
+                             ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, DirectX::XMFLOAT4X4* outViewProj);
     void UpdatePiPTarget();
     void DrawPiPPanel();
     // The watched player's HUD along the bottom of the split camera's image: name, effects,
@@ -2508,6 +2560,11 @@ private:
     // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
     void RenderEnergyPopsOverPlayers();
     void RenderIncomingEffects();
+    // A second view (the Split Camera, Highlights' right half): what floats over its picture, and
+    // the numbers over the one agent it watches, in a list of its own.
+    void DrawSecondaryViewOverlay(ImDrawList* dl, const DirectX::XMFLOAT4X4& viewProj, ImVec2 imgPos, float imgW, float imgH,
+                                  int floaterAgent, const std::vector<IncomingEffect>* floaters);
+    void UpdateSecondaryFloaters(int agent, std::vector<IncomingEffect>& effects, int& trackedAgent, float& lastScan, bool& toggle);
     void DrawFollowedAgentHUD();
     int  GetFocusedAgentId() const;
 

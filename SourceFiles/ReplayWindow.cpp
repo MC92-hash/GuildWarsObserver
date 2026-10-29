@@ -142,6 +142,9 @@ void ReplayHotkeys::Save() const
       << "  \"toggleFogOfWar\": "      << toggleFogOfWar      << ",\n"
       << "  \"toggleTopView\": "       << toggleTopView       << ",\n"
       << "  \"togglePianoRoll\": "     << togglePianoRoll     << ",\n"
+      << "  \"toggleHighlights\": "    << toggleHighlights    << ",\n"
+      << "  \"nextHighlight\": "       << nextHighlight       << ",\n"
+      << "  \"prevHighlight\": "       << prevHighlight       << ",\n"
       << "  \"toggleHeatmap\": "       << toggleHeatmap       << ",\n"
       << "  \"toggleMinimap\": "       << toggleMinimap       << ",\n"
       << "  \"addBookmark\": "         << addBookmark         << ",\n"
@@ -187,6 +190,9 @@ void ReplayHotkeys::Load()
         readKey("toggleFogOfWar",      toggleFogOfWar);
         readKey("toggleTopView",       toggleTopView);
         readKey("togglePianoRoll",     togglePianoRoll);
+        readKey("toggleHighlights",    toggleHighlights);
+        readKey("nextHighlight",       nextHighlight);
+        readKey("prevHighlight",       prevHighlight);
         readKey("toggleHeatmap",       toggleHeatmap);
         readKey("toggleMinimap",       toggleMinimap);
         readKey("addBookmark",         addBookmark);
@@ -6752,6 +6758,8 @@ void ReplayWindow::Tick()
         char energyFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
             (void)EnergyTrackFor(0);
+        // And the key moments (GWO_HIGHLIGHTS_DEBUG).
+        WriteHighlightsDebug();
         // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.
         char damageFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_DAMAGE_DEBUG", damageFlag, (DWORD)sizeof(damageFlag)) != 0)
@@ -6893,7 +6901,8 @@ void ReplayWindow::Tick()
     {
         float dt = static_cast<float>(m_timer.GetElapsedSeconds());
         float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
-        m_debugTimeline += dt * m_replayCtx.playbackSpeed;
+        // Highlights drives the speed (and may jump-cut) while it is on; otherwise the plain speed.
+        m_debugTimeline += dt * HighlightsPlaybackSpeed(dt);
 
         if (m_debugTimeline >= maxT)
         {
@@ -7023,6 +7032,8 @@ void ReplayWindow::Update(double elapsedMs)
         GuiGlobalConstants::SaveSettings();
     }
     UpdateTopViewTransition(dt);
+    if (!m_topViewActive)
+        UpdateHighlights(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
     if (!m_topViewActive && !m_topViewTransitioning)
@@ -7208,6 +7219,8 @@ void ReplayWindow::Render()
 
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
+    // Highlights' second moment, for the right half of a split screen.
+    RenderHighlightsSecondView();
 
     // A moment after Ready: the lever gates, Meditation gates and vine bridges the picture
     // records are resolved in the first frames after loading.
@@ -7306,6 +7319,8 @@ void ReplayWindow::Render()
     // characters, because the game applies it to the finished frame, and before the interface,
     // because the interface is drawn by us and was never in it.
     DrawSceneBloom();
+    // Highlights greys out what is not in the moment: the finished picture, before the interface.
+    DrawHighlightsFilter();
 
     // The character panels' portraits, into targets of their own, after the world and before the
     // interface that shows them.
@@ -7346,6 +7361,7 @@ void ReplayWindow::DrawImGuiOverlay()
         clipIo.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 
+    ApplyHighlightsMouseBlock();   // the clean screen's hidden panels take no mouse
     ImGui::NewFrame();
 
     // Top menu bar
@@ -7606,6 +7622,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawBattleLedgerPanel();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
+    DrawHighlightsPanel();
     DrawNotepad();
     DrawNameFilterPanel();
     DrawPiPPanel();
@@ -7678,6 +7695,10 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSpiritRanges();
     DrawWurmsShrineCaptureRadius();
     DrawAgentOverlay();
+    // Over the main view's labels: Highlights' right half, when two moments play at once, and the
+    // moment cards.
+    DrawHighlightsSplit();
+    DrawHighlightsCard();
     DrawFlags();
     DrawBundleItems();
     DrawSkillLasers();
@@ -7767,7 +7788,9 @@ void ReplayWindow::DrawImGuiOverlay()
 
             // Escape doubles as "disarm the drawing tool"; if it was used for
             // that this frame it must not also drop follow mode.
-            if (HotkeyFired(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent
+            // Highlights' clean screen takes Escape first: it brings the interface back.
+            if (HotkeyFired(hk.exitFollowMode) && !LeaveHighlightsCleanScreen()
+                && m_cameraMode == CameraMode::FollowAgent
                 && !m_annotationMgr.EscapeConsumedThisFrame() && !m_clip.escConsumed)
                 ExitFollowMode();
 
@@ -7855,6 +7878,13 @@ void ReplayWindow::DrawImGuiOverlay()
 
             if (HotkeyFired(hk.togglePianoRoll))
                 m_showPianoRoll = !m_showPianoRoll;
+
+            if (HotkeyFired(hk.toggleHighlights))
+                ToggleHighlights();
+            if (HotkeyFired(hk.nextHighlight))
+                HighlightsStep(1);
+            if (HotkeyFired(hk.prevHighlight))
+                HighlightsStep(-1);
 
             if (HotkeyFired(hk.toggleHeatmap))
             {
@@ -7955,6 +7985,8 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawClipEditor();
 
     ImGui::Render();
+    // Highlights' clean screen leaves only what floats over the world and the moment cards.
+    FilterHighlightsDrawData(ImGui::GetDrawData());
     RenderImGuiWithClipCapture(ImGui::GetDrawData());
 
     ImGui::SetCurrentContext(prevCtx);

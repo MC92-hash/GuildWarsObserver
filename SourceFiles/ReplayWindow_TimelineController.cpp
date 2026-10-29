@@ -192,6 +192,9 @@ void ReplayWindow::DrawTimelineController()
                                            maxT, m_debugTimeline,
                                            m_displayTimeOffset);
 
+    // The key moments under the track while Highlights is on, in the target's team colour.
+    DrawHighlightsTimelineMarkers(trackX, trackW, trackBarY, TRKH, maxT);
+
     // The clip editor's range and its two handles, before the scrub button so a handle wins
     // the mouse over the track under it.
     DrawClipTimelineRange(trackX, trackW, trackBarY, TRKH, maxT);
@@ -571,6 +574,9 @@ void ReplayWindow::DrawTimelineController()
         dl->AddText(font, fs, ImVec2(ix + 20.f * sf, cy + (BTN_H - fs) * 0.5f), fg, "Clip");
 
         if (hov) ImGui::SetTooltip("Create a GIF clip (Alt+X)");
+
+        // Highlights, left of Clip: play only the key moments.
+        DrawHighlightsButton(clipX - 10.f * sf - 104.f, cy, BTN_H);
     }
 
     // ── Speed (right-aligned) ────────────────────────────────────────────
@@ -590,7 +596,9 @@ void ReplayWindow::DrawTimelineController()
         FillBtn(speedX, cy, speedW, BTN_H, hov, 0, cBorderHi);
 
         ImU32 sfg = hov ? cGoldBright : cTextMid;
-        const char* sLbl = speedLabels[ctx.speedIndex];
+        // While Highlights drives the clock, the speed it is playing at.
+        const std::string hlLbl = HighlightsSpeedLabel();
+        const char* sLbl = hlLbl.empty() ? speedLabels[ctx.speedIndex] : hlLbl.c_str();
         ImVec2 tsz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, sLbl);
         float tx = speedX + (speedW - tsz.x - 8.f*sf) * 0.5f;
         float ty = cy + (BTN_H - fs) * 0.5f;

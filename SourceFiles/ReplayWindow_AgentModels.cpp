@@ -1829,6 +1829,12 @@ void ReplayWindow::DrawAgentModels()
             m_agentModelRenderStatus[slotKey] = "hidden: fog";
             continue;
         }
+        // Highlights with the bystanders hidden: off the screen while a moment they are not in plays.
+        if (HighlightsHidesAgent(agentId)) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            m_agentModelRenderStatus[slotKey] = "hidden: highlights";
+            continue;
+        }
 
         // Get interpolated position — use agent's own height (includes plane elevation)
         float sx, sy, sz;
@@ -2668,6 +2674,7 @@ void ReplayWindow::DrawAgentCylinders()
 
         bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
         if (inFog && !m_fogGhostMode) continue;
+        if (HighlightsHidesAgent(agentId)) continue;
 
         bool dead = ard.isDeadAtTime(m_debugTimeline);
 

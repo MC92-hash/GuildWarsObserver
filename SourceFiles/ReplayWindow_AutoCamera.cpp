@@ -346,6 +346,11 @@ void ReplayWindow::UpdateFollowCamera(float dt)
         }
     }
 
+    // Highlights leans the orbit from the target toward the people acting on them (zero otherwise).
+    center.x += m_followCenterBias.x;
+    center.y += m_followCenterBias.y;
+    center.z += m_followCenterBias.z;
+
     // Spherical offset from orbit center. The pitch is clamped here as well as at the mouse: entering
     // follow mode derives it from wherever the free camera was, which can be far below the subject.
     m_followPitch = std::clamp(m_followPitch, kFollowMinPitch, kFollowMaxPitch);
