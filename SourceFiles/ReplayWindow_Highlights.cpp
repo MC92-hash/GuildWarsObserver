@@ -188,6 +188,43 @@ float4 PSMain(VS_OUT i) : SV_TARGET
         XMFLOAT4 ellipses[kMaxEllipses];
         float amount, count, darken, pad;
     };
+
+    // One view's mask in screen uv: the spotlight's ground circle as the ellipse around its
+    // projection, and one upright ellipse from each person's feet to their head.
+    void ProjectHighlightsMask(const XMMATRIX& viewProj, float vw, float vh, const XMFLOAT3& c, float r,
+                               const std::vector<XMFLOAT4>& feetList, std::vector<XMFLOAT4>& out)
+    {
+        out.clear();
+        vw = std::max(1.f, vw);
+        vh = std::max(1.f, vh);
+        {
+            float mnx = FLT_MAX, mny = FLT_MAX, mxx = -FLT_MAX, mxy = -FLT_MAX;
+            int got = 0;
+            for (int k = 0; k < 12; ++k)
+            {
+                const float a = XM_2PI * k / 12.f;
+                const XMFLOAT3 p{ c.x + r * std::cos(a), c.y, c.z + r * std::sin(a) };
+                float sx, sy;
+                if (!ProjectToScreen(viewProj, vw, vh, p, sx, sy)) continue;
+                mnx = std::min(mnx, sx); mny = std::min(mny, sy); mxx = std::max(mxx, sx); mxy = std::max(mxy, sy);
+                ++got;
+            }
+            if (got >= 6)
+                out.push_back({ (mnx + mxx) * 0.5f / vw, (mny + mxy) * 0.5f / vh,
+                                (mxx - mnx) * 0.5f / vw, (mxy - mny) * 0.5f / vh });
+        }
+        for (const XMFLOAT4& f : feetList)
+        {
+            if (static_cast<int>(out.size()) >= kMaxEllipses) break;
+            const XMFLOAT3 feet{ f.x, f.y, f.z };
+            const XMFLOAT3 head{ feet.x, feet.y + kCharHeight, feet.z };
+            float fx, fy, hx, hy;
+            if (!ProjectToScreen(viewProj, vw, vh, feet, fx, fy) || !ProjectToScreen(viewProj, vw, vh, head, hx, hy)) continue;
+            const float tall = std::max(8.f, std::hypot(hx - fx, hy - fy));
+            const float ry = tall * 0.75f * f.w, rx = std::max(tall * 0.45f, 10.f) * f.w;
+            out.push_back({ (fx + hx) * 0.5f / vw, (fy + hy) * 0.5f / vh, rx / vw, ry / vh });
+        }
+    }
 }
 
 struct ReplayWindow::HighlightsState
@@ -257,6 +294,14 @@ struct ReplayWindow::HighlightsState
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> secSRV;
     ID3D11Device* secDevice = nullptr;
     int secW = 0, secH = 0;
+    // Its grey look: the mask in the world, and the copy of its picture the pass reads.
+    XMFLOAT3 secSpotCenter{0.f, 0.f, 0.f};
+    float    secSpotRadius = 0.f;
+    bool     secSpotValid = false;
+    std::vector<XMFLOAT4> secMaskFeet;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>          secGreyTex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> secGreySRV;
+    int secGreyW = 0, secGreyH = 0;
 
     // ---- grey pass ----
     ID3D11Device* device = nullptr;
@@ -696,6 +741,8 @@ void ReplayWindow::ToggleHighlights()
         h.secShown = -1;
         h.splitAmt = 0.f;
         h.secValid = false;
+        h.secSpotValid = false;
+        h.secMaskFeet.clear();
         m_followCenterBias = XMFLOAT3(0.f, 0.f, 0.f);
         m_replayCtx.playbackSpeed = kReplaySpeeds[m_replayCtx.speedIndex];
         m_autoCameraEnabled = h.savedAutoCam;
@@ -1216,7 +1263,7 @@ void ReplayWindow::UpdateHighlightsSecond(float dt, const XMFLOAT3& mainTarget, 
     if (pick != h.second)
     {
         h.second = pick;
-        if (pick >= 0) { h.secValid = false; h.secShown = pick; }
+        if (pick >= 0) { h.secValid = false; h.secSpotValid = false; h.secShown = pick; }
         h.clearYaw[1] = h.clearLift[1] = h.clearTimer[1] = 0.f;
     }
     const float step = std::clamp(dt / kSplitSlide, 0.f, 1.f);
@@ -1246,6 +1293,36 @@ void ReplayWindow::UpdateHighlightsSecond(float dt, const XMFLOAT3& mainTarget, 
     h.secBias.y += (wantBias.y - h.secBias.y) * kd;
     h.secBias.z += (wantBias.z - h.secBias.z) * kd;
     h.secLook = XMFLOAT3(shot.target.x + h.secBias.x, shot.target.y + h.secBias.y, shot.target.z + h.secBias.z);
+
+    // Its grey look's mask, built as the main view's: a spotlight on its target, and its people.
+    const auto& mo = h.moments[h.second];
+    const float wantRadius = std::clamp(shot.reach + 150.f, kSpotMin, kSpotMax);
+    if (!h.secSpotValid) h.secSpotRadius = wantRadius;
+    h.secSpotRadius += (wantRadius - h.secSpotRadius) * (1.f - std::exp(-dt * 1.0f));
+    h.secSpotCenter = shot.target;
+    h.secSpotValid = true;
+    h.secMaskFeet.clear();
+    for (const auto& p : mo.people)
+    {
+        if (p.role == Highlights::Role::Target) continue;
+        const float grow = std::clamp((t - p.from) / kJoinGrow, 0.f, 1.f);
+        if (grow <= 0.f) continue;
+        for (const auto& q : shot.placed)
+            if (q.agent == p.agent) { h.secMaskFeet.push_back({ q.pos.x, q.pos.y, q.pos.z, grow }); break; }
+    }
+    h.secMaskFeet.push_back({ shot.target.x, shot.target.y, shot.target.z, 1.f });
+    if (h.bystanders == 0)
+        for (const auto& [id, a] : m_replayCtx.agents)
+        {
+            if (id == mo.target || a.snapshots.empty()) continue;
+            if (std::any_of(mo.people.begin(), mo.people.end(), [id](const auto& p) { return p.agent == id; })) continue;
+            if (a.type != AgentType::Player && a.type != AgentType::NPC) continue;
+            if (!AgentOnStageAt(id, a, t)) continue;
+            float sx, sy, sz;
+            InterpolateAgentPosition(a, t, m_replayCtx.interpSettings, sx, sy, sz);
+            const XMFLOAT3 w = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+            h.secMaskFeet.push_back({ w.x, w.y, w.z, 1.f });
+        }
 }
 
 // The second moment's picture, into a target of its own the size of the right half. Before the
@@ -1333,39 +1410,7 @@ void ReplayWindow::BuildHighlightsMask(std::vector<DirectX::XMFLOAT4>& out) cons
     Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
     if (!cam || !h.spotValid) return;
     const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
-    const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
-    const float vw = std::max(1.f, vp.Width), vh = std::max(1.f, vp.Height);
-
-    {
-        const XMFLOAT3 c = h.spotCenter;
-        const float r = h.spotRadius;
-        float mnx = FLT_MAX, mny = FLT_MAX, mxx = -FLT_MAX, mxy = -FLT_MAX;
-        int got = 0;
-        for (int k = 0; k < 12; ++k)
-        {
-            const float a = XM_2PI * k / 12.f;
-            const XMFLOAT3 p{ c.x + r * std::cos(a), c.y, c.z + r * std::sin(a) };
-            float sx, sy;
-            if (!ProjectToScreen(viewProj, vw, vh, p, sx, sy)) continue;
-            mnx = std::min(mnx, sx); mny = std::min(mny, sy); mxx = std::max(mxx, sx); mxy = std::max(mxy, sy);
-            ++got;
-        }
-        if (got >= 6)
-            out.push_back({ (mnx + mxx) * 0.5f / vw, (mny + mxy) * 0.5f / vh,
-                            (mxx - mnx) * 0.5f / vw, (mxy - mny) * 0.5f / vh });
-    }
-
-    for (const XMFLOAT4& f : h.maskFeet)
-    {
-        if (static_cast<int>(out.size()) >= kMaxEllipses) break;
-        const XMFLOAT3 feet{ f.x, f.y, f.z };
-        const XMFLOAT3 head{ feet.x, feet.y + kCharHeight, feet.z };
-        float fx, fy, hx, hy;
-        if (!ProjectToScreen(viewProj, vw, vh, feet, fx, fy) || !ProjectToScreen(viewProj, vw, vh, head, hx, hy)) continue;
-        const float tall = std::max(8.f, std::hypot(hx - fx, hy - fy));
-        const float ry = tall * 0.75f * f.w, rx = std::max(tall * 0.45f, 10.f) * f.w;
-        out.push_back({ (fx + hx) * 0.5f / vw, (fy + hy) * 0.5f / vh, rx / vw, ry / vh });
-    }
+    ProjectHighlightsMask(cam->GetView() * cam->GetProj(), vp.Width, vp.Height, h.spotCenter, h.spotRadius, h.maskFeet, out);
 }
 
 // A player or NPC kept off the screen: Highlights on, bystanders hidden, a moment playing, and this
@@ -1548,6 +1593,48 @@ void ReplayWindow::DrawHighlightsFilter()
     ctx->Draw(3, 0);
     ID3D11ShaderResourceView* nullSRV = nullptr;
     ctx->PSSetShaderResources(0, 1, &nullSRV);
+
+    // ---- the split view's right half: its own picture, greyed with its own moment's mask ----
+    if (h.splitAmt > 0.f && h.secValid && h.secSpotValid && h.secTex && h.secRTV)
+    {
+        if (!h.secGreySRV || h.secGreyW != h.secW || h.secGreyH != h.secH)
+        {
+            h.secGreyTex.Reset(); h.secGreySRV.Reset(); h.secGreyW = h.secGreyH = 0;
+            D3D11_TEXTURE2D_DESC sd = {};
+            h.secTex->GetDesc(&sd);
+            sd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (SUCCEEDED(dev->CreateTexture2D(&sd, nullptr, h.secGreyTex.GetAddressOf())) &&
+                SUCCEEDED(dev->CreateShaderResourceView(h.secGreyTex.Get(), nullptr, h.secGreySRV.GetAddressOf())))
+            { h.secGreyW = h.secW; h.secGreyH = h.secH; }
+            else
+            { h.secGreyTex.Reset(); h.secGreySRV.Reset(); }
+        }
+        if (h.secGreySRV)
+        {
+            ctx->CopyResource(h.secGreyTex.Get(), h.secTex.Get());
+            ProjectHighlightsMask(XMLoadFloat4x4(&h.secViewProj), static_cast<float>(h.secW), static_cast<float>(h.secH),
+                                  h.secSpotCenter, h.secSpotRadius, h.secMaskFeet, ellipses);
+            const int sn = std::min(static_cast<int>(ellipses.size()), kMaxEllipses);
+            for (int i = 0; i < sn; ++i) cbData.ellipses[i] = ellipses[i];
+            cbData.count = static_cast<float>(sn);
+            if (SUCCEEDED(ctx->Map(h.cb.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            {
+                memcpy(mapped.pData, &cbData, sizeof(cbData));
+                ctx->Unmap(h.cb.Get(), 0);
+                D3D11_VIEWPORT svp = {};
+                svp.Width = static_cast<float>(h.secW);
+                svp.Height = static_cast<float>(h.secH);
+                svp.MaxDepth = 1.f;
+                ctx->RSSetViewports(1, &svp);
+                ID3D11RenderTargetView* secRTV = h.secRTV.Get();
+                ctx->OMSetRenderTargets(1, &secRTV, nullptr);
+                ID3D11ShaderResourceView* secSrv = h.secGreySRV.Get();
+                ctx->PSSetShaderResources(0, 1, &secSrv);
+                ctx->Draw(3, 0);
+                ctx->PSSetShaderResources(0, 1, &nullSRV);
+            }
+        }
+    }
 
     // ---- restore ----
     ctx->OMSetRenderTargets(prevRTVs[1] ? 2u : 1u, prevRTVs, prevDSV.Get());
