@@ -19,6 +19,7 @@
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
+#include "ProtEfficiency.h"
 #include <imgui_internal.h>
 #include "../ThirdParty/nanosvg/nanosvg.h"
 #include "../ThirdParty/nanosvg/nanosvgrast.h"
@@ -48,6 +49,10 @@ namespace
 {
     // The roll's toolbar: spike boxes on or off, and the skill being searched (0 none).
     bool sPrSpikeBoxes = true;
+
+    // The panel's own font at its own size. Not ui::DisplayFont: the replay window has its own ImGui
+    // context, and the main window's baked sizes draw nothing in it; a scaled base font blurs.
+    ImFont* PrFont(float) { return ImGui::GetFont(); }
 
     // GW's own left / right arrow (Textures\Game_UI\ui_left_right.png: four 16 px cells - left lit,
     // right lit, left, right). Lit while hovered; true when clicked.
@@ -883,13 +888,48 @@ namespace
     }
 
     constexpr const char* kHelpTiming =
-        "When their help took effect.\n0 = the first hit. Below 0 = it was up before the damage.\nTheir own cast time is included.";
+        "Timing\n"
+        "From: the first enemy hit on the player.\n"
+        "To: the moment their prot or heal took effect (their cast finished).\n"
+        "So their own cast time is included.\n"
+        "Below 0: it was already on the player before the damage came.";
     constexpr const char* kHelpReaction =
-        "How fast they started casting,\nfrom the moment a second enemy started on the player.\nTheir own cast time is not included.";
+        "Reaction\n"
+        "From: the moment a second enemy started casting on the player.\n"
+        "To: the moment they started casting.\n"
+        "So their own cast time is not included.";
+    constexpr const char* kHelpTypical =
+        "On a card: their median over all their spikes.";
     constexpr const char* kHelpCovered = "Spikes on their team they helped on\n(a prot or heal on the player).";
     constexpr const char* kHelpFirst   = "Times they were the first teammate to help.";
     constexpr const char* kHelpProtUse =
-        "While this prot was up:\nhits = enemy hits the player took.\nhealed back = Health the prot itself gave back.";
+        "While this prot was up:\n"
+        "hits = enemy hits the player took.\n"
+        "reversed = damage turned into Health (Reversal of Fortune, Life Sheath).\n"
+        "offset = Health given back after big hits (Spirit Bond).\n"
+        "prevented = damage that never landed (Shielding Hands, Shield of Absorption,\n"
+        "Aura of Faith), at the Monk's Protection Prayers. ~ = an estimate.\n"
+        "capped = hits held to 10% of max Health (Protective Spirit).";
+
+    // A prot's figures as one short line: "3 hits · 120 damage reversed".
+    std::string PrProtLine(int hits, int kind, int reversed, int offset, int prevented, int endHeal,
+                           int healBoost, int capped, int healedBack)
+    {
+        std::string s = std::to_string(hits) + (hits == 1 ? " hit" : " hits");
+        auto add = [&](const std::string& part) { s += "  \xc2\xb7  " + part; };
+        switch (static_cast<ProtEfficiency::Kind>(kind))
+        {
+        case ProtEfficiency::Kind::Reversed:         if (reversed > 0) add(std::to_string(reversed) + " damage reversed"); break;
+        case ProtEfficiency::Kind::Offset:           if (offset > 0) add(std::to_string(offset) + " damage offset"); break;
+        case ProtEfficiency::Kind::FlatReduction:    if (prevented > 0) add("~" + std::to_string(prevented) + " prevented");
+                                                     if (endHeal > 0) add(std::to_string(endHeal) + " healed at end"); break;
+        case ProtEfficiency::Kind::PercentReduction: if (prevented > 0) add("~" + std::to_string(prevented) + " prevented");
+                                                     if (healBoost > 0) add("+" + std::to_string(healBoost) + " heal boost"); break;
+        case ProtEfficiency::Kind::Cap:              if (capped > 0) add(std::to_string(capped) + " capped at 10%"); break;
+        default:                                     if (healedBack > 0) add(std::to_string(healedBack) + " healed back"); break;
+        }
+        return s;
+    }
 
     void PrTip(const char* text)
     {
@@ -943,6 +983,10 @@ ReplayWindow::ProtUse ReplayWindow::PianoRollProtUse(const CastRef& answer, int 
         const uint8_t team = tit != m_replayCtx.agents.end() ? tit->second.teamId : 0;
         int lastCaster = -1;
         float lastTime = -1.f;
+        ProtEfficiency::Inputs in;
+        in.skillId = answer.ev->skillId;
+        in.rank = SkillRankBandAt(answer.ev->skillId, answer.casterId, land).best;
+        in.maxHp = static_cast<int>(FloaterMaxHp(target, r.start));
         for (const DamagePop& pop : DamagePopsOn(target))
         {
             if (pop.time < r.start - 0.02f) continue;
@@ -952,16 +996,32 @@ ReplayWindow::ProtUse ReplayWindow::PianoRollProtUse(const CastRef& answer, int 
             if (pop.heal)
             {
                 if (pop.skillId == answer.ev->skillId && pop.casterId == answer.casterId) r.healedBack += amount;
+                else if (pop.time <= r.end + 0.02f) in.heals.push_back(amount);
                 continue;
             }
             if (pop.time > r.end + 0.02f) continue;
             auto cit = m_replayCtx.agents.find(pop.casterId);
             if (cit == m_replayCtx.agents.end() || cit->second.teamId == team) continue;
-            if (pop.casterId == lastCaster && pop.time - lastTime < 0.03f) continue;
+            if (pop.casterId == lastCaster && pop.time - lastTime < 0.03f)
+            {
+                if (!in.hits.empty()) in.hits.back() += amount;   // the same hit's second number
+                continue;
+            }
             lastCaster = pop.casterId;
             lastTime = pop.time;
             ++r.hits;
+            in.hits.push_back(amount);
         }
+        in.ownHeal = r.healedBack;
+        const ProtEfficiency::Result fx2 = ProtEfficiency::Evaluate(in);
+        r.kind = static_cast<int>(fx2.kind);
+        r.reversed = fx2.reversed;
+        r.offset = fx2.offset;
+        r.prevented = fx2.prevented;
+        r.endHeal = fx2.endHeal;
+        r.healBoost = fx2.healBoost;
+        r.capped = fx2.capped;
+        r.estimate = fx2.estimate;
     }
     sCache[answer.ev] = r;
     return r;
@@ -1166,9 +1226,11 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         }
         vText(sz, PrTeamText(a->teamId), a->playerName.c_str());
     };
-    auto section = [&](const char* title, const char* help, const char* right, const char* rightHelp = nullptr) {
-        ImGui::Dummy(ImVec2(1.f, 2.f));
-        ImGui::TextColored(kPrDim, "%s", title);
+    auto section = [&](const char* title, const char* help, const char* right, const char* rightHelp = nullptr,
+                       const char* figure = nullptr) {
+        ImGui::Dummy(ImVec2(1.f, 6.f));
+        ImGui::TextColored(ImVec4(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f), "%s", title);
+        if (figure) { ImGui::SameLine(0.f, 10.f); ImGui::TextColored(ImVec4(1.f, 0.45f, 0.40f, 1.f), "%s", figure); }
         if (help) { ImGui::SameLine(0.f, 4.f); PrHelp(help); }
         if (right)
         {
@@ -1320,24 +1382,46 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         if (weaponDamage + otherDamage > 0) { spikeDamage += weaponDamage + otherDamage; damageKnown = true; }
     }
 
-    // ── Title: SPIKE, its time, the player who took it ──
+    // ── Title band: SPIKE ON, the player who took it (large), the time ──
     {
+        const float fs = font->FontSize, big = std::round(fs * 1.3f);
+        const float bandH = std::round(10.f + fs + 4.f + std::max(big, iconSz + 4.f) + 10.f);
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        dl->AddText(font, font->FontSize, p, ImGui::ColorConvertFloat4ToU32(kPrSpike), "SPIKE");
-        ImGui::Dummy(ImVec2(1.f, font->FontSize));
+        const ImVec2 q(p.x + cw, p.y + bandH);
+        dl->AddRectFilled(p, q, IM_COL32(0xE8, 0x50, 0x48, 0x26), 4.f);
+        dl->AddRectFilled(p, ImVec2(p.x + 3.f, q.y), IM_COL32(0xFF, 0x8A, 0x80, 0xFF), 2.f);
+        dl->AddText(font, fs, ImVec2(p.x + 12.f, p.y + 8.f), ImGui::ColorConvertFloat4ToU32(kPrSpike), "SPIKE ON");
         PrClock(sp.firstHit, buf, sizeof(buf));
-        rightText(font->FontSize, kPrGold, buf);
-        ImGui::TextColored(kPrDim, "on");
-        ImGui::SameLine(0.f, 6.f);
-        who(sp.target, iconSz);
+        dl->AddText(font, fs, ImVec2(q.x - 10.f - font->CalcTextSizeA(fs, FLT_MAX, 0.f, buf).x, p.y + 8.f),
+                    ImGui::ColorConvertFloat4ToU32(kPrGold), buf);
+        float nx = p.x + 12.f;
+        const float ny = p.y + 8.f + fs + 6.f;
+        if (const AgentReplayData* a = agentOf(sp.target))
+        {
+            const float isz = iconSz + 4.f;
+            if (ImTextureID prof = a->primaryProf > 0 ? LoadProfIcon(dev, a->primaryProf) : nullptr)
+            {
+                dl->AddImage(prof, ImVec2(nx, ny), ImVec2(nx + isz, ny + isz));
+                nx += isz + 8.f;
+            }
+            const ImVec4 tc = PrTeamText(a->teamId);
+            dl->AddText(PrFont(big), PrFont(big)->FontSize, ImVec2(nx, ny + (isz - big) * 0.5f), ImGui::ColorConvertFloat4ToU32(tc), a->playerName.c_str());
+        }
+        ImGui::Dummy(ImVec2(cw, bandH));
     }
 
     // ── Four facts in boxes ──
     {
         ImGui::Dummy(ImVec2(1.f, 2.f));
         constexpr float kGap = 6.f;
-        const float kBoxH = std::round(font->FontSize * 2.f + 16.f);
-        const float boxW = std::floor((cw - 3.f * kGap) / 4.f);
+        const float valSz = std::round(font->FontSize * 1.35f);
+        const float kBoxH = std::round(font->FontSize + valSz + 20.f);
+        // Four in a row when the labels fit, else two rows of two.
+        float widest = 0.f;
+        for (const char* l : { "Skills", "Hit in", "Damage", "Lowest HP" })
+            widest = std::max(widest, ImGui::CalcTextSize(l).x);
+        const int cols = std::floor((cw - 3.f * kGap) / 4.f) >= widest + 18.f ? 4 : 2;
+        const float boxW = std::floor((cw - (cols - 1) * kGap) / cols);
         const ImVec2 b0 = ImGui::GetCursorScreenPos();
         struct Fact { const char* label; const char* help; std::string value; ImVec4 col; float bar; };
         char v1[16], v2[16], v3[16], v4[16];
@@ -1356,15 +1440,16 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         for (int i = 0; i < 4; ++i)
         {
             const Fact& f = facts[i];
-            const ImVec2 r0(b0.x + i * (boxW + kGap), b0.y), r1(r0.x + boxW, r0.y + kBoxH);
+            const ImVec2 r0(b0.x + (i % cols) * (boxW + kGap), b0.y + (i / cols) * (kBoxH + kGap)), r1(r0.x + boxW, r0.y + kBoxH);
             ImGui::SetCursorScreenPos(r0);
             ImGui::PushID(i);
             ImGui::InvisibleButton("##fact", ImVec2(boxW, kBoxH));
             ImGui::PopID();
             const bool hov = ImGui::IsItemHovered();
-            dl->AddRectFilled(r0, r1, hov ? IM_COL32(255, 255, 255, 22) : IM_COL32(255, 255, 255, 10), 3.f);
-            dl->AddText(font, font->FontSize, ImVec2(r0.x + 7.f, r0.y + 4.f), ImGui::ColorConvertFloat4ToU32(kPrDim), f.label);
-            dl->AddText(font, font->FontSize, ImVec2(r0.x + 7.f, r0.y + 6.f + font->FontSize), ImGui::ColorConvertFloat4ToU32(f.col), f.value.c_str());
+            dl->AddRectFilled(r0, r1, hov ? IM_COL32(255, 255, 255, 26) : IM_COL32(255, 255, 255, 14), 4.f);
+            dl->AddRect(r0, r1, hov ? IM_COL32(0xE1, 0xBE, 0x50, 0x90) : IM_COL32(255, 255, 255, 34), 4.f, 0, 1.f);
+            dl->AddText(font, font->FontSize, ImVec2(r0.x + 8.f, r0.y + 5.f), ImGui::ColorConvertFloat4ToU32(kPrDim), f.label);
+            dl->AddText(PrFont(valSz), PrFont(valSz)->FontSize, ImVec2(r0.x + 8.f, r0.y + 7.f + font->FontSize), ImGui::ColorConvertFloat4ToU32(f.col), f.value.c_str());
             if (f.bar >= 0.f)
             {
                 const float by = r1.y - 6.f;
@@ -1381,7 +1466,8 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
                 ImGui::EndTooltip();
             }
         }
-        ImGui::SetCursorScreenPos(ImVec2(b0.x, b0.y + kBoxH + 4.f));
+        const int rows = 4 / cols;
+        ImGui::SetCursorScreenPos(ImVec2(b0.x, b0.y + rows * kBoxH + (rows - 1) * kGap + 4.f));
     }
 
     // One line per cast: icon + skill, a value on the right, "by" + caster under it.
@@ -1409,10 +1495,9 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
     };
 
     // ── Hits ──
-    char hitsTitle[48];
-    if (damageKnown) snprintf(hitsTitle, sizeof(hitsTitle), "HITS   %d damage in total", spikeDamage);
-    else             snprintf(hitsTitle, sizeof(hitsTitle), "HITS");
-    section(hitsTitle, nullptr, "hits at");
+    char hitsTotal[48];
+    snprintf(hitsTotal, sizeof(hitsTotal), "-%d in total", spikeDamage);
+    section("HITS", nullptr, "hits at", nullptr, damageKnown ? hitsTotal : nullptr);
     {
         const ImVec2 h0 = ImGui::GetCursorScreenPos();
         for (size_t i = 0; i < sp.hits.size(); ++i)
@@ -1461,13 +1546,10 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
         const ProtUse pu = PianoRollProtUse(a, sp.target);
         if (pu.isProt)
         {
-            char note[96];
-            if (pu.healedBack > 0)
-                snprintf(note, sizeof(note), "%d hit%s  \xc2\xb7  %d healed back", pu.hits, pu.hits == 1 ? "" : "s", pu.healedBack);
-            else
-                snprintf(note, sizeof(note), "%d hit%s", pu.hits, pu.hits == 1 ? "" : "s");
+            const std::string note = PrProtLine(pu.hits, pu.kind, pu.reversed, pu.offset, pu.prevented, pu.endHeal,
+                                                pu.healBoost, pu.capped, pu.healedBack);
             ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + iconSz + 6.f, ImGui::GetCursorPosY() - 2.f));
-            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%s", note);
+            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%s", note.c_str());
             if (ImGui::IsItemHovered()) PrTip(kHelpProtUse);
             ImGui::Dummy(ImVec2(1.f, 2.f));
         }
@@ -1530,12 +1612,14 @@ void ReplayWindow::DrawPianoRollMonkCards()
                 ImGui::SameLine(valX);
                 ImGui::TextColored(kPrDim, "%s", text);
             };
-            row("covered",  "Spikes they helped on.");
-            row("first",    "Times they helped first.");
-            row("timing",   "When their help took effect. 0 = the first hit.");
-            row("",         "Includes their own cast time.");
-            row("reaction", "How fast they started casting.");
-            row("",         "Does not include their cast time.");
+            row("covered",  "Spikes they helped on, out of their team's spikes.");
+            row("reaction", "Second enemy starts casting -> they start casting.");
+            row("",         "Their own cast time is not included.");
+            row("timing",   "First enemy hit -> their prot or heal takes effect.");
+            row("",         "Their own cast time is included.");
+            row("first",    "Times they were the first teammate to help.");
+            ImGui::Spacing();
+            ImGui::TextColored(kPrDim, "Reaction and timing on a card are medians over their spikes.");
             ImGui::Spacing();
             ImGui::TextColored(kPrDim, "Hover a number on a card for more.");
             ImGui::Spacing();
@@ -1610,38 +1694,52 @@ void ReplayWindow::DrawPianoRollMonkCards()
             if (!mine.empty() && covered > 0)
                 dl->AddRectFilled(ImVec2(r0.x + 7.f, by), ImVec2(r0.x + 7.f + (barR - r0.x - 7.f) * covered / mine.size(), by + 5.f), TeamColour(team, 0xD0), 2.5f);
             dl->AddText(font, font->FontSize, ImVec2(r1.x - 7.f - numW, by - 5.f), IM_COL32(216, 220, 226, 255), buf);
-            // first / reaction / heal time
-            // Narrow cards (many Monks on a team) keep one number, the timing; the rest is in the hover.
+
+            // reaction (first: it is the number that matters), timing, first. Narrow cards (many
+            // Monks on a team) keep reaction alone; the rest is in the hover.
             const bool compact = cardW < 170.f;
             const float colStep = compact ? cardW - 14.f : (cardW - 14.f) / 3.f, ly = by + 11.f;
-            const char* labels[3] = { "first", "timing", "reaction" };
-            char vals[3][16];
-            snprintf(vals[0], sizeof(vals[0]), "%d", first);
+            const char* labels[3] = { "reaction", "timing", "first" };
             const float tMed = PrMedian(timings), rMed = PrMedian(reactions);
+            char vals[3][16];
+            if (std::isnan(rMed)) snprintf(vals[0], sizeof(vals[0]), "-"); else snprintf(vals[0], sizeof(vals[0]), "%+.2f s", rMed);
             if (std::isnan(tMed)) snprintf(vals[1], sizeof(vals[1]), "-"); else snprintf(vals[1], sizeof(vals[1]), "%+.2f s", tMed);
-            if (std::isnan(rMed)) snprintf(vals[2], sizeof(vals[2]), "-"); else snprintf(vals[2], sizeof(vals[2]), "%+.2f s", rMed);
-            for (int c = compact ? 1 : 0; c < (compact ? 2 : 3); ++c)
+            snprintf(vals[2], sizeof(vals[2]), "%d", first);
+            const ImU32 valCol[3] = { ImGui::ColorConvertFloat4ToU32(kPrGold), IM_COL32(216, 220, 226, 255), IM_COL32(216, 220, 226, 255) };
+            for (int c = 0; c < (compact ? 1 : 3); ++c)
             {
-                const float cx = r0.x + 7.f + (compact ? 0.f : c * colStep);
-                dl->AddText(font, font->FontSize, ImVec2(cx, ly), ImGui::ColorConvertFloat4ToU32(kPrDim), labels[c]);
-                dl->AddText(font, font->FontSize, ImVec2(cx, ly + font->FontSize),
-                            c == 0 ? IM_COL32(216, 220, 226, 255) : ImGui::ColorConvertFloat4ToU32(kPrGold), vals[c]);
+                const float cx = r0.x + 7.f + c * colStep;
+                dl->AddText(font, font->FontSize, ImVec2(cx, ly), c == 0 ? ImGui::ColorConvertFloat4ToU32(kPrGold) : ImGui::ColorConvertFloat4ToU32(kPrDim), labels[c]);
+                dl->AddText(font, font->FontSize, ImVec2(cx, ly + font->FontSize), valCol[c], vals[c]);
+            }
+            // The reaction column stands out: a thin gold underline under its value.
+            if (!std::isnan(rMed))
+            {
+                const float vw = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, vals[0]).x;
+                const float uy = ly + font->FontSize * 2.f + 1.f;
+                dl->AddLine(ImVec2(r0.x + 7.f, uy), ImVec2(r0.x + 7.f + vw, uy), IM_COL32(0xE1, 0xBE, 0x50, 0xB0), 1.f);
             }
             dl->PopClipRect();
 
-            // Hover: a short summary - how often they answered, how fast (each spike as a dot on a
-            // small axis), and what they answered with. The spike-by-spike view is the spike bar.
-            int hovNum = -1;   // 0..2 = first / timing / reaction, 3 = the covered bar
+            // Hover a number: what it measures; elsewhere on the card: the summary.
+            int hovNum = -1;   // 0..2 = reaction / timing / first, 3 = the covered bar
             if (hov)
             {
                 const ImVec2 mp = ImGui::GetIO().MousePos;
-                if (mp.y >= ly - 2.f) hovNum = compact ? 1 : std::clamp(static_cast<int>((mp.x - r0.x - 7.f) / colStep), 0, 2);
+                if (mp.y >= ly - 2.f) hovNum = compact ? 0 : std::clamp(static_cast<int>((mp.x - r0.x - 7.f) / colStep), 0, 2);
                 else if (mp.y >= by - 7.f && mp.y <= by + 12.f) hovNum = 3;
             }
             if (hovNum >= 0)
             {
-                const char* help[4] = { kHelpFirst, kHelpTiming, kHelpReaction, kHelpCovered };
-                PrTip(help[hovNum]);
+                const char* help[4] = { kHelpReaction, kHelpTiming, kHelpFirst, kHelpCovered };
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(help[hovNum]);
+                if (hovNum == 0 || hovNum == 1)
+                {
+                    ImGui::Spacing();
+                    ImGui::TextColored(kPrDim, "%s", kHelpTypical);
+                }
+                ImGui::EndTooltip();
             }
             else if (hov && !mine.empty())
             {
@@ -1663,16 +1761,17 @@ void ReplayWindow::DrawPianoRollMonkCards()
                 if (!timings.empty())
                 {
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(timings));
-                    line("Usual timing", kPrGold, buf);
-                    ImGui::SameLine(0.f, 8.f); ImGui::TextColored(kPrDim, "(with their cast)");
+                    line("Median timing", kPrGold, buf);
+                    ImGui::SameLine(0.f, 10.f); ImGui::TextColored(kPrDim, "first enemy hit -> their help takes effect");
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(reactions));
-                    line("Usual reaction", kPrGold, buf);
-                    ImGui::SameLine(0.f, 8.f); ImGui::TextColored(kPrDim, "(before their cast)");
+                    line("Median reaction", kPrGold, buf);
+                    ImGui::SameLine(0.f, 10.f); ImGui::TextColored(kPrDim, "second enemy starts casting -> they start casting");
                 }
                 if (!healTimes.empty())
                 {
                     snprintf(buf, sizeof(buf), "%+.2f s", PrMedian(healTimes));
-                    line("Usual heal time", kPrGold, buf);
+                    line("Median heal time", kPrGold, buf);
+                    ImGui::SameLine(0.f, 10.f); ImGui::TextColored(kPrDim, "first enemy hit -> their heal lands");
                 }
 
                 // Their prots, each cast once (one cast can answer two spikes).
@@ -1687,8 +1786,9 @@ void ReplayWindow::DrawPianoRollMonkCards()
                         if (!pu.isProt) continue;
                         ++prots;
                         if (pu.hits > 0) ++protsHit;
-                        back += pu.healedBack;
-                        backBySkill[a.ev->skillId] += pu.healedBack;
+                        const int spared = pu.reversed + pu.offset + pu.prevented;
+                        back += spared;
+                        backBySkill[a.ev->skillId] += spared;
                     }
                 if (prots > 0)
                 {
@@ -1697,7 +1797,9 @@ void ReplayWindow::DrawPianoRollMonkCards()
                     if (back > 0)
                     {
                         snprintf(buf, sizeof(buf), "%d Health", back);
-                        line("Healed back by prots", kWhite, buf);
+                        line("Spared by prots", kWhite, buf);
+                        ImGui::SameLine(0.f, 10.f);
+                        ImGui::TextColored(kPrDim, "reversed + offset + ~prevented");
                     }
                 }
 
@@ -1732,7 +1834,7 @@ void ReplayWindow::DrawPianoRollMonkCards()
                         tdl->AddCircleFilled(ImVec2(ax(r), cy), 3.f, TeamColour(team, 0x90));
                     const float med = ax(PrMedian(timings));
                     tdl->AddRectFilled(ImVec2(med - 1.f, cy - 7.f), ImVec2(med + 1.f, cy + 7.f), IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
-                    ImGui::TextColored(kPrDim, "0 = the first hit. Left of 0: up before the damage. Gold = their usual timing.");
+                    ImGui::TextColored(kPrDim, "0 = the first enemy hit. Left of 0: their help was on before the damage. Gold = their median.");
                 }
 
                 // What they answered with, most used first.
@@ -1767,7 +1869,16 @@ void ReplayWindow::DrawPianoRollMonkCards()
                         if (const auto bit = backBySkill.find(used[u].first); bit != backBySkill.end() && bit->second > 0)
                         {
                             ImGui::SameLine(0.f, 10.f);
-                            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%d healed back", bit->second);
+                            const char* verb = "spared";
+                            switch (ProtEfficiency::KindOf(used[u].first))
+                            {
+                            case ProtEfficiency::Kind::Reversed:         verb = "reversed"; break;
+                            case ProtEfficiency::Kind::Offset:           verb = "offset"; break;
+                            case ProtEfficiency::Kind::FlatReduction:
+                            case ProtEfficiency::Kind::PercentReduction: verb = "prevented"; break;
+                            default: break;
+                            }
+                            ImGui::TextColored(ImVec4(0.74f, 0.82f, 0.70f, 1.f), "%d %s", bit->second, verb);
                         }
                     }
                 }

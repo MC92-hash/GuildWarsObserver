@@ -42,31 +42,27 @@
 
 void ReplayWindow::BuildMeterAbsCache()
 {
-    if (m_meterAbsCacheBuilt || !m_maxHpSolved) return;
+    // The meters add up the same ledger as the Damage & Healing window: each packet at the number
+    // its floater shows, degeneration credited to its caster, minions to their master, no-caster
+    // party heals to the skill's caster; map effects, own Health costs, resurrection and victory
+    // heals are not anyone's. The ledger is rebuilt once the attributes are solved; so is this.
+    if (!m_agentsClassified || !m_maxHpSolved) return;
+    const bool ledgerStale = !m_ledgerBuilt || (!m_ledgerUsedAttributes && m_attributesDeduced);
+    if (m_meterAbsCacheBuilt && !ledgerStale) return;
+    if (ledgerStale) BuildBattleLedger();
+
     m_meterAbsCache.clear();
-    m_meterAbsCache.reserve(m_replayCtx.stocData.combat.size());
-
-    // Recorded max_hp is the effective value the packet fractions are taken
-    // against; the solved per-weapon-set value is the fallback. See
-    // ResolveMaxHp for why this order matters.
-    auto findMaxHp = [&](int agentId, float t) -> uint32_t {
-        auto it = m_replayCtx.agents.find(agentId);
-        if (it == m_replayCtx.agents.end()) return 0;
-        if (uint32_t m = it->second.maxHpAtTime(t)) return m;
-        return it->second.solvedMaxHpAtTime(t);
-    };
-
-    for (auto& ce : m_replayCtx.stocData.combat)
+    m_meterAbsCache.reserve(m_ledger.size());
+    for (const LedgerLine& ln : m_ledger)
     {
-        if (!ce.IsDamageOrHeal()) continue;
-        uint32_t mhp = CorrectMaxHpForPacket(findMaxHp(ce.target_id, ce.time), ce.value);
-        int absVal = (mhp > 0)
-            ? (int)std::lround(std::fabs((double)ce.value) * mhp) : 0;
-        if (absVal <= 0) continue;
-        bool isDmg = (ce.value < 0.f);
-        m_meterAbsCache.push_back({ ce.time, ce.caster_id, absVal, isDmg });
+        if (ln.src <= 0 || ln.amount <= 0 || IsLedgerMapRow(ln.rowKey)) continue;
+        const bool dmg  = ln.kind == LedgerKind::Damage;
+        const bool heal = ln.kind == LedgerKind::Heal || ln.kind == LedgerKind::DivineFavor;
+        if (!dmg && !heal) continue;
+        m_meterAbsCache.push_back({ ln.t, ln.src, ln.amount, dmg });
     }
     m_meterAbsCacheBuilt = true;
+    m_meterLastTime = -1.f;   // accumulate again from the start with the new lines
 }
 
 ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard, float t) const
@@ -741,6 +737,14 @@ void ReplayWindow::DrawPartyWindows()
             }
 
             float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
+            // The meters grow outward from the panel on its own side; where that would leave the
+            // screen (the panel dragged to an edge), they go on the panel's other side, as in Iris.
+            bool meterRight = leftSide;
+            {
+                const float need = maxBarW + 8.f;
+                if (meterRight && wPos.x + wSize.x + need > vp->Pos.x + vpW) meterRight = false;
+                else if (!meterRight && wPos.x - need < vp->Pos.x) meterRight = true;
+            }
             // Morale + effects beside the player rows, as Iris draws them: right of the panel, or left
             // when the widest strip would leave the screen, one side per panel with hysteresis; past
             // the meters when they grow on the same side.
@@ -750,8 +754,8 @@ void ReplayWindow::DrawPartyWindows()
                 static std::unordered_map<std::string, bool> s_effectsOnLeft;
                 const bool meters = m_showDamageMeter || m_showHealMeter;
                 const float barL = ImGui::GetCursorScreenPos().x, barR = barL + availW;
-                const float rightX = std::max(wPos.x + wSize.x, meters && leftSide ? barR + 2.f + maxBarW : 0.f) + 4.f;
-                const float leftX  = std::min(wPos.x, meters && !leftSide ? barL - 2.f - maxBarW : wPos.x) - 4.f;
+                const float rightX = std::max(wPos.x + wSize.x, meters && meterRight ? barR + 2.f + maxBarW : 0.f) + 4.f;
+                const float leftX  = std::min(wPos.x, meters && !meterRight ? barL - 2.f - maxBarW : wPos.x) - 4.f;
                 const float widest = PartyEffectStripWidest(kBarHeight);
                 const float screenR = vp->Pos.x + vpW;
                 bool& onLeft = s_effectsOnLeft[layoutKey];
@@ -759,7 +763,7 @@ void ReplayWindow::DrawPartyWindows()
                 else if (onLeft && rightX + widest + 24.f <= screenR) onLeft = false;
                 strip = { onLeft ? leftX : rightX, onLeft, dl->GetClipRectMin().y, dl->GetClipRectMax().y };
             }
-            DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW,
+            DrawBars(dl, availW, playerIds, kBarHeight, false, meterRight, maxBarW,
                      teamTotalDmg, teamTotalHeal, true, m_showPartyEffects ? &strip : nullptr);
 
             if (m_showDamageMeter || m_showHealMeter)
@@ -773,10 +777,10 @@ void ReplayWindow::DrawPartyWindows()
                     if (h != m_meterHeal.end()) pHeal += h->second.value;
                 }
                 ImDrawList* fgDl = ImGui::GetForegroundDrawList();
-                float sumAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                float sumAnchorX = meterRight ? (wPos.x + wSize.x) : wPos.x;
                 DrawMeterSumText(fgDl, sumAnchorX, wPos.y + 12.f, 20.f,
                                  pDmg, pHeal,
-                                 m_showDamageMeter, m_showHealMeter, leftSide);
+                                 m_showDamageMeter, m_showHealMeter, meterRight);
             }
 
             // Allies collapsible section
@@ -806,11 +810,11 @@ void ReplayWindow::DrawPartyWindows()
                         auto h = m_meterHeal.find(id);
                         if (h != m_meterHeal.end()) aHeal += h->second.value;
                     }
-                    float allyAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                    float allyAnchorX = meterRight ? (wPos.x + wSize.x) : wPos.x;
                     DrawMeterSumText(ImGui::GetForegroundDrawList(),
                                      allyAnchorX, alliesHeaderPos.y, ImGui::GetFrameHeight(),
                                      aDmg, aHeal,
-                                     m_showDamageMeter, m_showHealMeter, leftSide);
+                                     m_showDamageMeter, m_showHealMeter, meterRight);
                 }
 
                 // Auto-resize on open/close transition
@@ -831,11 +835,11 @@ void ReplayWindow::DrawPartyWindows()
                 }
 
                 if (!pinnedNpcIds.empty())
-                    DrawBars(dl, availW, pinnedNpcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                    DrawBars(dl, availW, pinnedNpcIds, kNpcBarHeight, true, meterRight, maxBarW,
                              teamTotalDmg, teamTotalHeal);
                 if (alliesOpen && !foldNpcIds.empty())
                 {
-                    DrawBars(dl, availW, foldNpcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                    DrawBars(dl, availW, foldNpcIds, kNpcBarHeight, true, meterRight, maxBarW,
                              teamTotalDmg, teamTotalHeal);
                 }
             }
