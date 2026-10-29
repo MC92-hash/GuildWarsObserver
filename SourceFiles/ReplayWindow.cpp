@@ -7813,6 +7813,12 @@ void ReplayWindow::DrawImGuiOverlay()
             if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
 
+            // Up/Down arrows: tap = ±30s, hold = continuous ±30s at repeat rate
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))
+                m_debugTimeline = std::min(maxT, m_debugTimeline + 30.f);
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))
+                m_debugTimeline = std::max(0.f, m_debugTimeline - 30.f);
+
             if (HotkeyFired(hk.playPause))
                 m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
 
