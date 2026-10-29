@@ -2121,7 +2121,11 @@ private:
     bool  m_pianoRollTeam1Open  = true;
     bool  m_pianoRollTeam2Open  = true;
     float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
-    int   m_pianoRollPinned     = -1;    // player whose casts (out and in) are linked on the roll
+    std::vector<int> m_pianoRollPinned;  // players picked on the roll (ctrl+click adds): their casts are linked
+    int   m_pianoRollPinDir     = 0;     // what the picked players show: 0 both ways, 1 their casts out, 2 the casts on them
+    bool  m_pianoRollPinFromSpike = false; // the pick came from a spike (bar, arrows): it follows the card
+    bool  m_pianoRollHideRest   = false; // the casts outside the pick hidden instead of faded
+    bool  m_pianoRollFollowSpikes = true; // the card (and a pick made from it) moves to the spike at the playhead
     bool  m_pianoRollLanes      = true;  // the thin "incoming" lane under each player row
     int   m_pianoRollSpikeSel   = -1;    // spike picked with the card's arrows or the spike bar
     int   m_pianoRollMonkSel    = -1;    // Monk card picked: the spike bar marks the spikes they answered

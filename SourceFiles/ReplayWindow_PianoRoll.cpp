@@ -70,7 +70,7 @@ namespace
         if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         return pressed;
     }
-    int  sPrFindSkill  = 0;
+    std::vector<int> sPrFindSkills;   // the skills found on the roll
     char sPrFindText[64] = {};
 
     constexpr float kSpikeWindow   = 1.5f;
@@ -79,6 +79,18 @@ namespace
     constexpr float kAnswerAfter   = 3.f;
 
     float HitTime(const SkillUseEvent& ev) { return std::max(ev.endTime, ev.startTime); }
+
+    bool PrPicked(const std::vector<int>& picked, int id) { return std::find(picked.begin(), picked.end(), id) != picked.end(); }
+
+    // Whether a cast belongs to the pick: by a picked player (out), on one (in), or either (both).
+    // Nothing picked: every cast does.
+    bool PrInPick(const std::vector<int>& picked, int dir, int casterId, int targetId)
+    {
+        if (picked.empty()) return true;
+        const bool out = PrPicked(picked, casterId);
+        const bool in  = targetId >= 0 && targetId != casterId && PrPicked(picked, targetId);
+        return dir == 1 ? out : dir == 2 ? in : out || in;
+    }
 
     ImU32 TeamColour(uint8_t team, int alpha)
     {
@@ -203,7 +215,7 @@ void ReplayWindow::DrawPianoRollPanel()
     const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
     const int nRows = std::max(1, nBlueRows + nRedRows);
     const float minRowH = m_pianoRollLanes ? 32.f : 26.f;
-    const float totalH = 32.f + kSpikeBarH + kTimeAxisH + 2.f * kTeamLabelH + nRows * minRowH * 1.3f + kMonkH;
+    const float totalH = 90.f + kSpikeBarH + kTimeAxisH + 2.f * kTeamLabelH + nRows * minRowH * 1.3f + kMonkH;
 
     const float screenW = io.DisplaySize.x;
 
@@ -256,27 +268,30 @@ void ReplayWindow::DrawPianoRollPanel()
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.f, 0.f));
     const int cardSpike = PianoRollCardSpike(now);
     {
-        // A player pinned through a spike (the card's arrows, the bar) follows the card to the next
-        // spike's target as the timeline plays on; a player pinned by hand stays.
+        // A player picked through a spike (the card's arrows, the bar) follows the card to the next
+        // spike's target as the timeline plays on; a player picked by hand stays.
         static int sCardTarget = -1;
         if (cardSpike >= 0)
         {
             const int target = m_spikes[cardSpike].target;
-            if (target != sCardTarget && sCardTarget >= 0 && m_pianoRollPinned == sCardTarget) m_pianoRollPinned = target;
+            if (target != sCardTarget && m_pianoRollFollowSpikes && m_pianoRollPinFromSpike &&
+                m_pianoRollPinned.size() == 1 && m_pianoRollPinned[0] == sCardTarget)
+                m_pianoRollPinned = { target };
             sCardTarget = target;
         }
     }
     DrawPianoRollSpikeBar(winStart, winEnd, cardSpike);
 
-    // ── Toolbar: lanes, spike boxes, find a skill, the zoom hint ──
+    // ── Toolbar: three rows that never move - the players picked, the skills found, the view ──
     {
-        constexpr float kBarH = 32.f;
-        const ImVec2 t0 = ImGui::GetCursorScreenPos();
-        const float tw = ImGui::GetContentRegionAvail().x;
+        constexpr float kBarH   = 30.f;
+        constexpr float kTitleW = 62.f;   // the rows' titles, one column
         ImDrawList* wdl = ImGui::GetWindowDrawList();
-        wdl->AddLine(ImVec2(t0.x, t0.y + kBarH - 0.5f), ImVec2(t0.x + tw, t0.y + kBarH - 0.5f), IM_COL32(0x66, 0x54, 0x26, 0x66));
+        const float tx0 = ImGui::GetCursorScreenPos().x;
+        const float tw = ImGui::GetContentRegionAvail().x;
+        float rowY = ImGui::GetCursorScreenPos().y;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.f, 4.f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.f, 3.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.f, 3.f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.f);
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.f);
         ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.04f, 0.05f, 0.06f, 0.80f));
@@ -288,79 +303,94 @@ void ReplayWindow::DrawPianoRollPanel()
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.12f, 0.12f, 0.13f, 0.95f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.16f, 0.15f, 0.12f, 1.f));
         ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(0.88f, 0.75f, 0.31f, 0.35f));
-        ImGui::SetCursorScreenPos(ImVec2(t0.x + 10.f, t0.y + (kBarH - ImGui::GetFrameHeight()) * 0.5f));
-        ImGui::Checkbox("Incoming lanes", &m_pianoRollLanes);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Under each player, a thin line for the casts aimed at them,\nin the caster's team colour.");
-        ImGui::SameLine(0.f, 18.f);
-        ImGui::Checkbox("Spike boxes", &sPrSpikeBoxes);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The red boxes around spikes on the roll.");
-
-        // Find a skill, like the Library's skill search: type a name and pick it from the list; the
-        // picked skill shows as its icon, and clicking the icon clears the search.
-        ImGui::SameLine(0.f, 28.f);
-        static std::vector<int> sUsed;
-        static const void* sUsedOwner = nullptr;
-        if (sUsedOwner != m_spikes.data() || sUsed.empty())
-        {
-            sUsedOwner = m_spikes.data();
-            std::unordered_set<int> ids;
-            for (const auto& [id, ard] : m_replayCtx.agents)
-                for (const auto& ev : ard.skillUseHistory) ids.insert(ev.skillId);
-            sUsed.assign(ids.begin(), ids.end());
-            std::sort(sUsed.begin(), sUsed.end(), [&](int a, int b) { return GetSkillDisplayName(a) < GetSkillDisplayName(b); });
-            if (sPrFindSkill && !ids.count(sPrFindSkill)) sPrFindSkill = 0;
-        }
         const ImVec4 kGoldText(225 / 255.f, 190 / 255.f, 80 / 255.f, 1.f);
-        if (sPrFindSkill)
-        {
-            const std::string name = GetSkillDisplayName(sPrFindSkill);
-            const float chip = ImGui::GetFrameHeight();
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.f, 1.f));
-            bool clear = false;
-            if (ImTextureID tex = LoadSkillIcon(this, dev, sPrFindSkill, m_skillIconIndex, m_skillIconCache))
-                clear = ImGui::ImageButton("##pr_find_chip", tex, ImVec2(chip - 2.f, chip - 2.f));
-            else
-                clear = ImGui::Button("x##pr_find_chip");
-            ImGui::PopStyleVar();
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("%s\nClick to clear the search.", name.c_str());
-                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            }
-            ImGui::SameLine(0.f, 6.f);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(ImVec4(216 / 255.f, 220 / 255.f, 226 / 255.f, 1.f), "%s", name.c_str());
+        const ImVec4 kDimText(0.48f, 0.50f, 0.53f, 1.f);
 
-            // Every use of the skill in the match, by anyone, in time order.
-            std::vector<float> uses;
-            for (const auto& [id, ard] : m_replayCtx.agents)
-                for (const auto& ev : ard.skillUseHistory)
-                    if (ev.skillId == sPrFindSkill) uses.push_back(ev.startTime);
-            std::sort(uses.begin(), uses.end());
-            const float arrow = 20.f;
-            ImGui::SameLine(0.f, 10.f);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ImGui::GetFrameHeight() - arrow) * 0.5f);
-            if (PrGwArrow(dev, "##pr_find_prev", false, arrow))
-                for (auto it = uses.rbegin(); it != uses.rend(); ++it)
-                    if (*it < now - 0.05f) { m_debugTimeline = *it; break; }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous use");
-            ImGui::SameLine(0.f, 4.f);
-            if (PrGwArrow(dev, "##pr_find_next", true, arrow))
-                for (float u : uses)
-                    if (u > now + 0.05f) { m_debugTimeline = u; break; }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next use");
-            ImGui::SameLine(0.f, 8.f);
-            const int at = static_cast<int>(std::upper_bound(uses.begin(), uses.end(), now + 0.05f) - uses.begin());
+        // A row: its title in the left column, the cursor on the row's first widget.
+        auto beginRow = [&](const char* title) {
+            wdl->AddText(ImVec2(tx0 + 10.f, rowY + (kBarH - ImGui::GetTextLineHeight()) * 0.5f), IM_COL32(0xB0, 0xAA, 0x98, 0xFF), title);
+            ImGui::SetCursorScreenPos(ImVec2(tx0 + 10.f + kTitleW, rowY + (kBarH - ImGui::GetFrameHeight()) * 0.5f));
+        };
+        auto endRow = [&]() {
+            rowY += kBarH;
+            wdl->AddLine(ImVec2(tx0, rowY - 0.5f), ImVec2(tx0 + tw, rowY - 0.5f), IM_COL32(0x66, 0x54, 0x26, 0x50));
+        };
+        // Joined buttons, the chosen one lit in gold; greyed and inert when `enabled` is false.
+        struct Seg { int value; const char* label; const char* help; };
+        auto segmented = [&](const char* id, int& value, std::initializer_list<Seg> segs, bool enabled, const char* offHelp) {
+            ImGui::PushID(id);
+            ImGui::BeginDisabled(!enabled);
+            bool first = true;
+            for (const Seg& s : segs)
+            {
+                if (!first) ImGui::SameLine(0.f, 0.f);
+                first = false;
+                const bool on = value == s.value;
+                if (on) { ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.88f, 0.75f, 0.31f, 0.28f)); ImGui::PushStyleColor(ImGuiCol_Text, kGoldText); }
+                if (ImGui::Button(s.label)) value = s.value;
+                if (on) ImGui::PopStyleColor(2);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", enabled ? s.help : offHelp);
+            }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        };
+
+        // ── Players: what of theirs shows, then the picked players (click a name on the roll) ──
+        beginRow("Players");
+        segmented("pr_dir", m_pianoRollPinDir, {
+            { 1, "Their casts",   "Only the casts BY the picked players, with a line to each target." },
+            { 2, "Casts on them", "Only the casts AIMED AT the picked players, with a line from each caster." },
+            { 0, "Both",          "The casts by the picked players and the casts aimed at them." } },
+            !m_pianoRollPinned.empty(), "Pick a player first: click a name on the left of the roll.");
+        ImGui::SameLine(0.f, 14.f);
+        if (m_pianoRollPinned.empty())
+        {
             ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(kGoldText, "%d / %d", at, static_cast<int>(uses.size()));
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uses of this skill up to now, out of the whole match.");
-            if (clear) sPrFindSkill = 0;
+            ImGui::TextColored(kDimText, "Click a name on the roll to pick a player, Ctrl+click to pick more.");
         }
         else
         {
-            ImGui::SetNextItemWidth(220.f);
+            int drop = -1;
+            for (int id : m_pianoRollPinned)
+            {
+                auto pit = m_replayCtx.agents.find(id);
+                if (pit == m_replayCtx.agents.end()) continue;
+                char lbl[96];
+                snprintf(lbl, sizeof(lbl), "%s  x##pr_pick%d", pit->second.playerName.c_str(), id);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(TeamColour(pit->second.teamId, 255)));
+                if (ImGui::Button(lbl)) drop = id;
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to unpick %s.", pit->second.playerName.c_str());
+                ImGui::SameLine(0.f, 4.f);
+            }
+            if (drop >= 0) m_pianoRollPinned.erase(std::find(m_pianoRollPinned.begin(), m_pianoRollPinned.end(), drop));
+            ImGui::SameLine(0.f, 8.f);
+            if (ImGui::SmallButton("Clear##pr_pick_clear")) m_pianoRollPinned.clear();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unpick every player.");
+            if (m_pianoRollPinned.empty()) m_pianoRollPinFromSpike = false;
+        }
+        endRow();
+
+        // ── Skills: the search box always there, the skills found after it as icons ──
+        beginRow("Skills");
+        {
+            static std::vector<int> sUsed;
+            static const void* sUsedOwner = nullptr;
+            if (sUsedOwner != m_spikes.data() || sUsed.empty())
+            {
+                sUsedOwner = m_spikes.data();
+                std::unordered_set<int> ids;
+                for (const auto& [id, ard] : m_replayCtx.agents)
+                    for (const auto& ev : ard.skillUseHistory) ids.insert(ev.skillId);
+                sUsed.assign(ids.begin(), ids.end());
+                std::sort(sUsed.begin(), sUsed.end(), [&](int a, int b) { return GetSkillDisplayName(a) < GetSkillDisplayName(b); });
+                std::erase_if(sPrFindSkills, [&](int s) { return !ids.count(s); });
+            }
+
+            ImGui::SetNextItemWidth(200.f);
             ImGui::InputTextWithHint("##pr_find", "Find a skill...", sPrFindText, sizeof(sPrFindText));
+            if (ImGui::IsItemHovered() && !ImGui::IsItemActive())
+                ImGui::SetTooltip("Type a skill name and pick it from the list.\nPick several to follow them together.");
             const ImVec2 inMin = ImGui::GetItemRectMin(), inMax = ImGui::GetItemRectMax();
             const bool inputActive = ImGui::IsItemActive();
             static bool sListHovered = false;
@@ -371,6 +401,7 @@ void ReplayWindow::DrawPianoRollPanel()
                 std::vector<int> hits;
                 for (int id : sUsed)
                 {
+                    if (PrPicked(sPrFindSkills, id)) continue;
                     std::string low = GetSkillDisplayName(id);
                     std::transform(low.begin(), low.end(), low.begin(), [](unsigned char c) { return (char)std::tolower(c); });
                     if (low.find(q) != std::string::npos) hits.push_back(id);
@@ -398,14 +429,14 @@ void ReplayWindow::DrawPianoRollPanel()
                     sListHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows |
                                                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
                     if (hits.empty())
-                        ImGui::TextColored(ImVec4(0.48f, 0.50f, 0.53f, 1.f), "No skill matches");
+                        ImGui::TextColored(kDimText, "No skill matches");
                     for (int id : hits)
                     {
                         const ImVec2 pos = ImGui::GetCursorScreenPos();
                         ImGui::PushID(id);
                         if (ImGui::Selectable("##row", false, 0, ImVec2(0.f, rowH)))
                         {
-                            sPrFindSkill = id;
+                            sPrFindSkills.push_back(id);
                             sPrFindText[0] = 0;
                             sListHovered = false;
                         }
@@ -423,21 +454,168 @@ void ReplayWindow::DrawPianoRollPanel()
             }
             else
                 sListHovered = false;
-        }
 
-        // The zoom hint, right-aligned.
-        const char* hint = "Mouse wheel on the timeline: zoom in / out";
-        const float hw = ImGui::CalcTextSize(hint).x;
-        ImGui::SameLine();
-        const float hx = t0.x + tw - hw - 12.f;
-        if (hx > ImGui::GetCursorScreenPos().x + 10.f)
-        {
-            ImGui::SetCursorScreenPos(ImVec2(hx, t0.y + (kBarH - ImGui::GetTextLineHeight()) * 0.5f));
-            ImGui::TextDisabled("%s", hint);
+            if (sPrFindSkills.empty())
+            {
+                ImGui::SameLine(0.f, 14.f);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(kDimText, "The skills found are framed in gold on the roll.");
+            }
+            else
+            {
+                // The skills found, one icon each: click one to drop it.
+                const float chip = ImGui::GetFrameHeight();
+                int drop = -1;
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.f, 1.f));
+                for (size_t i = 0; i < sPrFindSkills.size(); ++i)
+                {
+                    const int sid = sPrFindSkills[i];
+                    ImGui::SameLine(0.f, i == 0 ? 10.f : 3.f);
+                    ImGui::PushID(sid);
+                    bool clicked = false;
+                    if (ImTextureID tex = LoadSkillIcon(this, dev, sid, m_skillIconIndex, m_skillIconCache))
+                        clicked = ImGui::ImageButton("##chip", tex, ImVec2(chip - 2.f, chip - 2.f));
+                    else
+                        clicked = ImGui::Button("?##chip", ImVec2(chip, chip));
+                    ImGui::PopID();
+                    if (clicked) drop = sid;
+                    if (ImGui::IsItemHovered())
+                    {
+                        ImGui::SetTooltip("%s\nClick to drop it from the search.", GetSkillDisplayName(sid).c_str());
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    }
+                }
+                ImGui::PopStyleVar();
+
+                // Every use of the skills found, by the picked players when some are, in time order.
+                std::vector<float> uses;
+                for (const auto& [id, ard] : m_replayCtx.agents)
+                    for (const auto& ev : ard.skillUseHistory)
+                        if (PrPicked(sPrFindSkills, ev.skillId) && PrInPick(m_pianoRollPinned, m_pianoRollPinDir, id, ev.targetId))
+                            uses.push_back(ev.startTime);
+                std::sort(uses.begin(), uses.end());
+                const float arrow = 20.f;
+                ImGui::SameLine(0.f, 12.f);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (ImGui::GetFrameHeight() - arrow) * 0.5f);
+                if (PrGwArrow(dev, "##pr_find_prev", false, arrow))
+                    for (auto it = uses.rbegin(); it != uses.rend(); ++it)
+                        if (*it < now - 0.05f) { m_debugTimeline = *it; break; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Previous use");
+                ImGui::SameLine(0.f, 4.f);
+                if (PrGwArrow(dev, "##pr_find_next", true, arrow))
+                    for (float u : uses)
+                        if (u > now + 0.05f) { m_debugTimeline = u; break; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next use");
+                ImGui::SameLine(0.f, 8.f);
+                const int at = static_cast<int>(std::upper_bound(uses.begin(), uses.end(), now + 0.05f) - uses.begin());
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(kGoldText, "%d / %d uses", at, static_cast<int>(uses.size()));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(m_pianoRollPinned.empty() ? "Uses of these skills up to now, out of the whole match."
+                                                                : "Uses of these skills up to now, out of the whole match,\n"
+                                                                  "counting only the picked players' casts (Players row).");
+                ImGui::SameLine(0.f, 10.f);
+                if (ImGui::SmallButton("Clear##pr_find_clear")) sPrFindSkills.clear();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drop every skill from the search.");
+                if (drop >= 0) sPrFindSkills.erase(std::find(sPrFindSkills.begin(), sPrFindSkills.end(), drop));
+            }
         }
+        endRow();
+
+        // ── View: the casts outside the picks, the roll's marks, the zoom hint ──
+        beginRow("View");
+        {
+            int rest = m_pianoRollHideRest ? 1 : 0;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Other casts");
+            ImGui::SameLine(0.f, 6.f);
+            segmented("pr_rest", rest, {
+                { 0, "Dimmed", "The casts outside the picked players and skills stay, dimmed." },
+                { 1, "Hidden", "The casts outside the picked players and skills are not drawn." } },
+                !m_pianoRollPinned.empty() || !sPrFindSkills.empty(), "Pick a player or find a skill first.");
+            m_pianoRollHideRest = rest == 1;
+        }
+        ImGui::SameLine(0.f, 22.f);
+        ImGui::Checkbox("Casts received", &m_pianoRollLanes);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Under each name, a thin line for every cast aimed at that player,\n"
+                              "in the caster's team colour: it runs for the cast time, from the\n"
+                              "cast's start to its end, with a mark at the end.");
+        ImGui::SameLine(0.f, 16.f);
+        ImGui::Checkbox("Spike boxes", &sPrSpikeBoxes);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The red boxes around spikes on the roll.");
+        ImGui::SameLine(0.f, 16.f);
+        if (ImGui::Checkbox("Follow spikes", &m_pianoRollFollowSpikes) && !m_pianoRollFollowSpikes)
+            m_pianoRollSpikeSel = cardSpike;   // the card stays on the spike it shows
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("On: the spike card moves to the spike at the playhead.\n"
+                              "Off: the card stays put; it changes only with its arrows or the spike bar,\n"
+                              "and the players you picked are never changed for you.");
+        ImGui::SameLine(0.f, 16.f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("(?)");
+        if (ImGui::IsItemHovered())
+        {
+            // The key: each line drawn the way the roll draws it, then what it means.
+            ImGui::BeginTooltip();
+            ImGui::TextColored(kGoldText, "Reading the roll");
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Each player's own casts: the skill icon where the cast starts,\n"
+                                   "and under it a line for the cast time, until the cast ends.");
+            ImGui::Spacing();
+            ImDrawList* kdl = ImGui::GetWindowDrawList();
+            const float sw = 34.f, lh = ImGui::GetTextLineHeight();
+            auto keyRow = [&](auto&& draw, const char* text, ImU32 textCol) {
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                draw(p, lh);
+                ImGui::SetCursorScreenPos(ImVec2(p.x + sw + 10.f, p.y));
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(textCol), "%s", text);
+            };
+            auto castLine = [&](ImU32 c1, ImU32 c2) {
+                return [=](ImVec2 p, float h) {
+                    const float y = std::round(p.y + h * 0.5f);
+                    if (c2) {
+                        kdl->AddRectFilled(ImVec2(p.x, y - 1.f), ImVec2(p.x + sw * 0.5f - 1.f, y + 1.f), c1, 1.f);
+                        kdl->AddRectFilled(ImVec2(p.x + sw * 0.5f + 1.f, y - 1.f), ImVec2(p.x + sw, y + 1.f), c2, 1.f);
+                    } else
+                        kdl->AddRectFilled(ImVec2(p.x, y - 1.f), ImVec2(p.x + sw, y + 1.f), c1, 1.f);
+                };
+            };
+            keyRow(castLine(TeamColour(1, 255), TeamColour(2, 255)), "Team colour: the cast went through", IM_COL32(216, 220, 226, 255));
+            keyRow(castLine(IM_COL32(0x90, 0x30, 0xD0, 0xFF), 0), "Purple: the cast was interrupted", IM_COL32(0xB8, 0x70, 0xF0, 0xFF));
+            keyRow(castLine(IM_COL32(0xE0, 0x80, 0x20, 0xFF), 0), "Orange: the cast was cancelled by the player", IM_COL32(0xE0, 0x80, 0x20, 0xFF));
+            ImGui::Spacing();
+            keyRow([&](ImVec2 p, float h) {
+                    const float y = std::round(p.y + h * 0.5f);
+                    kdl->AddLine(ImVec2(p.x + 2.f, y), ImVec2(p.x + sw - 6.f, y), TeamColour(2, 230), 1.f);
+                    kdl->AddRectFilled(ImVec2(p.x + sw - 6.f, y - 4.f), ImVec2(p.x + sw - 3.f, y + 4.f), TeamColour(2, 230));
+                }, "Casts received: the thin line under a name, in the caster's team colour", IM_COL32(216, 220, 226, 255));
+            keyRow([&](ImVec2 p, float h) {
+                    kdl->AddRect(ImVec2(p.x + sw * 0.5f - h * 0.5f, p.y), ImVec2(p.x + sw * 0.5f + h * 0.5f, p.y + h),
+                                 IM_COL32(0xE1, 0xBE, 0x50, 0xFF), 3.f, 0, 2.f);
+                }, "Gold frame: a skill found in the Skills row", IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
+            keyRow([&](ImVec2 p, float h) {
+                    kdl->AddRectFilled(ImVec2(p.x, p.y + 1.f), ImVec2(p.x + sw, p.y + h - 1.f), IM_COL32(0xE8, 0x50, 0x48, 0x30));
+                    kdl->AddRect(ImVec2(p.x, p.y + 1.f), ImVec2(p.x + sw, p.y + h - 1.f), IM_COL32(0xFF, 0x8A, 0x80, 0xFF), 2.f, 0, 1.5f);
+                }, "Red box: a spike", IM_COL32(0xFF, 0x8A, 0x80, 0xFF));
+            ImGui::EndTooltip();
+        }
+        {
+            const char* hint = "Mouse wheel on the timeline: zoom";
+            const float hw = ImGui::CalcTextSize(hint).x;
+            ImGui::SameLine();
+            const float hx = tx0 + tw - hw - 12.f;
+            if (hx > ImGui::GetCursorScreenPos().x + 10.f)
+            {
+                ImGui::SetCursorScreenPos(ImVec2(hx, rowY + (kBarH - ImGui::GetTextLineHeight()) * 0.5f));
+                ImGui::TextDisabled("%s", hint);
+            }
+        }
+        endRow();
+
         ImGui::PopStyleColor(9);
         ImGui::PopStyleVar(4);
-        ImGui::SetCursorScreenPos(ImVec2(t0.x, t0.y + kBarH));
+        ImGui::SetCursorScreenPos(ImVec2(tx0, rowY));
     }
 
     const float availH = ImGui::GetContentRegionAvail().y;
@@ -527,7 +705,7 @@ void ReplayWindow::DrawPianoRollPanel()
             if (HitTime(*it) >= winStart) fn(*it);
     };
 
-    std::unordered_map<int, float> rowTopOf;   // laid-out player rows, for the incoming lanes and links
+    std::unordered_map<int, float> rowTopOf;   // laid-out player rows, for the hits-taken lines and links
     std::vector<CastRef> hoverPile;            // what the hover table shows this frame
     std::string hoverHeadline;
     const SkillUseEvent* hoverCast = nullptr;
@@ -603,7 +781,7 @@ void ReplayWindow::DrawPianoRollPanel()
 
             const bool rowHovered = ImGui::IsMouseHoveringRect(ImVec2(cp.x, rowTop), ImVec2(cp.x + panelW, rowBot));
             if (rowHovered) m_pianoRollHoverRow = agentId;
-            const bool pinned = m_pianoRollPinned == agentId;
+            const bool pinned = PrPicked(m_pianoRollPinned, agentId);
 
             const AgentSnapshot* snap = getSnap(agentId, now);
             const bool isDead = snap && snap->is_dead;
@@ -656,8 +834,21 @@ void ReplayWindow::DrawPianoRollPanel()
                 if (overName && !m_annotationMgr.IsDrawModeActive())
                 {
                     if (ImGui::IsMouseDoubleClicked(0))  OpenPlayerInfoPanel(agentId);
-                    else if (ImGui::IsMouseClicked(0))   m_pianoRollPinned = pinned ? -1 : agentId;
-                    ImGui::SetTooltip("Click: show who %s casts on and who casts on them\nDouble-click: player info",
+                    else if (ImGui::IsMouseClicked(0))
+                    {
+                        // Ctrl+click adds or removes the player; a plain click picks them alone (again: none).
+                        auto& pick = m_pianoRollPinned;
+                        if (io.KeyCtrl)
+                        {
+                            if (pinned) pick.erase(std::find(pick.begin(), pick.end(), agentId));
+                            else        pick.push_back(agentId);
+                        }
+                        else if (pinned && pick.size() == 1) pick.clear();
+                        else                                 pick = { agentId };
+                        m_pianoRollPinFromSpike = false;
+                    }
+                    ImGui::SetTooltip("Click: pick %s - the Players row above sets what shows\n"
+                                      "Ctrl+click: add or remove them from the picked players\nDouble-click: player info",
                                       ard.playerName.c_str());
                 }
             }
@@ -669,11 +860,13 @@ void ReplayWindow::DrawPianoRollPanel()
             forEachInWindow(ard, [&](const SkillUseEvent& ev) {
                 const float x0 = std::round(timeToX(ev.startTime));
                 const float x1 = std::round(timeToX(HitTime(ev)));
-                const bool linked = m_pianoRollPinned < 0 || m_pianoRollPinned == agentId || ev.targetId == m_pianoRollPinned;
+                const bool linked = PrInPick(m_pianoRollPinned, m_pianoRollPinDir, agentId, ev.targetId);
+                const bool found = PrPicked(sPrFindSkills, ev.skillId);
+                const bool skillOk = sPrFindSkills.empty() || found;
+                if ((!linked || !skillOk) && m_pianoRollHideRest) return;
                 float a = ev.startTime > now ? 0.5f : 1.f;
-                if (!linked) a *= 0.25f;
-                const bool found = sPrFindSkill != 0 && ev.skillId == sPrFindSkill;
-                if (sPrFindSkill != 0 && !found) a *= 0.3f;
+                if (!linked) a *= 0.12f;
+                else if (!skillOk) a *= 0.3f;
                 const ImU32 edge = ev.wasInterrupted ? IM_COL32(0x90, 0x30, 0xD0, 0xFF)
                                  : ev.wasCancelled   ? IM_COL32(0xE0, 0x80, 0x20, 0xFF) : TeamColour(ard.teamId, 0xFF);
                 const ImU32 edgeA = (edge & ~IM_COL32_A_MASK) | (static_cast<ImU32>(220 * a) << IM_COL32_A_SHIFT);
@@ -730,7 +923,7 @@ void ReplayWindow::DrawPianoRollPanel()
         dl->AddText(font, font->FontSize, ImVec2(x1 + 4.f, rit->second + 2.f), IM_COL32(0xFF, 0x8A, 0x80, 0xFF), lbl);
     }
 
-    // Incoming lanes: every cast aimed at a laid-out player, as a mark at its hit with a thin line
+    // Hits taken: every cast aimed at a laid-out player, as a mark at its hit with a thin line
     // back to its start, in the caster's team colour.
     if (m_pianoRollLanes)
         for (const auto& [casterId, caster] : m_replayCtx.agents)
@@ -738,8 +931,10 @@ void ReplayWindow::DrawPianoRollPanel()
                 if (ev.targetId < 0 || ev.targetId == casterId) return;
                 auto rit = rowTopOf.find(ev.targetId);
                 if (rit == rowTopOf.end()) return;
-                const bool linked = m_pianoRollPinned < 0 || m_pianoRollPinned == casterId || ev.targetId == m_pianoRollPinned;
-                const int alpha = (int)((ev.startTime > now ? 120 : 230) * (linked ? 1.f : 0.25f));
+                const bool linked = PrInPick(m_pianoRollPinned, m_pianoRollPinDir, casterId, ev.targetId) &&
+                                    (sPrFindSkills.empty() || PrPicked(sPrFindSkills, ev.skillId));
+                if (!linked && m_pianoRollHideRest) return;
+                const int alpha = (int)((ev.startTime > now ? 120 : 230) * (linked ? 1.f : 0.12f));
                 const ImU32 col = TeamColour(caster.teamId, alpha);
                 const float laneY = rit->second + kCastLaneH;
                 const float xs = std::round(timeToX(ev.startTime)), xh = std::round(timeToX(HitTime(ev)));
@@ -765,10 +960,11 @@ void ReplayWindow::DrawPianoRollPanel()
         dl->AddBezierCubic(p0, ImVec2(p0.x + bend, p0.y), ImVec2(p1.x - bend, p1.y), p1, col, 1.5f);
         dl->AddCircleFilled(p1, 3.f, IM_COL32(0xE1, 0xBE, 0x50, 0xFF));
     };
-    if (m_pianoRollPinned >= 0)
+    if (!m_pianoRollPinned.empty())
         for (const auto& [casterId, caster] : m_replayCtx.agents)
             forEachInWindow(caster, [&](const SkillUseEvent& ev) {
-                if (casterId == m_pianoRollPinned || ev.targetId == m_pianoRollPinned) drawLink(ev, casterId);
+                if (PrInPick(m_pianoRollPinned, m_pianoRollPinDir, casterId, ev.targetId) &&
+                    (sPrFindSkills.empty() || PrPicked(sPrFindSkills, ev.skillId))) drawLink(ev, casterId);
             });
     if (hoverCast)
     {
@@ -1031,6 +1227,9 @@ ReplayWindow::ProtUse ReplayWindow::PianoRollProtUse(const CastRef& answer, int 
 // else the last one whose first cast has started, until 8 s after its last hit.
 int ReplayWindow::PianoRollCardSpike(float now) const
 {
+    // Not following: only the spike picked with the arrows or the bar, wherever the playhead is.
+    if (!m_pianoRollFollowSpikes)
+        return m_pianoRollSpikeSel >= 0 && m_pianoRollSpikeSel < static_cast<int>(m_spikes.size()) ? m_pianoRollSpikeSel : -1;
     int best = -1;   // the latest spike whose first cast has started (within 1 s), until 8 s after it
     for (size_t i = 0; i < m_spikes.size(); ++i)
         if (m_spikes[i].cue - 1.f <= now && now - m_spikes[i].lastHit < 8.f &&
@@ -1136,7 +1335,7 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
             const SpikeInfo& sp = m_spikes[hovered];
             m_debugTimeline = std::max(0.f, sp.cue - 1.f);
             m_pianoRollSpikeSel = hovered;
-            m_pianoRollPinned = sp.target;
+            if (m_pianoRollFollowSpikes) { m_pianoRollPinned = { sp.target }; m_pianoRollPinFromSpike = true; }
         }
     }
     if (ImGui::IsItemActive() && sDragScrub) m_debugTimeline = mouseT;
@@ -1264,7 +1463,7 @@ void ReplayWindow::DrawPianoRollSpikeCard(int cardSpike)
             if (idx < 0) return;
             m_pianoRollSpikeSel = idx;
             m_debugTimeline = std::max(0.f, m_spikes[idx].cue - 1.f);
-            m_pianoRollPinned = m_spikes[idx].target;
+            if (m_pianoRollFollowSpikes) { m_pianoRollPinned = { m_spikes[idx].target }; m_pianoRollPinFromSpike = true; }
         };
         constexpr float kArrow = 22.f;
         if (PrGwArrow(dev, "##pr_prev", false, kArrow))
