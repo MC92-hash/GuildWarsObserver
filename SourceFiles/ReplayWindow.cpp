@@ -41,6 +41,7 @@
 #include <cmath>
 #include <map>
 #include <json.hpp>
+#include "ReplaySync.h"
 #pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
@@ -228,7 +229,8 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("skill_lasers",    "Skill Lasers",         &m_showLaserPanel,       false, true);
     m_panelLayout.RegisterPanel("auto_camera",     "Auto Camera",          &m_showAutoCameraPanel,  false, true);
     m_panelLayout.RegisterPanel("combat_log",      "Combat Log",           &m_showCombatLog,        false, true);
-    m_panelLayout.RegisterPanel("skill_analytics", "Damage & Healing",     &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("skill_analytics", "Breakdown",            &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("stats_panel",     "Stats",                &m_showStatsPanel,       false, true);
     m_panelLayout.RegisterPanel("piano_roll",      "Piano Roll",           &m_showPianoRoll,        false, true);
     m_panelLayout.RegisterPanel("heatmap",         "Heatmap",              &m_heatmapSettings.show, false, true);
     m_panelLayout.RegisterPanel("agent_names",     "Agent Names",          &m_showNameFilterPanel,  false, true);
@@ -6927,6 +6929,16 @@ void ReplayWindow::Tick()
         }
     }
 
+    // The Library's Stats tab follows this replay and may ask it to jump (ReplaySync.h). Times
+    // cross on the displayed clock.
+    if (m_loadingPhase == LoadingPhase::Ready)
+    {
+        float seekT = 0.f;
+        if (ReplaySync::TakeSeek(m_matchMeta.folder_name, seekT))
+            m_debugTimeline = std::clamp(seekT + m_displayTimeOffset, 0.f, std::max(1.f, m_replayCtx.maxReplayTime));
+        ReplaySync::Publish(m_matchMeta.folder_name, m_debugTimeline - m_displayTimeOffset, m_replayCtx.isPlaying);
+    }
+
     // The clip export's exact frame time, or the clip preview's loop.
     if (m_loadingPhase == LoadingPhase::Ready)
     {
@@ -7633,6 +7645,7 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawPlayerContextMenu();
     DrawCombatLog();
     DrawBattleLedgerPanel();
+    DrawStatsPanel();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
     DrawHighlightsPanel();

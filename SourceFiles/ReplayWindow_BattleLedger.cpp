@@ -3,6 +3,9 @@
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "SkillDatabase.h"
+#include "StatsTableView.h"
+#include "GuiGlobalConstants.h"
+#include <filesystem>
 #include "FontConfig.h"
 #include "ui/ui_kit.h"
 #include <algorithm>
@@ -558,6 +561,140 @@ namespace
     }
 }
 
+// The replay's Stats panel holds the analysis file it reads (StatsTableView.h).
+struct StatsTableFile { StatsTable::Loaded loaded; };
+
+namespace
+{
+    // The replay's icons and bold font for the shared Stats table.
+    class ReplayStatsHost : public StatsTable::Host
+    {
+    public:
+        ReplayStatsHost(BattleLedger::Host& inner, ImFont* bold, std::function<void(int, int)> openBars)
+            : m_in(inner), m_bold(bold), m_openBars(std::move(openBars)) {}
+        void OpenBars(int agent, int ledgerTab) override { if (m_openBars) m_openBars(agent, ledgerTab); }
+        ImTextureID SkillIcon(int skillId) override { return m_in.SkillIcon(skillId); }
+        ImTextureID ProfIcon(int prof) override { return m_in.ProfIcon(prof); }
+        ImTextureID UiIcon(const char* file) override { return m_in.UiIcon(file); }
+        std::string SkillName(int skillId) override { return m_in.SkillName(skillId); }
+        const BitmapFont* Digits(int metric) override { return m_in.Digits(metric); }
+        ImFont* Bold() override { return m_bold ? m_bold : ImGui::GetFont(); }
+    private:
+        BattleLedger::Host& m_in;
+        ImFont* m_bold;
+        std::function<void(int, int)> m_openBars;
+    };
+}
+
+// ---------------------------------------------------------------------------
+// The Stats panel: the Library's Stats table (StatsTableView) over this replay, its columns and
+// favourites shared with the Library. It reads the match's match_analysis.json; a missing or old
+// one is written first by this replay (ExportMatchAnalysis, a few seconds, once). Scopes count on
+// the displayed clock: the full match, up to the playhead, or its last 30 s.
+// ---------------------------------------------------------------------------
+void ReplayWindow::DrawStatsPanel()
+{
+    if (!m_showStatsPanel) return;
+    if (!m_agentsClassified) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    const float vpW = io.DisplaySize.x, vpH = io.DisplaySize.y;
+    ImGui::SetNextWindowSizeConstraints(ImVec2(640.f, 320.f), ImVec2(vpW, vpH));
+    if (m_panelLayout.HasSavedSize("stats_panel"))
+        m_panelLayout.ApplySize("stats_panel");
+    else
+        ImGui::SetNextWindowSize(ImVec2(std::min(1100.f, vpW), std::min(640.f, vpH * 0.8f)), ImGuiCond_FirstUseEver);
+    m_panelLayout.ApplyPosition("stats_panel");
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,      ImVec4(0.055f, 0.063f, 0.078f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg,       ImVec4(0.07f, 0.08f, 0.10f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.10f, 0.09f, 0.06f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.16f, 0.12f, 0.06f, 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
+    const bool visible = ImGui::Begin("Stats###replay_stats", &m_showStatsPanel);
+    m_panelLayout.TrackWindow("stats_panel");
+    if (visible)
+    {
+        const ImVec4 dim(0.59f, 0.61f, 0.65f, 1.f);
+        // The file: drawn "Reading..." for one frame first, then read (or written, then read).
+        if (m_statsFileState == 0)
+        {
+            ImGui::TextColored(dim, "Reading the match's stats...");
+            m_statsFileState = 1;
+        }
+        else if (m_statsFileState == 1)
+        {
+            ImGui::TextColored(dim, "Reading the match's stats...");
+            const std::filesystem::path file = std::filesystem::path(m_matchMeta.folder_path) / "match_analysis.json";
+            auto f = std::make_shared<StatsTableFile>();
+            if (StatsTable::LoadFile(file, f->loaded) || (ExportMatchAnalysis(file) && StatsTable::LoadFile(file, f->loaded)))
+            {
+                m_statsFile = f;
+                m_statsFileState = 2;
+            }
+            else m_statsFileState = 3;
+        }
+        else if (m_statsFileState == 3)
+            ImGui::TextColored(dim, "Stats are not available for this match.");
+        else if (m_statsFile)
+        {
+            // Scope, and Total / Per minute (shared with the Library).
+            const float now = m_debugTimeline - m_displayTimeOffset;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(dim, "SCOPE");
+            ImGui::SameLine(0.f, 10.f);
+            const char* kScopes[] = { "Full match", "Up to now", "Last 30 s" };
+            for (int i = 0; i < 3; ++i)
+            {
+                if (i) ImGui::SameLine(0.f, 4.f);
+                if (BattleLedger::Pill(kScopes[i], m_statsPanelScope == i)) m_statsPanelScope = i;
+            }
+            ImGui::SameLine(0.f, 12.f);
+            ImGui::TextColored(dim, "%s", Clock(std::max(0.f, now)).c_str());
+            const float comboW = ImGui::CalcTextSize("Per minute").x + 40.f;
+            ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - comboW - ImGui::CalcTextSize("Show").x - 8.f);
+            ImGui::TextColored(dim, "Show");
+            ImGui::SameLine(0.f, 8.f);
+            ImGui::SetNextItemWidth(comboW);
+            int show = StatsTable::PerMinute() ? 1 : 0;
+            if (ImGui::Combo("##replay_stats_show", &show, "Total\0Per minute\0")) StatsTable::SetPerMinute(show == 1);
+            ImGui::Dummy(ImVec2(0.f, 2.f));
+
+            const float pre = (float)m_statsFile->loaded.gateSeconds;
+            const float r0 = m_statsPanelScope == 2 ? now - 30.f : -pre;
+            const float r1 = m_statsPanelScope == 0 ? 1.0e9f : now;
+
+            StatsTable::SetFavouritesFile(GuiGlobalConstants::GetSettingsFilePath().parent_path() / "stats_favourites.txt");
+            EnsureSkillIconIndex();
+            EnsureBitmapFontsLoaded();
+            ReplayLedgerHost inner(this, m_deviceResources->GetD3DDevice(), m_skillIconIndex, m_skillIconCache,
+                                   &m_damageBitmapFont, &m_healBitmapFont, &m_energyBitmapFont);
+            // A click on a fixed column's number opens Breakdown on that player, that tab and this
+            // scope (Last 30 s reads as Breakdown's Last 60 s, its shortest).
+            ReplayStatsHost host(inner, m_latoBold, [this](int agent, int ledgerTab) {
+                m_showSkillAnalytics = true;
+                sLedgerView.metric = ledgerTab;
+                sLedgerView.selPlayer = agent;
+                sLedgerView.matrix = false;
+                sLedgerView.openRows.clear();
+                sLedgerView.scope = m_statsPanelScope;
+            });
+            const StatsTable::Data data = StatsTable::MakeData(m_statsFile->loaded, &m_skillView);
+            const float panelW = std::min(280.f, ImGui::GetContentRegionAvail().x * 0.3f);
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(1.f, 1.f, 1.f, 0.025f));
+            if (ImGui::BeginChild("##replay_stats_columns", ImVec2(panelW, 0.f), false))
+                StatsTable::DrawColumnsPanel(host);
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+            ImGui::SameLine(0.f, 10.f);
+            StatsTable::DrawTable(data, host, r0, r1);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(4);
+}
+
 void ReplayWindow::DrawBattleLedgerPanel()
 {
     if (!m_showSkillAnalytics) return;
@@ -589,7 +726,7 @@ void ReplayWindow::DrawBattleLedgerPanel()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 4.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 8));
-    const bool visible = ImGui::Begin("Damage & Healing###battle_ledger", &m_showSkillAnalytics);
+    const bool visible = ImGui::Begin("Breakdown###battle_ledger", &m_showSkillAnalytics);
     m_panelLayout.TrackWindow("skill_analytics");
     if (visible)
     {

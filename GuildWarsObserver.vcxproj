@@ -345,6 +345,8 @@
     <ClInclude Include="SourceFiles\ui\ui_kit.h" />
     <ClInclude Include="SourceFiles\ui\app_navigation.h" />
     <ClInclude Include="SourceFiles\ReplayWindow.h" />
+    <ClInclude Include="SourceFiles\ReplaySync.h" />
+    <ClInclude Include="SourceFiles\StatsTableView.h" />
     <ClInclude Include="SourceFiles\TeamColors.h" />
     <ClInclude Include="SourceFiles\CatapultLeverState.h" />
     <ClInclude Include="SourceFiles\HeatmapData.h" />
@@ -681,6 +683,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_PianoRoll.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_BattleLedger.cpp" />
     <ClCompile Include="SourceFiles\BattleLedgerView.cpp" />
+    <ClCompile Include="SourceFiles\StatsTableView.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_SkillAnalytics.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_DebugWindows.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_EventTimeline.cpp" />

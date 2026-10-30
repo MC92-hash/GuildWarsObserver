@@ -970,9 +970,16 @@ void ReplayWindow::DrawRibbonToolbar()
               "and attacks from the replay. Damage and heals are matched to "
               "skill casts when the timing fits. Category toggles in the "
               "panel control what is listed."),
-            T(Ico::BarChart, "Damage & Healing", m_showSkillAnalytics,
+            // Stats, then Breakdown: who stood out, then why (owner, 2026-10-30).
+            B(Ico::Doc, "Stats", m_showStatsPanel,
+              "Everyone side by side, over the stats you pick: damage by kind, knockdowns, interrupts, "
+              "cleansing, reaction speeds, objectives... for the full match, up to the playhead or its "
+              "last 30 s. Click a number to see how it was made in Breakdown."),
+            T(Ico::BarChart, "Breakdown", m_showSkillAnalytics,
               kArtSkillAnalytics,
-              "Who dealt, took, healed and prevented how much, and who interrupted whom, for the full match, up to the playhead, the last 60 s or a stretch you drag on the time strip. The totals are the overhead numbers added up."),
+              "How one number was made: damage, healing, prevention and interrupts by skill, by target "
+              "and by source, for the full match, up to the playhead, the last 60 s or a stretch you drag "
+              "on the time strip. The totals are the overhead numbers added up."),
             T(Ico::Gradient, "Heatmap", m_heatmapSettings.show,
               kArtHeatmap,
               "Accumulate player movement into a density overlay on the map. "

@@ -2546,6 +2546,11 @@ private:
     };
 
     bool  m_showSkillAnalytics      = false;
+    // The Stats panel: the Library's Stats table over the replay (ReplayWindow_BattleLedger.cpp).
+    bool  m_showStatsPanel          = false;
+    int   m_statsPanelScope         = 1;   // 0 full match, 1 up to now, 2 last 30 s
+    int   m_statsFileState          = 0;   // 0 not read, 1 reading next frame, 2 ready, 3 unavailable
+    std::shared_ptr<struct StatsTableFile> m_statsFile;
     bool  m_analyticsShowTeam[2]    = { true, true };
     bool  m_analyticsProfFilter[10] = { true, true, true, true, true, true, true, true, true, true };
     float m_analyticsCacheTime      = -1.f;
@@ -2582,6 +2587,7 @@ public:
 private:
     void BuildBattleLedger() const;
     void DrawBattleLedgerPanel();
+    void DrawStatsPanel();
     mutable std::vector<LedgerLine> m_ledger;
     mutable std::vector<LedgerInterrupt> m_ledgerInts;
     mutable bool m_ledgerBuilt = false;
