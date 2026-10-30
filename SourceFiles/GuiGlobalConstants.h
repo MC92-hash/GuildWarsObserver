@@ -371,6 +371,7 @@ public:
 	inline static bool character_silhouette_shadows = true; // false = the round blob under each character
 	inline static int map_detail = 0;                 // 0 high, 1 medium (the props' own lower-detail meshes)
 	inline static bool minimap_reduced_rate = false;  // redraw the minimap's scene ~10 times a second
+	inline static bool footprints = true;             // the prints characters leave on the ground (High only)
 
 	static void ApplyGraphicsPreset(int preset)
 	{
@@ -380,17 +381,17 @@ public:
 		case kGraphicsHigh:
 			render_scale_percent = 100; texture_quality = 0; texture_anisotropy = 16;
 			map_shadows = true; character_silhouette_shadows = true; map_detail = 0;
-			minimap_reduced_rate = false;
+			minimap_reduced_rate = false; footprints = true;
 			break;
 		case kGraphicsBalanced:
 			render_scale_percent = 85; texture_quality = 0; texture_anisotropy = 4;
 			map_shadows = true; character_silhouette_shadows = false; map_detail = 0;
-			minimap_reduced_rate = true;
+			minimap_reduced_rate = true; footprints = false;
 			break;
 		case kGraphicsLow:
 			render_scale_percent = 60; texture_quality = 1; texture_anisotropy = 1;
 			map_shadows = false; character_silhouette_shadows = false; map_detail = 1;
-			minimap_reduced_rate = true;
+			minimap_reduced_rate = true; footprints = false;
 			break;
 		default:
 			break;
@@ -781,6 +782,7 @@ public:
 		file << "character_silhouette_shadows=" << (character_silhouette_shadows ? 1 : 0) << "\n";
 		file << "map_detail=" << map_detail << "\n";
 		file << "minimap_reduced_rate=" << (minimap_reduced_rate ? 1 : 0) << "\n";
+		file << "footprints=" << (footprints ? 1 : 0) << "\n";
 		file << "replay_show_skill_icons=" << (replay_show_skill_icons ? 1 : 0) << "\n";
 		file << "replay_show_skill_lasers=" << (replay_show_skill_lasers ? 1 : 0) << "\n";
 
@@ -820,6 +822,7 @@ public:
 		if (!file.is_open()) return; // Use defaults if no settings file
 
 		bool loadedPan = false, loadedRot = false, loadedZoom = false, loadedKbd = false;
+		bool loadedFootprints = false;
 		float legacyUnifiedMovement = -1.f;
 
 		std::string line;
@@ -967,6 +970,7 @@ public:
 			else if (key == "character_silhouette_shadows") character_silhouette_shadows = (value != 0);
 			else if (key == "map_detail") map_detail = std::clamp(value, 0, 1);
 			else if (key == "minimap_reduced_rate") minimap_reduced_rate = (value != 0);
+			else if (key == "footprints") { footprints = (value != 0); loadedFootprints = true; }
 			else if (key == "replay_show_skill_icons") replay_show_skill_icons = (value != 0);
 			else if (key == "replay_show_skill_lasers") replay_show_skill_lasers = (value != 0);
 			// An existing settings file has no map_light_mode key, so it takes the default -
@@ -1008,6 +1012,11 @@ public:
 			if (!loadedKbd)
 				replay_camera_keyboard_speed_multiplier = legacyUnifiedMovement;
 		}
+
+		// A settings file older than the footprints has no key for them: they follow its preset,
+		// on for High only.
+		if (!loadedFootprints)
+			footprints = graphics_quality == kGraphicsHigh;
 
 		file.close();
 	}

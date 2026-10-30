@@ -601,6 +601,8 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\SoundPrograms.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_Projectiles.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\AgentEffects.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Footprints.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\ReplayWindow_Footprints.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Tables.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PlayerVisuals_Draw.cpp" />

@@ -67,6 +67,8 @@ namespace PlayerVisuals { class Set; class ReplayWeapons; }
 namespace AgentEffects { class Player; }
 // The projectiles in flight: opaque here too.
 namespace ReplayProjectiles { class State; }
+// The prints characters leave on the ground: opaque too (private).
+namespace Footprints { struct State; }
 // The match's sounds - the recording's own and the scheduled ones: opaque too (private).
 namespace ReplaySounds { class State; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
@@ -1842,6 +1844,19 @@ private:
     void DrawAgentEffects(const DirectX::XMMATRIX& view);
     void ReleaseAgentEffects();   // match teardown
     std::shared_ptr<AgentEffects::Player> m_agentEffects;
+
+    // The prints characters leave on sand, snow and soft ground (the graphics detail "Footprints",
+    // which only the High preset sets). The transform pass hands over each animated character's
+    // pose; the prints are drawn once per view, before the shadows. Defined in the private module.
+    // `facing` is the agent's heading on the ground (x, z), `gwX/gwY` its position in game units.
+    void FootprintsObserve(int agentId, const AgentModelInstance& tmpl,
+                           const GW::Animation::AnimationController& pose,
+                           const DirectX::XMFLOAT4X4& characterWorld, const DirectX::XMFLOAT3& position,
+                           const DirectX::XMFLOAT2& facing, float gwX, float gwY, float standInHeight,
+                           bool composed, bool female);
+    void DrawFootprints();
+    void ReleaseFootprints();     // match teardown
+    std::shared_ptr<Footprints::State> m_footprints;
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

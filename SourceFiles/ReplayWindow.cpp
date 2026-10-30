@@ -895,6 +895,7 @@ ReplayWindow::~ReplayWindow()
 {
     ReleasePlayerVisuals();
     ReleaseAgentEffects();
+    ReleaseFootprints();
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
     if (m_weaponModelLoadThread.joinable())
@@ -7288,6 +7289,7 @@ void ReplayWindow::Render()
             m_deviceResources->GetPickingStagingTexture(), cursor.x, cursor.y);
     }
 
+    DrawFootprints();
     DrawAgentShadows();
     DrawHeatmapOverlay();
 
@@ -10648,6 +10650,7 @@ void ReplayWindow::OnDeviceLost()
     m_shadowInitAttempted = false;
     m_shadowLoadError.clear();
     m_shadowCasters.clear();
+    ReleaseFootprints();
 
     const size_t dropped = m_agentAnimStates.size();
     m_agentAnimStates.clear();

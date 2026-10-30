@@ -339,8 +339,13 @@ struct AnimationClip
     // For FA1 only: per-segment source selector from segmentType.
     // 0 = local clip, >0 = external referenced animation source index.
     std::vector<uint8_t> animationSegmentSourceTypes;
+    // For FA1 only: the event table the segments index into (a segment's phaseStartIndex /
+    // phaseEndIndex, the low / high byte of its flags). Times are animation units (100000 = 1 s)
+    // from the segment's own start; ids are the client's event kinds (a footfall, a hit, ...).
+    std::vector<uint32_t> eventTimes;
+    std::vector<uint8_t> eventIds;
 
-    AnimationLoopConfig loopConfig;                  // Loop configuration (intro/loop regions)
+    AnimationLoopConfig loopConfig;                 // Loop configuration (intro/loop regions)
 
     // Intermediate bone tracking (from Ghidra RE @ Model_UpdateSkeletonTransforms)
     // Bones with flag 0x10000000 are "intermediate" - they participate in hierarchy

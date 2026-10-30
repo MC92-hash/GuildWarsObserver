@@ -369,6 +369,7 @@ void ReplayWindow::RenderSecondaryView(const XMFLOAT3& camPos, float yaw, float 
     ID3D11RenderTargetView* pipRTV = rtv;
     ctx->OMSetRenderTargets(1, &pipRTV, dsv);
 
+    DrawFootprints();
     DrawAgentShadows();
     DrawSkinnedAgentModels();
     // ...and, immediately after it, the recorded players who have a character of their own -

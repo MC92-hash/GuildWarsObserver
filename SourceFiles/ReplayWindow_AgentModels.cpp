@@ -2368,6 +2368,16 @@ void ReplayWindow::DrawAgentModels()
                                   worldF, pos, rotRad);
             }
 
+            // Its feet print the ground they land on (the High graphics detail).
+            if (GuiGlobalConstants::footprints && animState.controller && tmplIt != m_agentModelTemplates.end()) {
+                XMFLOAT4X4 worldF{};
+                XMStoreFloat4x4(&worldF, worldMat);
+                const XMFLOAT3 ahead = ApplyMapTransformToPos(sx + std::cos(rotRad), sy + std::sin(rotRad), sz, mt);
+                FootprintsObserve(agentId, tmplIt->second, *animState.controller, worldF, pos,
+                                  XMFLOAT2(ahead.x - pos.x, ahead.z - pos.z), sx, sy,
+                                  tmplIt->second.nativeHeight * scale, pvPlaced, ard.isFemale);
+            }
+
             // Consumed by DrawWeaponModels, which runs after this pass.
             animState.lastSnapIdx = snapIdx;
 
