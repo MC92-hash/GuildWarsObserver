@@ -338,7 +338,8 @@ void ReplayWindow::RenderCharacterPortraits()
         else
         {
             const AgentModelInfo info =
-                LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+                LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale,
+                                     IsHalloweenMatch());
             scale = (info.fitHeight > 0.f && tmpl.nativeHeight > 1.f)
                         ? (info.fitHeight / tmpl.nativeHeight) * m_agentModelScale
                         : info.npcAdjustment * m_agentModelScale;

@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 #include "imgui.h"
+#include "SeasonalEvents.h"
 #include <ctime>
 #include <filesystem>
 #include <string>
@@ -26,11 +27,9 @@ inline const char* GetSeasonalLaunchScreenFile()
     std::time_t t = std::time(nullptr);
     std::tm lt{};
     localtime_s(&lt, &t);
-    const int md = (lt.tm_mon + 1) * 100 + lt.tm_mday; // e.g. Oct 18 = 1018
-
-    if (md >= 1018 && md <= 1102)
+    if (IsHalloweenDate(lt.tm_mon + 1, lt.tm_mday))
         return "GWOBS_Loading_Screen_Halloween.png";
-    if (md >= 1219 || md <= 102)
+    if (IsWintersdayDate(lt.tm_mon + 1, lt.tm_mday))
         return "GWOBS_Loading_Screen_Wintersday.png";
     return nullptr;
 }

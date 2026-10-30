@@ -9,6 +9,7 @@
 #include "Terrain.h"
 #include "ReplayMapData.h"
 #include "ReplayLibrary.h"
+#include "SeasonalEvents.h"
 #include "GuildCapeCache.h"
 #include "FFNA_MapFile.h"
 #include "FFNA_ModelFile.h"
@@ -346,6 +347,8 @@ private:
 
     ReplayContext m_replayCtx;
     MatchMeta m_matchMeta;
+    // GvG NPCs wear their Halloween disguises in matches played during the event.
+    bool IsHalloweenMatch() const { return IsHalloweenDate(m_matchMeta.month, m_matchMeta.day); }
     SkillDatabaseView m_skillView;
     std::unique_ptr<Terrain> m_terrain;
 

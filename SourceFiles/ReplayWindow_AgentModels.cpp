@@ -524,7 +524,7 @@ void ReplayWindow::LoadAgentModelsAsync()
                                                 it->second[idx]);
             }
         } else {
-            fileHash = LookupAgentFileHash(ard.type, ard.modelId);
+            fileHash = LookupAgentFileHash(ard.type, ard.modelId, 0, false, IsHalloweenMatch());
         }
         if (fileHash == 0) continue;
         m_agentFileHashCache[agentId] = fileHash;
@@ -1304,6 +1304,13 @@ void ReplayWindow::LoadAgentModelsIO()
                     wi.tmpl.weaponSocket.positiveXBone = cachedSocket->positiveXBone;
                     wi.tmpl.weaponSocket.resolved      = true;
                 }
+                else if (int32_t neg, pos; LookupHalloweenHandBones(wi.fileHash, neg, pos) &&
+                         static_cast<size_t>(std::max(neg, pos)) < wi.tmpl.clip->boneTracks.size())
+                {
+                    wi.tmpl.weaponSocket.negativeXBone = neg;
+                    wi.tmpl.weaponSocket.positiveXBone = pos;
+                    wi.tmpl.weaponSocket.resolved      = true;
+                }
                 else
                 {
                     wi.tmpl.weaponSocket = GW::Animation::ResolveWeaponSocket(*wi.tmpl.clip);
@@ -1472,6 +1479,8 @@ void ReplayWindow::StepCreateAgentModelResources()
                     templateCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
                     templateCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
                     templateCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                    if (mesh.blend_flags[k] == 0 && HalloweenDisguiseNeedsCutout(fileHash))
+                        templateCBs[j].texture_types[k / 4][k % 4] |= kTextureTypeAlphaCutout;
                 }
             }
         }
@@ -1619,7 +1628,8 @@ float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
 
     const AgentModelInfo info = avatar
         ? LookupAvatarModelInfo(avatar)
-        : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+        : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale,
+                                   IsHalloweenMatch());
 
     // A recorded player is as tall as the character they played, so anything anchored above their
     // head has to measure THAT and not the stand-in it replaced.
@@ -1869,7 +1879,8 @@ void ReplayWindow::DrawAgentModels()
 
         AgentModelInfo info = slotAvatar
             ? LookupAvatarModelInfo(slotAvatar)
-            : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+            : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale,
+                                   IsHalloweenMatch());
         float nativeH = (tmplIt != m_agentModelTemplates.end())
                             ? tmplIt->second.nativeHeight : 0.f;
         float scale;

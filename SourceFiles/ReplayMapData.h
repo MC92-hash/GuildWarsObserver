@@ -619,9 +619,53 @@ inline const HenchmanInfo* LookupHenchman(uint32_t modelId)
 
 inline bool IsHenchmanModelId(uint32_t modelId) { return LookupHenchman(modelId) != nullptr; }
 
-inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
-                                     int primaryProf = 0, bool isFemale = false)
+// ---------------------------------------------------------------------------
+// Halloween GvG NPC disguises
+//
+// During the Halloween event (Oct 18 - Nov 2, SeasonalEvents.h) the client draws the GvG NPCs as
+// undead PvE creatures. The recording does not show it: the agents keep their own model ids and
+// NPC records, and the disguise is a transmog (AgentLiving::transmog_npc_id) that only the client
+// knows about. So it is applied by the match's date. Captured with the NpcCapture plugin on
+// 2026-10-30 (map 248): transmog NPC id -> that NPC's model_files[0]. The archers' disguise NPC
+// has no model_files; its model_file_id is the whole model.
+// ---------------------------------------------------------------------------
+
+inline uint32_t LookupHalloweenNpcFileHash(uint32_t modelId)
 {
+    switch (modelId) {
+    case 170: return 0x268A6; // Guild Lord        (transmog 0x2161)
+    case 172: return 0x22A97; // Bodyguard         (transmog 0x215C)
+    case 173:                 // Footman           (transmog 0x2160)
+    case 174: return 0x1C83D; // Knight            (transmog 0x2160)
+    case 175:                 // Archer            (transmog 0x215E)
+    case 176: return 0xA0CE;  // Archer            (transmog 0x215F)
+    }
+    return 0;
+}
+
+// The archer disguise is an old-format model: every stage is blend 0, but its texture's clear
+// texels (the leg spikes' gaps) are holes in the client. Without this they draw black.
+constexpr uint32_t kTextureTypeAlphaCutout = 0x40000u; // OldModelPixelShader, blend-0 stages
+inline bool HalloweenDisguiseNeedsCutout(uint32_t fileHash) { return fileHash == 0xA0CE; }
+
+// Hand bones of the disguises whose hands are not the five three-bone fingers the weapon socket
+// rule looks for (four two-bone fingers instead), measured from their bone trees 2026-10-30.
+// negativeX / positiveX are the bind-pose sides, as in GW::Animation::WeaponSocket.
+inline bool LookupHalloweenHandBones(uint32_t fileHash, int32_t& negativeX, int32_t& positiveX)
+{
+    switch (fileHash) {
+    case 0xA0CE:  negativeX = 12; positiveX = 27; return true; // Archer
+    case 0x22A97: negativeX = 48; positiveX = 62; return true; // Bodyguard
+    }
+    return false;
+}
+
+inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
+                                     int primaryProf = 0, bool isFemale = false,
+                                     bool halloween = false)
+{
+    if (halloween && type == AgentType::NPC)
+        if (uint32_t disguise = LookupHalloweenNpcFileHash(modelId)) return disguise;
     if (type == AgentType::Player)
         return LookupPlayerFileHash(primaryProf, isFemale);
     if (type == AgentType::Spirit) {
@@ -679,8 +723,15 @@ inline AgentModelInfo LookupAvatarModelInfo(uint32_t avatarModelId)
 }
 
 inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
-                                            int primaryProf = 0, bool isFemale = false)
+                                            int primaryProf = 0, bool isFemale = false,
+                                            bool halloween = false)
 {
+    // A disguise is drawn at its own native size, times the NPC's own adjustment (the Guild
+    // Lord's 130% belongs to his NPC record, which the transmog keeps).
+    if (halloween && type == AgentType::NPC) {
+        if (uint32_t disguise = LookupHalloweenNpcFileHash(modelId))
+            return { disguise, 0.f, modelId == 170 ? 1.3f : 1.0f };
+    }
     if (type == AgentType::Player)
         return LookupPlayerModelInfo(primaryProf, isFemale);
     if (type == AgentType::Spirit) {
