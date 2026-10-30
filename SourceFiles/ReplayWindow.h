@@ -2566,6 +2566,7 @@ public:
     using LedgerLine      = BattleLedger::Line;
     using LedgerInterrupt = BattleLedger::Interrupt;
     static constexpr int kLedgerRowMinions      = BattleLedger::kRowMinions;
+    static constexpr int kLedgerRowPets         = BattleLedger::kRowPets;
     static constexpr int kLedgerRowDegenUnknown = BattleLedger::kRowDegenUnknown;
     static constexpr int kLedgerRowCatapult = BattleLedger::kRowCatapult;
     static constexpr int kLedgerRowCoral    = BattleLedger::kRowCoral;

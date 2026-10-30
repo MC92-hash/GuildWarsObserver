@@ -7294,7 +7294,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 8;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 12;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -8534,22 +8534,37 @@ std::filesystem::path FindTexturesDDSDir();   // ReplayWindow.cpp
 namespace
 {
     enum StatCol { SC_Dealt, SC_Taken, SC_Healed, SC_Received, SC_Prevented, SC_Kills, SC_Deaths, SC_Ints,
-                   SC_IntsRecv, SC_Skills, SC_Cancelled, SC_Dead, SC_Distance, SC_Count };
-    struct StatColInfo { const char* label; const char* head; int ledgerTab; const char* help; };
+                   SC_IntsRecv, SC_Skills, SC_Cancelled, SC_Dead, SC_Distance,
+                   SC_DmgAttack, SC_DmgSkill, SC_DmgHex, SC_DmgCond, SC_DmgMinion,
+                   SC_DmgBleed, SC_DmgBurn, SC_DmgPoison, SC_DmgDisease, SC_Sacrifice, SC_SelfCond, SC_Count };
+    // name: the column's id in MatchStats::Layout() ("base:<name>"); help: its plain meaning;
+    // lowerBetter: a smaller number is the better play (the header marks it).
+    struct StatColInfo { const char* name; const char* label; const char* head; int ledgerTab; const char* help; bool lowerBetter; };
     const StatColInfo kStatCols[SC_Count] = {
-        { "Damage dealt",        "Damage",     BattleLedger::kDealt,     "Damage dealt to foes, as the overhead numbers showed it." },
-        { "Damage taken",        "Taken",      BattleLedger::kTaken,     "Damage taken, from foes, the map and the player's own sacrifices." },
-        { "Healing done",        "Healing",    BattleLedger::kHealed,    "Healing given, the player's own included." },
-        { "Healing received",    "Healed",     BattleLedger::kReceived,  "Healing received, from anyone and the map." },
-        { "Damage prevented",    "Prevented",  BattleLedger::kPrevented, "Damage the player's protections spared, some of it estimated." },
-        { "Kills",               "Kills",      BattleLedger::kDealt,     "Foes whose last hit before dying (within 5 s) was this player's." },
-        { "Deaths",              "Deaths",     BattleLedger::kTaken,     "Times the player died." },
-        { "Interrupts landed",   "Interrupts", BattleLedger::kInts,      "Interrupt attempts that stopped a foe's cast." },
-        { "Interrupts received", "Rupted",     BattleLedger::kIntsRecv,  "Casts of this player that a foe interrupted." },
-        { "Skills used",         "Skills",     BattleLedger::kDealt,     "Skills used, interrupted ones included, cancelled ones left out." },
-        { "Skills cancelled",    "Cancelled",  BattleLedger::kIntsRecv,  "Casts the player stopped themselves." },
-        { "Time dead",           "Dead",       BattleLedger::kTaken,     "Seconds spent dead. Per minute: the share of the interval." },
-        { "Distance",            "Distance",   BattleLedger::kDealt,     "Ground covered while alive, in game units." },
+        { "dealt",     "Damage dealt",        "Damage",      BattleLedger::kDealt,     "All the damage this player caused: attacks, skills, hexes, conditions and minions. Degeneration is included: the Health lost to it is split among the conditions and hexes active at the time, each part credited to whoever applied it. Own sacrifices are left out.", false },
+        { "taken",     "Damage taken",        "Taken",       BattleLedger::kTaken,     "Damage taken from foes and the map, degeneration included. The player's own sacrifices are apart (Health sacrificed).", true },
+        { "healed",    "Healing done",        "Healing",     BattleLedger::kHealed,    "Healing given, the player's own included.", false },
+        { "received",  "Healing received",    "Healed",      BattleLedger::kReceived,  "Healing received, from anyone and the map.", false },
+        { "prevented", "Damage prevented",    "Prevented",   BattleLedger::kPrevented, "Damage the player's protections spared, some of it estimated.", false },
+        { "kills",     "Kills",               "Kills",       BattleLedger::kDealt,     "Foes whose last hit before dying (within 5 s) was this player's.", false },
+        { "deaths",    "Deaths",              "Deaths",      BattleLedger::kTaken,     "Times the player died.", true },
+        { "ints",      "Interrupts landed",   "Interrupts",  BattleLedger::kInts,      "Foe casts this player interrupted.", false },
+        { "intsrecv",  "Interrupted",         "Interrupted", BattleLedger::kIntsRecv,  "Casts of this player that a foe interrupted.", true },
+        { "skills",    "Skills used",         "Skills",      BattleLedger::kDealt,     "Skills used, interrupted ones included, cancelled ones left out.", false },
+        { "cancelled", "Skills cancelled",    "Cancelled",   BattleLedger::kIntsRecv,  "Casts the player stopped themselves.", true },
+        { "dead",      "Time dead",           "Dead",        BattleLedger::kTaken,     "Seconds spent dead. Per minute: the share of the interval.", true },
+        { "distance",  "Distance",            "Distance",    BattleLedger::kDealt,     "Ground covered while alive, in game units.", false },
+        { "dmg_attack", "Attack damage",      "Attacks",     BattleLedger::kDealt,     "Damage dealt by weapon hits and attack skills.", false },
+        { "dmg_skill",  "Skill damage",       "Skills dmg",  BattleLedger::kDealt,     "Damage dealt by spells and other non-attack skills (hexes apart), and damage whose skill is unknown.", false },
+        { "dmg_hex",    "Hex damage",         "Hexes",       BattleLedger::kDealt,     "Damage dealt by hexes: their hits (Empathy, Spiteful Spirit...) and their degeneration.", false },
+        { "dmg_cond",   "Condition damage",   "Conditions",  BattleLedger::kDealt,     "Degeneration from the conditions this player applied: Bleeding, Burning, Poison, Disease.", false },
+        { "dmg_minion", "Minion, spirit & pet damage", "Summons", BattleLedger::kDealt, "Damage dealt by this player's minions, spirits (Bloodsong...) and pet.", false },
+        { "dmg_bleed",  "Bleeding damage",    "Bleeding",    BattleLedger::kDealt,     "Degeneration from the Bleeding this player applied.", false },
+        { "dmg_burn",   "Burning damage",     "Burning",     BattleLedger::kDealt,     "Degeneration from the Burning this player applied.", false },
+        { "dmg_poison", "Poison damage",      "Poison",      BattleLedger::kDealt,     "Degeneration from the Poison this player applied.", false },
+        { "dmg_disease","Disease damage",     "Disease",     BattleLedger::kDealt,     "Degeneration from the Disease this player applied.", false },
+        { "sacrifice",  "Health sacrificed",  "Sacrificed",  BattleLedger::kTaken,     "Health this player paid for their own skills (sacrifices). Not part of Damage taken.", false },
+        { "selfcond",   "Own conditions caught", "Own condi",  BattleLedger::kTaken,     "Health this player lost to a condition from their own skill that came back to them: Mystic Corruption puts Disease on adjacent foes, Disease spreads, and the Dervish catches it. Their own doing, so it is not part of Damage taken.", true },
     };
 
     // A column is one of the fixed ones above (0 .. SC_Count - 1) or a stat of the MatchStats
@@ -8562,7 +8577,112 @@ namespace
     }
     const char* ColLabel(int c) { const auto* d = ExtraDef(c); return d ? d->label : kStatCols[c].label; }
     const char* ColHead(int c)  { const auto* d = ExtraDef(c); return d ? d->head : kStatCols[c].head; }
-    const char* ColHelp(int c)  { const auto* d = ExtraDef(c); return d ? d->help : kStatCols[c].help; }
+    bool ColLowerBetter(int c)  { const auto* d = ExtraDef(c); return d ? d->lowerBetter : kStatCols[c].lowerBetter; }
+
+    // A MatchStats::Layout() key's column: "base:<name>" a fixed one, else the catalogue stat; -1 unknown.
+    int LayoutCol(const char* key)
+    {
+        if (std::strncmp(key, "base:", 5) == 0)
+        {
+            for (int c = 0; c < SC_Count; ++c) if (std::strcmp(key + 5, kStatCols[c].name) == 0) return c;
+            return -1;
+        }
+        const auto& cat = MatchStats::Catalog();
+        for (size_t i = 0; i < cat.size(); ++i) if (std::strcmp(cat[i].key, key) == 0) return kExtraBase + (int)i;
+        return -1;
+    }
+
+    // Typical skills behind a column, shown as icons in its tooltip so the meaning is plain to see.
+    // Ids checked against skilldesc-en.json; the conditions are the client's condition "skills"
+    // (478 Bleeding ... 486 Weakness), which have icons but no skill data.
+    struct ExampleSkill { int id; const char* name; };
+    using Examples = std::vector<ExampleSkill>;
+    const Examples& ColExamples(int c)
+    {
+        static const Examples kHeals   = { { 2061, "Patient Spirit" }, { 1257, "Spirit Light Weapon" }, { 292, "Infuse Health" }, { 1118, "Healing Burst" } };
+        static const Examples kProts   = { { 245, "Protective Spirit" }, { 258, "Guardian" }, { 307, "Reversal of Fortune" }, { 299, "Shielding Hands" }, { 1114, "Spirit Bond" } };
+        static const Examples kRupts   = { { 426, "Savage Shot" }, { 399, "Distracting Shot" }, { 25, "Power Drain" }, { 61, "Leech Signet" } };
+        static const Examples kKds     = { { 2011, "Grapple" }, { 226, "Mind Shock" }, { 332, "Bull's Strike" }, { 869, "\"Coward!\"" }, { 162, "Gale" } };
+        static const Examples kStab    = { { 2063, "Aura of Stability" }, { 938, "Ward of Stability" }, { 1572, "\"Brace Yourself!\"" }, { 371, "Balanced Stance" }, { 1514, "Fleeting Stability" } };
+        static const Examples kDrains  = { { 42, "Energy Burn" }, { 49, "Mind Wrack" }, { 39, "Energy Surge" }, { 366, "\"Fear Me!\"" } };
+        static const Examples kCondRm  = { { 275, "Mend Condition" }, { 276, "Restore Condition" }, { 311, "Draw Conditions" }, { 1401, "Mending Touch" } };
+        static const Examples kHexRm   = { { 2003, "Cure Hex" }, { 295, "Purge Signet" }, { 1692, "Divert Hexes" }, { 302, "Smite Hex" } };
+        static const Examples kHexes   = { { 26, "Empathy" }, { 30, "Diversion" }, { 52, "Panic" }, { 31, "Conjure Phantasm" } };
+        static const Examples kConds   = { { 481, "Crippled" }, { 479, "Blind" }, { 486, "Weakness" }, { 485, "Dazed" }, { 478, "Bleeding" } };
+        static const Examples kRes     = { { 1481, "Death Pact Signet" }, { 2, "Resurrection Signet" }, { 791, "Flesh of My Flesh" } };
+        static const std::unordered_map<std::string, Examples> byKey = {
+            { "base:dealt",      { { 338, "Eviscerate" }, { 1227, "Essence Strike" }, { 26, "Empathy" }, { 478, "Bleeding" }, { 1253, "Bloodsong" } } },
+            { "base:dmg_attack", { { 338, "Eviscerate" }, { 336, "Executioner's Strike" }, { 352, "Crushing Blow" }, { 907, "Dragon Slash" } } },
+            { "base:dmg_skill",  { { 1227, "Essence Strike" }, { 133, "Dark Pact" }, { 1662, "Mind Blast" }, { 205, "Lightning Surge" } } },
+            { "base:dmg_hex",    { { 26, "Empathy" }, { 121, "Spiteful Spirit" }, { 31, "Conjure Phantasm" }, { 109, "Life Siphon" } } },
+            { "base:dmg_cond",   { { 478, "Bleeding" }, { 480, "Burning" }, { 484, "Poison" }, { 483, "Disease" } } },
+            { "base:dmg_minion", { { 84, "Animate Bone Fiend" }, { 832, "Animate Flesh Golem" }, { 1253, "Bloodsong" }, { 411, "Charm Animal" } } },
+            { "base:dmg_bleed",  { { 478, "Bleeding" } } },
+            { "base:dmg_burn",   { { 480, "Burning" } } },
+            { "base:dmg_poison", { { 484, "Poison" } } },
+            { "base:dmg_disease",{ { 483, "Disease" } } },
+            { "cond_inflicted_crippled",   { { 481, "Crippled" } } },
+            { "cond_inflicted_dazed",      { { 485, "Dazed" } } },
+            { "cond_inflicted_weakness",   { { 486, "Weakness" } } },
+            { "cond_inflicted_cracked",    { { 2077, "Cracked Armor" } } },
+            { "cond_inflicted_blind",      { { 479, "Blind" } } },
+            { "cond_inflicted_deep_wound", { { 482, "Deep Wound" } } },
+            { "base:sacrifice",  { { 133, "Dark Pact" }, { 791, "Flesh of My Flesh" }, { 119, "Blood is Power" }, { 146, "Offering of Blood" } } },
+            { "base:selfcond",   { { 1755, "Mystic Corruption" }, { 483, "Disease" } } },
+            { "base:healed", kHeals }, { "heal_effective", kHeals }, { "heal_overheal", kHeals },
+            { "base:prevented", kProts }, { "spike_reaction", kProts },
+            { "base:ints", kRupts }, { "base:intsrecv", kRupts }, { "int_accuracy", kRupts }, { "int_reaction", kRupts }, { "int_fakes", kRupts },
+            { "kd_dealt", kKds }, { "kd_success", kKds }, { "kd_taken", kKds },
+            { "kd_blocked", kStab }, { "kd_prevent_reaction", kStab },
+            { "en_denied", kDrains }, { "en_lost_foes", kDrains },
+            { "ench_removed", { { 141, "Rend Enchantments" }, { 69, "Shatter Enchantment" }, { 143, "Strip Enchantment" } } },
+            { "cond_inflicted_total", kConds }, { "cond_time", kConds },
+            { "hex_time", kHexes },
+            { "cond_removed", kCondRm }, { "cond_removal_reaction", kCondRm },
+            { "hex_removed", kHexRm }, { "hex_removal_reaction", kHexRm },
+            { "act_res_done", kRes }, { "act_res_reaction", kRes },
+            { "en_given", { { 1782, "\"The Power Is Yours!\"" } } },
+            { "kd_coward_dodge", { { 869, "\"Coward!\"" } } },
+        };
+        static const Examples none;
+        const auto* d = ExtraDef(c);
+        auto it = byKey.find(d ? std::string(d->key) : std::string("base:") + kStatCols[c].name);
+        return it == byKey.end() ? none : it->second;
+    }
+
+    // A column's tooltip: what it means in plain words, "Lower is better" when it is, typical
+    // skills as icons, the method dimmed below (catalogue stats), then the caller's own hint.
+    void ColTooltip(int c, const char* hint = nullptr, bool withName = false)
+    {
+        const auto* d = ExtraDef(c);
+        const ImVec4 dim(0.55f, 0.57f, 0.60f, 1.0f);
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        if (withName) ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.0f), "%s", ColLabel(c));
+        ImGui::TextUnformatted(d ? (d->meaning[0] ? d->meaning : d->help) : kStatCols[c].help);
+        if (ColLowerBetter(c)) ImGui::TextColored(ImVec4(0.90f, 0.62f, 0.45f, 1.0f), "Lower is better.");
+        if (const Examples& ex = ColExamples(c); !ex.empty())
+        {
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::TextColored(dim, "Typical skills:");
+            const float sz = ImGui::GetFontSize() * 2.2f;
+            for (size_t i = 0; i < ex.size(); ++i)
+            {
+                if (i) ImGui::SameLine(0.0f, 4.0f);
+                if (ImTextureID t = GetSkillIcon(ex[i].id)) ImGui::Image(t, ImVec2(sz, sz));
+                else ImGui::Dummy(ImVec2(sz, sz));
+            }
+        }
+        if (d && d->meaning[0] && d->meaning != d->help)
+        {
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::TextColored(dim, "How it is measured: %s", d->help);
+        }
+        if (d && d->estimated) ImGui::TextColored(dim, "~ = estimated from a model.");
+        if (hint) ImGui::TextColored(ImVec4(0.67f, 0.69f, 0.72f, 1.0f), "%s", hint);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
 
     struct StatsTabState
     {
@@ -8617,7 +8737,8 @@ namespace
     };
 
     // Every column's number per player over [r0, r1] on the match clock.
-    std::unordered_map<int, std::array<double, SC_Count>> StatValues(const MatchAnalysisJob& job, float r0, float r1)
+    std::unordered_map<int, std::array<double, SC_Count>> StatValues(const MatchAnalysisJob& job, float r0, float r1,
+                                                                    const SkillDatabaseView& skills)
     {
         const BattleLedger::Data& d = job.ledger;
         std::unordered_map<int, std::array<double, SC_Count>> out;
@@ -8635,6 +8756,48 @@ namespace
             v[SC_Prevented] = (double)t[BattleLedger::kPrevented];
             v[SC_Ints]      = (double)t[BattleLedger::kInts];
             v[SC_IntsRecv]  = (double)t[BattleLedger::kIntsRecv];
+        }
+        // Damage dealt by kind, the same lines Damage dealt sums, so the five always add up to it.
+        for (const BattleLedger::Line& ln : d.lines)
+        {
+            if (ln.t < r0) continue;
+            if (ln.t > r1) break;
+            if (BattleLedger::LineMetricGiver(ln.kind) != BattleLedger::kDealt) continue;
+            auto it = out.find(ln.src);
+            if (it == out.end()) continue;
+            int col = SC_DmgSkill;
+            if (ln.rowKey == BattleLedger::kRowMinions || ln.rowKey == BattleLedger::kRowPets) col = SC_DmgMinion;
+            else if (BattleLedger::IsDegenRow(ln.rowKey) || ln.rowKey == BattleLedger::kRowDegenUnknown)
+            {
+                col = SC_DmgCond;
+                // Each damaging condition also on its own column (the client's condition ids).
+                switch (BattleLedger::IsDegenRow(ln.rowKey) ? BattleLedger::DegenCondition(ln.rowKey) : 0)
+                {
+                case 478: it->second[SC_DmgBleed]   += ln.amount; break;
+                case 480: it->second[SC_DmgBurn]    += ln.amount; break;
+                case 484: it->second[SC_DmgPoison]  += ln.amount; break;
+                case 483: it->second[SC_DmgDisease] += ln.amount; break;
+                default: break;
+                }
+            }
+            else if (ln.weaponHit) col = SC_DmgAttack;
+            else if (const SkillInfo* si = ln.skillId ? skills.Get(ln.skillId) : nullptr)
+                col = SkillDatabase::IsWeaponAttack(si->type) ? SC_DmgAttack
+                    : si->type == 24                    ? SC_DmgHex
+                    : si->type == 18 || si->type == 19  ? SC_DmgMinion     // a spirit's attack (Bloodsong)
+                                                        : SC_DmgSkill;
+            it->second[col] += ln.amount;
+        }
+        // Sacrifices out of Damage taken, on their own column.
+        for (const BattleLedger::Line& ln : d.lines)
+        {
+            if (ln.t < r0) continue;
+            if (ln.t > r1) break;
+            if (ln.kind != BattleLedger::Kind::SelfCost) continue;
+            auto it = out.find(ln.dst);
+            if (it == out.end()) continue;
+            it->second[BattleLedger::IsDegenRow(ln.rowKey) ? SC_SelfCond : SC_Sacrifice] += ln.amount;
+            it->second[SC_Taken] -= ln.amount;
         }
         // Deaths, and the kill: the last foe player's hit within 5 s before it.
         auto teamOf = [&](int id) { auto it = d.agents.find(id); return it == d.agents.end() ? 0 : it->second.team; };
@@ -8828,34 +8991,54 @@ namespace
 
     std::filesystem::path FavouritesFile() { return GuiGlobalConstants::GetSettingsFilePath().parent_path() / "stats_favourites.txt"; }
 
+    // A fixed column is kept as "base:<name>". Once one fixed column is starred, the starred ones
+    // replace the default set (the others start unticked).
     void LoadFavourites()
     {
         if (s_favsLoaded) return;
         s_favsLoaded = true;
         std::ifstream f(FavouritesFile());
-        const auto& cat = MatchStats::Catalog();
         std::string key;
+        bool anyBase = false;
         while (std::getline(f, key))
         {
             while (!key.empty() && (key.back() == '\r' || key.back() == ' ')) key.pop_back();
-            for (size_t i = 0; i < cat.size(); ++i)
-                if (key == cat[i].key && std::find(s_favs.begin(), s_favs.end(), kExtraBase + (int)i) == s_favs.end())
-                    s_favs.push_back(kExtraBase + (int)i);
+            if (key.empty()) continue;
+            const int c = LayoutCol(key.c_str());
+            if (c < 0 || std::find(s_favs.begin(), s_favs.end(), c) != s_favs.end()) continue;
+            s_favs.push_back(c);
+            anyBase |= c < SC_Count;
         }
+        if (anyBase)
+            for (bool& on : s_stats.on) on = false;
     }
 
     void SaveFavourites()
     {
         std::ofstream f(FavouritesFile(), std::ios::trunc);
-        for (int c : s_favs) if (const auto* d = ExtraDef(c)) f << d->key << "\n";
+        for (int c : s_favs)
+        {
+            if (c < SC_Count) f << "base:" << kStatCols[c].name << "\n";
+            else if (const auto* d = ExtraDef(c)) f << d->key << "\n";
+        }
     }
 
     bool IsFavourite(int c) { return std::find(s_favs.begin(), s_favs.end(), c) != s_favs.end(); }
+    // A fixed column is on screen when ticked or starred.
+    bool BaseShown(int c) { return s_stats.on[c] || IsFavourite(c); }
 
     // Starring keeps the column for good; unstarring leaves it shown for this session.
     void ToggleFavourite(int c)
     {
         auto it = std::find(s_favs.begin(), s_favs.end(), c);
+        if (c < SC_Count)
+        {
+            // A fixed column: unstarring leaves it ticked for this session.
+            if (it != s_favs.end()) { s_favs.erase(it); s_stats.on[c] = true; }
+            else s_favs.push_back(c);
+            SaveFavourites();
+            return;
+        }
         auto ex = std::find(s_stats.extra.begin(), s_stats.extra.end(), c);
         if (it != s_favs.end()) { s_favs.erase(it); if (ex == s_stats.extra.end()) s_stats.extra.push_back(c); }
         else { s_favs.push_back(c); if (ex != s_stats.extra.end()) s_stats.extra.erase(ex); }
@@ -8902,7 +9085,7 @@ namespace
     bool MatchesSearch(const MatchStats::StatDef& d, const char* query)
     {
         auto lower = [](std::string s) { for (auto& ch : s) ch = (char)std::tolower((unsigned char)ch); return s; };
-        const std::string hay = lower(std::string(d.label) + " " + d.head + " " + d.group + " " + d.help);
+        const std::string hay = lower(std::string(d.label) + " " + d.head + " " + d.group + " " + d.sub + " " + d.meaning + " " + d.help);
         std::string q = lower(query), word;
         for (size_t i = 0; i <= q.size(); ++i)
         {
@@ -8917,14 +9100,164 @@ namespace
     }
 }
 
+// The Stats tab's columns panel (left of the table). Its own function, never inlined: inside DrawStatsTab's large
+// frame MSVC once emitted an aligned SSE load (movdqa) to an 8-aligned stack slot here, and opening
+// the picker crashed reading 0xFFFFFFFFFFFFFFFF (2026-10-30).
+static __declspec(noinline) void DrawStatsPicker()
+{
+    // Clear all: every ticked column off (and the search); starred ones stay, they are kept on purpose.
+    const float clearW = ImGui::CalcTextSize("Clear all").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - clearW - 6.0f);
+    ImGui::InputTextWithHint("##search", "Search stats (kd, energy, flag...)", s_stats.search, sizeof s_stats.search);
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("Clear all"))
+    {
+        s_stats.extra.clear();
+        for (bool& on : s_stats.on) on = false;
+        s_stats.search[0] = 0;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Untick every column. Starred columns stay: unstar them to remove them.");
+    ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "Tick to show a column; star to keep it every time.");
+    ImGui::Separator();
+    ImGui::BeginChild("##picker_list", ImVec2(0.0f, 0.0f), false);
+    const auto& cat = MatchStats::Catalog();
+    int toggleFav = -1;
+    // One stat's line: star, tick box, label, its short column name dimmed.
+    auto row = [&](int c, const MatchStats::StatDef& d, const char* idSuffix) {
+        ImGui::PushID(c);
+        ImGui::PushID(idSuffix);
+        const bool fav = IsFavourite(c);
+        if (StarButton(fav)) toggleFav = c;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(fav ? "Favourite: shown every time. Click to unstar." : "Star: show this column every time.");
+        ImGui::SameLine(0.0f, 2.0f);
+        bool on = fav || std::find(s_stats.extra.begin(), s_stats.extra.end(), c) != s_stats.extra.end();
+        if (fav) ImGui::BeginDisabled();
+        if (ImGui::Checkbox(d.label, &on))
+        {
+            if (on) s_stats.extra.push_back(c);
+            else s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), c));
+        }
+        if (fav) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ColTooltip(c);
+        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::TextColored(ImVec4(0.45f, 0.47f, 0.50f, 1.0f), "%s", d.head);
+        ImGui::PopID();
+        ImGui::PopID();
+    };
+    const bool searching = s_stats.search[0] != '\0';
+    if (!searching && !s_favs.empty())
+    {
+        ImGui::TextColored(ImVec4(0.94f, 0.78f, 0.31f, 1.0f), "Favourites");
+    }
+    // A fixed column's line: star, tick box, label, its short name dimmed, like a stat's.
+    auto baseRow = [&](int c, const char* idSuffix) {
+        ImGui::PushID(c);
+        ImGui::PushID(idSuffix);
+        const bool fav = IsFavourite(c);
+        if (StarButton(fav)) toggleFav = c;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(fav ? "Favourite: shown every time. Click to unstar." : "Star: show this column every time.");
+        ImGui::SameLine(0.0f, 2.0f);
+        bool on = BaseShown(c);
+        if (fav) ImGui::BeginDisabled();
+        if (ImGui::Checkbox(kStatCols[c].label, &on)) s_stats.on[c] = on;
+        if (fav) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ColTooltip(c);
+        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::TextColored(ImVec4(0.45f, 0.47f, 0.50f, 1.0f), "%s", kStatCols[c].head);
+        ImGui::PopID();
+        ImGui::PopID();
+    };
+    if (!searching && !s_favs.empty())
+        for (int c : s_favs)
+        {
+            if (c < SC_Count) baseRow(c, "fav");
+            else if (const auto* d = ExtraDef(c)) row(c, *d, "fav");
+        }
+    auto baseMatches = [&](int c, const MatchStats::LayoutEntry& e) {
+        MatchStats::StatDef probe;
+        probe.label = kStatCols[c].label; probe.head = kStatCols[c].head; probe.help = kStatCols[c].help;
+        probe.group = e.group; probe.sub = e.sub;
+        return MatchesSearch(probe, s_stats.search);
+    };
+    // The tree: group, sub-group (unless it repeats the group's name), then its stats.
+    std::string group, sub;
+    bool any = false;
+    for (const auto& e : MatchStats::Layout())
+    {
+        const int c = LayoutCol(e.key);
+        if (c < 0) continue;
+        const auto* d = ExtraDef(c);
+        if (d ? !MatchesSearch(*d, s_stats.search) : !baseMatches(c, e)) continue;
+        any = true;
+        if (group != e.group)
+        {
+            group = e.group; sub.clear();
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            ImGui::PushFont(GuiGlobalConstants::boldFont ? GuiGlobalConstants::boldFont : ImGui::GetFont());
+            ImGui::TextColored(ImVec4(0.94f, 0.78f, 0.31f, 1.0f), "%s", group.c_str());
+            ImGui::PopFont();
+        }
+        if (sub != e.sub)
+        {
+            sub = e.sub;
+            if (sub != group) ImGui::TextColored(ImVec4(0.72f, 0.64f, 0.42f, 1.0f), "  %s", sub.c_str());
+        }
+        ImGui::Indent(10.0f);
+        if (d) row(c, *d, "all"); else baseRow(c, "all");
+        ImGui::Unindent(10.0f);
+    }
+    // The detailed stats left out of the tree, found by search only.
+    if (searching)
+    {
+        bool header = false;
+        for (size_t i = 0; i < cat.size(); ++i)
+        {
+            const auto& d = cat[i];
+            if (!d.hidden || !MatchesSearch(d, s_stats.search)) continue;
+            if (!header)
+            {
+                header = true;
+                ImGui::Dummy(ImVec2(0.0f, 4.0f));
+                ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "Detailed (search only)");
+            }
+            any = true;
+            ImGui::Indent(10.0f);
+            row(kExtraBase + (int)i, d, "all");
+            ImGui::Unindent(10.0f);
+        }
+    }
+    if (!any) ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "%s", cat.empty() ? "No extra stats yet." : "No stat matches.");
+    if (toggleFav >= 0) ToggleFavourite(toggleFav);
+    ImGui::EndChild();
+}
+
+// A Stats table player's build card as a tooltip (the Overview's: skill bar, then attributes). The
+// ledger knows players by name, so the match's PlayerMeta is found by its sanitized name.
+static __declspec(noinline) void StatsPlayerTooltip(const MatchMeta& m, const std::string& name)
+{
+    for (const auto& [partyId, party] : m.parties)
+        for (const auto& p : party.players)
+        {
+            if (p.encoded_name.empty() || SanitizePlayerName(p.encoded_name) != name) continue;
+            const std::vector<SolvedAttribute>* build = nullptr;
+            if (s_analysis.folderName == m.folder_name)
+                if (auto it = s_analysis.builds.find(partyId + ":" + std::to_string(p.player_number)); it != s_analysis.builds.end())
+                    build = &it->second;
+            ImGui::BeginTooltip();
+            DrawBuildCard(p, name, build, nullptr, GetMatchSkillView(m), 32.0f, false);
+            ImGui::EndTooltip();
+            return;
+        }
+}
+
 static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
 {
     const MatchAnalysisJob& job = s_analysis;
     const BattleLedger::Data& d = job.ledger;
     const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
-    auto raw = StatValues(job, r0, r1);
+    auto raw = StatValues(job, r0, r1, GetMatchSkillView(m));
     std::vector<int> cols;
-    for (int c = 0; c < SC_Count; ++c) if (s_stats.on[c]) cols.push_back(c);
+    for (int c = 0; c < SC_Count; ++c) if (BaseShown(c)) cols.push_back(c);
     for (int c : ShownExtras()) cols.push_back(c);
     std::unordered_map<int, std::unordered_map<int, ExtraCell>> extraCells;
     for (int c : cols)
@@ -9028,11 +9361,17 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
         if (ImGui::InvisibleButton("##sort", ImVec2(cw - 2.0f, rowH))) s_stats.sort = c;
         const bool hov = ImGui::IsItemHovered();
         ImGui::PopID();
-        if (hov) ImGui::SetTooltip("%s\n%s\nClick to sort.", ColLabel(c), ColHelp(c));
+        if (hov) ColTooltip(c, "Click to sort.", true);
         const bool sorted = s_stats.sort == c;
         const float tw = ImGui::CalcTextSize(ColHead(c)).x;
-        const float tx = x + cw - 10.0f - tw;
+        const float tx = x + cw - 14.0f - tw;
         dl->AddText(ImVec2(tx, y + (rowH - lineH) * 0.5f), sorted ? cGold : hov ? IM_COL32(216, 220, 226, 255) : cDim, ColHead(c));
+        if (ColLowerBetter(c))
+        {
+            // "Lower is better": a small hollow down arrow after the name (the sort mark is filled, before it).
+            const float ax = tx + tw + 2.0f, ay = y + (rowH - lineH) * 0.5f;
+            dl->AddTriangle(ImVec2(ax, ay + 1.0f), ImVec2(ax + 6.0f, ay + 1.0f), ImVec2(ax + 3.0f, ay + 5.5f), IM_COL32(230, 158, 115, 220), 1.0f);
+        }
         if (sorted)
         {
             const float cy = y + rowH * 0.5f;     // a small down triangle before the name
@@ -9088,6 +9427,8 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
                              ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 170));
             x += iconS + 8.0f;
             dl->AddText(ImVec2(x, y + (rowH - lineH) * 0.5f), teamCol, ag.name.c_str());
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ra, ImVec2(o.x + nameColW, rb.y)))
+                StatsPlayerTooltip(m, ag.name);
             for (size_t k = 0; k < cols.size(); ++k)
             {
                 const int c = cols[k];
@@ -9109,7 +9450,8 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
                 dl->AddText(f, fs, ImVec2(b.x - 8.0f - tw, y + (rowH - lineH) * 0.5f),
                             s == "-" ? IM_COL32(90, 88, 82, 255) : place == 1 ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 205, 212, 255),
                             s.c_str());
-                if (hov && ExtraDef(c)) ImGui::SetTooltip("%s - %s: %s\n%s", ag.name.c_str(), ColLabel(c), s.c_str(), ColHelp(c));
+                if (hov && ExtraDef(c)) ImGui::SetTooltip("%s - %s: %s\n%s", ag.name.c_str(), ColLabel(c), s.c_str(),
+                                                          ExtraDef(c)->meaning[0] ? ExtraDef(c)->meaning : ExtraDef(c)->help);
                 else if (hov) ImGui::SetTooltip("%s - %s: %s\nClick for the breakdown (Bars, %s).", ag.name.c_str(), kStatCols[c].label,
                                                 s.c_str(), BattleLedger::MetricName(kStatCols[c].ledgerTab));
                 if (clicked && !ExtraDef(c))
@@ -9187,8 +9529,8 @@ static void DrawStatsTable(const MatchMeta& m, float r0, float r1)
                 if (m == BattleLedger::kTaken)         { mapV[SC_Taken] += ln.amount;    byEffect[0][ln.rowKey] += ln.amount; }
                 else if (m == BattleLedger::kReceived) { mapV[SC_Received] += ln.amount; byEffect[1][ln.rowKey] += ln.amount; }
             }
-            const bool showTaken = s_stats.on[SC_Taken] && mapV[SC_Taken] > 0.0;
-            const bool showHealed = s_stats.on[SC_Received] && mapV[SC_Received] > 0.0;
+            const bool showTaken = BaseShown(SC_Taken) && mapV[SC_Taken] > 0.0;
+            const bool showHealed = BaseShown(SC_Received) && mapV[SC_Received] > 0.0;
             if (showTaken || showHealed)
             {
                 if (s_stats.perMinute) { mapV[SC_Taken] /= minutes; mapV[SC_Received] /= minutes; }
@@ -9274,115 +9616,26 @@ static void DrawStatsTab(const MatchMeta& m)
     if (BattleLedger::Pill("Bars", s_stats.bars)) s_stats.bars = true;
     if (!s_stats.bars)
     {
-        // Columns, wrapping onto more lines when the panel is narrow; Total / Per minute at the right.
-        // Placed by hand (each pill is its text + 22 wide): the fixed columns, the favourites (star),
-        // this session's picks, then "+ More stats".
+        // Total / Per minute at the right of the VIEW row; under it the columns panel on the left
+        // (every stat by role, as tall as the tab) and the table beside it.
         LoadFavourites();
         const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
         const float segW = ImGui::CalcTextSize("Total").x + ImGui::CalcTextSize("Per minute").x + 52.0f;
-        ImGui::SameLine(0.0f, 18.0f);
-        const ImVec2 first = ImGui::GetCursorScreenPos();
-        const float x0 = first.x, pillH = ImGui::GetTextLineHeight() + 10.0f, limit = right - segW - 12.0f;
-        float px = x0, py = first.y;
-        auto place = [&](float w) {
-            if (px > x0 && px + w > limit) { px = x0; py += pillH + 4.0f; }
-            ImGui::SetCursorScreenPos(ImVec2(px, py));
-            px += w + 4.0f;
-        };
-        for (int c = 0; c < SC_Count; ++c)
-        {
-            place(ImGui::CalcTextSize(kStatCols[c].label).x + 22.0f);
-            ImGui::PushID(c);
-            if (BattleLedger::Pill(kStatCols[c].label, s_stats.on[c])) s_stats.on[c] = !s_stats.on[c];
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kStatCols[c].help);
-            ImGui::PopID();
-        }
-        int dropFav = -1, dropExtra = -1;
-        for (int c : ShownExtras())
-        {
-            const bool fav = IsFavourite(c);
-            // A favourite's pill carries a star in front of its label (spaces leave it room).
-            const std::string label = fav ? std::string("    ") + ColLabel(c) : std::string(ColLabel(c));
-            place(ImGui::CalcTextSize(label.c_str()).x + 22.0f);
-            const ImVec2 at = ImGui::GetCursorScreenPos();
-            ImGui::PushID(c);
-            const bool clicked = BattleLedger::Pill(label.c_str(), true);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip(fav ? "%s\nFavourite: shown every time. Click to unstar it." : "%s\nClick to remove the column.", ColHelp(c));
-            ImGui::PopID();
-            if (fav) DrawStar(ImGui::GetWindowDrawList(), ImVec2(at.x + 17.0f, at.y + pillH * 0.5f), pillH * 0.27f, true, IM_COL32(240, 200, 80, 255));
-            if (clicked) (fav ? dropFav : dropExtra) = c;
-        }
-        if (dropFav >= 0) ToggleFavourite(dropFav);
-        if (dropExtra >= 0) s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), dropExtra));
-        place(ImGui::CalcTextSize("+ More stats").x + 22.0f);
-        if (BattleLedger::Pill("+ More stats", false)) ImGui::OpenPopup("##stats_picker");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add columns: knockdowns, interrupts, reactions, conditions, energy, objectives...\nStar a stat to show it every time.");
-        const float bottom = py + pillH;
-        if (ImGui::BeginPopup("##stats_picker"))
-        {
-            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-            ImGui::SetNextItemWidth(360.0f);
-            ImGui::InputTextWithHint("##search", "Search stats (kd, energy, flag...)", s_stats.search, sizeof s_stats.search);
-            ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "Tick to show now; star to show every time.");
-            ImGui::Separator();
-            ImGui::BeginChild("##picker_list", ImVec2(460.0f, 460.0f), false);
-            const auto& cat = MatchStats::Catalog();
-            int toggleFav = -1;
-            // One stat's line: star, tick box, label, its short column name dimmed.
-            auto row = [&](int c, const MatchStats::StatDef& d, const char* idSuffix) {
-                ImGui::PushID(c);
-                ImGui::PushID(idSuffix);
-                const bool fav = IsFavourite(c);
-                if (StarButton(fav)) toggleFav = c;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip(fav ? "Favourite: shown every time. Click to unstar." : "Star: show this column every time.");
-                ImGui::SameLine(0.0f, 2.0f);
-                bool on = fav || std::find(s_stats.extra.begin(), s_stats.extra.end(), c) != s_stats.extra.end();
-                if (fav) ImGui::BeginDisabled();
-                if (ImGui::Checkbox(d.label, &on))
-                {
-                    if (on) s_stats.extra.push_back(c);
-                    else s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), c));
-                }
-                if (fav) ImGui::EndDisabled();
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", d.help);
-                ImGui::SameLine(0.0f, 8.0f);
-                ImGui::TextColored(ImVec4(0.45f, 0.47f, 0.50f, 1.0f), "%s", d.head);
-                ImGui::PopID();
-                ImGui::PopID();
-            };
-            const bool searching = s_stats.search[0] != '\0';
-            if (!searching && !s_favs.empty())
-            {
-                ImGui::TextColored(ImVec4(0.94f, 0.78f, 0.31f, 1.0f), "Favourites");
-                for (int c : s_favs) if (const auto* d = ExtraDef(c)) row(c, *d, "fav");
-            }
-            std::string group;
-            bool any = false;
-            for (size_t i = 0; i < cat.size(); ++i)
-            {
-                const auto& d = cat[i];
-                if (!MatchesSearch(d, s_stats.search)) continue;
-                any = true;
-                if (group != d.group)
-                {
-                    group = d.group;
-                    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-                    ImGui::TextColored(ImVec4(0.88f, 0.75f, 0.31f, 1.0f), "%s", group.c_str());
-                }
-                row(kExtraBase + (int)i, d, "all");
-            }
-            if (!any) ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "%s", cat.empty() ? "No extra stats yet." : "No stat matches.");
-            if (toggleFav >= 0) ToggleFavourite(toggleFav);
-            ImGui::EndChild();
-            ImGui::EndPopup();
-        }
-        ImGui::SetCursorScreenPos(ImVec2(right - segW, first.y));
+        ImGui::SameLine(0.0f, 0.0f);
+        const float rowY = ImGui::GetCursorScreenPos().y;
+        ImGui::SetCursorScreenPos(ImVec2(right - segW, rowY));
         if (BattleLedger::Pill("Total", !s_stats.perMinute)) s_stats.perMinute = false;
         ImGui::SameLine(0.0f, 4.0f);
         if (BattleLedger::Pill("Per minute", s_stats.perMinute)) s_stats.perMinute = true;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Divided by the interval's length.");
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, bottom + 8.0f));
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        const float panelW = std::min(320.0f, ImGui::GetContentRegionAvail().x * 0.35f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(1.0f, 1.0f, 1.0f, 0.025f));
+        if (ImGui::BeginChild("##stats_columns", ImVec2(panelW, 0.0f), false))
+            DrawStatsPicker();
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, 12.0f);
         DrawStatsTable(m, r0, r1);
         return;
     }

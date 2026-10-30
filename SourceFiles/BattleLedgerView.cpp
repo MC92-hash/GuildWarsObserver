@@ -1052,7 +1052,7 @@ void DrawBody(const Data& d, Host& host, ViewState& st, float r0, float r1, cons
                         nm = ConditionName(cond);
                         if (cause > 0) nm += " from";
                     }
-                    else nm = r->key == -1 ? "Weapon hits" : r->key == -2 ? "Divine Favor bonus" : r->key == kRowMinions ? "Minions"
+                    else nm = r->key == -1 ? "Weapon hits" : r->key == -2 ? "Divine Favor bonus" : r->key == kRowMinions ? "Minions" : r->key == kRowPets ? "Pets"
                             : r->key == kRowDegenUnknown ? "Degeneration (source unknown)" : "No skill named";
                     int icon = r->icon;
                     if (IsDegenRow(r->key) && host.SkillIcon(DegenCondition(r->key)) != nullptr) icon = DegenCondition(r->key);

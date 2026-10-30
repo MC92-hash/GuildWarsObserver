@@ -40,6 +40,7 @@ namespace BattleLedger
         uint8_t preventGroup = 0;     // Prevented without a heal: 1 + DamageAttribution::PreventGroup
     };
     constexpr int kRowMinions      = -4;
+    constexpr int kRowPets         = -12;   // a pet's hits, on its ranger's "Pets" row
     constexpr int kRowDegenUnknown = -5;
     // Map effects: never a player's (src 0), shown on the board's MAP EFFECTS strip and in a
     // victim's "hit by" / "healed by" under their own name.

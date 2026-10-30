@@ -77,6 +77,34 @@ void ReplayWindow::BuildBattleLedger() const
     for (size_t i = 0; i < combat.size() && i < table->packets.size(); ++i)
         if (table->packets[i].rule == DamageAttribution::Rule::StruckHeal)
             struckTicks.insert((uint64_t)(uint32_t)combat[i].target_id << 32 | (uint32_t)std::llround(combat[i].time * 1000.0));
+    // Pets: a pet is an NPC with a pet model id and only its team to go by. Its owner is the
+    // team's player who used Charm Animal or pet attack skills the most; combat packets name the
+    // pet by its original id, so both ids map.
+    std::unordered_map<int, int> petOwner;
+    {
+        std::unordered_map<int, std::pair<int, int>> bestOfTeam;    // team -> (player, uses)
+        for (int pid : m_playerIds)
+        {
+            auto it = m_replayCtx.agents.find(pid);
+            if (it == m_replayCtx.agents.end()) continue;
+            int uses = 0;
+            for (const SkillUseEvent& su : it->second.skillUseHistory)
+            {
+                const SkillInfo* si = m_skillView.Get(su.skillId);
+                if (su.skillId == 411 || (si && si->type == 11)) ++uses;    // Charm Animal, a Pet Attack
+            }
+            auto& best = bestOfTeam[it->second.teamId];
+            if (uses > best.second) best = { pid, uses };
+        }
+        for (const auto& [id, a] : m_replayCtx.agents)
+        {
+            if (a.type != AgentType::NPC || !IsPetModelId(a.modelId)) continue;
+            auto bt = bestOfTeam.find(a.teamId);
+            if (bt == bestOfTeam.end() || bt->second.second == 0) continue;
+            petOwner[id] = bt->second.first;
+            if (a.originalAgentId >= 0) petOwner[a.originalAgentId] = bt->second.first;
+        }
+    }
     for (size_t i = 0; i < combat.size() && i < table->packets.size(); ++i)
     {
         const CombatEvent& ce = combat[i];
@@ -153,6 +181,15 @@ void ReplayWindow::BuildBattleLedger() const
                 ln.skillId = m_skillView.ResolvePvpSkillId(mn->skillId);
                 ln.weaponHit = false;
             }
+            // A pet's hit is its ranger's, on his "Pets" row (Charm Animal's icon unless a pet
+            // attack skill named it).
+            else if (auto pt = petOwner.find(ce.caster_id); pt != petOwner.end())
+            {
+                ln.src = pt->second;
+                ln.rowKey = kLedgerRowPets;
+                if (ln.skillId <= 0) ln.skillId = 411;
+                ln.weaponHit = false;
+            }
         }
         else
             ln.kind = r.rule == DamageAttribution::Rule::StruckHeal  ? Kind::Prevented
@@ -205,6 +242,9 @@ void ReplayWindow::BuildBattleLedger() const
             ln.dst    = d.victim;
             ln.src    = d.caster;
             ln.amount = d.health;
+            // Self cost when the victim is the cause: his own degeneration hex, or a condition he
+            // caught back from his own skill (Mystic Corruption's Disease spreads from the foes to
+            // the Dervish). The Library shows the latter apart from sacrifices (DegenRow key).
             ln.kind   = d.caster != 0 && d.caster == d.victim ? Kind::SelfCost : Kind::Damage;
             if (d.skillId == 0)
                 ln.rowKey = kLedgerRowDegenUnknown;

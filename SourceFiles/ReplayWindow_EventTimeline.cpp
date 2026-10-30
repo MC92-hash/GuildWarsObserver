@@ -222,7 +222,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 8;
+    static constexpr int kVersion = 12;   // 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
