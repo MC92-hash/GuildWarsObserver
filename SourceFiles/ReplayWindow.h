@@ -38,6 +38,7 @@
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "EnergyModel.h"
+#include "FluxAllIn.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
 #include "LordAggressiveness.h"
@@ -2702,6 +2703,17 @@ private:
     size_t m_bossClaimScanCursor = 0;          // speech-bubble scan position in m_bossClaims
     void   BuildBossTimeline();
     const BossTenure* FindBossTenure(int agentId, float t) const;
+
+    // All In (November flux): who carries it, from the bar, the quiet regeneration and the armour
+    // (private FluxAllIn.h). Built once before the armour solve; empty in any other month.
+    AllIn::Table m_allIn;
+    bool m_allInBuilt = false;
+    AttributeModel::Flux MatchFlux() const;
+    void BuildAllInStatus();
+    // The status to show for this agent, or null when the match is not All In or he is not a player.
+    const AllIn::Status* AllInStatusFor(int agentId) const;
+    void DrawAllInTooltipLines(const AllIn::Status& s) const;
+    void WriteAllInDebugDump() const;
 
     // --- Spatial Audio ---
     // The recording's own sounds (StoC/sound_events.txt: what the recording client played, mostly

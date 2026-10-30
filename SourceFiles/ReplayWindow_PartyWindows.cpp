@@ -136,6 +136,7 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
     // (4) Last of all: base health is 100 at level 1 and rises 20 per level, so 20*level + 80 --
     // the documented 480 at level 20, not 500.
     uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 80) : 480;
+    if (m_allInBuilt && AllIn::Applies(&m_allIn, ard.agent_id)) estimated += AllIn::kHealthBonus;
     if (deepWounded) estimated = AgentReplayData::ApplyDeepWound(estimated);
     return { estimated, true };
 }

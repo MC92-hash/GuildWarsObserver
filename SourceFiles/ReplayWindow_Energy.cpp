@@ -57,6 +57,9 @@ void ReplayWindow::BuildEnergyTracks() const
         return { s.value, s.estimated };
     };
 
+    // All In: a player under it pays a quarter less; one the recording cannot place widens the band.
+    in.allIn = m_allInBuilt ? &m_allIn : nullptr;
+
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyTracks.merge(EnergyModel::BuildHenchmen(m_replayCtx.agents, in));
     m_energyBuilt = true;
@@ -319,6 +322,10 @@ void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
             Txt(kTipPlain, "A gain paid on an event the recording does not show: ");
             Icon(texEnergy);
             Txt(kTipPlain, " may be higher");
+            break;
+        case DoubtKind::AllIn:
+            Txt(kTipPlain, "All In not known for this player: skills may have cost 25% less ");
+            Icon(texEnergy);
             break;
         }
         Br();

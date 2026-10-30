@@ -181,6 +181,10 @@ bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, 
 
         out.map_id = j.value("map_id", 0);
         out.flux = j.value("flux", std::string());
+        // Developer test: GWO_FLUX_OVERRIDE="All In" replays any match under that flux's rules.
+        char fluxOverride[64] = {};
+        if (GetEnvironmentVariableA("GWO_FLUX_OVERRIDE", fluxOverride, (DWORD)sizeof(fluxOverride)) > 0)
+            out.flux = fluxOverride;
         out.day = j.value("day", 0);
         out.month = j.value("month", 0);
         out.year = j.value("year", 0);

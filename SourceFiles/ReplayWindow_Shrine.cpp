@@ -64,6 +64,11 @@ HealthModel::Inputs ReplayWindow::BuildHealthModelInputs() const
     HealthModel::Inputs in;
     in.equipment = &m_replayCtx.stocData.equipment;
     in.stoc      = &m_replayCtx.stocData;
+    // All In's +100, once the table is built (before the armour solve).
+    if (m_allInBuilt)
+        in.fluxHealth = [this](int agentId) {
+            return AllIn::Applies(&m_allIn, agentId) ? AllIn::kHealthBonus : 0;
+        };
 
     in.moralePercent = [this](const AgentReplayData& ard, float t) {
         return MoralePercentAtTime(ard, t);

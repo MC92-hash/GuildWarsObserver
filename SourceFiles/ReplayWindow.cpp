@@ -6700,9 +6700,18 @@ void ReplayWindow::Tick()
                 if (da->maxHpVote[i])
                     m_healthInputs.packetMaxHp.push_back({ combat[i].target_id, combat[i].time, da->maxHpVote[i] });
         }
+        // All In: who carries the flux, before the armour solve that must leave its +100 out
+        // (BuildHealthModelInputs reads the table). The armour then settles the players the bar and
+        // the regeneration left open.
+        BuildAllInStatus();
+        m_healthInputs.fluxHealth = [this](int agentId) {
+            return AllIn::Applies(&m_allIn, agentId) ? AllIn::kHealthBonus : 0;
+        };
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
+        AllIn::ApplyArmourEvidence(m_allIn, m_replayCtx.agents);
         m_armourSolved = true;
+        WriteAllInDebugDump();
     }
 
     // Solve each player's attribute build. It runs last of the analysis passes because it reads
@@ -6740,6 +6749,7 @@ void ReplayWindow::Tick()
         attrInputs.flux = AttributeModel::FluxFromName(m_matchMeta.flux);
         if (attrInputs.flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
             attrInputs.flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+        attrInputs.allIn      = m_allInBuilt ? &m_allIn : nullptr;
         attrInputs.matchYear  = m_matchMeta.year;
         attrInputs.matchMonth = m_matchMeta.month;
         attrInputs.matchDay   = m_matchMeta.day;
@@ -7006,6 +7016,21 @@ std::vector<int> ReplayWindow::SkillBarForAgent(int agentId) const
         if (const HenchmanInfo* h = LookupHenchman(it->second.modelId))
             return std::vector<int>(std::begin(h->skills), std::end(h->skills));
     return {};
+}
+
+// The All In table, the same way the attribute solve writes its own: %TEMP%\gwo_allin_<match>.txt
+// whenever GWO_ALLIN_DEBUG is set. Written in any month (the table is empty outside November).
+void ReplayWindow::WriteAllInDebugDump() const
+{
+    char flag[16] = {};
+    if (GetEnvironmentVariableA("GWO_ALLIN_DEBUG", flag, (DWORD)sizeof(flag)) == 0) return;
+    char tempDir[MAX_PATH] = {};
+    if (GetTempPathA(MAX_PATH, tempDir) == 0) return;
+    std::string folder = m_replayCtx.matchFolderPath.filename().string();
+    if (folder.empty()) folder = "replay";
+    for (char& c : folder)
+        if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
+    AllIn::WriteDump(m_allIn, m_replayCtx.agents, std::string(tempDir) + "gwo_allin_" + folder + ".txt");
 }
 
 void ReplayWindow::WriteAttributeDebugDump() const

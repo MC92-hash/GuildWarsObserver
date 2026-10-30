@@ -782,6 +782,46 @@ const ReplayWindow::BossTenure* ReplayWindow::FindBossTenure(int agentId, float 
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// All In (November flux) - who carries it. The rules live in the private FluxAllIn.h; this only
+// feeds them the match and keeps the table for the models and the effect icons.
+// ---------------------------------------------------------------------------
+
+AttributeModel::Flux ReplayWindow::MatchFlux() const
+{
+    // The recording names the flux when the recorder saw it; the month decides otherwise.
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+    return flux;
+}
+
+void ReplayWindow::BuildAllInStatus()
+{
+    m_allIn = AllIn::Build(m_replayCtx.agents, m_replayCtx.stocData, m_skillView,
+                           [this](int agentId) { return SkillBarForAgent(agentId); },
+                           m_replayCtx.mapId, MatchFlux() == AttributeModel::Flux::AllIn);
+    m_allInBuilt = true;
+}
+
+const AllIn::Status* ReplayWindow::AllInStatusFor(int agentId) const
+{
+    if (!m_allInBuilt) return nullptr;
+    const AllIn::Status* s = AllIn::Find(&m_allIn, agentId);
+    return (s && !s->henchman) ? s : nullptr;
+}
+
+void ReplayWindow::DrawAllInTooltipLines(const AllIn::Status& s) const
+{
+    const std::string why = AllIn::Describe(s);
+    if (s.state == AllIn::State::Yes)
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.f), "Under All In: %s", why.c_str());
+    else if (s.state == AllIn::State::Possible)
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.f), "All In? %s", why.c_str());
+    else
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "Not under All In: %s", why.c_str());
+}
+
 
 // ---------------------------------------------------------------------------
 // Top-of-screen HUD for the followed agent: health bar (with name inside)

@@ -1221,16 +1221,20 @@ float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, flo
     const bool windowHovered = ImGui::IsWindowHovered();
     float x = rowTopLeft.x;
 
-    // The recording names the flux when the recorder saw it; the month decides otherwise.
-    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
-    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
-        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
-    if (flux != AttributeModel::Flux::None) {
+    const AttributeModel::Flux flux = MatchFlux();
+    // All In is a per-player flux: only a player under it carries the icon, and one the recording
+    // cannot place carries it dimmed (FluxAllIn.h).
+    const AllIn::Status* allIn = flux == AttributeModel::Flux::AllIn ? AllInStatusFor(agentId) : nullptr;
+    const bool showFlux = flux != AttributeModel::Flux::None &&
+                          (flux != AttributeModel::Flux::AllIn || (allIn && allIn->state != AllIn::State::No));
+    if (showFlux) {
         const ImVec2 tl(x, rowTopLeft.y), br(x + side, rowTopLeft.y + side);
+        const ImU32 tint = (allIn && allIn->state == AllIn::State::Possible) ? IM_COL32(255, 255, 255, 110)
+                                                                             : IM_COL32(255, 255, 255, 255);
         ImVec2 fuv0, fuv1;
         FrameCellUV(2, fuv0, fuv1);
         if (ImTextureID tex = LoadSkillIconFile(dev, "PvP_Flair.png"))
-            dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+            dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f), tint);
         if (ImTextureID texSlots = LoadGameUITexture(dev, "Skillbar\\ui_skillbar_slot_frames.png"))
             dl->AddImage(texSlots, tl, br, fuv0, fuv1);
 
@@ -1248,6 +1252,7 @@ float ReplayWindow::DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, flo
                     ImGui::Spacing();
                     ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "The Boss, held for %d:%02d", held / 60, held % 60);
                 }
+            if (allIn) { ImGui::Spacing(); DrawAllInTooltipLines(*allIn); }
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "PvP flux");
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
@@ -1560,13 +1565,17 @@ void ReplayWindow::DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft,
 
     struct Icon
     {
-        const EffectTimeline::Effect* e;   // null = morale
+        const EffectTimeline::Effect* e;   // null = morale, or the flux (key 0)
         float placed;
         int   key;
     };
     std::vector<Icon> icons;
     int deaths = 0, boosts = 0;
     const int morale = ComputeAgentMorale(ard, t, &deaths, &boosts);
+    // All In, a per-player flux: first in the strip, dimmed while the recording cannot place him.
+    const AllIn::Status* allIn = MatchFlux() == AttributeModel::Flux::AllIn ? AllInStatusFor(agentId) : nullptr;
+    if (allIn && allIn->state == AllIn::State::No) allIn = nullptr;
+    if (allIn) icons.push_back({ nullptr, 0.f, 0 });
     if (morale != 0) icons.push_back({ nullptr, 0.f, 1 });
     if (const EffectTimeline::Table* table = EffectTimelineTable())
         if (const auto all = table->byAgent.find(agentId); all != table->byAgent.end())
@@ -1581,7 +1590,7 @@ void ReplayWindow::DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft,
     std::stable_sort(icons.begin(), icons.end(), [](const Icon& a, const Icon& b) {
         return a.key != b.key ? a.key < b.key : a.placed < b.placed;
     });
-    const size_t cap = kPartyEffectsMax + (morale != 0 ? 1u : 0u);
+    const size_t cap = kPartyEffectsMax + (morale != 0 ? 1u : 0u) + (allIn ? 1u : 0u);
     const size_t hidden = icons.size() > cap ? icons.size() - cap : 0;
     icons.resize(icons.size() - hidden);
 
@@ -1614,6 +1623,24 @@ void ReplayWindow::DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft,
     dl->PushClipRect(ImVec2(vp->Pos.x, clipY0), ImVec2(vp->Pos.x + vp->Size.x, clipY1), true);
     for (const Icon& icon : icons) {
         const ImVec2 tl(place(side), y), br(tl.x + side, tl.y + side);
+        if (!icon.e && icon.key == 0) {
+            const int a = allIn->state == AllIn::State::Possible ? 110 : 255;
+            if (ImTextureID tex = LoadSkillIconFile(dev, "PvP_Flair.png"))
+                dl->AddImage(tex, tl, br, iconUV0, iconUV1, IM_COL32(255, 255, 255, a));
+            dl->AddRect(tl, br, IM_COL32(0, 0, 0, 200));
+            if (hovered(tl, br)) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(340.f);
+                ImGui::TextColored(ImVec4(1.f, 238.f / 255.f, 187.f / 255.f, 1.f), "All In");
+                if (const char* desc = GetFluxDescription("All In")) ImGui::TextUnformatted(desc);
+                ImGui::Spacing();
+                DrawAllInTooltipLines(*allIn);
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "PvP flux");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            continue;
+        }
         if (!icon.e) {
             // GW's morale icon, its text centred at the bottom in Friz-gold 0xFFEEBB.
             if (ImTextureID tex = LoadGameUITexture(dev, morale > 0 ? "Effectbar\\ui_effect_morale_boost.png"
