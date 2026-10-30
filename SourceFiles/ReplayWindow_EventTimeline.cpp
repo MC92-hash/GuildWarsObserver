@@ -222,7 +222,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 7;
+    static constexpr int kVersion = 8;
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
@@ -559,8 +559,25 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         }
     }
 
+    // The solved builds, the --export-attributes file verbatim: the Library's Overview shows each
+    // player's attributes and copies them into the template. null when nothing was solved.
+    nlohmann::json attributes = nullptr;
+    {
+        std::filesystem::path attrTmp = outPath;
+        attrTmp += ".attributes.tmp";
+        if (ExportAttributes(attrTmp))
+        {
+            std::ifstream in(attrTmp, std::ios::binary);
+            attributes = nlohmann::json::parse(in, nullptr, false);
+            if (attributes.is_discarded()) attributes = nullptr;
+        }
+        std::error_code ec;
+        std::filesystem::remove(attrTmp, ec);
+    }
+
     nlohmann::json root = {
         { "version",        kVersion },
+        { "attributes",     std::move(attributes) },
         { "display_offset", m_displayTimeOffset },
         { "gate_seconds",   gate },
         { "replay_length",  m_replayCtx.maxReplayTime },

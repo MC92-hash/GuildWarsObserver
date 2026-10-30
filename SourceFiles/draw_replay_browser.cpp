@@ -12,6 +12,7 @@
 #include "ReplayHotkeys.h"
 #include "CatapultLeverState.h"
 #include "BattleLedger.h"
+#include "EquipmentData.h"
 #include "BitmapFont.h"
 #include "Net/HttpClient.h"
 #include <algorithm>
@@ -353,7 +354,8 @@ static std::string ComputeTeamBuild(const PartyMeta& party)
 // ─── GW1 skill template encoder ─────────────────────────────────────────────
 
 static std::string EncodeSkillTemplate(int primary, int secondary,
-                                       const std::vector<int>& skills)
+                                       const std::vector<int>& skills,
+                                       const std::vector<std::pair<int, int>>& attributes = {})
 {
     // GW1 template code format: variable-length bitstream, base64 encoded.
     // Reference: https://wiki.guildwars.com/wiki/Skill_template_format
@@ -374,9 +376,20 @@ static std::string EncodeSkillTemplate(int primary, int secondary,
     pushBits(primary, profBits);
     pushBits(secondary, profBits);
 
-    // Attributes: 0 attributes, 0 bits per value
-    pushBits(0, 4);  // number of attributes
-    pushBits(0, 4);  // bits per attribute value
+    // Attributes: count, bits per attribute id minus 4, then (id, rank) pairs, rank in 4 bits.
+    // The ranks are the points bought, without runes or headgear, as the game's template holds them.
+    const int attrCount = std::min((int)attributes.size(), 15);
+    int maxAttr = 0;
+    for (int i = 0; i < attrCount; i++) maxAttr = std::max(maxAttr, attributes[i].first);
+    int attrBits = 4;
+    while ((1 << attrBits) <= maxAttr) attrBits++;
+    pushBits(attrCount, 4);
+    pushBits(attrBits - 4, 4);
+    for (int i = 0; i < attrCount; i++)
+    {
+        pushBits(attributes[i].first, attrBits);
+        pushBits(std::clamp(attributes[i].second, 0, 12), 4);
+    }
 
     // Skills: need enough bits for max skill ID
     int maxSkill = 0;
@@ -389,6 +402,7 @@ static std::string EncodeSkillTemplate(int primary, int secondary,
         skillBits = 0;
         int tmp = maxSkill;
         while (tmp > 0) { skillBits++; tmp >>= 1; }
+        skillBits = std::max(skillBits, 8);   // the field holds bits minus 8; never below
     }
 
     pushBits(skillBits - 8, 4); // bits-per-skill minus 8, encoded in 4 bits
@@ -6291,6 +6305,25 @@ static const SkillDatabaseView& GetMatchSkillView(const MatchMeta& m)
 }
 
 // A player's bar, as the Overview shows it: hover for the skill, click to filter by it.
+// One solved attribute (match_analysis.json "attributes", AttributeModel::WriteJson): the
+// effective rank the packets measure, and what of it the rune and the headgear added.
+struct SolvedAttribute
+{
+    int id = 0, lo = 0, hi = 0, best = 0;
+    bool budgetOnly = true;   // never seen in use: only a ceiling from the 200 points
+    int rune = 0;             // 0..3
+    bool headgear = false;
+    int Base() const { return std::clamp(best - rune - (headgear ? 1 : 0), 0, 12); }
+};
+
+// What the Overview knows about the match beyond the index: the solved builds, once the match
+// analysis has run. Null while it is downloading or reading.
+struct OverviewBuilds
+{
+    const std::unordered_map<std::string, std::vector<SolvedAttribute>>* builds = nullptr;
+    const char* pending = nullptr;   // what is happening instead, shown where the attributes go
+};
+
 static void DrawPlayerSkillRow(const PlayerMeta& p, const SkillDatabaseView& matchView, float skillIconSize)
 {
     if (p.used_skills.empty()) return;
@@ -6353,22 +6386,262 @@ static void DrawPlayerSkillRow(const PlayerMeta& p, const SkillDatabaseView& mat
     }
 }
 
+// The primary profession's own attribute, which a template window lists first.
+static int PrimaryAttributeOf(int primaryProf)
+{
+    switch (primaryProf)
+    {
+    case 1:  return 17;  // Warrior       Strength
+    case 2:  return 23;  // Ranger        Expertise
+    case 3:  return 16;  // Monk          Divine Favor
+    case 4:  return 6;   // Necromancer   Soul Reaping
+    case 5:  return 0;   // Mesmer        Fast Casting
+    case 6:  return 12;  // Elementalist  Energy Storage
+    case 7:  return 35;  // Assassin      Critical Strikes
+    case 8:  return 36;  // Ritualist     Spawning Power
+    case 9:  return 40;  // Paragon       Leadership
+    case 10: return 44;  // Dervish       Mysticism
+    default: return -1;
+    }
+}
+
+// The attributes worth a line: seen in use and above zero, primary profession first with its own
+// attribute at the top, each group strongest first - the order the replay's Character panel uses.
+// A rank nothing was observed on is only a ceiling the 200 points leave, so it is left out here.
+static std::vector<const SolvedAttribute*> ShownAttributes(const std::vector<SolvedAttribute>& build, int primaryProf)
+{
+    std::vector<const SolvedAttribute*> out;
+    for (const auto& a : build)
+        if (!a.budgetOnly && a.hi > 0) out.push_back(&a);
+    const int primaryAttr = PrimaryAttributeOf(primaryProf);
+    std::sort(out.begin(), out.end(), [&](const SolvedAttribute* a, const SolvedAttribute* b) {
+        const auto key = [&](const SolvedAttribute* x) {
+            const int group = SkillDatabase::GetProfessionForAttribute(x->id) == primaryProf ? 0 : 1;
+            return std::tuple{ group, x->id == primaryAttr ? 0 : 1, -x->best, x->id };
+        };
+        return key(a) < key(b);
+    });
+    return out;
+}
+
+// The player's template code: the solved ranks when the match has been read, the skills alone
+// otherwise (the recorder's own code when it has one).
+static std::string PlayerTemplateCode(const PlayerMeta& p, const std::vector<SolvedAttribute>* build)
+{
+    if (build && !build->empty())
+    {
+        std::vector<std::pair<int, int>> attrs;
+        for (const SolvedAttribute* a : ShownAttributes(*build, p.primary))
+            if (a->Base() > 0) attrs.push_back({ a->id, a->Base() });
+        if (!attrs.empty())
+            return EncodeSkillTemplate(p.primary, p.secondary, p.used_skills, attrs);
+    }
+    return p.skill_template_code.empty() ? EncodeSkillTemplate(p.primary, p.secondary, p.used_skills)
+                                         : p.skill_template_code;
+}
+
+// The two-sheet copy icon, turning gold and showing a tick for a moment after a click. Returns
+// true when clicked.
+static bool DrawCopyIcon(const char* id, float btnSize, float vertOff, float feedbackAt)
+{
+    const float now = (float)ImGui::GetTime();
+    const bool showFeedback = feedbackAt >= 0.0f && (now - feedbackAt < 1.5f);
+
+    const ImVec2 startCursor = ImGui::GetCursorScreenPos();
+    const ImVec2 cursor(startCursor.x, startCursor.y + vertOff);
+    ImGui::SetCursorScreenPos(cursor);
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(btnSize, btnSize));
+    const bool hovered = ImGui::IsItemHovered();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float feedbackAge = showFeedback ? (now - feedbackAt) : 99.0f;
+    float goldBlend = 0.0f;
+    if (showFeedback)
+        goldBlend = (feedbackAge < 0.3f) ? 1.0f : std::max(0.0f, 1.0f - (feedbackAge - 0.3f) / 1.2f);
+
+    auto lerpCol = [](ImU32 a, ImU32 b, float t) -> ImU32 {
+        float r = ((a >> 0) & 0xFF) * (1 - t) + ((b >> 0) & 0xFF) * t;
+        float g = ((a >> 8) & 0xFF) * (1 - t) + ((b >> 8) & 0xFF) * t;
+        float bl = ((a >> 16) & 0xFF) * (1 - t) + ((b >> 16) & 0xFF) * t;
+        float al = ((a >> 24) & 0xFF) * (1 - t) + ((b >> 24) & 0xFF) * t;
+        return IM_COL32((int)r, (int)g, (int)bl, (int)al);
+    };
+
+    const ImU32 baseCol = hovered ? IM_COL32(190, 190, 190, 230) : IM_COL32(130, 130, 130, 160);
+    const ImU32 iconCol = lerpCol(baseCol, IM_COL32(225, 190, 80, 255), goldBlend);
+
+    const float m = btnSize * 0.12f;
+    const float cx = cursor.x + m, cy = cursor.y + m;
+    const float cw = btnSize - 2 * m, ch = btnSize - 2 * m;
+    const float t = std::max(1.0f, btnSize * 0.08f);
+
+    if (showFeedback && feedbackAge < 0.4f)
+    {
+        const float mx = cursor.x + btnSize * 0.5f, my = cursor.y + btnSize * 0.5f;
+        const float s = btnSize * 0.22f;
+        dl->AddLine(ImVec2(mx - s, my), ImVec2(mx - s * 0.3f, my + s * 0.7f), iconCol, t * 1.5f);
+        dl->AddLine(ImVec2(mx - s * 0.3f, my + s * 0.7f), ImVec2(mx + s, my - s * 0.5f), iconCol, t * 1.5f);
+    }
+    else
+    {
+        const float off = cw * 0.2f, rw = cw - off, rh = ch - off, r = 1.5f;
+        dl->AddRect(ImVec2(cx + off, cy), ImVec2(cx + off + rw, cy + rh), iconCol, r, 0, t);
+        dl->AddRectFilled(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), IM_COL32(30, 30, 30, 200), r);
+        dl->AddRect(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), iconCol, r, 0, t);
+    }
+    return clicked;
+}
+
+// The colours of the replay's Character panel split (ReplayWindow_CharacterPanel.cpp): a
+// near-white rank, the rune's own number in its rarity's colour, the headgear's in dim gold.
+static constexpr ImU32 kAttrExact  = IM_COL32(232, 236, 242, 255);
+static constexpr ImU32 kAttrRanged = IM_COL32(196, 202, 210, 255);
+static constexpr ImU32 kAttrMarker = IM_COL32(176, 148, 74, 255);
+
+static ImU32 RuneTierColour(int tier)
+{
+    const Equipment::Rgb c = Equipment::RarityColor(tier >= 3 ? Equipment::Rarity::Gold
+                                                    : tier == 2 ? Equipment::Rarity::Purple
+                                                                : Equipment::Rarity::Blue);
+    return IM_COL32(c.r, c.g, c.b, 255);
+}
+
+// The Overview's one pinned build card: which match and player, and where it was opened.
+struct PinnedBuildCard
+{
+    std::string folder;   // MatchMeta::folder_name
+    std::string key;      // "party:number"
+    ImVec2 pos;
+};
+static PinnedBuildCard s_pinnedCard;
+
+// A player's build as the game's template window shows it: professions and name, the skill bar,
+// then each attribute with its rank in a frame, how the armour made it up ("10+2+1", the rune in
+// its rarity's colour), and the full name. Drawn into the current tooltip or window.
+static void DrawBuildCard(const PlayerMeta& p, const std::string& name,
+                          const std::vector<SolvedAttribute>* build, const char* pending,
+                          const SkillDatabaseView& matchView, float skillIconSize, bool pinned)
+{
+    const float profIcon = ImGui::GetTextLineHeight() + 4.0f;
+    ImFont* bold = GuiGlobalConstants::boldFont;
+
+    // Header: the two profession icons, the name, the professions spelled out.
+    for (int prof : { p.primary, p.secondary })
+    {
+        if (ImTextureID ico = GetProfessionIcon(prof)) ImGui::Image(ico, ImVec2(profIcon, profIcon));
+        else                                          ImGui::Dummy(ImVec2(profIcon, profIcon));
+        ImGui::SameLine(0, 2);
+    }
+    ImGui::SameLine(0, 8);
+    {
+        const float y = ImGui::GetCursorPosY();
+        ImGui::SetCursorPosY(y + (profIcon - ImGui::GetTextLineHeight()) * 0.5f);
+        if (bold) ImGui::PushFont(bold);
+        ImGui::TextColored(kColorText, "%s", name.c_str());
+        if (bold) ImGui::PopFont();
+        ImGui::SameLine(0, 10);
+        ImGui::SetCursorPosY(y + (profIcon - ImGui::GetTextLineHeight()) * 0.5f);
+        ImGui::TextColored(kColorTextDim, "%s / %s", GetProfessionName(p.primary), GetProfessionName(p.secondary));
+    }
+
+    // The bar, as plain icons: the card is for reading, the list row is where skills are picked.
+    if (!p.used_skills.empty())
+    {
+        ImGui::Spacing();
+        const auto sortedSkills = matchView.SortSkillsForDisplay(p.used_skills, p.primary, p.secondary);
+        for (size_t i = 0; i < sortedSkills.size(); i++)
+        {
+            if (i > 0) ImGui::SameLine(0, 2);
+            if (ImTextureID tex = GetSkillIcon(sortedSkills[i], &matchView))
+                ImGui::Image(tex, ImVec2(skillIconSize, skillIconSize));
+            else
+                ImGui::Dummy(ImVec2(skillIconSize, skillIconSize));
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (!build)
+        ImGui::TextColored(kColorTextDim, "%s", pending ? pending : "Attributes unavailable");
+    else if (const auto shown = ShownAttributes(*build, p.primary); shown.empty())
+        ImGui::TextColored(kColorTextDim, "No attributes seen in use");
+    else
+    {
+        if (bold) ImGui::PushFont(bold);
+        const float boxW = ImGui::CalcTextSize("~00").x + 12.0f;
+        if (bold) ImGui::PopFont();
+        const float splitW = ImGui::CalcTextSize("~00+0+0").x + 10.0f;
+        const float lineH = ImGui::GetTextLineHeight();
+        const ImU32 frame = IM_COL32(120, 128, 140, 190);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        for (const SolvedAttribute* ap : shown)
+        {
+            const SolvedAttribute& a = *ap;
+            const bool exact = (a.lo == a.hi);
+            const ImU32 colour = exact ? kAttrExact : kAttrRanged;
+            const ImVec2 o = ImGui::GetCursorScreenPos();
+
+            dl->AddRect(ImVec2(o.x, o.y - 2.0f), ImVec2(o.x + boxW, o.y + lineH + 2.0f), frame, 2.0f);
+            char rank[16];
+            snprintf(rank, sizeof(rank), exact ? "%d" : "~%d", a.best);
+            if (bold) ImGui::PushFont(bold);
+            dl->AddText(ImVec2(o.x + (boxW - ImGui::CalcTextSize(rank).x) * 0.5f, o.y), colour, rank);
+            if (bold) ImGui::PopFont();
+
+            // Nothing to spell out when the points bought the whole rank.
+            float x = o.x + boxW + 8.0f;
+            if (a.rune > 0 || a.headgear)
+            {
+                const std::string base = (exact ? "" : "~") + std::to_string(a.Base());
+                dl->AddText(ImVec2(x, o.y), colour, base.c_str());
+                x += ImGui::CalcTextSize(base.c_str()).x;
+                if (a.rune > 0)
+                {
+                    const std::string r = "+" + std::to_string(a.rune);
+                    dl->AddText(ImVec2(x, o.y), RuneTierColour(a.rune), r.c_str());
+                    x += ImGui::CalcTextSize(r.c_str()).x;
+                }
+                if (a.headgear)
+                    dl->AddText(ImVec2(x, o.y), kAttrMarker, "+1");
+            }
+
+            ImGui::SetCursorScreenPos(ImVec2(o.x + boxW + 8.0f + splitW, o.y));
+            ImGui::TextColored(kColorText, "%s", SkillDatabase::GetAttributeName(a.id));
+            if (!exact)
+            {
+                ImGui::SameLine(0, 8);
+                ImGui::TextColored(kColorTextDim, "(%d-%d)", a.lo, a.hi);
+            }
+            ImGui::Dummy(ImVec2(0, 2));
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::TextColored(kColorTextDim, pinned ? "Click the profession icon again to close"
+                                             : "Click the profession icon to keep this open");
+    ImGui::TextColored(kColorTextDim, "Click the name to show every match with this player");
+}
+
 static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                                 const GuildLabel& guild, bool isWinner,
-                                const ResponsiveSizes& sz)
+                                const ResponsiveSizes& sz, const OverviewBuilds& ob)
 {
     const auto& matchView = GetMatchSkillView(m);
 
     const float iconSize = sz.profIcon;
     const float skillIconSize = sz.skillIcon;
-    const float smallIconSize = sz.cupIcon + 2.0f;
 
-    // The two teams sit side by side here with nothing to say which side of the map each one
-    // held - the list's TEAM 1 / TEAM 2 column headings are gone by the time you are reading
-    // this panel. Party "1" is Blue and party "2" is Red; see TeamColors.h.
+    // Party "1" is Blue and party "2" is Red; see TeamColors.h.
     const int teamSlot = (partyId == "2") ? 1 : 0;
 
     static std::unordered_map<std::string, float> s_copyFeedbackTimes;
+    auto feedbackAt = [](const std::string& key) {
+        auto it = s_copyFeedbackTimes.find(key);
+        return it == s_copyFeedbackTimes.end() ? -1.0f : it->second;
+    };
 
     ImGui::BeginGroup();
 
@@ -6387,176 +6660,87 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     std::sort(sorted.begin(), sorted.end(),
         [](const PlayerMeta* a, const PlayerMeta* b) { return a->player_number < b->player_number; });
 
+    auto keyOf = [&](const PlayerMeta& p) { return partyId + ":" + std::to_string(p.player_number); };
+    auto buildOf = [&](const PlayerMeta& p) -> const std::vector<SolvedAttribute>* {
+        if (!ob.builds) return nullptr;
+        auto it = ob.builds->find(keyOf(p));
+        return it == ob.builds->end() ? nullptr : &it->second;
+    };
+
     static const ImVec4 kColorStatText = ImVec4(0.490f, 0.490f, 0.494f, 1.0f); // #7D7D7E
 
     const float availW = ImGui::GetContentRegionAvail().x;
-    const float statColW = 42.0f;
-    const float dmgColW = 50.0f;
-    const float statIconSz = 34.0f;
-    bool showSkills = (s_state.layout != LayoutMode::Mobile && s_state.layout != LayoutMode::Narrow
-                       && availW >= 500.0f);
-    const float nameColW = showSkills
-        ? std::max(80.0f, availW * 0.18f)
-        : std::max(80.0f, availW * 0.30f);
-
-    struct StatCol { const char* hdr; const char* tooltip; const char* iconBase; float w; };
-    // The hdr strings are the fallback shown when an icon fails to load.
-    StatCol statCols[] = {
-        { "K",   "Kills",                "Kills",       statColW },
-        { "D",   "Deaths",               "Deaths",      statColW },
-        { "DMG", "Damage Dealt",         "Dmg_Out",     dmgColW  },
-        { "DMR", "Damage Received",      "Dmg_In",      dmgColW  },
-        { "HEL", "Healing Done",         "Heal_Out",    dmgColW  },
-        { "HLR", "Healing Received",     "Heal_In",     dmgColW  },
-        { "INT", "Interrupts Received",  "Rupt_In",     statColW },
-        { "CNC", "Cancelled Skills",     "Cancel",      statColW },
-        { "SKL", "Skill Count",          "Skill_Count", statColW },
-    };
-    const int numStats = static_cast<int>(std::size(statCols));
-
-    // Read a column off a player. The column order lives in exactly one place this way,
-    // instead of in a header list, a totals loop and a per-row list that could drift apart.
-    auto StatOf = [](const PlayerMeta& q, int si) -> int {
-        switch (si) {
-        case 0:  return q.kills;
-        case 1:  return q.deaths;
-        case 2:  return q.total_damage;
-        case 3:  return q.total_damage_received;
-        case 4:  return q.total_healing_dealt;
-        case 5:  return q.total_healing_received;
-        case 6:  return q.interrupted_count;
-        case 7:  return q.cancelled_skills_count;
-        default: return q.skills_finished;
-        }
-    };
-
-    auto StatAvailable = [](const PlayerMeta& q, int si) -> bool {
-        switch (si) {
-        case 3:  return (q.preview_stats_available & PreviewDamageReceived) != 0;
-        case 4:  return (q.preview_stats_available & PreviewHealingDealt) != 0;
-        case 5:  return (q.preview_stats_available & PreviewHealingReceived) != 0;
-        case 6:  return (q.preview_stats_available & PreviewInterrupted) != 0;
-        case 7:  return (q.preview_stats_available & PreviewCancelledSkills) != 0;
-        case 8:  return (q.preview_stats_available & PreviewSkillsFinished) != 0;
-        default: return true;
-        }
-    };
-
-    int totals[std::size(statCols)] = {};
-    bool totalsAvailable[std::size(statCols)];
-    std::fill(std::begin(totalsAvailable), std::end(totalsAvailable), true);
-    for (const auto* pp : sorted)
-        for (int si = 0; si < numStats; si++)
-        {
-            totals[si] += StatOf(*pp, si);
-            totalsAvailable[si] &= StatAvailable(*pp, si);
-        }
-
-    float skillsNeeded = showSkills ? (8 * (skillIconSize + 2) + 16.0f) : 0.0f;
-    float statsNeeded = 0.0f;
-    for (int si = 0; si < numStats; si++) statsNeeded += statCols[si].w + 6.0f;
-    float copyBtnW = skillIconSize * 0.45f + 4.0f;
-    float fixedNeeded = iconSize + (iconSize + 2) + nameColW + copyBtnW + skillsNeeded;
-    bool statsOverflow = (fixedNeeded + statsNeeded) > availW;
-
-    bool showStats = true;
-    if (statsOverflow)
-        showStats = s_state.statsExpanded;
-
-    int fixedCols = 3;
-    int numCols = fixedCols + (showSkills ? 1 : 0) + 1 + (showStats ? numStats : 0);
-
-    if (statsOverflow)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.15f, 0.15f, 0.8f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-        const char* lbl = s_state.statsExpanded ? "Stats <" : "Stats >";
-        if (ImGui::SmallButton((std::string(lbl) + "###stattgl_" + partyId).c_str()))
-            s_state.statsExpanded = !s_state.statsExpanded;
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
-    }
+    const float headerH = 34.0f;
+    const bool showSkills = (s_state.layout != LayoutMode::Mobile && s_state.layout != LayoutMode::Narrow
+                             && availW >= 500.0f);
+    const float nameColW = showSkills ? std::max(80.0f, availW * 0.18f) : std::max(80.0f, availW * 0.30f);
+    const float copyBtnW = skillIconSize * 0.45f + 4.0f;
+    const float skillsW = 8 * (skillIconSize + 2) + 16.0f;
+    const int numCols = 3 + (showSkills ? 1 : 0) + 1;
 
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(3, 2));
     ImGui::PushStyleColor(ImGuiCol_Text, kColorStatText);
 
     if (ImGui::BeginTable(("##team_" + partyId).c_str(), numCols,
-        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX |
-        ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollX))
+        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_RowBg))
     {
-        ImGui::TableSetupScrollFreeze(fixedCols, 0);
-
         ImGui::TableSetupColumn("Pri",  ImGuiTableColumnFlags_WidthFixed, iconSize);
         ImGui::TableSetupColumn("Sec",  ImGuiTableColumnFlags_WidthFixed, iconSize + 2);
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, nameColW);
         if (showSkills)
-            ImGui::TableSetupColumn("Skills", ImGuiTableColumnFlags_WidthFixed,
-                8 * (skillIconSize + 2) + 16.0f);
+            ImGui::TableSetupColumn("Skills", ImGuiTableColumnFlags_WidthFixed, skillsW);
         ImGui::TableSetupColumn("##Copy", ImGuiTableColumnFlags_WidthFixed, copyBtnW);
-        if (showStats)
-            for (int si = 0; si < numStats; si++)
-                ImGui::TableSetupColumn(statCols[si].hdr, ImGuiTableColumnFlags_WidthFixed, statCols[si].w);
+        const int copyCol = numCols - 1;
 
-        // Header row: the guild's identity on the left, the stat icons on the right.
-        // Folding the two together reclaims the separate title line the guild used to have.
+        // Header row: the guild's identity on the left, the whole team's copy on the right.
         {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
 
-            // The name is drawn from the first column but is far wider than it, so the clip
-            // is widened across the cells to its right - all empty on this row - rather than
-            // letting a long guild name be cut at the Name column's edge.
+            // The name is drawn from the first column but is far wider than it, so the clip is
+            // widened across the empty cells to its right rather than cut at the Name column.
             const ImVec2 clipMin = ImGui::GetCursorScreenPos();
-            const float clipW = iconSize + (iconSize + 2.0f) + nameColW
-                              + skillsNeeded + copyBtnW + kTeamRibbonW + 10.0f;
-            ImGui::PushClipRect(clipMin,
-                                ImVec2(clipMin.x + clipW, clipMin.y + statIconSz + 8.0f), false);
+            const float clipW = iconSize + (iconSize + 2.0f) + nameColW + (showSkills ? skillsW : 0.0f);
+            ImGui::PushClipRect(clipMin, ImVec2(clipMin.x + clipW, clipMin.y + headerH + 8.0f), false);
 
             ImFont* bold = GuiGlobalConstants::boldFont;
             if (bold) ImGui::PushFont(bold);
 
-            // Everything on this row lines up on the stat icons' centre rather than their top.
             const float rowTopY = ImGui::GetCursorPosY();
-            auto CentreOnIcons = [&](float itemH) {
-                ImGui::SetCursorPosY(rowTopY + (statIconSz - itemH) * 0.5f);
+            auto CentreOnRow = [&](float itemH) {
+                ImGui::SetCursorPosY(rowTopY + (headerH - itemH) * 0.5f);
             };
             const float lineH = ImGui::GetTextLineHeight();
             constexpr float kNameScale = 1.15f;
 
-            // The side's colour opens the header, ahead of even the trophy: which half of
-            // the map a team held is the one thing you cannot read off the names.
-            {
-                CentreOnIcons(lineH);
-                TeamRibbonItem(statIconSz * 0.72f, teamSlot, true);
-                ImGui::SameLine(0, 10);
-            }
+            // The side's colour opens the header, ahead of even the trophy: which half of the
+            // map a team held is the one thing you cannot read off the names.
+            CentreOnRow(lineH);
+            TeamRibbonItem(headerH * 0.72f, teamSlot, true);
+            ImGui::SameLine(0, 10);
 
-            // The trophy leads the winner rather than trailing the name: at a glance the eye
-            // finds the marker before it has read either guild. The art is 64x109, so the
-            // width follows the height or the cup comes out squashed.
+            // The art is 64x109, so the width follows the height or the cup comes out squashed.
             if (isWinner)
             {
                 if (ImTextureID cup = GetCupIcon())
                 {
-                    const float trophyH = statIconSz;
-                    const float trophyW = trophyH * (64.0f / 109.0f);
-                    CentreOnIcons(trophyH);
-                    ImGui::Image(cup, ImVec2(trophyW, trophyH));
+                    const float trophyH = headerH;
+                    CentreOnRow(trophyH);
+                    ImGui::Image(cup, ImVec2(trophyH * (64.0f / 109.0f), trophyH));
                     ImGui::SameLine(0, 12);
                 }
             }
 
             if (guild.rank > 0)
             {
-                CentreOnIcons(lineH);
+                CentreOnRow(lineH);
                 ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
                 ImGui::Text("#%d", guild.rank);
                 ImGui::PopStyleColor();
                 ImGui::SameLine(0, 6);
             }
 
-            CentreOnIcons(lineH * kNameScale);
+            CentreOnRow(lineH * kNameScale);
             ImGui::SetWindowFontScale(kNameScale);
             if (DrawFilterLink(guild.display.c_str(), isWinner ? kColorAccent : kColorText))
                 FilterBySearchTerm(guild.display);
@@ -6568,105 +6752,89 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
 
             if (guildHovered)
                 ImGui::SetTooltip("Show every match for %s", guild.display.c_str());
-        }
 
-        if (showStats)
-        {
-            const int firstStatCol = 3 + (showSkills ? 1 : 0) + 1;
-            for (int si = 0; si < numStats; si++)
+            // Every player's template, one chat link a line: a whole team to paste or keep.
+            ImGui::TableSetColumnIndex(copyCol);
+            const std::string teamKey = "team_" + partyId;
+            const float btnSize = std::round(skillIconSize * 0.45f);
+            if (DrawCopyIcon(("###cpyteam_" + partyId).c_str(), btnSize, (headerH - btnSize) * 0.5f,
+                             feedbackAt(teamKey)))
             {
-                ImGui::TableSetColumnIndex(firstStatCol + si);
-                ImTextureID ico = GetStatIcon(statCols[si].iconBase);
-                if (ico)
+                std::string all;
+                for (const auto* pp : sorted)
                 {
-                    float padX = (statCols[si].w - statIconSz) * 0.5f;
-                    if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
-                    ImGui::Image(ico, ImVec2(statIconSz, statIconSz));
+                    if (pp->used_skills.empty() && pp->skill_template_code.empty()) continue;
+                    const std::string name = pp->encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(pp->encoded_name);
+                    all += "[" + name + "-Skills;" + PlayerTemplateCode(*pp, buildOf(*pp)) + "]\n";
                 }
-                else
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
-                    ImGui::TextUnformatted(statCols[si].hdr);
-                    ImGui::PopStyleColor();
-                }
-                if (ImGui::IsItemHovered())
-                {
-                    ImGui::BeginTooltip();
-                    ImGui::TextUnformatted(statCols[si].tooltip);
-                    ImGui::EndTooltip();
-                }
+                ImGui::SetClipboardText(all.c_str());
+                s_copyFeedbackTimes[teamKey] = (float)ImGui::GetTime();
             }
-        }
-
-        // Summary (totals) row — bold
-        if (showStats)
-        {
-            ImFont* bold = GuiGlobalConstants::boldFont;
-            if (bold) ImGui::PushFont(bold);
-
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TableNextColumn();
-            ImGui::TableNextColumn();
-            if (showSkills) ImGui::TableNextColumn();
-            ImGui::TableNextColumn(); // Copy
-
-            for (int si = 0; si < numStats; si++)
+            if (ImGui::IsItemHovered())
             {
-                ImGui::TableNextColumn();
-                char buf[16];
-                if (!totalsAvailable[si]) snprintf(buf, sizeof(buf), "-");
-                else snprintf(buf, sizeof(buf), "%d", totals[si]);
-                float tw = ImGui::CalcTextSize(buf).x;
-                float padX = (statCols[si].w - tw) * 0.5f;
-                if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
-                ImGui::TextUnformatted(buf);
+                ImGui::BeginTooltip();
+                ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
+                ImGui::TextUnformatted("Copy the whole team's templates");
+                ImGui::PopStyleColor();
+                ImGui::TextColored(kColorTextDim, ob.builds ? "Skills and solved attributes, one player a line"
+                                                             : "Skills only until the match has been read");
+                ImGui::EndTooltip();
             }
-
-            if (bold) ImGui::PopFont();
         }
 
         // Player rows
         for (const auto* pp : sorted)
         {
             const auto& p = *pp;
+            const auto* build = buildOf(p);
+            const std::string key = keyOf(p);
+            const bool isPinned = (s_pinnedCard.folder == m.folder_name && s_pinnedCard.key == key);
+            std::string cleanName = p.encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p.encoded_name);
             ImGui::TableNextRow();
 
-            float rowH = std::max(skillIconSize, std::max(iconSize, ImGui::GetTextLineHeight()));
-            float profPad = (rowH - iconSize) * 0.5f;
-            float textPad = (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+            const float rowH = std::max(skillIconSize, std::max(iconSize, ImGui::GetTextLineHeight()));
+            const float profPad = (rowH - iconSize) * 0.5f;
+            const float textPad = (rowH - ImGui::GetTextLineHeight()) * 0.5f;
+
+            // The profession icons open the build card on hover and pin it on a click.
+            bool showCard = false;
+            for (int prof : { p.primary, p.secondary })
+            {
+                ImGui::TableNextColumn();
+                if (profPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + profPad);
+                ImTextureID ico = GetProfessionIcon(prof);
+                if (ico) ImGui::Image(ico, ImVec2(iconSize, iconSize));
+                else     ImGui::Dummy(ImVec2(iconSize, iconSize));
+                if (ImGui::IsItemHovered())
+                {
+                    showCard = true;
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        if (isPinned) s_pinnedCard = PinnedBuildCard();
+                        else s_pinnedCard = { m.folder_name, key, ImVec2(ImGui::GetMousePos().x + 16.0f, ImGui::GetMousePos().y + 8.0f) };
+                    }
+                }
+            }
+            if (isPinned)
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImVec2(ImGui::GetItemRectMin().x - iconSize - 4.0f, ImGui::GetItemRectMin().y - 1.0f),
+                    ImVec2(ImGui::GetItemRectMax().x + 1.0f, ImGui::GetItemRectMax().y + 1.0f),
+                    ImGui::GetColorU32(kColorAccent), 3.0f);
 
             ImGui::TableNextColumn();
-            if (profPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + profPad);
-            ImTextureID priIcon = GetProfessionIcon(p.primary);
-            if (priIcon) ImGui::Image(priIcon, ImVec2(iconSize, iconSize));
-            else         ImGui::Dummy(ImVec2(iconSize, iconSize));
-
-            ImGui::TableNextColumn();
-            if (profPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + profPad);
-            ImTextureID secIcon = GetProfessionIcon(p.secondary);
-            if (secIcon) ImGui::Image(secIcon, ImVec2(iconSize, iconSize));
-            else         ImGui::Dummy(ImVec2(iconSize, iconSize));
-
-            ImGui::TableNextColumn();
-            std::string cleanName = p.encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p.encoded_name);
             if (textPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textPad);
             if (DrawFilterLink(cleanName.c_str(), kColorText))
             {
                 if (ImGui::GetIO().KeyCtrl) AddSearchTerm(cleanName);
                 else                        FilterBySearchTerm(cleanName);
             }
+            if (ImGui::IsItemHovered()) showCard = true;
 
-            if (ImGui::IsItemHovered())
+            if (showCard && !isPinned)
             {
                 ImGui::BeginTooltip();
-                ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
-                ImGui::Text("%s / %s", GetProfessionName(p.primary), GetProfessionName(p.secondary));
-                if (!p.skill_template_code.empty())
-                    ImGui::Text("Template: %s", p.skill_template_code.c_str());
-                ImGui::PopStyleColor();
-                ImGui::TextColored(kColorTextDim, "Click to show every match with this player");
-                ImGui::TextColored(kColorTextDim, "Ctrl+click to add them to the current filter");
+                DrawBuildCard(p, cleanName, build, ob.pending, matchView, skillIconSize, false);
                 ImGui::EndTooltip();
             }
 
@@ -6676,147 +6844,29 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
                 DrawPlayerSkillRow(p, matchView, skillIconSize);
             }
 
-            // Copy template button column
             ImGui::TableNextColumn();
             if (!p.used_skills.empty() || !p.skill_template_code.empty())
             {
-                std::string tmplKey = partyId + "_" + std::to_string(p.player_number);
-
-                float now = (float)ImGui::GetTime();
-                auto feedbackIt = s_copyFeedbackTimes.find(tmplKey);
-                bool showFeedback = (feedbackIt != s_copyFeedbackTimes.end())
-                                 && (now - feedbackIt->second < 1.5f);
-
-                float btnSize = std::round(skillIconSize * 0.45f);
-                float rowH = std::max(skillIconSize, std::max(sz.profIcon, ImGui::GetTextLineHeight()));
-                float vertOff = (rowH - btnSize) * 0.5f;
-
-                ImVec2 startCursor = ImGui::GetCursorScreenPos();
-                ImVec2 cursor = ImVec2(startCursor.x, startCursor.y + vertOff);
-
-                std::string btnId = "###cpytmpl_" + tmplKey;
-                ImGui::SetCursorScreenPos(cursor);
-                if (ImGui::InvisibleButton(btnId.c_str(), ImVec2(btnSize, btnSize)))
+                const std::string tmplKey = partyId + "_" + std::to_string(p.player_number);
+                const float btnSize = std::round(skillIconSize * 0.45f);
+                const float fb = feedbackAt(tmplKey);
+                if (DrawCopyIcon(("###cpytmpl_" + tmplKey).c_str(), btnSize, (rowH - btnSize) * 0.5f, fb))
                 {
-                    std::string code = p.skill_template_code;
-                    if (code.empty())
-                        code = EncodeSkillTemplate(p.primary, p.secondary, p.used_skills);
-                    std::string chatLink = "[" + cleanName + "-Skills;" + code + "]";
+                    const std::string chatLink = "[" + cleanName + "-Skills;" + PlayerTemplateCode(p, build) + "]";
                     ImGui::SetClipboardText(chatLink.c_str());
-                    s_copyFeedbackTimes[tmplKey] = now;
+                    s_copyFeedbackTimes[tmplKey] = (float)ImGui::GetTime();
                 }
-                bool hovered = ImGui::IsItemHovered();
-
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-
-                float feedbackAge = showFeedback ? (now - feedbackIt->second) : 99.0f;
-                float goldBlend = 0.0f;
-                if (showFeedback)
-                    goldBlend = (feedbackAge < 0.3f)
-                        ? 1.0f
-                        : std::max(0.0f, 1.0f - (feedbackAge - 0.3f) / 1.2f);
-
-                auto lerpCol = [](ImU32 a, ImU32 b, float t) -> ImU32 {
-                    float r = ((a >> 0) & 0xFF) * (1 - t) + ((b >> 0) & 0xFF) * t;
-                    float g = ((a >> 8) & 0xFF) * (1 - t) + ((b >> 8) & 0xFF) * t;
-                    float bl = ((a >> 16) & 0xFF) * (1 - t) + ((b >> 16) & 0xFF) * t;
-                    float al = ((a >> 24) & 0xFF) * (1 - t) + ((b >> 24) & 0xFF) * t;
-                    return IM_COL32((int)r, (int)g, (int)bl, (int)al);
-                };
-
-                ImU32 baseCol = hovered
-                    ? IM_COL32(190, 190, 190, 230)
-                    : IM_COL32(130, 130, 130, 160);
-                ImU32 goldCol = IM_COL32(225, 190, 80, 255);
-                ImU32 iconCol = lerpCol(baseCol, goldCol, goldBlend);
-
-                float m = btnSize * 0.12f;
-                float cx = cursor.x + m;
-                float cy = cursor.y + m;
-                float cw = btnSize - 2 * m;
-                float ch = btnSize - 2 * m;
-                float t = std::max(1.0f, btnSize * 0.08f);
-
-                if (showFeedback && feedbackAge < 0.4f)
+                if (ImGui::IsItemHovered())
                 {
-                    float mx = cursor.x + btnSize * 0.5f;
-                    float my = cursor.y + btnSize * 0.5f;
-                    float s = btnSize * 0.22f;
-                    dl->AddLine(ImVec2(mx - s, my), ImVec2(mx - s * 0.3f, my + s * 0.7f), iconCol, t * 1.5f);
-                    dl->AddLine(ImVec2(mx - s * 0.3f, my + s * 0.7f), ImVec2(mx + s, my - s * 0.5f), iconCol, t * 1.5f);
-                }
-                else
-                {
-                    float off = cw * 0.2f;
-                    float rw = cw - off;
-                    float rh = ch - off;
-                    float r = 1.5f;
-                    dl->AddRect(ImVec2(cx + off, cy), ImVec2(cx + off + rw, cy + rh), iconCol, r, 0, t);
-                    dl->AddRectFilled(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), IM_COL32(30, 30, 30, 200), r);
-                    dl->AddRect(ImVec2(cx, cy + off), ImVec2(cx + rw, cy + off + rh), iconCol, r, 0, t);
-                }
-
-                if (hovered)
-                {
+                    const bool copied = fb >= 0.0f && (float)ImGui::GetTime() - fb < 1.5f;
                     ImGui::BeginTooltip();
                     ImGui::PushStyleColor(ImGuiCol_Text, kColorText);
-                    ImGui::TextUnformatted(showFeedback ? "Copied!" : "Copy template code");
+                    ImGui::TextUnformatted(copied ? "Copied!" : "Copy template code");
                     ImGui::PopStyleColor();
+                    if (!copied)
+                        ImGui::TextColored(kColorTextDim, build ? "Skills and the solved attributes (points only, no runes)"
+                                                                : "Skills only until the match has been read");
                     ImGui::EndTooltip();
-                }
-            }
-
-            if (showStats)
-            {
-                for (int si = 0; si < numStats; si++)
-                {
-                    const int value = StatOf(p, si);
-
-                    ImGui::TableNextColumn();
-                    if (textPad > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + textPad);
-                    char buf[16];
-                    if (!StatAvailable(p, si)) snprintf(buf, sizeof(buf), "-");
-                    else snprintf(buf, sizeof(buf), "%d", value);
-                    float tw = ImGui::CalcTextSize(buf).x;
-                    float padX = (statCols[si].w - tw) * 0.5f;
-                    if (padX > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + padX);
-                    ImGui::TextUnformatted(buf);
-
-                    // A bare number says little on its own. Placing it against the rest of
-                    // the team is the reading you actually want, and it is only computed
-                    // for the one cell under the cursor.
-                    if (ImGui::IsItemHovered())
-                    {
-                        int better = 0, equal = 0;
-                        for (const auto* q : sorted)
-                        {
-                            const int v = StatOf(*q, si);
-                            if (v > value) better++;
-                            else if (v == value) equal++;
-                        }
-                        const int rank = better + 1;
-                        const int teamTotal = totals[si];
-
-                        ImFont* tipBold = GuiGlobalConstants::boldFont;
-                        ImGui::BeginTooltip();
-                        if (tipBold) ImGui::PushFont(tipBold);
-                        ImGui::TextUnformatted(statCols[si].tooltip);
-                        if (tipBold) ImGui::PopFont();
-                        ImGui::Separator();
-                        ImGui::Text("%d", value);
-                        if (teamTotal > 0)
-                            ImGui::TextColored(kColorTextDim, "%.0f%% of team (%d)",
-                                               value * 100.0f / teamTotal, teamTotal);
-                        // Ties share a place, so say so rather than implying an order the
-                        // numbers do not support.
-                        if (equal > 1)
-                            ImGui::TextColored(kColorTextDim, "joint #%d of %d",
-                                               rank, (int)sorted.size());
-                        else
-                            ImGui::TextColored(kColorTextDim, "#%d of %d",
-                                               rank, (int)sorted.size());
-                        ImGui::EndTooltip();
-                    }
                 }
             }
         }
@@ -6826,12 +6876,36 @@ static void DrawTeamComposition(const MatchMeta& m, const std::string& partyId,
     ImGui::PopStyleVar();
 
     ImGui::EndGroup();
+
+    // The pinned card stays where it was opened, in a window of its own, until its icon is
+    // clicked again, its close button is pressed or another match is selected.
+    if (s_pinnedCard.folder == m.folder_name)
+        for (const auto* pp : sorted)
+        {
+            if (keyOf(*pp) != s_pinnedCard.key) continue;
+            const std::string cleanName = pp->encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(pp->encoded_name);
+            ImGui::SetNextWindowPos(s_pinnedCard.pos, ImGuiCond_Always);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_PopupBg));
+            ImGui::PushStyleColor(ImGuiCol_Border, kColorAccent);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            if (ImGui::Begin("Build##pinned_build_card", nullptr,
+                             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoMove))
+            {
+                DrawBuildCard(*pp, cleanName, buildOf(*pp), ob.pending, matchView, skillIconSize, true);
+                if (ImGui::SmallButton("Close")) s_pinnedCard = PinnedBuildCard();
+            }
+            ImGui::End();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
+        }
 }
 
 // ─── Bottom match detail panel ───────────────────────────────────────────────
 
 // The Overview tab: today's panel - map, match facts, notes, lord damage, both teams.
-static void DrawMatchOverview(const MatchMeta& m)
+static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
 {
     const auto sz = GetSizes(s_state.layout);
     const float sp = sz.spacing;
@@ -7073,11 +7147,11 @@ static void DrawMatchOverview(const MatchMeta& m)
     if (stackVertical)
     {
         ImGui::BeginGroup();
-        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz);
+        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz, ob);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz);
+        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz, ob);
         ImGui::EndGroup();
     }
     else
@@ -7085,13 +7159,13 @@ static void DrawMatchOverview(const MatchMeta& m)
         float teamW = (teamsW - sp) * 0.5f;
 
         ImGui::BeginChild("##team1_detail", ImVec2(teamW, 0));
-        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz);
+        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz, ob);
         ImGui::EndChild();
 
         ImGui::SameLine(0, sp);
 
         ImGui::BeginChild("##team2_detail", ImVec2(teamW, 0));
-        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz);
+        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz, ob);
         ImGui::EndChild();
     }
 }
@@ -7220,7 +7294,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 7;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 8;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7291,6 +7365,7 @@ struct MatchAnalysisJob
     int mapId = -1;
     BattleLedger::Data ledger;    // the Damage & Healing lines, times on the match clock
     MatchStats::Records stats;    // the Stats tab's extra columns, times on the match clock
+    std::unordered_map<std::string, std::vector<SolvedAttribute>> builds;   // "party:number"
 };
 
 static MatchAnalysisJob s_analysis;
@@ -7454,6 +7529,28 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
         job.landmarks.push_back(std::move(lm));
     }
     ReadLedger(root.value("ledger", nlohmann::json::object()), job);
+    job.builds.clear();
+    if (root.contains("attributes") && root["attributes"].is_object())
+    {
+        const nlohmann::json players = root["attributes"].value("players", nlohmann::json::object());
+        for (const auto& [key, pj] : players.items())
+        {
+            const nlohmann::json attrs = pj.value("attributes", nlohmann::json::object());
+            const nlohmann::json runes = pj.value("runes", nlohmann::json::object());
+            const int head = pj.value("headgear", -1);
+            auto& build = job.builds[key];
+            for (const auto& [idStr, aj] : attrs.items())
+            {
+                SolvedAttribute a;
+                a.id = std::atoi(idStr.c_str());
+                a.lo = aj.value("lo", 0); a.hi = aj.value("hi", 0); a.best = aj.value("best", 0);
+                a.budgetOnly = aj.value("budget_only", true);
+                a.rune = runes.value(idStr, 0);
+                a.headgear = (head == a.id);
+                build.push_back(a);
+            }
+        }
+    }
     // The extra columns (ReplayWindow::ExportMatchAnalysis "stats"): [ms, agent, value, dur ms, other, skill, flag].
     // Held in a variable: items() over value()'s temporary would iterate a destroyed copy.
     job.stats.clear();
@@ -9916,7 +10013,19 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
     if (s_state.detailTab == DetailTab_Overview)
     {
-        DrawMatchOverview(m);
+        // The attributes need the match read, as the other tabs do: selecting a match starts it.
+        UpdateMatchAnalysis(m);
+        OverviewBuilds ob;
+        using State = MatchAnalysisJob::State;
+        if (s_analysis.folderName == m.folder_name && s_analysis.state == State::Ready)
+        {
+            ob.builds = &s_analysis.builds;
+        }
+        else
+            ob.pending = s_analysis.state == State::Downloading ? "Downloading the match..."
+                       : s_analysis.state == State::Failed      ? "Attributes unavailable"
+                                                                : "Solving attributes...";
+        DrawMatchOverview(m, ob);
     }
     else
     {
