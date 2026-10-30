@@ -4,6 +4,7 @@
 #include "draw_gui_for_open_dat_file.h"
 #include "GuiGlobalConstants.h"
 #include "TextureCache.h"
+#include "LaunchScreenPath.h"
 #include "imgui.h"
 #include <shellapi.h>
 #include <filesystem>
@@ -50,23 +51,7 @@ namespace
         dl->AddText(pos, col, text);
     }
 
-    static std::string GetLoadingScreenPath()
-    {
-        wchar_t exePath[MAX_PATH];
-        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
-            return "";
-        auto dir = std::filesystem::path(exePath).parent_path();
-        for (int i = 0; i < 6; i++)
-        {
-            auto p = dir / "Textures" / "Launch_screen" / "GWOBS_Loading_Screen_1.png";
-            if (std::filesystem::exists(p))
-                return p.string();
-            if (!dir.has_parent_path() || dir == dir.parent_path())
-                break;
-            dir = dir.parent_path();
-        }
-        return "";
-    }
+    static std::string GetLoadingScreenPath() { return GetLaunchScreenPath(); }
 
 }
 
@@ -364,7 +349,7 @@ bool draw_first_launch(const LoadingProgress& progress, const UpdateInfo* update
     static std::string cachedLoadPath = GetLoadingScreenPath();
     ImTextureID tex = cachedLoadPath.empty() ? nullptr : GetTextureCache().GetTexture(cachedLoadPath);
     if (tex)
-        dl->AddImage(tex, ImVec2(0, 0), display);
+        DrawLaunchScreenCover(dl, tex, display);
 
     // Progress bar geometry (unchanged position)
     float barW = display.x * 0.4f;

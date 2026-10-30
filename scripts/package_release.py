@@ -42,7 +42,7 @@ USER_STATE = {
 
 # Build byproducts and local debris that must never reach a user.
 EXCLUDED_SUFFIXES = (".pdb", ".lib", ".exp", ".ilk", ".iobj", ".ipdb", ".log", ".dmp", ".cso")
-EXCLUDED_DIRS = {"MatchCache", "UserData", "__pycache__", ".git"}
+EXCLUDED_DIRS = {"MatchCache", "UserData", "__pycache__", ".git", "ObserverLogo_Source"}
 
 
 def skip(path: Path) -> bool:
