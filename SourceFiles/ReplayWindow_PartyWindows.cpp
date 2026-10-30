@@ -42,31 +42,27 @@
 
 void ReplayWindow::BuildMeterAbsCache()
 {
-    if (m_meterAbsCacheBuilt || !m_maxHpSolved) return;
+    // The meters add up the same ledger as the Damage & Healing window: each packet at the number
+    // its floater shows, degeneration credited to its caster, minions to their master, no-caster
+    // party heals to the skill's caster; map effects, own Health costs, resurrection and victory
+    // heals are not anyone's. The ledger is rebuilt once the attributes are solved; so is this.
+    if (!m_agentsClassified || !m_maxHpSolved) return;
+    const bool ledgerStale = !m_ledgerBuilt || (!m_ledgerUsedAttributes && m_attributesDeduced);
+    if (m_meterAbsCacheBuilt && !ledgerStale) return;
+    if (ledgerStale) BuildBattleLedger();
+
     m_meterAbsCache.clear();
-    m_meterAbsCache.reserve(m_replayCtx.stocData.combat.size());
-
-    // Recorded max_hp is the effective value the packet fractions are taken
-    // against; the solved per-weapon-set value is the fallback. See
-    // ResolveMaxHp for why this order matters.
-    auto findMaxHp = [&](int agentId, float t) -> uint32_t {
-        auto it = m_replayCtx.agents.find(agentId);
-        if (it == m_replayCtx.agents.end()) return 0;
-        if (uint32_t m = it->second.maxHpAtTime(t)) return m;
-        return it->second.solvedMaxHpAtTime(t);
-    };
-
-    for (auto& ce : m_replayCtx.stocData.combat)
+    m_meterAbsCache.reserve(m_ledger.size());
+    for (const LedgerLine& ln : m_ledger)
     {
-        if (!ce.IsDamageOrHeal()) continue;
-        uint32_t mhp = CorrectMaxHpForPacket(findMaxHp(ce.target_id, ce.time), ce.value);
-        int absVal = (mhp > 0)
-            ? (int)std::lround(std::fabs((double)ce.value) * mhp) : 0;
-        if (absVal <= 0) continue;
-        bool isDmg = (ce.value < 0.f);
-        m_meterAbsCache.push_back({ ce.time, ce.caster_id, absVal, isDmg });
+        if (ln.src <= 0 || ln.amount <= 0 || IsLedgerMapRow(ln.rowKey)) continue;
+        const bool dmg  = ln.kind == LedgerKind::Damage;
+        const bool heal = ln.kind == LedgerKind::Heal || ln.kind == LedgerKind::DivineFavor;
+        if (!dmg && !heal) continue;
+        m_meterAbsCache.push_back({ ln.t, ln.src, ln.amount, dmg });
     }
     m_meterAbsCacheBuilt = true;
+    m_meterLastTime = -1.f;   // accumulate again from the start with the new lines
 }
 
 ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard, float t) const
@@ -140,6 +136,7 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
     // (4) Last of all: base health is 100 at level 1 and rises 20 per level, so 20*level + 80 --
     // the documented 480 at level 20, not 500.
     uint32_t estimated = (ard.playerLevel > 0) ? (20 * ard.playerLevel + 80) : 480;
+    if (m_allInBuilt && AllIn::Applies(&m_allIn, ard.agent_id)) estimated += AllIn::kHealthBonus;
     if (deepWounded) estimated = AgentReplayData::ApplyDeepWound(estimated);
     return { estimated, true };
 }
@@ -275,13 +272,17 @@ void ReplayWindow::DrawPartyWindows()
     };
 
     bool bothMeters = m_showDamageMeter && m_showHealMeter;
+
+    // Where a panel's morale + effects strip starts and which way it runs (DrawPartyEffectStrip).
+    struct EffectStrip { float anchorX; bool toLeft; float clipY0, clipY1; };
     constexpr ImU32 kDmgBarCol  = IM_COL32(0xD0, 0x8C, 0x20, 0x80);
     constexpr ImU32 kHealBarCol = IM_COL32(0x40, 0xA8, 0x40, 0x80);
 
     auto DrawBars = [&](ImDrawList* dl, float availW,
                         const std::vector<int>& ids, float barH,
                         bool filterSpirits, bool leftSide, float maxBarW,
-                        int teamTotalDmg, int teamTotalHeal, bool withEnergy = false)
+                        int teamTotalDmg, int teamTotalHeal, bool withEnergy = false,
+                        const EffectStrip* strip = nullptr)
     {
         int n = static_cast<int>(ids.size());
         for (int i = 0; i < n; ++i)
@@ -382,6 +383,9 @@ void ReplayWindow::DrawPartyWindows()
                 const float ey = cursor.y + barH + kEnergyGap;
                 DrawPartyEnergyBar(dl, ard, ImVec2(cursor.x, ey), ImVec2(cursor.x + availW, ey + kEnergyH));
             }
+
+            if (strip)
+                DrawPartyEffectStrip(agentId, strip->anchorX, strip->toLeft, cursor.y, barH, strip->clipY0, strip->clipY1);
 
             // The "..." menu button over the bar's right end. Always submitted, so Tab reaches it;
             // painted only while the row, the button or the menu for this player has attention.
@@ -496,7 +500,20 @@ void ReplayWindow::DrawPartyWindows()
         const float energyRowsH = m_showPartyEnergy ? nPlayers * (kEnergyH + kEnergyGap) : 0.f;
         float playersH = nPlayers * kBarHeight + energyRowsH + (nPlayers - 1) * kBarSpacing;
         float alliesHeaderH = hasNpcs ? treeNodeH + kBarSpacing : 0.f;
-        float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + 4.f;
+
+        // The Guild Lord and Bodyguards stay on show under the Allies header; only the
+        // rest (knights, archers, footmen, pets, spirits, minions) fold away.
+        std::vector<int> pinnedNpcIds, foldNpcIds;
+        for (int id : npcIds)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            const bool pinned = it != m_replayCtx.agents.end() &&
+                (it->second.categoryName == "Guild Lord" || it->second.categoryName == "Bodyguard");
+            (pinned ? pinnedNpcIds : foldNpcIds).push_back(id);
+        }
+        const int nPinned = CountVisibleNpcs(pinnedNpcIds);
+        const float pinnedH = nPinned * (kNpcBarHeight + kBarSpacing);
+        float collapsedH = kFrameTop + kFrameBottom + playersH + alliesHeaderH + pinnedH + 4.f;
 
         if (!m_partyWindowsPositioned)
         {
@@ -633,6 +650,7 @@ void ReplayWindow::DrawPartyWindows()
                 float energyX = wPos.x + wSize.x - closeBtnW - iconPad - iconSz;
                 float heartX = energyX - iconPad - iconSz;
                 float swordX = heartX - iconPad - iconSz;
+                float effectsX = swordX - iconPad - iconSz;
 
                 dl->PushClipRect(wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y), false);
 
@@ -640,9 +658,9 @@ void ReplayWindow::DrawPartyWindows()
                 ImGuiContext* ctx = ImGui::GetCurrentContext();
                 bool windowHovered = (ctx && ctx->HoveredWindow == ImGui::GetCurrentWindow());
 
-                auto DrawToggleIcon = [&](ImTextureID tex, float ix, bool& toggleRef, const char* tooltip)
+                // `paint(tl, br, tint)` draws the icon multiplied by `tint`.
+                auto DrawToggle = [&](auto&& paint, float ix, bool& toggleRef, const char* tooltip)
                 {
-                    if (!tex) return;
                     ImVec2 tl(ix, iconY);
                     ImVec2 br(ix + iconSz, iconY + iconSz);
 
@@ -652,15 +670,14 @@ void ReplayWindow::DrawPartyWindows()
 
                     if (toggleRef)
                     {
-                        dl->AddImage(tex, tl, br, ImVec2(0,0), ImVec2(1,1),
-                                     IM_COL32(0xFF, 0xD7, 0x00, 0xFF));
+                        paint(tl, br, IM_COL32(0xFF, 0xD7, 0x00, 0xFF));
                         float uy = br.y + 1.f;
                         dl->AddLine(ImVec2(tl.x, uy), ImVec2(br.x, uy),
                                     IM_COL32(0xCB, 0xAA, 0x09, 0xFF), 2.f);
                     }
                     else
                     {
-                        dl->AddImage(tex, tl, br);
+                        paint(tl, br, IM_COL32_WHITE);
                     }
 
                     if (hovered)
@@ -668,8 +685,7 @@ void ReplayWindow::DrawPartyWindows()
                         float expand = iconSz * 0.10f;
                         ImVec2 htl(tl.x - expand, tl.y - expand);
                         ImVec2 hbr(br.x + expand, br.y + expand);
-                        dl->AddImage(tex, htl, hbr, ImVec2(0,0), ImVec2(1,1),
-                                     IM_COL32(0xFF, 0xE0, 0x80, 0xB0));
+                        paint(htl, hbr, IM_COL32(0xFF, 0xE0, 0x80, 0xB0));
 
                         g_CurrentCursor = CursorMode::Clickable;
                         ImGui::SetTooltip("%s", tooltip);
@@ -682,18 +698,74 @@ void ReplayWindow::DrawPartyWindows()
                         }
                     }
                 };
+                auto DrawToggleIcon = [&](ImTextureID tex, float ix, bool& toggleRef, const char* tooltip)
+                {
+                    if (!tex) return;
+                    DrawToggle([&](ImVec2 a, ImVec2 b, ImU32 tint) {
+                        dl->AddImage(tex, a, b, ImVec2(0, 0), ImVec2(1, 1), tint);
+                    }, ix, toggleRef, tooltip);
+                };
+                // The effects toggle: gold sparkles, a big four-point star and two small ones, each
+                // star two thin diamonds crossed.
+                auto PaintSparkles = [&](ImVec2 a, ImVec2 b, ImU32 tint) {
+                    auto mul = [&](int r, int g, int bl) {
+                        return IM_COL32(r * ((tint >> IM_COL32_R_SHIFT) & 0xFF) / 255,
+                                        g * ((tint >> IM_COL32_G_SHIFT) & 0xFF) / 255,
+                                        bl * ((tint >> IM_COL32_B_SHIFT) & 0xFF) / 255,
+                                        (tint >> IM_COL32_A_SHIFT) & 0xFF);
+                    };
+                    const float sz = b.x - a.x;
+                    auto star = [&](float fx, float fy, float fr, ImU32 col) {
+                        const ImVec2 c(a.x + fx * sz, a.y + fy * sz);
+                        const float r = fr * sz, w = r * 0.25f;
+                        const ImVec2 v[4] = { {c.x, c.y - r}, {c.x + w, c.y}, {c.x, c.y + r}, {c.x - w, c.y} };
+                        const ImVec2 h[4] = { {c.x - r, c.y}, {c.x, c.y - w}, {c.x + r, c.y}, {c.x, c.y + w} };
+                        dl->AddConvexPolyFilled(v, 4, col);
+                        dl->AddConvexPolyFilled(h, 4, col);
+                    };
+                    star(0.40f, 0.55f, 0.42f, mul(0xFF, 0xCD, 0x3C));
+                    star(0.80f, 0.22f, 0.20f, mul(0xFF, 0xEB, 0x96));
+                    star(0.80f, 0.82f, 0.13f, mul(0xFF, 0xEB, 0x96));
+                };
 
                 DrawToggleIcon(swordTex, swordX, m_showDamageMeter, "Toggle Damage Meter");
                 DrawToggleIcon(heartTex, heartX, m_showHealMeter, "Toggle Heal Meter");
                 DrawToggleIcon(LoadSkillDescIcon(dev, "energy.png"), energyX,
                                m_showPartyEnergy, "Toggle Energy Bars");
+                DrawToggle(PaintSparkles, effectsX, m_showPartyEffects, "Toggle Effects and Morale");
 
                 dl->PopClipRect();
             }
 
             float maxBarW = std::clamp(vpW * 0.10f, 60.f, 200.f);
-            DrawBars(dl, availW, playerIds, kBarHeight, false, leftSide, maxBarW,
-                     teamTotalDmg, teamTotalHeal, true);
+            // The meters grow outward from the panel on its own side; where that would leave the
+            // screen (the panel dragged to an edge), they go on the panel's other side, as in Iris.
+            bool meterRight = leftSide;
+            {
+                const float need = maxBarW + 8.f;
+                if (meterRight && wPos.x + wSize.x + need > vp->Pos.x + vpW) meterRight = false;
+                else if (!meterRight && wPos.x - need < vp->Pos.x) meterRight = true;
+            }
+            // Morale + effects beside the player rows, as Iris draws them: right of the panel, or left
+            // when the widest strip would leave the screen, one side per panel with hysteresis; past
+            // the meters when they grow on the same side.
+            EffectStrip strip{};
+            if (m_showPartyEffects)
+            {
+                static std::unordered_map<std::string, bool> s_effectsOnLeft;
+                const bool meters = m_showDamageMeter || m_showHealMeter;
+                const float barL = ImGui::GetCursorScreenPos().x, barR = barL + availW;
+                const float rightX = std::max(wPos.x + wSize.x, meters && meterRight ? barR + 2.f + maxBarW : 0.f) + 4.f;
+                const float leftX  = std::min(wPos.x, meters && !meterRight ? barL - 2.f - maxBarW : wPos.x) - 4.f;
+                const float widest = PartyEffectStripWidest(kBarHeight);
+                const float screenR = vp->Pos.x + vpW;
+                bool& onLeft = s_effectsOnLeft[layoutKey];
+                if (!onLeft && rightX + widest > screenR) onLeft = true;
+                else if (onLeft && rightX + widest + 24.f <= screenR) onLeft = false;
+                strip = { onLeft ? leftX : rightX, onLeft, dl->GetClipRectMin().y, dl->GetClipRectMax().y };
+            }
+            DrawBars(dl, availW, playerIds, kBarHeight, false, meterRight, maxBarW,
+                     teamTotalDmg, teamTotalHeal, true, m_showPartyEffects ? &strip : nullptr);
 
             if (m_showDamageMeter || m_showHealMeter)
             {
@@ -706,10 +778,10 @@ void ReplayWindow::DrawPartyWindows()
                     if (h != m_meterHeal.end()) pHeal += h->second.value;
                 }
                 ImDrawList* fgDl = ImGui::GetForegroundDrawList();
-                float sumAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                float sumAnchorX = meterRight ? (wPos.x + wSize.x) : wPos.x;
                 DrawMeterSumText(fgDl, sumAnchorX, wPos.y + 12.f, 20.f,
                                  pDmg, pHeal,
-                                 m_showDamageMeter, m_showHealMeter, leftSide);
+                                 m_showDamageMeter, m_showHealMeter, meterRight);
             }
 
             // Allies collapsible section
@@ -739,11 +811,11 @@ void ReplayWindow::DrawPartyWindows()
                         auto h = m_meterHeal.find(id);
                         if (h != m_meterHeal.end()) aHeal += h->second.value;
                     }
-                    float allyAnchorX = leftSide ? (wPos.x + wSize.x) : wPos.x;
+                    float allyAnchorX = meterRight ? (wPos.x + wSize.x) : wPos.x;
                     DrawMeterSumText(ImGui::GetForegroundDrawList(),
                                      allyAnchorX, alliesHeaderPos.y, ImGui::GetFrameHeight(),
                                      aDmg, aHeal,
-                                     m_showDamageMeter, m_showHealMeter, leftSide);
+                                     m_showDamageMeter, m_showHealMeter, meterRight);
                 }
 
                 // Auto-resize on open/close transition
@@ -752,7 +824,7 @@ void ReplayWindow::DrawPartyWindows()
                     *prevAlliesOpen = alliesOpen;
                     if (alliesOpen)
                     {
-                        int visNpcs = CountVisibleNpcs(npcIds);
+                        int visNpcs = CountVisibleNpcs(foldNpcIds);
                         float npcsH = visNpcs * kNpcBarHeight + std::max(0, visNpcs - 1) * kBarSpacing;
                         float expandedH = collapsedH + npcsH + kBarSpacing;
                         ImGui::SetWindowSize(ImVec2(wSize.x, expandedH));
@@ -763,9 +835,12 @@ void ReplayWindow::DrawPartyWindows()
                     }
                 }
 
-                if (alliesOpen)
+                if (!pinnedNpcIds.empty())
+                    DrawBars(dl, availW, pinnedNpcIds, kNpcBarHeight, true, meterRight, maxBarW,
+                             teamTotalDmg, teamTotalHeal);
+                if (alliesOpen && !foldNpcIds.empty())
                 {
-                    DrawBars(dl, availW, npcIds, kNpcBarHeight, true, leftSide, maxBarW,
+                    DrawBars(dl, availW, foldNpcIds, kNpcBarHeight, true, meterRight, maxBarW,
                              teamTotalDmg, teamTotalHeal);
                 }
             }

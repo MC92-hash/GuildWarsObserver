@@ -95,6 +95,11 @@ inline void DrawGraphicsSettingsControls()
             ImGui::SetTooltip("The map's props use their own lower-detail models.");
         if (ImGui::Checkbox("Minimap at a reduced rate", &GuiGlobalConstants::minimap_reduced_rate))
             custom = true;
+        if (ImGui::Checkbox("Footprints", &GuiGlobalConstants::footprints))
+            custom = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The prints characters leave on sand, snow and soft ground, as in the game.\n"
+                              "On in High only.");
 
         if (custom)
         {

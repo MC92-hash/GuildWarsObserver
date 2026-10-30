@@ -21,6 +21,7 @@ Configuration via scripts/r2_config.env or environment variables:
 """
 
 import argparse
+import hashlib
 import io
 import gzip
 import json
@@ -31,7 +32,8 @@ import tarfile
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -66,7 +68,7 @@ def load_config(env_path: Path | None) -> dict:
     # Environment variables override .env file
     for key in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY", "R2_SECRET_KEY",
                 "MATCH_SOURCE_DIR", "POST_UPLOAD_ARCHIVE_DIR",
-                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE"):
+                "RECORDING_SOURCE_DIR", "ORCHESTRATOR_DB", "OBSERVER_EXE", "IRIS_BUCKET", "IRIS_EXPORTER_AUTO"):
         env_val = os.environ.get(key)
         if env_val:
             config[key] = env_val
@@ -766,6 +768,213 @@ def upload_attributes(s3, bucket: str, safe_name: str, attributes: dict):
     )
 
 
+# --- Iris (the in-game observer HUD, a GWToolbox plugin) -------------------
+# Iris reads two things from the bucket: iris/recent.json, the matches the
+# in-game Observe list can still offer, and iris/<folder>.pack, one sealed
+# pack per match written by the app's --export-iris-pack. <folder> is the
+# index entry's own "folder", which is what Iris looks a match up by.
+IRIS_RECENT_KEY = "iris/recent.json"
+
+
+def iris_bucket(config: dict) -> str:
+    """Where the Iris objects go: IRIS_BUCKET when set (a bucket only Iris's
+    read key can see), else the recordings bucket."""
+    return config.get("IRIS_BUCKET") or config["R2_BUCKET"]
+# The in-game Observe list keeps monthly tournament matches for about two weeks
+# (owner, 2026-10-22).
+IRIS_RECENT_DAYS = 14
+
+
+def iris_pack_key(folder_name: str) -> str:
+    """R2 key for one match's Iris pack."""
+    return f"iris/{folder_name}.pack"
+
+
+
+# The Iris exporter, published so the recording machine never rebuilds it. The pack format follows the
+# Observer's exporter, which changes with Iris; rather than asking the recording machine to pull and rebuild
+# each time, the build is published to the private bucket (--publish-iris-exporter) and fetched here when a
+# newer one is out: the exe plus its Data folder, ~5 MB zipped, checked against its SHA-256 and kept under
+# %LOCALAPPDATA%\GWObserver\iris-exporter\<version>. An OBSERVER_EXE in the config still wins (a machine that
+# builds its own), IRIS_EXPORTER_AUTO=0 turns the fetch off, and any failure falls back to the local build.
+IRIS_EXPORTER_PREFIX = "tools/iris-exporter/"
+IRIS_EXPORTER_LATEST = IRIS_EXPORTER_PREFIX + "latest.json"
+_iris_exporter_cache: dict = {}
+
+
+def iris_exporter_home() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "GWObserver" / "iris-exporter"
+
+
+def iris_exporter_exe(config: dict | None) -> Path | None:
+    """The published exporter, fetched once per run when newer; None to use the local build."""
+    config = config or {}
+    if config.get("OBSERVER_EXE") or config.get("IRIS_EXPORTER_AUTO", "1") == "0":
+        return None
+    if "exe" in _iris_exporter_cache:
+        return _iris_exporter_cache["exe"]
+    _iris_exporter_cache["exe"] = None
+    try:
+        s3 = create_s3_client(config)
+        latest = json.loads(s3.get_object(Bucket=config["R2_BUCKET"], Key=IRIS_EXPORTER_LATEST)["Body"].read())
+        version = str(latest["version"])
+        if not version or any(c in version for c in "/\\:") or ".." in version:
+            raise ValueError(f"bad version {version!r}")
+        home = iris_exporter_home()
+        target = home / version
+        exe = target / "GuildWarsObserver.exe"
+        if not exe.is_file():
+            home.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=home) as tmp:
+                archive = Path(tmp) / "exporter.zip"
+                s3.download_file(config["R2_BUCKET"], latest["key"], str(archive))
+                digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+                if digest != latest["sha256"]:
+                    raise ValueError("SHA-256 mismatch")
+                staging = Path(tmp) / "unpacked"
+                with zipfile.ZipFile(archive) as z:
+                    for name in z.namelist():
+                        if name.startswith(("/", "\\")) or ".." in Path(name).parts:
+                            raise ValueError(f"unsafe path in archive: {name}")
+                    z.extractall(staging)
+                if not (staging / "GuildWarsObserver.exe").is_file():
+                    raise ValueError("archive holds no GuildWarsObserver.exe")
+                staging.rename(target)
+            print(f"  Iris exporter {version} installed")
+            # Keep the newest two: the one in use and the one before it.
+            for old in sorted((d for d in home.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime)[:-2]:
+                shutil.rmtree(old, ignore_errors=True)
+        _iris_exporter_cache["exe"] = exe
+    except Exception as exc:
+        print(f"  Iris exporter: using the local build ({type(exc).__name__}: {exc})")
+    return _iris_exporter_cache["exe"]
+
+
+def _git_head(repo: Path) -> str:
+    try:
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                              timeout=30).stdout.strip()
+    except Exception:
+        return ""
+
+
+def cmd_publish_iris_exporter(args, config: dict):
+    """Zip the exporter build (exe + Data) and publish it as the newest Iris exporter."""
+    exe = Path(args.publish_iris_exporter) if args.publish_iris_exporter != "auto" else observer_exe(config)
+    if exe is None or not exe.is_file():
+        print("Error: no GuildWarsObserver.exe to publish (pass its path).")
+        sys.exit(1)
+    root = Path(__file__).resolve().parent.parent
+    data = root / "Data"
+    observer_commit = _git_head(root)
+    private_commit = _git_head(root.parent / "gwobserver-private") or _git_head(root.parent / "gwobserver-private-dev")
+    version = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + (f"-{observer_commit}" if observer_commit else "")
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "exporter.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(exe, "GuildWarsObserver.exe")
+            for f in sorted(data.rglob("*")):
+                if f.is_file():
+                    z.write(f, str(Path("Data") / f.relative_to(data)))
+        body = archive.read_bytes()
+        latest = {
+            "version": version,
+            "key": f"{IRIS_EXPORTER_PREFIX}{version}.zip",
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "size": len(body),
+            "observer_commit": observer_commit,
+            "private_commit": private_commit,
+            "published": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        print(f"Iris exporter {version}: {len(body) // 1024} KB from {exe}")
+        if args.dry_run:
+            print(json.dumps(latest, indent=2))
+            return
+        s3 = create_s3_client(config)
+        s3.put_object(Bucket=config["R2_BUCKET"], Key=latest["key"], Body=body, ContentType="application/zip")
+        s3.put_object(Bucket=config["R2_BUCKET"], Key=IRIS_EXPORTER_LATEST, Body=json.dumps(latest, indent=2).encode(),
+                      ContentType="application/json", CacheControl="no-cache")
+        print(f"Published {latest['key']} and {IRIS_EXPORTER_LATEST}")
+
+
+def build_iris_pack(match_dir: Path, config: dict | None = None) -> bytes | None:
+    """The sealed Iris pack for one match, or None when it cannot be built.
+
+    The published Iris exporter when there is one (iris_exporter_exe), else the
+    same exporter as the attributes; same failure contract: a warning and no
+    object, never a lost index entry.
+    """
+    exe = iris_exporter_exe(config) or observer_exe(config)
+    if exe is None:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "iris.pack"
+        try:
+            result = subprocess.run(
+                [str(exe), "--export-iris-pack", str(match_dir), "--out", str(out)],
+                capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  Warning: Iris pack timed out for {match_dir.name}")
+            return None
+        except Exception as exc:
+            print(f"  Warning: Iris pack failed: {type(exc).__name__}: {exc}")
+            return None
+        if result.returncode != 0 or not out.is_file():
+            detail = (result.stderr or "").strip().splitlines()
+            if result.returncode not in (5, 6):
+                print(f"  Warning: Iris pack: {detail[-1] if detail else f'exit {result.returncode}'}")
+            return None
+        return out.read_bytes()
+
+
+def upload_iris_pack(s3, bucket: str, folder_name: str, pack: bytes):
+    """Write one match's Iris pack."""
+    s3.put_object(Bucket=bucket, Key=iris_pack_key(folder_name), Body=pack,
+                  ContentType="application/octet-stream")
+
+
+def published_iris_packs(s3, bucket: str) -> set[str]:
+    """Folders whose Iris pack is in the bucket."""
+    folders = set()
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="iris/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if key.endswith(".pack"):
+                folders.add(key.removeprefix("iris/").removesuffix(".pack"))
+    return folders
+
+
+def write_iris_recent(s3, bucket: str, entries: list[dict]) -> int:
+    """Publish the recent index entries whose Iris pack is out.
+
+    Iris shows its Eye of Janthir on exactly these matches in the in-game
+    Observe list, and re-reads this file while that list is open: an entry here
+    is a promise that the HUD works for the match, so it lists only matches
+    with a pack, and is written after the pack uploads. Same entry shape as
+    index.json, a few KB.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    packed = published_iris_packs(s3, bucket)
+    # Only what Iris reads (the full entries are ~5 KB each): the folder, the map and date and both
+    # guilds to find the match in the Observe list, and the player names to recognise it once watched.
+    recent = [{
+        "folder": e["folder"],
+        "map_id": e.get("map_id", 0),
+        "date": e.get("date", ""),
+        "duration": e.get("duration", ""),  # "mm:ss": Iris turns instance time into GW's "Time elapsed"
+        "guilds": {k: {"name": g.get("name", ""), "tag": g.get("tag", "")}
+                   for k, g in e.get("guilds", {}).items() if k in ("1", "2")},
+        "parties": {k: {"PLAYER": [{"encoded_name": p.get("encoded_name", "")} for p in party.get("PLAYER", [])]}
+                    for k, party in e.get("parties", {}).items()},
+    } for e in entries if e.get("date", "") >= cutoff and e.get("folder") in packed]
+    body = json.dumps({"version": 1, "matches": recent}, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+    s3.put_object(Bucket=bucket, Key=IRIS_RECENT_KEY, Body=body, ContentType="application/json")
+    return len(recent)
+
+
 def build_equipment_entry(infos: dict, match_dir: Path | None = None) -> dict:
     """Per-match weapon sets and armour, or {} when the recording has none.
 
@@ -1364,6 +1573,20 @@ def cmd_upload(args, config: dict) -> dict:
                         "warning": f"Attributes not published: {e}",
                     })
 
+            # The Iris pack, from the same headless app. Keyed by the URL-safe
+            # name: that is the index entry's "folder", which Iris looks up.
+            iris_pack = build_iris_pack(match_dir, config)
+            if iris_pack:
+                try:
+                    upload_iris_pack(s3, iris_bucket(config), safe_name, iris_pack)
+                    print(f"  Iris pack: {len(iris_pack) // 1024} KB")
+                except Exception as e:
+                    print(f"  Warning: Iris pack not published: {e}")
+                    report["warnings"].append({
+                        "match": folder_name,
+                        "warning": f"Iris pack not published: {e}",
+                    })
+
             report["uploaded"] += 1
 
             # Clean up temp archive
@@ -1404,6 +1627,11 @@ def cmd_upload(args, config: dict) -> dict:
         try:
             upload_index(s3, bucket, all_entries)
             print("Index updated.")
+            try:
+                print(f"Iris recent list: {write_iris_recent(s3, iris_bucket(config), all_entries)} matches.")
+            except Exception as e:
+                print(f"  Warning: {IRIS_RECENT_KEY} not written: {e}")
+                report["warnings"].append({"match": "", "warning": f"Iris recent list not written: {e}"})
         except Exception as e:
             msg = f"Failed to update index.json: {e}"
             print(f"ERROR: {msg}")
@@ -1681,6 +1909,60 @@ def cmd_cleanup_duplicates(args, config: dict):
     print(f"Done. Deleted {deleted} archive(s), index updated.")
 
 
+def cmd_iris_backfill(args, config: dict):
+    """Give every recent, already-published match its Iris pack, then rewrite iris/recent.json.
+
+    Recent = within IRIS_RECENT_DAYS, the window the in-game Observe list offers;
+    older matches cannot be observed in game, so a pack for them is wasted work.
+    A recording found under MATCH_SOURCE_DIR (or --source-dir) is used as is;
+    otherwise its archive is downloaded from the bucket for the export. Matches
+    whose pack is already in the bucket are skipped.
+    """
+    s3 = create_s3_client(config)
+    bucket = config["R2_BUCKET"]
+    source_dir = Path(os.path.expandvars(os.path.expanduser(args.source_dir or config.get("MATCH_SOURCE_DIR", ""))))
+    local = {d.name: d for d in scan_local_matches(source_dir)} if source_dir.is_dir() else {}
+    entries = fetch_remote_index(s3, bucket)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=IRIS_RECENT_DAYS)).strftime("%Y-%m-%d")
+    recent = sorted((e["folder"] for e in entries if e.get("date", "") >= cutoff), reverse=True)
+    print(f"{len(recent)} published matches since {cutoff}")
+
+    built = missing = present = 0
+    for i, folder in enumerate(recent, 1):
+        if not getattr(args, "iris_force", False) and object_exists(s3, iris_bucket(config), iris_pack_key(folder)):
+            present += 1
+            continue
+        if args.dry_run:
+            print(f"  would build: {folder}")
+            missing += 1
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            match_dir = local.get(folder)
+            if match_dir is None:
+                archive = Path(tmp) / "match.tar.gz"
+                try:
+                    s3.download_file(bucket, f"matches/{folder}.tar.gz", str(archive))
+                    with tarfile.open(archive, "r:gz") as tar:
+                        tar.extractall(tmp, filter="data")
+                except Exception as exc:
+                    print(f"  [{i}/{len(recent)}] {folder}: archive unavailable ({type(exc).__name__}: {exc})")
+                    missing += 1
+                    continue
+                found = [p.parent for p in Path(tmp).rglob("infos.json")]
+                match_dir = found[0] if found else None
+            pack = build_iris_pack(match_dir, config) if match_dir else None
+            if not pack:
+                print(f"  [{i}/{len(recent)}] {folder}: no pack")
+                missing += 1
+                continue
+            upload_iris_pack(s3, iris_bucket(config), folder, pack)
+            built += 1
+            print(f"  [{i}/{len(recent)}] {folder}: {len(pack) // 1024} KB")
+    print(f"Iris packs: {built} built, {present} already there, {missing} {'to build' if args.dry_run else 'not built'}")
+    if not args.dry_run:
+        print(f"Iris recent list: {write_iris_recent(s3, iris_bucket(config), entries)} matches.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Upload GvG match recordings to Cloudflare R2."
@@ -1739,6 +2021,26 @@ def main():
              "match folder names. Pair with --dry-run first.",
     )
     parser.add_argument(
+        "--iris-backfill",
+        action="store_true",
+        help="Build and upload the Iris pack of every recent published match that has none, "
+             "then rewrite iris/recent.json. Pair with --dry-run first.",
+    )
+    parser.add_argument(
+        "--iris-force",
+        action="store_true",
+        help="With --iris-backfill: rebuild packs that already exist (after the pack format changes).",
+    )
+    parser.add_argument(
+        "--publish-iris-exporter",
+        nargs="?",
+        const="auto",
+        default=None,
+        metavar="EXE",
+        help="Publish an Iris exporter build (GuildWarsObserver.exe + Data) to the bucket; every machine's next "
+             "upload fetches it. EXE defaults to this checkout's build. Pair with --dry-run first.",
+    )
+    parser.add_argument(
         "--dedup-index",
         action="store_true",
         help="Remove duplicate entries from index.json",
@@ -1768,7 +2070,11 @@ def main():
         print(f"Set them in {args.env_file} or as environment variables.")
         sys.exit(1)
 
-    if args.cleanup_duplicates:
+    if args.publish_iris_exporter:
+        cmd_publish_iris_exporter(args, config)
+    elif args.iris_backfill:
+        cmd_iris_backfill(args, config)
+    elif args.cleanup_duplicates:
         cmd_cleanup_duplicates(args, config)
     elif args.dedup_index:
         cmd_dedup_index(args, config)

@@ -290,6 +290,13 @@ PSOutput main(PixelInputType input)
                 }
                 else if (blend_flag == 0)
                 {
+                    // HOLES IN AN OLD-FORMAT STAGE (texture_types bit 0x40000, set per model by the
+                    // replay). Some old models flag nothing, yet the client draws their clear
+                    // texels as holes; the stage stays opaque everywhere else.
+                    if ((texture_types[i / 4][i % 4] & 0x40000) != 0 && currentSampledTextureColor.a < 0.1)
+                    {
+                        continue;
+                    }
                     alpha = 1;
                 }
                 if (blend_flag == 8 && alpha == 0 || (blend_flag == 7 && a == 0))

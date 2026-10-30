@@ -41,6 +41,7 @@
 #include <cmath>
 #include <map>
 #include <json.hpp>
+#include "ReplaySync.h"
 #pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
@@ -142,6 +143,9 @@ void ReplayHotkeys::Save() const
       << "  \"toggleFogOfWar\": "      << toggleFogOfWar      << ",\n"
       << "  \"toggleTopView\": "       << toggleTopView       << ",\n"
       << "  \"togglePianoRoll\": "     << togglePianoRoll     << ",\n"
+      << "  \"toggleHighlights\": "    << toggleHighlights    << ",\n"
+      << "  \"nextHighlight\": "       << nextHighlight       << ",\n"
+      << "  \"prevHighlight\": "       << prevHighlight       << ",\n"
       << "  \"toggleHeatmap\": "       << toggleHeatmap       << ",\n"
       << "  \"toggleMinimap\": "       << toggleMinimap       << ",\n"
       << "  \"addBookmark\": "         << addBookmark         << ",\n"
@@ -187,6 +191,9 @@ void ReplayHotkeys::Load()
         readKey("toggleFogOfWar",      toggleFogOfWar);
         readKey("toggleTopView",       toggleTopView);
         readKey("togglePianoRoll",     togglePianoRoll);
+        readKey("toggleHighlights",    toggleHighlights);
+        readKey("nextHighlight",       nextHighlight);
+        readKey("prevHighlight",       prevHighlight);
         readKey("toggleHeatmap",       toggleHeatmap);
         readKey("toggleMinimap",       toggleMinimap);
         readKey("addBookmark",         addBookmark);
@@ -216,13 +223,14 @@ void ReplayWindow::RegisterPanelLayout()
     m_panelLayout.RegisterPanel("team1_party",     "Team 1 Party",         &m_showTeam1Party,       true,  true);
     m_panelLayout.RegisterPanel("team2_party",     "Team 2 Party",         &m_showTeam2Party,       true,  true);
     m_panelLayout.RegisterPanel("morale",          "Morale",               &m_showMoralePanel,      false, true);
-    m_panelLayout.RegisterPanel("lord_damage",     "Lord Damage",          &m_showLordDamagePanel,  false, true);
+    m_panelLayout.RegisterPanel("lord_damage",     "Aggressiveness",       &m_showLordDamagePanel,  false, true);
     m_panelLayout.RegisterPanel("event_timeline",  "Event Timeline",       &m_showEventTimeline,    false, false);
     m_panelLayout.RegisterPanel("range_rings",     "Range Rings",          &m_showRangeRings,       false, true);
     m_panelLayout.RegisterPanel("skill_lasers",    "Skill Lasers",         &m_showLaserPanel,       false, true);
     m_panelLayout.RegisterPanel("auto_camera",     "Auto Camera",          &m_showAutoCameraPanel,  false, true);
     m_panelLayout.RegisterPanel("combat_log",      "Combat Log",           &m_showCombatLog,        false, true);
-    m_panelLayout.RegisterPanel("skill_analytics", "Skill Analytics",      &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("skill_analytics", "Breakdown",            &m_showSkillAnalytics,   false, true);
+    m_panelLayout.RegisterPanel("stats_panel",     "Stats",                &m_showStatsPanel,       false, true);
     m_panelLayout.RegisterPanel("piano_roll",      "Piano Roll",           &m_showPianoRoll,        false, true);
     m_panelLayout.RegisterPanel("heatmap",         "Heatmap",              &m_heatmapSettings.show, false, true);
     m_panelLayout.RegisterPanel("agent_names",     "Agent Names",          &m_showNameFilterPanel,  false, true);
@@ -255,10 +263,10 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashBool(m_clFilterHeals);
     hashBool(m_clFilterSkills);
     hashBool(m_clFilterInterrupt);
-    hashBool(m_clFilterCancel);
     hashBool(m_clFilterDeaths);
-    hashBool(m_clFilterAttacks);
-    hashBool(m_clFilterJumbo);
+    hashBool(m_clShowCancels);
+    hashInt(m_clTeamFilter);
+    hashBool(m_clFollowCamera);
     hashBool(m_clAutoScroll);
     hashBool(m_tlFilterDeath);
     hashBool(m_tlFilterFlag);
@@ -275,6 +283,8 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashBool(m_showDamageMeter);
     hashBool(m_showHealMeter);
     hashBool(m_showPartyEnergy);
+    hashBool(m_showPartyEffects);
+    hashBool(m_showFocusCasts);
     return h;
 }
 
@@ -352,10 +362,10 @@ void ReplayWindow::SaveUILayout()
     ps["clFilterHeals"]     = m_clFilterHeals;
     ps["clFilterSkills"]    = m_clFilterSkills;
     ps["clFilterInterrupt"] = m_clFilterInterrupt;
-    ps["clFilterCancel"]    = m_clFilterCancel;
     ps["clFilterDeaths"]    = m_clFilterDeaths;
-    ps["clFilterAttacks"]   = m_clFilterAttacks;
-    ps["clFilterJumbo"]     = m_clFilterJumbo;
+    ps["clShowCancels"]     = m_clShowCancels;
+    ps["clTeamFilter"]      = m_clTeamFilter;
+    ps["clFollowCamera"]    = m_clFollowCamera;
     ps["clAutoScroll"]      = m_clAutoScroll;
 
     // Event Timeline filters
@@ -380,6 +390,8 @@ void ReplayWindow::SaveUILayout()
     ps["showDamageMeter"]     = m_showDamageMeter;
     ps["showHealMeter"]       = m_showHealMeter;
     ps["showPartyEnergy"]     = m_showPartyEnergy;
+    ps["showPartyEffects"]    = m_showPartyEffects;
+    ps["showFocusCasts"]      = m_showFocusCasts;
 
     // Split Camera state
     ps["pipFollowDist"]       = m_pipFollowDist;
@@ -482,10 +494,10 @@ void ReplayWindow::LoadUILayout()
             bv("clFilterHeals",     m_clFilterHeals);
             bv("clFilterSkills",    m_clFilterSkills);
             bv("clFilterInterrupt", m_clFilterInterrupt);
-            bv("clFilterCancel",    m_clFilterCancel);
             bv("clFilterDeaths",    m_clFilterDeaths);
-            bv("clFilterAttacks",   m_clFilterAttacks);
-            bv("clFilterJumbo",     m_clFilterJumbo);
+            bv("clShowCancels",     m_clShowCancels);
+            iv("clTeamFilter",      m_clTeamFilter);
+            bv("clFollowCamera",    m_clFollowCamera);
             bv("clAutoScroll",      m_clAutoScroll);
 
             // Event Timeline filters
@@ -514,6 +526,8 @@ void ReplayWindow::LoadUILayout()
             bv("showDamageMeter", m_showDamageMeter);
             bv("showHealMeter",   m_showHealMeter);
             bv("showPartyEnergy", m_showPartyEnergy);
+            bv("showPartyEffects", m_showPartyEffects);
+            bv("showFocusCasts",  m_showFocusCasts);
             bv("showAbsoluteHp",  m_showAbsoluteHp);
 
             // Split Camera state
@@ -883,6 +897,7 @@ ReplayWindow::~ReplayWindow()
 {
     ReleasePlayerVisuals();
     ReleaseAgentEffects();
+    ReleaseFootprints();
     if (m_agentModelLoadThread.joinable())
         m_agentModelLoadThread.join();
     if (m_weaponModelLoadThread.joinable())
@@ -5508,6 +5523,8 @@ void ReplayWindow::Tick()
         // Only agents that are a flag for their whole recorded life qualify: the
         // server hands the same agent id to a flag and then to a repair kit, and
         // leaving those joined hides the kit and drags the flag to the kit's spot.
+        // It hands it to spirits and minions too, which carry no item id but a model
+        // id: kept joined, they are classified as the flag and never drawn.
         std::unordered_set<int> flagAgentSkipIds;
         for (auto& [id, ard] : m_replayCtx.agents)
         {
@@ -5517,7 +5534,12 @@ void ReplayWindow::Tick()
             bool flagThroughout = true;
             for (auto& s : ard.snapshots)
             {
-                if (s.item_id == 0) continue;   // gap between incarnations
+                if (s.item_id == 0)
+                {
+                    if (s.model_id == 0) continue;   // gap between incarnations
+                    flagThroughout = false;          // a living agent took the id
+                    break;
+                }
                 if (m_flagItems.IsFlagAt(s.item_id, s.time)) continue;
                 flagThroughout = false;
                 break;
@@ -6268,6 +6290,7 @@ void ReplayWindow::Tick()
     if (m_skillUseTimelineBuilt && m_replayCtx.stocLoaded && !m_combatLogBuilt)
     {
         m_combatLog.clear();
+        m_combatLogViewBuilt = false;
 
         // Recorded max_hp is the effective value the packet fractions are
         // taken against; the solved per-weapon-set value is the fallback for
@@ -6662,6 +6685,13 @@ void ReplayWindow::Tick()
             return AttributeModel::SkillHealthBonus(m_attrProfiles, agentId, span, m_skillView,
                                                     fx && fx->WeaknessAt(casterId, span.start) == 1);
         };
+        m_healthInputs.skillHealthEnd = [this](int agentId, const HealthModel::SkillHealthSpan& span) {
+            const int casterId = span.caster != 0 ? span.caster : agentId;
+            if (m_attrProfiles.find(casterId) == m_attrProfiles.end()) return -1.f;
+            const EffectTimeline::Table* fx = EffectTimelineTable();
+            return AttributeModel::SkillHealthEnd(m_attrProfiles, agentId, span, m_skillView,
+                                                  fx && fx->WeaknessAt(casterId, span.start) == 1);
+        };
         // The maxima the damage attribution confirmed (chant shares, flat hits) vote with the readings.
         if (const DamageAttribution::Table* da = DamageAttributionTable())
         {
@@ -6670,9 +6700,18 @@ void ReplayWindow::Tick()
                 if (da->maxHpVote[i])
                     m_healthInputs.packetMaxHp.push_back({ combat[i].target_id, combat[i].time, da->maxHpVote[i] });
         }
+        // All In: who carries the flux, before the armour solve that must leave its +100 out
+        // (BuildHealthModelInputs reads the table). The armour then settles the players the bar and
+        // the regeneration left open.
+        BuildAllInStatus();
+        m_healthInputs.fluxHealth = [this](int agentId) {
+            return AllIn::Applies(&m_allIn, agentId) ? AllIn::kHealthBonus : 0;
+        };
         m_healthInputsBuilt = true;
         HealthModel::SolveArmour(m_replayCtx.agents, m_healthInputs);
+        AllIn::ApplyArmourEvidence(m_allIn, m_replayCtx.agents);
         m_armourSolved = true;
+        WriteAllInDebugDump();
     }
 
     // Solve each player's attribute build. It runs last of the analysis passes because it reads
@@ -6710,6 +6749,7 @@ void ReplayWindow::Tick()
         attrInputs.flux = AttributeModel::FluxFromName(m_matchMeta.flux);
         if (attrInputs.flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
             attrInputs.flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+        attrInputs.allIn      = m_allInBuilt ? &m_allIn : nullptr;
         attrInputs.matchYear  = m_matchMeta.year;
         attrInputs.matchMonth = m_matchMeta.month;
         attrInputs.matchDay   = m_matchMeta.day;
@@ -6742,10 +6782,15 @@ void ReplayWindow::Tick()
         char energyFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
             (void)EnergyTrackFor(0);
+        // And the key moments (GWO_HIGHLIGHTS_DEBUG).
+        WriteHighlightsDebug();
         // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.
         char damageFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_DAMAGE_DEBUG", damageFlag, (DWORD)sizeof(damageFlag)) != 0)
+        {
             (void)DamageAttributionTable();
+            BuildBattleLedger();      // writes its own dump beside it (gwo_ledger_<match>.txt)
+        }
     }
 
     // Build flag timeline from StoC flag_events.txt (before BuildTimelineData
@@ -6880,7 +6925,8 @@ void ReplayWindow::Tick()
     {
         float dt = static_cast<float>(m_timer.GetElapsedSeconds());
         float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
-        m_debugTimeline += dt * m_replayCtx.playbackSpeed;
+        // Highlights drives the speed (and may jump-cut) while it is on; otherwise the plain speed.
+        m_debugTimeline += dt * HighlightsPlaybackSpeed(dt);
 
         if (m_debugTimeline >= maxT)
         {
@@ -6891,6 +6937,16 @@ void ReplayWindow::Tick()
                 m_replayCtx.isPlaying = false;
             }
         }
+    }
+
+    // The Library's Stats tab follows this replay and may ask it to jump (ReplaySync.h). Times
+    // cross on the displayed clock.
+    if (m_loadingPhase == LoadingPhase::Ready)
+    {
+        float seekT = 0.f;
+        if (ReplaySync::TakeSeek(m_matchMeta.folder_name, seekT))
+            m_debugTimeline = std::clamp(seekT + m_displayTimeOffset, 0.f, std::max(1.f, m_replayCtx.maxReplayTime));
+        ReplaySync::Publish(m_matchMeta.folder_name, m_debugTimeline - m_displayTimeOffset, m_replayCtx.isPlaying);
     }
 
     // The clip export's exact frame time, or the clip preview's loop.
@@ -6962,6 +7018,21 @@ std::vector<int> ReplayWindow::SkillBarForAgent(int agentId) const
     return {};
 }
 
+// The All In table, the same way the attribute solve writes its own: %TEMP%\gwo_allin_<match>.txt
+// whenever GWO_ALLIN_DEBUG is set. Written in any month (the table is empty outside November).
+void ReplayWindow::WriteAllInDebugDump() const
+{
+    char flag[16] = {};
+    if (GetEnvironmentVariableA("GWO_ALLIN_DEBUG", flag, (DWORD)sizeof(flag)) == 0) return;
+    char tempDir[MAX_PATH] = {};
+    if (GetTempPathA(MAX_PATH, tempDir) == 0) return;
+    std::string folder = m_replayCtx.matchFolderPath.filename().string();
+    if (folder.empty()) folder = "replay";
+    for (char& c : folder)
+        if (!std::isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') c = '_';
+    AllIn::WriteDump(m_allIn, m_replayCtx.agents, std::string(tempDir) + "gwo_allin_" + folder + ".txt");
+}
+
 void ReplayWindow::WriteAttributeDebugDump() const
 {
     char flag[16] = {};
@@ -7010,6 +7081,8 @@ void ReplayWindow::Update(double elapsedMs)
         GuiGlobalConstants::SaveSettings();
     }
     UpdateTopViewTransition(dt);
+    if (!m_topViewActive)
+        UpdateHighlights(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
     if (!m_topViewActive && !m_topViewTransitioning)
@@ -7195,6 +7268,16 @@ void ReplayWindow::Render()
 
     if (m_pipEnabled && m_pipResourcesReady && m_pipTargetAgent >= 0)
         RenderPiP();
+    // Highlights' second moment, for the right half of a split screen.
+    RenderHighlightsSecondView();
+
+    // A moment after Ready: the lever gates, Meditation gates and vine bridges the picture
+    // records are resolved in the first frames after loading.
+    // The Weeping Stone lever door waits for the flag stand; give it up to ~10 s more.
+    if (!m_mapImageCaptureTried && m_loadingPhase == LoadingPhase::Ready && m_calibrationLoaded
+        && ++m_mapImageReadyFrames > 90
+        && (m_replayCtx.datMapId != 0x2661F || m_weepingLeverResolved || m_mapImageReadyFrames > 600))
+        CaptureTopDownMapImage();
 
     // The minimap redraws the whole map from above; at the reduced rate it keeps its last picture
     // between redraws (about 10 a second at 60 FPS).
@@ -7243,6 +7326,7 @@ void ReplayWindow::Render()
             m_deviceResources->GetPickingStagingTexture(), cursor.x, cursor.y);
     }
 
+    DrawFootprints();
     DrawAgentShadows();
     DrawHeatmapOverlay();
 
@@ -7285,6 +7369,8 @@ void ReplayWindow::Render()
     // characters, because the game applies it to the finished frame, and before the interface,
     // because the interface is drawn by us and was never in it.
     DrawSceneBloom();
+    // Highlights greys out what is not in the moment: the finished picture, before the interface.
+    DrawHighlightsFilter();
 
     // The character panels' portraits, into targets of their own, after the world and before the
     // interface that shows them.
@@ -7325,6 +7411,7 @@ void ReplayWindow::DrawImGuiOverlay()
         clipIo.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
 
+    ApplyHighlightsMouseBlock();   // the clean screen's hidden panels take no mouse
     ImGui::NewFrame();
 
     // Top menu bar
@@ -7582,10 +7669,11 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawPartyWindows();
     DrawPlayerContextMenu();
     DrawCombatLog();
-    DrawSkillAnalyticsPanel();
-    DrawSkillAnalyticsPlayerPopups();
+    DrawBattleLedgerPanel();
+    DrawStatsPanel();
     DrawPlayerInfoPanel();
     DrawPianoRollPanel();
+    DrawHighlightsPanel();
     DrawNotepad();
     DrawNameFilterPanel();
     DrawPiPPanel();
@@ -7658,6 +7746,10 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawSpiritRanges();
     DrawWurmsShrineCaptureRadius();
     DrawAgentOverlay();
+    // Over the main view's labels: Highlights' right half, when two moments play at once, and the
+    // moment cards.
+    DrawHighlightsSplit();
+    DrawHighlightsCard();
     DrawFlags();
     DrawBundleItems();
     DrawSkillLasers();
@@ -7747,7 +7839,9 @@ void ReplayWindow::DrawImGuiOverlay()
 
             // Escape doubles as "disarm the drawing tool"; if it was used for
             // that this frame it must not also drop follow mode.
-            if (HotkeyFired(hk.exitFollowMode) && m_cameraMode == CameraMode::FollowAgent
+            // Highlights' clean screen takes Escape first: it brings the interface back.
+            if (HotkeyFired(hk.exitFollowMode) && !LeaveHighlightsCleanScreen()
+                && m_cameraMode == CameraMode::FollowAgent
                 && !m_annotationMgr.EscapeConsumedThisFrame() && !m_clip.escConsumed)
                 ExitFollowMode();
 
@@ -7766,6 +7860,12 @@ void ReplayWindow::DrawImGuiOverlay()
                 m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
             if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
+
+            // Up/Down arrows: tap = ±30s, hold = continuous ±30s at repeat rate
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_UpArrow, true))
+                m_debugTimeline = std::min(maxT, m_debugTimeline + 30.f);
+            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))
+                m_debugTimeline = std::max(0.f, m_debugTimeline - 30.f);
 
             if (HotkeyFired(hk.playPause))
                 m_replayCtx.isPlaying = !m_replayCtx.isPlaying;
@@ -7835,6 +7935,13 @@ void ReplayWindow::DrawImGuiOverlay()
 
             if (HotkeyFired(hk.togglePianoRoll))
                 m_showPianoRoll = !m_showPianoRoll;
+
+            if (HotkeyFired(hk.toggleHighlights))
+                ToggleHighlights();
+            if (HotkeyFired(hk.nextHighlight))
+                HighlightsStep(1);
+            if (HotkeyFired(hk.prevHighlight))
+                HighlightsStep(-1);
 
             if (HotkeyFired(hk.toggleHeatmap))
             {
@@ -7935,6 +8042,8 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawClipEditor();
 
     ImGui::Render();
+    // Highlights' clean screen leaves only what floats over the world and the moment cards.
+    FilterHighlightsDrawData(ImGui::GetDrawData());
     RenderImGuiWithClipCapture(ImGui::GetDrawData());
 
     ImGui::SetCurrentContext(prevCtx);
@@ -10294,26 +10403,28 @@ void DrawPartyHealthBar(
             iconX -= iconSz;
             dl->AddImage(flagTex, ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz));
         }
+    }
 
-        // Absolute HP display (right-aligned, avoiding icon region)
-        if (absMaxHp > 0)
-        {
-            uint32_t displayHp = (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
-            char hpStr[32];
-            if (hpEstimated)
-                snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
-            else
-                snprintf(hpStr, sizeof(hpStr), "%u/%u", displayHp, absMaxHp);
+    // Absolute HP display (right-aligned, avoiding icon region). A dead player reads 0/N, N being
+    // the maximum he will stand up with: the morale fold takes the death penalty at the death.
+    if (absMaxHp > 0)
+    {
+        const float iconSz = std::min(innerH - 2.f, 18.f);
+        uint32_t displayHp = isDead ? 0u : (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
+        char hpStr[32];
+        if (hpEstimated)
+            snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
+        else
+            snprintf(hpStr, sizeof(hpStr), "%u/%u", displayHp, absMaxHp);
 
-            ImVec2 hpSize = ImGui::CalcTextSize(hpStr);
-            float hpTextX = std::min(innerBR.x - iconSz * 6.f - 4.f, innerBR.x - hpSize.x - 4.f);
-            float hpTextY = innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f;
+        ImVec2 hpSize = ImGui::CalcTextSize(hpStr);
+        float hpTextX = std::min(innerBR.x - iconSz * 6.f - 4.f, innerBR.x - hpSize.x - 4.f);
+        float hpTextY = innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f;
 
-            ImU32 hpTextCol = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-            ImU32 hpShadowCol = IM_COL32(0, 0, 0, 0xCC);
-            dl->AddText(ImVec2(hpTextX + 1, hpTextY + 1), hpShadowCol, hpStr);
-            dl->AddText(ImVec2(hpTextX, hpTextY), hpTextCol, hpStr);
-        }
+        ImU32 hpTextCol = isDead ? IM_COL32(0xA0, 0xA0, 0xA0, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+        ImU32 hpShadowCol = IM_COL32(0, 0, 0, 0xCC);
+        dl->AddText(ImVec2(hpTextX + 1, hpTextY + 1), hpShadowCol, hpStr);
+        dl->AddText(ImVec2(hpTextX, hpTextY), hpTextCol, hpStr);
     }
 }
 
@@ -10503,6 +10614,7 @@ std::string GetSkillDisplayName(int skillId)
     // NPC / Guild Lord skills missing from the skill database
     static const std::unordered_map<int, const char*> s_overrides = {
         {3205, "Entourage"},
+        {1304, "Spiked Coral"},   // Isle of Jade hazard
     };
     auto ov = s_overrides.find(skillId);
     if (ov != s_overrides.end()) return ov->second;
@@ -10576,6 +10688,7 @@ void ReplayWindow::OnDeviceLost()
     m_shadowInitAttempted = false;
     m_shadowLoadError.clear();
     m_shadowCasters.clear();
+    ReleaseFootprints();
 
     const size_t dropped = m_agentAnimStates.size();
     m_agentAnimStates.clear();

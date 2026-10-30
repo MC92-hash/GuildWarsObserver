@@ -188,6 +188,14 @@ namespace
     constexpr int kClipPanelVars = 4;
 }
 
+// The GIF panel's look, for the other replay panels that match it (Highlights).
+void PushGoldPanelStyle() { PushClipPanelStyle(); }
+void PopGoldPanelStyle()
+{
+    ImGui::PopStyleColor(kClipPanelColours);
+    ImGui::PopStyleVar(kClipPanelVars);
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------

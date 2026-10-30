@@ -5,6 +5,7 @@
 #include "GuiGlobalConstants.h"
 #include "FolderWatcher.h"
 #include "TextureCache.h"
+#include "LaunchScreenPath.h"
 #include "CustomFileBrowser.h"
 #include "imgui.h"
 #include <filesystem>
@@ -111,23 +112,7 @@ static void DrawEulaContent()
 
 namespace
 {
-    static std::string GetLoadingScreenPath()
-    {
-        wchar_t exePath[MAX_PATH];
-        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) == 0)
-            return "";
-        auto dir = std::filesystem::path(exePath).parent_path();
-        for (int i = 0; i < 6; i++)
-        {
-            auto p = dir / "Textures" / "Launch_screen" / "GWOBS_Loading_Screen_1.png";
-            if (std::filesystem::exists(p))
-                return p.string();
-            if (!dir.has_parent_path() || dir == dir.parent_path())
-                break;
-            dir = dir.parent_path();
-        }
-        return "";
-    }
+    static std::string GetLoadingScreenPath() { return GetLaunchScreenPath(); }
 
     static std::string GetTodayString()
     {
@@ -183,7 +168,7 @@ static void DrawWizardBackground(ImDrawList* dl, ImVec2 display)
     static std::string bgPath = GetLoadingScreenPath();
     ImTextureID tex = bgPath.empty() ? nullptr : GetTextureCache().GetTexture(bgPath);
     if (tex)
-        dl->AddImage(tex, ImVec2(0, 0), display);
+        DrawLaunchScreenCover(dl, tex, display);
 
     dl->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 140));
 }

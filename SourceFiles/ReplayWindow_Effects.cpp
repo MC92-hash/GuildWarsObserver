@@ -57,23 +57,29 @@ uint32_t ReplayWindow::FloaterMaxHp(int agentId, float t) const
     if (snaps.empty()) return 0;
     const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
     if (s && s->max_hp > 0) return s->max_hp;
+    // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
+    // never looked at it. Without this a Guild Lord fell through to the player-only solver,
+    // which returns 0 for an NPC, and his damage numbers were dropped for want of a
+    // denominator. Deep Wound moves it, and a Guild Lord's also steps up with his team's morale boosts.
+    if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
+    {
+        if (it->second.modelId == 170)
+            fixed += (uint32_t)LordAggressiveness::LordMoraleHealth(TeamMoraleBoostsAt(it->second.teamId, t));
+        return (s && s->has_deep_wound)
+                   ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
+    }
+    // A henchman's maximum is modelled (level health, morale, Deep Wound) and never recorded.
+    if (IsHenchmanAgent(it->second))
+        return ResolveMaxHp(it->second, t).value;
+    // Solved per weapon set when the recording carries none.
+    if (uint32_t solved = it->second.solvedMaxHpAtTime(t)) return solved;
+    // Last of all a later recorded value. Never before the others: it can come from after a death
+    // and resurrection (a Paragon dead at 1:34 had no value until 1:38, and read 553 for 525).
     auto sit = std::lower_bound(snaps.begin(), snaps.end(), t,
         [](const AgentSnapshot& a, float b) { return a.time < b; });
     for (; sit != snaps.end(); ++sit)
         if (sit->max_hp > 0) return sit->max_hp;
-    // A guild hall NPC's maximum is a stated constant, so it is known even when the camera
-    // never looked at it. Without this a Guild Lord fell through to the player-only solver,
-    // which returns 0 for an NPC, and his damage numbers were dropped for want of a
-    // denominator. Deep Wound is the only thing that moves it.
-    if (uint32_t fixed = LookupGuildNpcMaxHealth(it->second.modelId))
-        return (s && s->has_deep_wound)
-                   ? AgentReplayData::ApplyDeepWound(fixed) : fixed;
-    // A henchman's maximum is modelled (level health, morale, Deep Wound) and never recorded.
-    if (IsHenchmanAgent(it->second))
-        return ResolveMaxHp(it->second, t).value;
-    // Recorded value first (it is the effective max HP); solved per
-    // weapon set only when the recording carries none.
-    return it->second.solvedMaxHpAtTime(t);
+    return 0;
 }
 
 uint32_t ReplayWindow::PacketMaxHp(int agentId, float t, float fraction) const
@@ -95,7 +101,49 @@ uint32_t ReplayWindow::PacketMaxHp(int agentId, float t, float fraction) const
     if (!woundOn && !woundOver)
         if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end())
             if (const AgentSnapshot* s = FindSnapshotAtTime(it->second, t)) woundOver = s->has_deep_wound;
-    return CorrectMaxHpForWoundedPacket(recorded, fraction, woundOn, woundOn ? false : woundOver);
+    auto whole = [f = std::fabs((double)fraction)](uint32_t m) {
+        const double x = f * (double)m;
+        return m > 0 && x >= 0.5 && std::fabs(x - std::round(x)) <= 0.0015;
+    };
+    // Wounded while the recorded value does not show it yet (it reads as before the wound): the cut
+    // value first, even when the uncut one also fits. A round fraction fits both - Pendulus' Energy
+    // Burn was 0.2 of 405 (81, nine energy at Domination 14), read 0.2 of 505 = 101 (2026-10-17).
+    if (woundOn)
+        if (auto ait = m_replayCtx.agents.find(agentId); ait != m_replayCtx.agents.end())
+        {
+            const uint32_t before = ait->second.maxHpBeforeDeepWound(t);
+            const uint32_t cut = AgentReplayData::ApplyDeepWound(recorded);
+            if ((before == 0 || recorded == before) && whole(cut)) return cut;
+        }
+    const uint32_t corrected = CorrectMaxHpForWoundedPacket(recorded, fraction, woundOn, woundOn ? false : woundOver);
+    if (whole(corrected)) return corrected;
+
+    // Still no whole number: the recorded value lags a weapon swap. Try the player's own recorded
+    // maxima from this match (one per weapon set), and each under Deep Wound while one is on him. A
+    // Paragon recorded at 563 had his 625 set out: his Word of Censure hits are 137/625, and 137/525
+    // once Augury of Death wounded him (2026-10-17 Crew vs Men).
+    static std::unordered_map<int, std::vector<uint32_t>> sSets;
+    static std::string sSetsMatch;
+    if (sSetsMatch != m_replayCtx.matchFolderPath.string())
+    {
+        sSets.clear();
+        sSetsMatch = m_replayCtx.matchFolderPath.string();
+    }
+    auto sit = sSets.find(agentId);
+    if (sit == sSets.end())
+    {
+        std::vector<uint32_t> seen;
+        if (auto it = m_replayCtx.agents.find(agentId); it != m_replayCtx.agents.end())
+            for (const AgentSnapshot& s : it->second.snapshots)
+                if (s.max_hp > 0 && std::find(seen.begin(), seen.end(), s.max_hp) == seen.end()) seen.push_back(s.max_hp);
+        sit = sSets.emplace(agentId, std::move(seen)).first;
+    }
+    for (uint32_t m : sit->second)
+    {
+        if (whole(m)) return m;
+        if (woundOn && whole(AgentReplayData::ApplyDeepWound(m))) return AgentReplayData::ApplyDeepWound(m);
+    }
+    return corrected;
 }
 
 std::string ReplayWindow::FloaterPopLabel(int agentId, const DamagePop& pop) const
@@ -255,7 +303,8 @@ void ReplayWindow::ScanIncomingEffects(int agentId, float from, float to, std::v
 
 void ReplayWindow::EnsureBitmapFontsLoaded()
 {
-    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded && m_energyBitmapFont.loaded) return;
+    if (m_damageBitmapFont.loaded && m_healBitmapFont.loaded && m_energyBitmapFont.loaded
+        && m_dealtBitmapFont.loaded) return;
 
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();
     auto ddsDir = FindTexturesDDSDir();
@@ -267,6 +316,10 @@ void ReplayWindow::EnsureBitmapFontsLoaded()
         m_healBitmapFont.Load(dev, (ddsDir / L"GW.EXE_0xA0629E7F.dds").c_str());
     if (!m_energyBitmapFont.loaded)
         m_energyBitmapFont.Load(dev, (ddsDir / L"texture_265569.dds").c_str());
+    // The client's damage atlas for a non-enemy cause (gw_overhead_numbers.md section 2). The extract
+    // reads cyan, (62,154,159) on average: red and blue exchanged, it is the client's yellow.
+    if (!m_dealtBitmapFont.loaded)
+        m_dealtBitmapFont.Load(dev, (ddsDir / L"texture_265568.dds").c_str(), true);
 }
 
 
@@ -387,6 +440,7 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
     {
         const BitmapFont* font = (e.type == IncomingEffectType::Heal)   ? &m_healBitmapFont
                                : (e.type == IncomingEffectType::Energy) ? &m_energyBitmapFont
+                               : (e.dealt && m_dealtBitmapFont.srv.Get()) ? &m_dealtBitmapFont
                                                                         : &m_damageBitmapFont;
         if (font->srv.Get())
         {
@@ -429,7 +483,7 @@ void ReplayWindow::DrawFloater(ImDrawList* dl, const IncomingEffect& e, float no
 
 void ReplayWindow::RenderIncomingEffects()
 {
-    if (m_incomingEffects.empty()) return;
+    if (m_incomingEffects.empty() || HighlightsOverheadMode() >= 1) return;   // Highlights: no numbers
     int focused = m_focusedAgentId;
     if (focused < 0) return;
 
@@ -728,6 +782,46 @@ const ReplayWindow::BossTenure* ReplayWindow::FindBossTenure(int agentId, float 
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// All In (November flux) - who carries it. The rules live in the private FluxAllIn.h; this only
+// feeds them the match and keeps the table for the models and the effect icons.
+// ---------------------------------------------------------------------------
+
+AttributeModel::Flux ReplayWindow::MatchFlux() const
+{
+    // The recording names the flux when the recorder saw it; the month decides otherwise.
+    AttributeModel::Flux flux = AttributeModel::FluxFromName(m_matchMeta.flux);
+    if (flux == AttributeModel::Flux::None && m_matchMeta.month > 0)
+        flux = AttributeModel::FluxForMonth(m_matchMeta.month);
+    return flux;
+}
+
+void ReplayWindow::BuildAllInStatus()
+{
+    m_allIn = AllIn::Build(m_replayCtx.agents, m_replayCtx.stocData, m_skillView,
+                           [this](int agentId) { return SkillBarForAgent(agentId); },
+                           m_replayCtx.mapId, MatchFlux() == AttributeModel::Flux::AllIn);
+    m_allInBuilt = true;
+}
+
+const AllIn::Status* ReplayWindow::AllInStatusFor(int agentId) const
+{
+    if (!m_allInBuilt) return nullptr;
+    const AllIn::Status* s = AllIn::Find(&m_allIn, agentId);
+    return (s && !s->henchman) ? s : nullptr;
+}
+
+void ReplayWindow::DrawAllInTooltipLines(const AllIn::Status& s) const
+{
+    const std::string why = AllIn::Describe(s);
+    if (s.state == AllIn::State::Yes)
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.45f, 1.f), "Under All In: %s", why.c_str());
+    else if (s.state == AllIn::State::Possible)
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.f), "All In? %s", why.c_str());
+    else
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.f), "Not under All In: %s", why.c_str());
+}
+
 
 // ---------------------------------------------------------------------------
 // Top-of-screen HUD for the followed agent: health bar (with name inside)
@@ -830,7 +924,7 @@ void ReplayWindow::DrawFollowedAgentHUD()
     ImVec2 barBR(barX + BAR_W, barY + BAR_H);
 
     auto sv = ard.skillVisualAtTime(m_debugTimeline);
-    bool showCast = (sv.skillId > 0 && sv.alpha > 0.f);
+    bool showCast = (sv.skillId > 0 && sv.alpha > 0.f && HighlightsOverheadMode() < 2);
     constexpr float CAST_ICON  = 34.f;
     constexpr float CAST_GAP   = 5.f;
     constexpr float CAST_BAR_H = 18.f;
@@ -972,11 +1066,12 @@ void ReplayWindow::DrawFollowedAgentHUD()
 
 // Energy gains and drains over every player but the followed one, in the client's purple digits and
 // with the client's floater layout - the energy model knows them for everyone. With them, the heals
-// the followed player GAVE, over each player he healed, as the client shows a healer his heals (the
-// heals he receives stay over him, UpdateIncomingEffects). Damage stays on the followed player.
+// the followed player GAVE, over each player he healed, and the damage he dealt, over each agent he
+// hit (a Guild Lord, a spirit and a pet too), as the client shows a player his own numbers. What
+// he receives stays over him (UpdateIncomingEffects).
 void ReplayWindow::RenderEnergyPopsOverPlayers()
 {
-    if (!m_replayCtx.agentsLoaded || !m_agentsClassified) return;
+    if (!m_replayCtx.agentsLoaded || !m_agentsClassified || HighlightsOverheadMode() >= 1) return;
     Camera* cam = m_mapRenderer ? m_mapRenderer->GetCamera() : nullptr;
     if (!cam) return;
     EnsureBitmapFontsLoaded();
@@ -990,14 +1085,27 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     std::vector<IncomingEffect> live, batch;
 
-    // One player's pops in time order: his energy changes and the followed player's heals on him.
-    // `draw` is false for a pop that only links the run (a zero or followed-only energy change).
+    // One agent's pops in time order: his energy changes and the followed player's heals and damage
+    // on him. `draw` is false for a pop that only links the run (a zero or followed-only energy change).
     struct Pop { float time; bool draw; IncomingEffect eff; };
     std::vector<Pop> run;
     constexpr float kRunLookback = 60.f;   // how far back a run of overlapping pops is replayed
     const int healer = m_focusedAgentId;
 
-    for (int pid : m_playerIds)
+    // The players, and any other agent the followed player has hit in the last lifetime.
+    std::vector<int> targets(m_playerIds.begin(), m_playerIds.end());
+    if (healer >= 0)
+    {
+        const auto& combat = m_replayCtx.stocData.combat;
+        for (auto c = std::upper_bound(combat.begin(), combat.end(), now - kEffectLifetime,
+                                       [](float v, const CombatEvent& x) { return v < x.time; });
+             c != combat.end() && c->time <= now; ++c)
+            if (c->caster_id == healer && c->IsDamageOrHeal()
+                && std::find(targets.begin(), targets.end(), c->target_id) == targets.end())
+                targets.push_back(c->target_id);
+    }
+
+    for (int pid : targets)
     {
         if (pid == m_focusedAgentId) continue;
         const EnergyModel::Track* track = EnergyTrackFor(pid);
@@ -1016,7 +1124,7 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
             for (auto h = std::upper_bound(pops.begin(), pops.end(), now - kEffectLifetime,
                                            [](float v, const DamagePop& x) { return v < x.time; });
                  h != pops.end() && h->time <= now; ++h)
-                if (h->heal && h->casterId == healer) { any = true; break; }
+                if (h->casterId == healer) { any = true; break; }
         if (!any) continue;
 
         auto it = m_replayCtx.agents.find(pid);
@@ -1051,11 +1159,14 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
                                        [](const DamagePop& x, float v) { return x.time < v; });
              h != pops.end() && h->time <= now; ++h)
         {
-            if (!h->heal || h->casterId != healer) continue;
+            if (h->casterId != healer) continue;
             Pop p{ h->time, true, {} };
             p.eff.spawnTime = h->time;
             p.eff.skillId = h->skillId;
-            p.eff.type = IncomingEffectType::Heal;
+            p.eff.type = h->weaponHit ? IncomingEffectType::BasicAttack
+                       : h->heal      ? IncomingEffectType::Heal
+                                      : IncomingEffectType::Damage;
+            p.eff.dealt = !h->heal;
             p.eff.label = FloaterPopLabel(pid, *h);
             run.push_back(std::move(p));
         }

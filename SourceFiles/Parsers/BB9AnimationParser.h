@@ -1343,6 +1343,16 @@ public:
                     size_t segmentCount = header.animationSegmentCount;
                     if (FindFA1SegmentBlockStructured(data, dataSize, header, keyframeEndOffset, segmentOffset))
                     {
+                        // The event table sits right before the segments: u32 time[n], then u8 id[n].
+                        const size_t eventCount = static_cast<size_t>(header.unknown_0x3C & 0xFFFF);
+                        if (eventCount > 0 && segmentOffset >= eventCount * 5)
+                        {
+                            const size_t eventOffset = segmentOffset - eventCount * 5;
+                            clip.eventTimes.resize(eventCount);
+                            std::memcpy(clip.eventTimes.data(), &data[eventOffset], eventCount * sizeof(uint32_t));
+                            clip.eventIds.assign(&data[eventOffset + eventCount * 4],
+                                                 &data[eventOffset + eventCount * 5]);
+                        }
                         constexpr uint32_t kMaxTime = 360000000;
                         clip.animationSegments.reserve(segmentCount);
                         clip.animationSegmentSourceTypes.reserve(segmentCount);

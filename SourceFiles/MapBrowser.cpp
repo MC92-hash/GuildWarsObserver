@@ -2279,14 +2279,21 @@ void MapBrowser::ProcessPendingReplayRequest()
 {
     if (!g_pendingReplay.requested) return;
     g_pendingReplay.requested = false;
+    // Reset at once: the replay buttons set only `requested` and `match`.
+    const bool openReplay = g_pendingReplay.openReplay;
+    g_pendingReplay.openReplay = true;
 
     // Don't start if a download is already in progress
     if (m_playDl.state.load() == PlayDownloadState::Downloading)
         return;
 
+    // A download-only request needs no gw.dat: nothing is rendered.
+    if (!openReplay && !g_pendingReplay.match.is_cloud_only)
+        return;
+
     // Require DAT MFT metadata to be loaded (don't need full background scan)
-    if (m_dat_managers.count(0) == 0 ||
-        m_dat_managers[0]->m_initialization_state < InitializationState::IndexReady)
+    if (openReplay && (m_dat_managers.count(0) == 0 ||
+        m_dat_managers[0]->m_initialization_state < InitializationState::IndexReady))
     {
         MessageBoxA(m_deviceResources->GetWindow(),
             "gw.dat is not loaded yet. Please open gw.dat first.",
@@ -2294,7 +2301,7 @@ void MapBrowser::ProcessPendingReplayRequest()
         return;
     }
 
-    if (!m_hash_index_initialized)
+    if (openReplay && !m_hash_index_initialized)
     {
         MessageBoxA(m_deviceResources->GetWindow(),
             "gw.dat is still indexing. Please wait a moment and try again.",
@@ -2321,6 +2328,7 @@ void MapBrowser::ProcessPendingReplayRequest()
             m_playDl.thread.join();
 
         m_playDl.originalMatch = match;
+        m_playDl.openReplay = openReplay;
         m_playDl.bytesReceived.store(0);
         m_playDl.bytesTotal.store(entry->size_bytes);
         m_playDl.errorMsg.clear();
@@ -2430,6 +2438,11 @@ void MapBrowser::ProcessCloudDownloadResult()
     // Ensure retention timestamp is written
     CloudReplayProvider::WriteLastPlayed(m_playDl.result.localPath);
 
+    // Downloaded for the Library's analysis tabs: the rescan above made it local, which is all
+    // they need.
+    if (!m_playDl.openReplay)
+        return;
+
     // Create the replay window with full metadata
     HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
     ReplayWindow* rw = ReplayWindow::Create(
@@ -2470,6 +2483,17 @@ void MapBrowser::StartAttrBatchFromEnv()
     m_attrBatch.active = !m_attrBatch.folders.empty();
     ReplayWindow::s_openWithoutFocus = m_attrBatch.active;
 
+    // GWO_MAP_PICTURES=<folder>: each window saves its map's top-down picture there (the repo's
+    // Textures/Map_Pictures, shipped with the app) and closes as soon as it has.
+    char picDir[MAX_PATH] = {};
+    if (m_attrBatch.active &&
+        GetEnvironmentVariableA("GWO_MAP_PICTURES", picDir, (DWORD)sizeof(picDir)) > 0)
+    {
+        m_attrBatch.mapPictures = true;
+        ReplayWindow::s_mapPictureOutDir = std::filesystem::path(picDir);
+        RunLog::Line("map-pictures: each match saves its map picture to '%s'", picDir);
+    }
+
     // GWO_CLIP_SELFTEST=<file.gif>[|<start seconds>]: each window also renders one GIF clip.
     char clipTest[MAX_PATH * 2] = {};
     if (m_attrBatch.active &&
@@ -2509,7 +2533,9 @@ void MapBrowser::ProcessAttrBatch()
         {
             const auto secs = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - m_attrBatch.openedAt).count();
-            const bool done = rw->AttributesDeduced() && rw->ClipSelfTestDone() && rw->SoundSelfTestDone();
+            const bool done = m_attrBatch.mapPictures
+                ? rw->MapImageCaptureTried()
+                : rw->AttributesDeduced() && rw->ClipSelfTestDone() && rw->SoundSelfTestDone();
             if (!done && !rw->LoadFailed() && secs < 600.0)
                 return;
             RunLog::Line("attr-batch: closing '%s' - %s after %.0f s",

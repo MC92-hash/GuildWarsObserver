@@ -524,7 +524,7 @@ void ReplayWindow::LoadAgentModelsAsync()
                                                 it->second[idx]);
             }
         } else {
-            fileHash = LookupAgentFileHash(ard.type, ard.modelId);
+            fileHash = LookupAgentFileHash(ard.type, ard.modelId, 0, false, IsHalloweenMatch());
         }
         if (fileHash == 0) continue;
         m_agentFileHashCache[agentId] = fileHash;
@@ -1304,6 +1304,13 @@ void ReplayWindow::LoadAgentModelsIO()
                     wi.tmpl.weaponSocket.positiveXBone = cachedSocket->positiveXBone;
                     wi.tmpl.weaponSocket.resolved      = true;
                 }
+                else if (int32_t neg, pos; LookupHalloweenHandBones(wi.fileHash, neg, pos) &&
+                         static_cast<size_t>(std::max(neg, pos)) < wi.tmpl.clip->boneTracks.size())
+                {
+                    wi.tmpl.weaponSocket.negativeXBone = neg;
+                    wi.tmpl.weaponSocket.positiveXBone = pos;
+                    wi.tmpl.weaponSocket.resolved      = true;
+                }
                 else
                 {
                     wi.tmpl.weaponSocket = GW::Animation::ResolveWeaponSocket(*wi.tmpl.clip);
@@ -1472,6 +1479,8 @@ void ReplayWindow::StepCreateAgentModelResources()
                     templateCBs[j].texture_indices[k / 4][k % 4] = (uint32_t)mesh.tex_indices[k];
                     templateCBs[j].blend_flags[k / 4][k % 4] = (uint32_t)mesh.blend_flags[k];
                     templateCBs[j].texture_types[k / 4][k % 4] = (uint32_t)mesh.texture_types[k];
+                    if (mesh.blend_flags[k] == 0 && HalloweenDisguiseNeedsCutout(fileHash))
+                        templateCBs[j].texture_types[k / 4][k % 4] |= kTextureTypeAlphaCutout;
                 }
             }
         }
@@ -1619,7 +1628,8 @@ float ReplayWindow::AgentModelTopY(int agentId, const AgentReplayData& ard,
 
     const AgentModelInfo info = avatar
         ? LookupAvatarModelInfo(avatar)
-        : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+        : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale,
+                                   IsHalloweenMatch());
 
     // A recorded player is as tall as the character they played, so anything anchored above their
     // head has to measure THAT and not the stand-in it replaced.
@@ -1829,6 +1839,12 @@ void ReplayWindow::DrawAgentModels()
             m_agentModelRenderStatus[slotKey] = "hidden: fog";
             continue;
         }
+        // Highlights with the bystanders hidden: off the screen while a moment they are not in plays.
+        if (HighlightsHidesAgent(agentId)) {
+            for (int mid : meshIds) meshMgr->SetMeshShouldRender(mid, false);
+            m_agentModelRenderStatus[slotKey] = "hidden: highlights";
+            continue;
+        }
 
         // Get interpolated position — use agent's own height (includes plane elevation)
         float sx, sy, sz;
@@ -1863,7 +1879,8 @@ void ReplayWindow::DrawAgentModels()
 
         AgentModelInfo info = slotAvatar
             ? LookupAvatarModelInfo(slotAvatar)
-            : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale);
+            : LookupAgentModelInfo(ard.type, ard.modelId, ard.primaryProf, ard.isFemale,
+                                   IsHalloweenMatch());
         float nativeH = (tmplIt != m_agentModelTemplates.end())
                             ? tmplIt->second.nativeHeight : 0.f;
         float scale;
@@ -2351,6 +2368,16 @@ void ReplayWindow::DrawAgentModels()
                                   worldF, pos, rotRad);
             }
 
+            // Its feet print the ground they land on (the High graphics detail).
+            if (GuiGlobalConstants::footprints && animState.controller && tmplIt != m_agentModelTemplates.end()) {
+                XMFLOAT4X4 worldF{};
+                XMStoreFloat4x4(&worldF, worldMat);
+                const XMFLOAT3 ahead = ApplyMapTransformToPos(sx + std::cos(rotRad), sy + std::sin(rotRad), sz, mt);
+                FootprintsObserve(agentId, tmplIt->second, *animState.controller, worldF, pos,
+                                  XMFLOAT2(ahead.x - pos.x, ahead.z - pos.z), sx, sy,
+                                  tmplIt->second.nativeHeight * scale, pvPlaced, ard.isFemale);
+            }
+
             // Consumed by DrawWeaponModels, which runs after this pass.
             animState.lastSnapIdx = snapIdx;
 
@@ -2668,6 +2695,7 @@ void ReplayWindow::DrawAgentCylinders()
 
         bool inFog = (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId));
         if (inFog && !m_fogGhostMode) continue;
+        if (HighlightsHidesAgent(agentId)) continue;
 
         bool dead = ard.isDeadAtTime(m_debugTimeline);
 

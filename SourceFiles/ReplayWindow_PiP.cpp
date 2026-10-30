@@ -44,36 +44,43 @@ void ReplayWindow::UpdatePiPIncomingEffects()
         m_pipEffectAgentId = -1;
         return;
     }
+    UpdateSecondaryFloaters(m_pipTargetAgent, m_pipIncomingEffects, m_pipEffectAgentId, m_pipLastEffectScanTime,
+                            m_pipFloaterToggle);
+}
 
-    int pipTarget = m_pipTargetAgent;
+// The numbers and icons landing on one agent watched by a second view, kept in that view's own list:
+// a new agent or a seek back starts the list over, expired ones drop, new packets since the last scan
+// are laid out by the client's floater rule.
+void ReplayWindow::UpdateSecondaryFloaters(int agent, std::vector<IncomingEffect>& effects, int& trackedAgent,
+                                           float& lastScan, bool& toggle)
+{
     float now = m_debugTimeline;
 
-    if (pipTarget != m_pipEffectAgentId || now < m_pipLastEffectScanTime - 0.5f) {
-        m_pipIncomingEffects.clear();
-        m_pipFloaterToggle = false;
-        m_pipEffectAgentId = pipTarget;
-        m_pipLastEffectScanTime = now;
+    if (agent != trackedAgent || now < lastScan - 0.5f) {
+        effects.clear();
+        toggle = false;
+        trackedAgent = agent;
+        lastScan = now;
         return;
     }
-    m_pipEffectAgentId = pipTarget;
 
-    std::erase_if(m_pipIncomingEffects, [&](const IncomingEffect& e) {
+    std::erase_if(effects, [&](const IncomingEffect& e) {
         return (now - e.spawnTime) >= kEffectLifetime;
     });
 
-    float scanFrom = m_pipLastEffectScanTime;
+    float scanFrom = lastScan;
     float scanTo   = now;
-    m_pipLastEffectScanTime = now;
+    lastScan = now;
     if (scanTo <= scanFrom) return;
 
     // The same numbers and icons as over the main view's followed player, from the same scan;
     // laid out together by the client's floater rule.
     std::vector<IncomingEffect> batch;
-    ScanIncomingEffects(pipTarget, scanFrom, scanTo, batch);
+    ScanIncomingEffects(agent, scanFrom, scanTo, batch);
 
-    // The PiP camera's distance is not the main view's; the client's scale at its usual distance.
+    // A second camera's distance is not the main view's; the client's scale at its usual distance.
     if (!batch.empty())
-        PlaceFloaters(m_pipIncomingEffects, batch, m_pipFloaterToggle, OverheadFloaters::BaseScale(50.f, 1000.f));
+        PlaceFloaters(effects, batch, toggle, OverheadFloaters::BaseScale(50.f, 1000.f));
 }
 
 
@@ -301,8 +308,19 @@ void ReplayWindow::RenderPiP()
     float camZ = targetWorld.z + m_pipFollowDist * cosf(m_pipFollowYaw) * cosP;
     XMFLOAT3 pipCamPos(camX, camY, camZ);
 
-    float aspect = static_cast<float>(m_pipWidth) / static_cast<float>(m_pipHeight);
-    float fovRad = 50.0f * XM_PI / 180.0f;
+    RenderSecondaryView(pipCamPos, m_pipFollowYaw, m_pipFollowPitch, 50.0f * XM_PI / 180.0f,
+                        m_pipWidth, m_pipHeight, m_pipRTV.Get(), m_pipDSV.Get(), &m_pipViewProj);
+    m_pipCamPos = pipCamPos;
+}
+
+// The scene from a second camera into a target of its own: the Split Camera, and Highlights' second
+// moment. The camera orbits at (yaw, pitch) and looks back along that direction; the main camera and
+// viewport are saved first and put back after, so the main view renders as if nothing happened.
+void ReplayWindow::RenderSecondaryView(const XMFLOAT3& camPos, float yaw, float pitch, float fovRad, int width, int height,
+                                       ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, XMFLOAT4X4* outViewProj)
+{
+    const float camX = camPos.x, camY = camPos.y, camZ = camPos.z;
+    float aspect = static_cast<float>(width) / static_cast<float>(std::max(1, height));
 
     // --- Save main camera state ---
     Camera* cam = m_mapRenderer->GetCamera();
@@ -314,17 +332,16 @@ void ReplayWindow::RenderPiP()
     float savedNear   = cam->GetNearZ();
     float savedFar    = cam->GetFarZ();
 
-    // --- Set camera to PiP position, looking at target ---
+    // --- Set camera to the second position, looking at its subject ---
     cam->SetFrustumAsPerspective(fovRad, aspect, savedNear, savedFar, true);
     cam->SetPosition(camX, camY, camZ);
-    cam->SetOrientation(-m_pipFollowPitch, m_pipFollowYaw + XM_PI);
+    cam->SetOrientation(-pitch, yaw + XM_PI);
 
-    // Update rebuilds view matrix + uploads constant buffer with PiP camera
+    // Update rebuilds view matrix + uploads constant buffer with the second camera
     m_mapRenderer->Update(0);
 
-    // Cache view*proj for overlay projection in DrawPiPPanel
-    XMStoreFloat4x4(&m_pipViewProj, cam->GetView() * cam->GetProj());
-    m_pipCamPos = pipCamPos;
+    // Cached view*proj, for projecting overlays onto this view
+    if (outViewProj) XMStoreFloat4x4(outViewProj, cam->GetView() * cam->GetProj());
 
     auto* ctx = m_deviceResources->GetD3DDeviceContext();
 
@@ -334,24 +351,25 @@ void ReplayWindow::RenderPiP()
     ctx->RSGetViewports(&numVP, &savedVP);
 
     // Set PiP viewport
-    D3D11_VIEWPORT pipVP = { 0.f, 0.f, (float)m_pipWidth, (float)m_pipHeight, 0.f, 1.f };
+    D3D11_VIEWPORT pipVP = { 0.f, 0.f, (float)width, (float)height, 0.f, 1.f };
     ctx->RSSetViewports(1, &pipVP);
 
-    // Clear PiP targets
+    // Clear the second targets
     float clearColor[4] = { 0.02f, 0.02f, 0.04f, 1.f };
-    ctx->ClearRenderTargetView(m_pipRTV.Get(), clearColor);
-    ctx->ClearDepthStencilView(m_pipDSV.Get(), D3D11_CLEAR_DEPTH, 0.f, 0);
+    ctx->ClearRenderTargetView(rtv, clearColor);
+    ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 0.f, 0);
 
-    // Render terrain/props/water to PiP target
+    // Render terrain/props/water to the second target
     DrawAgentModels();
     m_mapRenderer->SetWaterDrawnByHost(true);
-    m_mapRenderer->Render(m_pipRTV.Get(), nullptr, m_pipDSV.Get());
+    m_mapRenderer->Render(rtv, nullptr, dsv);
     m_mapRenderer->SetWaterDrawnByHost(false);
 
-    // Rebind PiP render targets for agent model + cylinder passes
-    ID3D11RenderTargetView* pipRTV = m_pipRTV.Get();
-    ctx->OMSetRenderTargets(1, &pipRTV, m_pipDSV.Get());
+    // Rebind the second render targets for agent model + cylinder passes
+    ID3D11RenderTargetView* pipRTV = rtv;
+    ctx->OMSetRenderTargets(1, &pipRTV, dsv);
 
+    DrawFootprints();
     DrawAgentShadows();
     DrawSkinnedAgentModels();
     // ...and, immediately after it, the recorded players who have a character of their own -
@@ -366,12 +384,12 @@ void ReplayWindow::RenderPiP()
     DrawPlayerVisuals(/*secondaryView=*/true);
     DrawWeaponModels();
     // The water over the characters, as in the main view.
-    m_mapRenderer->RenderWater(m_pipRTV.Get(), m_pipDSV.Get());
+    m_mapRenderer->RenderWater(rtv, dsv);
     DrawHeadpieceParticles(cam->GetView());
     DrawAgentEffects(cam->GetView());
     DrawProjectiles(cam->GetView());
     // The teleporter glow after the characters, as in the main view.
-    m_mapRenderer->RenderAnimatedPropGlow(m_pipRTV.Get(), m_pipDSV.Get());
+    m_mapRenderer->RenderAnimatedPropGlow(rtv, dsv);
     DrawAgentCylinders();
 
     // --- Restore main camera ---
@@ -823,311 +841,10 @@ void ReplayWindow::DrawPiPPanel()
             // Update PiP incoming effects so they're fresh for this frame
             UpdatePiPIncomingEffects();
 
-            // Overlay agent labels, cast bars, and laser lines
+            // Overlay agent labels, cast bars, laser lines, flags and the watched player's numbers
             if (m_agentsClassified && m_skillUseTimelineBuilt)
-            {
-                XMMATRIX vp = XMLoadFloat4x4(&m_pipViewProj);
-                ImFont* font = ImGui::GetFont();
-                float fontSize = font->FontSize;
-                const MapTransform& mt = m_replayCtx.mapTransform;
-                const InterpolationSettings& is = m_replayCtx.interpSettings;
-                float now = m_debugTimeline;
-
-                auto ProjectToImage = [&](const XMFLOAT3& pos, float& outX, float& outY) -> bool
-                {
-                    XMVECTOR wp = XMVectorSet(pos.x, pos.y + 40.f, pos.z, 1.f);
-                    XMVECTOR cl = XMVector4Transform(wp, vp);
-                    float cw = XMVectorGetW(cl);
-                    if (cw < 0.001f) return false;
-                    float nx = XMVectorGetX(cl) / cw;
-                    float ny = XMVectorGetY(cl) / cw;
-                    outX = imgPos.x + (nx * 0.5f + 0.5f) * imgW;
-                    outY = imgPos.y + (1.f - ny) * 0.5f * imgH;
-                    return true;
-                };
-
-                auto InBounds = [&](float x, float y) {
-                    return x >= imgPos.x && x <= imgPos.x + imgW
-                        && y >= imgPos.y && y <= imgPos.y + imgH;
-                };
-
-                // Names and skill icons: the main view's rules (AgentOnStageAt, fog, the name
-                // and skill-icon toggles), so the two views always show the same agents.
-                for (auto& [agentId, ard] : m_replayCtx.agents)
-                {
-                    if (ard.type == AgentType::Flag) continue;   // drawn from the flag timeline below
-                    if (!AgentOnStageAt(agentId, ard, now)) continue;
-                    if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId)
-                        && !m_fogGhostMode)
-                        continue;
-                    const bool dead = ard.isDeadAtTime(now);
-
-                    float sx, sy, sz;
-                    InterpolateAgentPosition(ard, now, is, sx, sy, sz);
-                    XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
-
-                    float scrX, scrY;
-                    if (!ProjectToImage(pos, scrX, scrY)) continue;
-                    if (!InBounds(scrX, scrY)) continue;
-
-                    float ly = scrY;
-                    if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
-                    {
-                        std::string label = GetAgentLabel(ard);
-                        ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
-                        float lx = scrX - textSz.x * 0.5f;
-                        float pad = 2.f;
-
-                        bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
-                                               ard.categoryName == "Tower Flag Stand" ||
-                                               ard.categoryName == "Obelisk Flag Stand" ||
-                                               ard.categoryName == "Resurrection Shrine" ||
-                                               ard.categoryName == "Dwarven Resurrection Shrine" ||
-                                               ard.categoryName == "Southern Health Shrine" ||
-                                               ard.categoryName == "Gate lever");
-                        if (isSpecialLabel)
-                        {
-                            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                                              ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
-                                              IM_COL32(0, 0, 0, 13), 3.f);
-                            dl->AddText(font, fontSize, ImVec2(lx, ly),
-                                        IM_COL32(245, 228, 180, 255), label.c_str());
-                        }
-                        else
-                        {
-                            dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
-                                              ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
-                                              IM_COL32(0, 0, 0, 25), 3.f);
-                            ImU32 labelCol;
-                            if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
-                            else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
-                            else                               labelCol = IM_COL32(255, 255, 255, 230);
-                            // A dead player or NPC keeps its team hue at 60%, as in the main view.
-                            if (dead && (ard.type == AgentType::NPC || ard.type == AgentType::Player))
-                            {
-                                const ImU32 r = (labelCol >> IM_COL32_R_SHIFT) & 0xFF;
-                                const ImU32 g = (labelCol >> IM_COL32_G_SHIFT) & 0xFF;
-                                const ImU32 b = (labelCol >> IM_COL32_B_SHIFT) & 0xFF;
-                                const ImU32 a = (labelCol >> IM_COL32_A_SHIFT) & 0xFF;
-                                labelCol = IM_COL32(r * 3 / 5, g * 3 / 5, b * 3 / 5, a);
-                            }
-                            dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
-                                        IM_COL32(0, 0, 0, 200), label.c_str());
-                            dl->AddText(font, fontSize, ImVec2(lx, ly), labelCol, label.c_str());
-                        }
-                    }
-
-                    if (m_showSkillIcons && !dead &&
-                        (ard.type == AgentType::Player || ard.type == AgentType::NPC))
-                    {
-                        auto sv = ard.skillVisualAtTime(now);
-                        if (sv.skillId > 0 && sv.alpha > 0.01f)
-                        {
-                            int alpha = (int)(255 * sv.alpha);
-                            float iconSz = 18.f;
-                            float gap = 2.f;
-
-                            float ikX = scrX - iconSz * 0.5f;
-                            float ikY = ly - iconSz - gap;
-                            ImTextureID skillTex = LoadSkillIcon(
-                                const_cast<ReplayWindow*>(this),
-                                m_deviceResources->GetD3DDevice(),
-                                sv.skillId, m_skillIconIndex, m_skillIconCache);
-                            if (skillTex)
-                            {
-                                dl->AddImage(skillTex, ImVec2(ikX, ikY),
-                                             ImVec2(ikX + iconSz, ikY + iconSz),
-                                             ImVec2(0, 0), ImVec2(1, 1),
-                                             IM_COL32(255, 255, 255, alpha));
-                            }
-
-                            if (sv.isCasting || sv.cancelled || sv.interrupted)
-                            {
-                                float cbW = iconSz + 8.f;
-                                float cbH = 5.f;
-                                float cbX = scrX - cbW * 0.5f;
-                                float cbY = ikY + iconSz + 1.f;
-                                ImU32 barBg = IM_COL32(0, 0, 0, (int)(180 * sv.alpha));
-                                ImU32 barFg;
-                                if (sv.interrupted)      barFg = IM_COL32(180, 80, 220, alpha);
-                                else if (sv.cancelled)   barFg = IM_COL32(230, 180, 40, alpha);
-                                else                     barFg = IM_COL32(60, 210, 100, alpha);
-                                dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW, cbY + cbH), barBg, 1.f);
-                                dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW * sv.progress, cbY + cbH), barFg, 1.f);
-                            }
-                        }
-                    }
-                }
-
-                // Lasers: the casters the main view's laser filters let through.
-                for (auto& [agentId, ard] : m_replayCtx.agents)
-                {
-                    if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
-                    if (ard.snapshots.empty() || ard.isDeadAtTime(now)) continue;
-                    if (!LaserCasterVisible(agentId, ard)) continue;
-
-                    auto laser = ard.skillLaserAtTime(now);
-                    if (laser.targetId <= 0 || laser.alpha < 0.01f) continue;
-
-                    auto tgtIt = m_replayCtx.agents.find(laser.targetId);
-                    if (tgtIt == m_replayCtx.agents.end()) continue;
-                    const auto& tgtArd = tgtIt->second;
-                    if (tgtArd.snapshots.empty()) continue;
-
-                    float csx, csy, csz;
-                    InterpolateAgentPosition(ard, now, is, csx, csy, csz);
-                    XMFLOAT3 cpos = ApplyMapTransformToPos(csx, csy, csz, mt);
-                    float cscrX, cscrY;
-                    if (!ProjectToImage(cpos, cscrX, cscrY)) continue;
-
-                    float tsx, tsy, tsz;
-                    InterpolateAgentPosition(tgtArd, now, is, tsx, tsy, tsz);
-                    XMFLOAT3 tpos = ApplyMapTransformToPos(tsx, tsy, tsz, mt);
-                    float tscrX, tscrY;
-                    if (!ProjectToImage(tpos, tscrX, tscrY)) continue;
-
-                    if (InBounds(cscrX, cscrY) || InBounds(tscrX, tscrY))
-                    {
-                        ImU32 col = (ard.teamId == tgtArd.teamId)
-                            ? IM_COL32(60, 255, 120, (int)(200 * laser.alpha))
-                            : IM_COL32(255, 60, 60, (int)(200 * laser.alpha));
-                        dl->AddLine(ImVec2(cscrX, cscrY), ImVec2(tscrX, tscrY), col, 2.f);
-                    }
-                }
-
-                // --- PiP flag overlay (mirrors DrawFlags) ---
-                if (m_flagTimelineBuilt && m_flagTimeline.valid)
-                {
-                    ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
-                    ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
-                    const float flagIconSz = std::clamp(imgH * 0.035f, 14.f, 24.f);
-
-                    auto DrawPipFlag = [&](float worldX, float worldY, float worldZ,
-                                           ImTextureID tex, int teamIdx, const char* label)
-                    {
-                        XMFLOAT3 fpos = ApplyMapTransformToPos(worldX, worldY, worldZ, mt);
-                        float fScrX, fScrY;
-                        if (!ProjectToImage(fpos, fScrX, fScrY)) return;
-                        if (!InBounds(fScrX, fScrY)) return;
-
-                        constexpr float kDotR = 4.f;
-                        ImU32 dotCol = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
-                                                                 : IM_COL32(100, 160, 255, 200);
-                        dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
-                        dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
-
-                        if (tex)
-                        {
-                            float oY = flagIconSz * 0.8f;
-                            ImVec2 iTL(fScrX - flagIconSz * 0.5f, fScrY - oY - flagIconSz);
-                            ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
-                            dl->AddImage(tex, iTL, iBR);
-                        }
-
-                        if (label)
-                        {
-                            ImVec2 tSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label);
-                            float ltx = fScrX - tSz.x * 0.5f;
-                            float oY = flagIconSz * 0.8f;
-                            float lty = fScrY - oY - flagIconSz - fontSize - 2.f;
-                            dl->AddText(ImVec2(ltx + 1.f, lty + 1.f), IM_COL32(0, 0, 0, 200), label);
-                            dl->AddText(ImVec2(ltx, lty), IM_COL32(255, 255, 255, 230), label);
-                        }
-                    };
-
-                    StandOwner pipStandOwner = m_flagTimeline.stand.ownerAtTime(now);
-                    if (pipStandOwner != StandOwner::Neutral)
-                    {
-                        int sti = (pipStandOwner == StandOwner::Red) ? 1 : 0;
-                        ImTextureID stTex = Team::IndexIsRed(sti) ? texRed : texBlue;
-                        float stx = m_flagTimeline.stand.standX;
-                        float sty = m_flagTimeline.stand.standY;
-                        float stz = m_flagTimeline.stand.standZ;
-
-                        XMFLOAT3 stPos = ApplyMapTransformToPos(stx, sty, stz, mt);
-                        float stScrX, stScrY;
-                        if (ProjectToImage(stPos, stScrX, stScrY) && InBounds(stScrX, stScrY) && stTex)
-                        {
-                            float oY = flagIconSz * 0.8f;
-                            ImVec2 iTL(stScrX - flagIconSz * 0.5f, stScrY - oY - flagIconSz);
-                            ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
-
-                            ImVec2 ctr((iTL.x + iBR.x) * 0.5f, (iTL.y + iBR.y) * 0.5f);
-                            float glowR = flagIconSz * 0.75f;
-                            float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
-                            ImU32 glowCol = Team::IndexIsRed(sti)
-                                ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
-                                : IM_COL32(60, 130, 255, (int)(50 * pulse));
-                            dl->AddCircleFilled(ctr, glowR, glowCol, 32);
-                            dl->AddImage(stTex, iTL, iBR);
-                        }
-                    }
-
-                    for (int ti = 0; ti < 2; ti++)
-                    {
-                        auto& ft = m_flagTimeline.teams[ti];
-                        if (ft.events.empty()) continue;
-
-                        ImTextureID tex = Team::IndexIsRed(ti) ? texRed : texBlue;
-                        FlagLocation loc = ft.locationAtTime(now);
-                        if (loc == FlagLocation::Stand) continue;
-
-                        float fwx = 0, fwy = 0, fwz = 0;
-                        const char* flabel = nullptr;
-
-                        if (loc == FlagLocation::Carried)
-                        {
-                            int carrierId = ft.carrierAtTime(now);
-                            if (carrierId >= 0)
-                            {
-                                auto cIt = m_replayCtx.agents.find(carrierId);
-                                if (cIt != m_replayCtx.agents.end() && !cIt->second.snapshots.empty())
-                                    InterpolateAgentPosition(cIt->second, now, is, fwx, fwy, fwz);
-                                else
-                                    ft.positionAtTime(now, fwx, fwy, fwz);
-                            }
-                            else
-                            {
-                                ft.positionAtTime(now, fwx, fwy, fwz);
-                            }
-                            flabel = "Flag (Carried)";
-                        }
-                        else
-                        {
-                            ft.positionAtTime(now, fwx, fwy, fwz);
-                            if (loc == FlagLocation::Ground)
-                                flabel = "Flag (Dropped)";
-                        }
-
-                        DrawPipFlag(fwx, fwy, fwz, tex, ti, flabel);
-                    }
-                }
-
-                // --- PiP incoming damage/heal floating numbers ---
-                if (m_pipHudOverhead && !m_pipIncomingEffects.empty() && m_pipTargetAgent >= 0)
-                {
-                    auto tgtIt = m_replayCtx.agents.find(m_pipTargetAgent);
-                    if (tgtIt != m_replayCtx.agents.end() && !tgtIt->second.snapshots.empty())
-                    {
-                        float tsx, tsy, tsz;
-                        InterpolateAgentPosition(tgtIt->second, now, is, tsx, tsy, tsz);
-                        XMFLOAT3 tgtPos = ApplyMapTransformToPos(tsx, tsy, tsz, mt);
-
-                        float anchorX, anchorY;
-                        if (ProjectToImage(tgtPos, anchorX, anchorY))
-                        {
-                            // The client's floaters, the PiP image taken as a scaled-down screen,
-                            // from a little above the feet (the PiP has no model-top anchor).
-                            anchorY -= 30.f;
-                            EnsureBitmapFontsLoaded();
-                            EnsureSkillIconIndex();
-                            const float view = imgH / std::max(1.f, ImGui::GetMainViewport()->Size.y);
-                            for (const IncomingEffect& e : m_pipIncomingEffects)
-                                DrawFloater(dl, e, now, anchorX, anchorY, view);
-                        }
-                    }
-                }
-            }
+                DrawSecondaryViewOverlay(dl, m_pipViewProj, imgPos, imgW, imgH, m_pipTargetAgent,
+                                         m_pipHudOverhead ? &m_pipIncomingEffects : nullptr);
 
             DrawPiPHud(dl, imgPos, imgW, imgH);
         }
@@ -1140,4 +857,316 @@ void ReplayWindow::DrawPiPPanel()
     ImGui::End();
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(2);
+}
+
+
+// What floats over the agents in a second view's image (the Split Camera, Highlights' right half):
+// names, skill icons and cast bars, lasers, flags, and the numbers over one watched agent. The main
+// view's rules (AgentOnStageAt, fog, the name / skill-icon / laser toggles) so both views agree.
+// viewProj is the second camera's; the image sits at imgPos, imgW x imgH, in display coordinates.
+void ReplayWindow::DrawSecondaryViewOverlay(ImDrawList* dl, const XMFLOAT4X4& viewProj, ImVec2 imgPos, float imgW, float imgH,
+                                            int floaterAgent, const std::vector<IncomingEffect>* floaters)
+{
+    XMMATRIX vp = XMLoadFloat4x4(&viewProj);
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImFont* font = ImGui::GetFont();
+    float fontSize = font->FontSize;
+    const MapTransform& mt = m_replayCtx.mapTransform;
+    const InterpolationSettings& is = m_replayCtx.interpSettings;
+    float now = m_debugTimeline;
+
+    auto ProjectToImage = [&](const XMFLOAT3& pos, float& outX, float& outY) -> bool
+    {
+        XMVECTOR wp = XMVectorSet(pos.x, pos.y + 40.f, pos.z, 1.f);
+        XMVECTOR cl = XMVector4Transform(wp, vp);
+        float cw = XMVectorGetW(cl);
+        if (cw < 0.001f) return false;
+        float nx = XMVectorGetX(cl) / cw;
+        float ny = XMVectorGetY(cl) / cw;
+        outX = imgPos.x + (nx * 0.5f + 0.5f) * imgW;
+        outY = imgPos.y + (1.f - ny) * 0.5f * imgH;
+        return true;
+    };
+
+    auto InBounds = [&](float x, float y) {
+        return x >= imgPos.x && x <= imgPos.x + imgW
+            && y >= imgPos.y && y <= imgPos.y + imgH;
+    };
+
+    // Names and skill icons: the main view's rules (AgentOnStageAt, fog, the name
+    // and skill-icon toggles), so the two views always show the same agents.
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type == AgentType::Flag) continue;   // drawn from the flag timeline below
+        if (!AgentOnStageAt(agentId, ard, now)) continue;
+        if (m_fogPerspective > 0 && ard.teamId != m_fogPerspective && IsAgentInFog(agentId)
+            && !m_fogGhostMode)
+            continue;
+        const bool dead = ard.isDeadAtTime(now);
+
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, now, is, sx, sy, sz);
+        XMFLOAT3 pos = ApplyMapTransformToPos(sx, sy, sz, mt);
+
+        float scrX, scrY;
+        if (!ProjectToImage(pos, scrX, scrY)) continue;
+        if (!InBounds(scrX, scrY)) continue;
+
+        float ly = scrY;
+        if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
+        {
+            std::string label = GetAgentLabel(ard);
+            ImVec2 textSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label.c_str());
+            float lx = scrX - textSz.x * 0.5f;
+            float pad = 2.f;
+
+            bool isSpecialLabel = (ard.categoryName == "Repair Kit" ||
+                                   ard.categoryName == "Tower Flag Stand" ||
+                                   ard.categoryName == "Obelisk Flag Stand" ||
+                                   ard.categoryName == "Resurrection Shrine" ||
+                                   ard.categoryName == "Dwarven Resurrection Shrine" ||
+                                   ard.categoryName == "Southern Health Shrine" ||
+                                   ard.categoryName == "Gate lever");
+            if (isSpecialLabel)
+            {
+                dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                  ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
+                                  IM_COL32(0, 0, 0, 13), 3.f);
+                dl->AddText(font, fontSize, ImVec2(lx, ly),
+                            IM_COL32(245, 228, 180, 255), label.c_str());
+            }
+            else
+            {
+                dl->AddRectFilled(ImVec2(lx - pad, ly - pad),
+                                  ImVec2(lx + textSz.x + pad, ly + textSz.y + pad),
+                                  IM_COL32(0, 0, 0, 25), 3.f);
+                ImU32 labelCol;
+                if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
+                else                               labelCol = IM_COL32(255, 255, 255, 230);
+                // A dead player or NPC keeps its team hue at 60%, as in the main view.
+                if (dead && (ard.type == AgentType::NPC || ard.type == AgentType::Player))
+                {
+                    const ImU32 r = (labelCol >> IM_COL32_R_SHIFT) & 0xFF;
+                    const ImU32 g = (labelCol >> IM_COL32_G_SHIFT) & 0xFF;
+                    const ImU32 b = (labelCol >> IM_COL32_B_SHIFT) & 0xFF;
+                    const ImU32 a = (labelCol >> IM_COL32_A_SHIFT) & 0xFF;
+                    labelCol = IM_COL32(r * 3 / 5, g * 3 / 5, b * 3 / 5, a);
+                }
+                dl->AddText(font, fontSize, ImVec2(lx + 1.f, ly + 1.f),
+                            IM_COL32(0, 0, 0, 200), label.c_str());
+                dl->AddText(font, fontSize, ImVec2(lx, ly), labelCol, label.c_str());
+            }
+        }
+
+        if (m_showSkillIcons && HighlightsOverheadMode() < 2 && !dead &&
+            (ard.type == AgentType::Player || ard.type == AgentType::NPC))
+        {
+            auto sv = ard.skillVisualAtTime(now);
+            if (sv.skillId > 0 && sv.alpha > 0.01f)
+            {
+                int alpha = (int)(255 * sv.alpha);
+                float iconSz = 18.f;
+                float gap = 2.f;
+
+                float ikX = scrX - iconSz * 0.5f;
+                float ikY = ly - iconSz - gap;
+                ImTextureID skillTex = LoadSkillIcon(
+                    const_cast<ReplayWindow*>(this),
+                    m_deviceResources->GetD3DDevice(),
+                    sv.skillId, m_skillIconIndex, m_skillIconCache);
+                if (skillTex)
+                {
+                    dl->AddImage(skillTex, ImVec2(ikX, ikY),
+                                 ImVec2(ikX + iconSz, ikY + iconSz),
+                                 ImVec2(0, 0), ImVec2(1, 1),
+                                 IM_COL32(255, 255, 255, alpha));
+                }
+
+                if (sv.isCasting || sv.cancelled || sv.interrupted)
+                {
+                    float cbW = iconSz + 8.f;
+                    float cbH = 5.f;
+                    float cbX = scrX - cbW * 0.5f;
+                    float cbY = ikY + iconSz + 1.f;
+                    ImU32 barBg = IM_COL32(0, 0, 0, (int)(180 * sv.alpha));
+                    ImU32 barFg;
+                    if (sv.interrupted)      barFg = IM_COL32(180, 80, 220, alpha);
+                    else if (sv.cancelled)   barFg = IM_COL32(230, 180, 40, alpha);
+                    else                     barFg = IM_COL32(60, 210, 100, alpha);
+                    dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW, cbY + cbH), barBg, 1.f);
+                    dl->AddRectFilled(ImVec2(cbX, cbY), ImVec2(cbX + cbW * sv.progress, cbY + cbH), barFg, 1.f);
+                }
+            }
+        }
+    }
+
+    // Lasers: the casters the main view's laser filters let through.
+    for (auto& [agentId, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC) continue;
+        if (ard.snapshots.empty() || ard.isDeadAtTime(now)) continue;
+        if (!LaserCasterVisible(agentId, ard)) continue;
+
+        auto laser = ard.skillLaserAtTime(now);
+        if (laser.targetId <= 0 || laser.alpha < 0.01f) continue;
+
+        auto tgtIt = m_replayCtx.agents.find(laser.targetId);
+        if (tgtIt == m_replayCtx.agents.end()) continue;
+        const auto& tgtArd = tgtIt->second;
+        if (tgtArd.snapshots.empty()) continue;
+
+        float csx, csy, csz;
+        InterpolateAgentPosition(ard, now, is, csx, csy, csz);
+        XMFLOAT3 cpos = ApplyMapTransformToPos(csx, csy, csz, mt);
+        float cscrX, cscrY;
+        if (!ProjectToImage(cpos, cscrX, cscrY)) continue;
+
+        float tsx, tsy, tsz;
+        InterpolateAgentPosition(tgtArd, now, is, tsx, tsy, tsz);
+        XMFLOAT3 tpos = ApplyMapTransformToPos(tsx, tsy, tsz, mt);
+        float tscrX, tscrY;
+        if (!ProjectToImage(tpos, tscrX, tscrY)) continue;
+
+        if (InBounds(cscrX, cscrY) || InBounds(tscrX, tscrY))
+        {
+            ImU32 col = (ard.teamId == tgtArd.teamId)
+                ? IM_COL32(60, 255, 120, (int)(200 * laser.alpha))
+                : IM_COL32(255, 60, 60, (int)(200 * laser.alpha));
+            dl->AddLine(ImVec2(cscrX, cscrY), ImVec2(tscrX, tscrY), col, 2.f);
+        }
+    }
+
+    // --- PiP flag overlay (mirrors DrawFlags) ---
+    if (m_flagTimelineBuilt && m_flagTimeline.valid)
+    {
+        ImTextureID texBlue = LoadFlagIcon(dev, "Blue_flag_waving.svg.png");
+        ImTextureID texRed  = LoadFlagIcon(dev, "Red_flag_waving.svg.png");
+        const float flagIconSz = std::clamp(imgH * 0.035f, 14.f, 24.f);
+
+        auto DrawPipFlag = [&](float worldX, float worldY, float worldZ,
+                               ImTextureID tex, int teamIdx, const char* label)
+        {
+            XMFLOAT3 fpos = ApplyMapTransformToPos(worldX, worldY, worldZ, mt);
+            float fScrX, fScrY;
+            if (!ProjectToImage(fpos, fScrX, fScrY)) return;
+            if (!InBounds(fScrX, fScrY)) return;
+
+            constexpr float kDotR = 4.f;
+            ImU32 dotCol = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
+                                                     : IM_COL32(100, 160, 255, 200);
+            dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
+            dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+
+            if (tex)
+            {
+                float oY = flagIconSz * 0.8f;
+                ImVec2 iTL(fScrX - flagIconSz * 0.5f, fScrY - oY - flagIconSz);
+                ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
+                dl->AddImage(tex, iTL, iBR);
+            }
+
+            if (label)
+            {
+                ImVec2 tSz = font->CalcTextSizeA(fontSize, FLT_MAX, 0.f, label);
+                float ltx = fScrX - tSz.x * 0.5f;
+                float oY = flagIconSz * 0.8f;
+                float lty = fScrY - oY - flagIconSz - fontSize - 2.f;
+                dl->AddText(ImVec2(ltx + 1.f, lty + 1.f), IM_COL32(0, 0, 0, 200), label);
+                dl->AddText(ImVec2(ltx, lty), IM_COL32(255, 255, 255, 230), label);
+            }
+        };
+
+        StandOwner pipStandOwner = m_flagTimeline.stand.ownerAtTime(now);
+        if (pipStandOwner != StandOwner::Neutral)
+        {
+            int sti = (pipStandOwner == StandOwner::Red) ? 1 : 0;
+            ImTextureID stTex = Team::IndexIsRed(sti) ? texRed : texBlue;
+            float stx = m_flagTimeline.stand.standX;
+            float sty = m_flagTimeline.stand.standY;
+            float stz = m_flagTimeline.stand.standZ;
+
+            XMFLOAT3 stPos = ApplyMapTransformToPos(stx, sty, stz, mt);
+            float stScrX, stScrY;
+            if (ProjectToImage(stPos, stScrX, stScrY) && InBounds(stScrX, stScrY) && stTex)
+            {
+                float oY = flagIconSz * 0.8f;
+                ImVec2 iTL(stScrX - flagIconSz * 0.5f, stScrY - oY - flagIconSz);
+                ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
+
+                ImVec2 ctr((iTL.x + iBR.x) * 0.5f, (iTL.y + iBR.y) * 0.5f);
+                float glowR = flagIconSz * 0.75f;
+                float pulse = 0.6f + 0.4f * sinf((float)ImGui::GetTime() * 1.8f);
+                ImU32 glowCol = Team::IndexIsRed(sti)
+                    ? IM_COL32(255, 60, 50,  (int)(50 * pulse))
+                    : IM_COL32(60, 130, 255, (int)(50 * pulse));
+                dl->AddCircleFilled(ctr, glowR, glowCol, 32);
+                dl->AddImage(stTex, iTL, iBR);
+            }
+        }
+
+        for (int ti = 0; ti < 2; ti++)
+        {
+            auto& ft = m_flagTimeline.teams[ti];
+            if (ft.events.empty()) continue;
+
+            ImTextureID tex = Team::IndexIsRed(ti) ? texRed : texBlue;
+            FlagLocation loc = ft.locationAtTime(now);
+            if (loc == FlagLocation::Stand) continue;
+
+            float fwx = 0, fwy = 0, fwz = 0;
+            const char* flabel = nullptr;
+
+            if (loc == FlagLocation::Carried)
+            {
+                int carrierId = ft.carrierAtTime(now);
+                if (carrierId >= 0)
+                {
+                    auto cIt = m_replayCtx.agents.find(carrierId);
+                    if (cIt != m_replayCtx.agents.end() && !cIt->second.snapshots.empty())
+                        InterpolateAgentPosition(cIt->second, now, is, fwx, fwy, fwz);
+                    else
+                        ft.positionAtTime(now, fwx, fwy, fwz);
+                }
+                else
+                {
+                    ft.positionAtTime(now, fwx, fwy, fwz);
+                }
+                flabel = "Flag (Carried)";
+            }
+            else
+            {
+                ft.positionAtTime(now, fwx, fwy, fwz);
+                if (loc == FlagLocation::Ground)
+                    flabel = "Flag (Dropped)";
+            }
+
+            DrawPipFlag(fwx, fwy, fwz, tex, ti, flabel);
+        }
+    }
+
+    // --- incoming damage/heal floating numbers over the watched agent ---
+    if (floaters && !floaters->empty() && floaterAgent >= 0)
+    {
+        auto tgtIt = m_replayCtx.agents.find(floaterAgent);
+        if (tgtIt != m_replayCtx.agents.end() && !tgtIt->second.snapshots.empty())
+        {
+            float tsx, tsy, tsz;
+            InterpolateAgentPosition(tgtIt->second, now, is, tsx, tsy, tsz);
+            XMFLOAT3 tgtPos = ApplyMapTransformToPos(tsx, tsy, tsz, mt);
+
+            float anchorX, anchorY;
+            if (ProjectToImage(tgtPos, anchorX, anchorY))
+            {
+                // The client's floaters, the PiP image taken as a scaled-down screen,
+                // from a little above the feet (the PiP has no model-top anchor).
+                anchorY -= 30.f;
+                EnsureBitmapFontsLoaded();
+                EnsureSkillIconIndex();
+                const float view = imgH / std::max(1.f, ImGui::GetMainViewport()->Size.y);
+                for (const IncomingEffect& e : *floaters)
+                    DrawFloater(dl, e, now, anchorX, anchorY, view);
+            }
+        }
+    }
 }

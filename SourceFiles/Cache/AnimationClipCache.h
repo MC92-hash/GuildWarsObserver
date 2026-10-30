@@ -121,7 +121,7 @@ public:
 
 private:
     static constexpr uint32_t kMagic   = 0x414E4943; // "ANIC"
-    static constexpr uint32_t kVersion = 1;
+    static constexpr uint32_t kVersion = 2;   // 2: the FA1 event table (eventTimes / eventIds)
 
     std::unordered_map<CacheKey, Animation::AnimationClip, CacheKeyHash> m_entries;
     bool m_dirty = false;
@@ -243,6 +243,8 @@ private:
         // Segments (POD, 22 bytes each)
         WriteVec(f, c.animationSegments);
         WriteVec(f, c.animationSegmentSourceTypes);
+        WriteVec(f, c.eventTimes);
+        WriteVec(f, c.eventIds);
 
         // Loop config
         W(f, c.loopConfig.introStartSequence);
@@ -296,6 +298,8 @@ private:
 
         if (!ReadVec(f, c.animationSegments)) return false;
         if (!ReadVec(f, c.animationSegmentSourceTypes)) return false;
+        if (!ReadVec(f, c.eventTimes)) return false;
+        if (!ReadVec(f, c.eventIds)) return false;
 
         if (!R(f, c.loopConfig.introStartSequence)) return false;
         if (!R(f, c.loopConfig.introEndSequence)) return false;

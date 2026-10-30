@@ -98,7 +98,7 @@ void ReplayWindow::DrawLordDamagePanel()
     ImGui::SetNextWindowSizeConstraints(ImVec2(600, 100), ImVec2(900, FLT_MAX));
     m_panelLayout.ApplyPosition("lord_damage");
 
-    if (!ImGui::Begin("Lord Damage##lord_dmg", &m_showLordDamagePanel,
+    if (!ImGui::Begin("Aggressiveness##lord_dmg", &m_showLordDamagePanel,
             ImGuiWindowFlags_AlwaysAutoResize))
     {
         m_panelLayout.TrackWindow("lord_damage");
@@ -172,6 +172,24 @@ void ReplayWindow::DrawLordDamagePanel()
         ImGui::SetCursorPos(ImVec2(textX, cursorY + 17.f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
         ImGui::TextUnformatted(std::format("{} Guild Lord", teamLabel).c_str());
+        // His team's morale boosts raise his maximum (about +1% each, up to ten).
+        const int lordBoosts = std::min(10, TeamMoraleBoostsAt(idx + 1, curTime));
+        if (lordBoosts > 0)
+        {
+            ImGui::SameLine(0.f, 8.f);
+            ImGui::BeginGroup();
+            if (ImTextureID moraleTex = LoadGameUITexture(dev, "Effectbar\\ui_effect_morale_boost.png"))
+            {
+                ImGui::Image(moraleTex, ImVec2(font->FontSize, font->FontSize));
+                ImGui::SameLine(0.f, 3.f);
+            }
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(cGreen), "+%d%%", lordBoosts);
+            ImGui::EndGroup();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Morale boost: his team has earned %d boost%s.\nMaximum Health %d instead of 1680.",
+                                  lordBoosts, lordBoosts == 1 ? "" : "s",
+                                  LordAggressiveness::kLordHealthByBoosts[lordBoosts]);
+        }
         ImGui::PopStyleColor();
 
         ImGui::SetCursorPosX(startX);
@@ -238,8 +256,12 @@ void ReplayWindow::DrawLordDamagePanel()
                     DrawLordGradRect(dl, ImVec2(innerTL.x + innerW * 0.80f, innerTL.y), innerBR, gDeepWound);
             }
 
-            char hpText[32];
-            snprintf(hpText, sizeof(hpText), "%d%%", (int)(hpPct * 100.f));
+            // Current / maximum, the maximum moved by his team's morale boosts and Deep Wound.
+            int lordMax = LordAggressiveness::kLordHealthByBoosts[std::min(10, TeamMoraleBoostsAt(idx + 1, curTime))];
+            if (snap && snap->has_deep_wound) lordMax = (int)AgentReplayData::ApplyDeepWound((uint32_t)lordMax);
+            char hpText[48];
+            snprintf(hpText, sizeof(hpText), "%s / %s", formatDmg((int)std::lround(hpPct * lordMax)).c_str(),
+                     formatDmg(lordMax).c_str());
             ImVec2 hpSz = ImGui::CalcTextSize(hpText);
             ImVec2 hpPos(innerTL.x + 4.f, innerTL.y + (innerH - hpSz.y) * 0.5f);
             dl->AddText(ImVec2(hpPos.x + 1, hpPos.y + 1), IM_COL32(0, 0, 0, 0xCC), hpText);
@@ -283,19 +305,24 @@ void ReplayWindow::DrawLordDamagePanel()
 
         if (liveTotalDmg > 0)
         {
-            ImU32 lpCol = hpColor(liveLowHp);
-            ImGui::GetWindowDrawList()->AddText(font, font->FontSize,
-                ImGui::GetCursorScreenPos(), lpCol,
-                std::format("Low point: {:.0f}%", liveLowHp * 100.f).c_str());
-            ImGui::Dummy(ImVec2(colW, font->FontSize + 2.f));
-            ImGui::SetCursorPosX(startX);
-
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            ImGui::GetWindowDrawList()->AddText(font, font->FontSize, p, cLabel, "Dmg taken: ");
-            ImVec2 valSz = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, "Dmg taken: ");
-            ImGui::GetWindowDrawList()->AddText(font, font->FontSize,
-                ImVec2(p.x + valSz.x, p.y), cWhite, formatDmg(liveTotalDmg).c_str());
-            ImGui::Dummy(ImVec2(colW, font->FontSize + 2.f));
+            // One line: the damage he has taken (party window's icon) and his lowest health so far.
+            ImDrawList* hdl = ImGui::GetWindowDrawList();
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float isz = font->FontSize;
+            float x = p.x;
+            if (ImTextureID taken = LoadFlagIcon(dev, "damagereceived.png"))
+            {
+                hdl->AddImage(taken, ImVec2(x, p.y), ImVec2(x + isz, p.y + isz));
+                x += isz + 4.f;
+            }
+            const std::string takenText = formatDmg(liveTotalDmg);
+            hdl->AddText(font, font->FontSize, ImVec2(x, p.y), cWhite, takenText.c_str());
+            x += font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, takenText.c_str()).x + 14.f;
+            hdl->AddText(font, font->FontSize, ImVec2(x, p.y), hpColor(liveLowHp),
+                         std::format("low {:.0f}%", liveLowHp * 100.f).c_str());
+            ImGui::Dummy(ImVec2(colW, font->FontSize + 1.f));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Damage this lord has taken so far (life steal not counted), and the lowest his health went.");
         }
         else
         {
@@ -433,6 +460,291 @@ void ReplayWindow::DrawLordDamagePanel()
         }
     };
 
+    // ---- PART 3: aggressiveness - the 28:00 tiebreak score of the team attacking this column's lord ----
+    // Icons only; each one explains itself on hover. Points move the attacking team's score, except
+    // enchantments and weapon spells, which that team cast on its own lord.
+    auto agentName = [&](int agentId) -> std::string {
+        auto it = m_replayCtx.agents.find(agentId);
+        if (it == m_replayCtx.agents.end()) return agentId ? std::format("#{}", agentId) : "unknown";
+        const auto& a = it->second;
+        if (!a.partyBarLabel.empty()) return a.partyBarLabel;
+        if (!a.playerName.empty()) return a.playerName;
+        return a.categoryName.empty() ? std::format("#{}", agentId) : a.categoryName;
+    };
+    auto skillName = [&](int skillId) -> std::string {
+        const SkillInfo* si = skillId ? m_skillView.Get(skillId) : nullptr;
+        return si ? si->name : std::string();
+    };
+    // The skill icon list is filled on first use by whichever panel needs it; this one may be first.
+    EnsureSkillIconIndex();
+    auto skillIcon = [&](int skillId) -> ImTextureID {
+        return skillId ? LoadSkillIcon(this, dev, skillId, m_skillIconIndex, m_skillIconCache) : ImTextureID{};
+    };
+    auto profIconOf = [&](int agentId) -> ImTextureID {
+        auto it = m_replayCtx.agents.find(agentId);
+        return it != m_replayCtx.agents.end() ? LoadProfIcon(dev, it->second.primaryProf) : ImTextureID{};
+    };
+    auto tipIcon = [&](ImTextureID tex, float sz) {
+        if (tex) ImGui::Image(tex, ImVec2(sz, sz));
+        else ImGui::Dummy(ImVec2(sz, sz));
+        ImGui::SameLine(0.f, 5.f);
+    };
+    // Whole points with a thousands separator and, when asked, a sign: +4,312 / -150 / 0.
+    auto fmtPoints = [](float v, bool sign) -> std::string {
+        const long n = std::lround(v);
+        std::string digits = std::to_string(std::labs(n));
+        for (int i = (int)digits.size() - 3; i > 0; i -= 3) digits.insert((size_t)i, ",");
+        if (n < 0) return "-" + digits;
+        return (sign && n > 0 ? "+" : "") + digits;
+    };
+    const ImVec4 kGain(0.40f, 0.78f, 0.40f, 1.f), kCost(0.86f, 0.40f, 0.35f, 1.f);
+    const ImVec4 kDim(0.47f, 0.49f, 0.53f, 1.f), kGold(0.88f, 0.71f, 0.39f, 1.f);
+
+    // The events of one cause for one team so far, grouped by (actor, source, skill), largest first.
+    struct AggrGroup { int actor; int source; int skill; bool estimated; int count; float health; float points; };
+    auto groupsOf = [&](int team, LordAggressiveness::Cause cause) {
+        std::vector<AggrGroup> out;
+        for (const auto& ev : m_lordAggr.events)
+        {
+            if (ev.time > curTime) break;
+            if (ev.team != team || ev.cause != cause) continue;
+            auto g = std::find_if(out.begin(), out.end(), [&](const AggrGroup& x) {
+                return x.actor == ev.actor && x.source == ev.source && x.skill == ev.sourceSkill; });
+            if (g == out.end())
+            {
+                out.push_back({ ev.actor, ev.source, ev.sourceSkill, ev.estimated, 0, 0.f, 0.f });
+                g = std::prev(out.end());
+            }
+            ++g->count; g->health += ev.health; g->points += ev.points;
+        }
+        std::sort(out.begin(), out.end(), [](const AggrGroup& a, const AggrGroup& b) {
+            return std::fabs(a.points) + a.health > std::fabs(b.points) + b.health; });
+        return out;
+    };
+
+    auto DrawAggressiveness = [&](int idx) {
+        using LordAggressiveness::Cause;
+        if (!m_lordAggr.valid) return;
+        const int lordTeam = idx + 1;
+        const int team = 3 - lordTeam;   // the attackers of this column's lord
+        const auto mine = LordAggressiveness::Sum(m_lordAggr, team, curTime);
+        const auto theirs = LordAggressiveness::Sum(m_lordAggr, lordTeam, curTime);
+        const bool isRed = Team::IndexIsRed(team - 1);
+        const std::string& guild = isRed ? m_team2GuildHeader : m_team1GuildHeader;
+        const std::string who = guild.empty() ? (isRed ? "Red" : "Blue") : guild;
+        const std::string other = (isRed ? m_team1GuildHeader : m_team2GuildHeader).empty()
+            ? (isRed ? "Blue" : "Red") : (isRed ? m_team1GuildHeader : m_team2GuildHeader);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        // The score: the team's flag, the number in the team's colour, a triangle for ahead / behind.
+        const float lineH = 20.f;
+        ImGui::BeginGroup();
+        if (ImTextureID flag = LoadFlagIcon(dev, isRed ? "Red_flag_waving.svg.png" : "Blue_flag_waving.svg.png"))
+        {
+            ImGui::Image(flag, ImVec2(lineH, lineH));
+            ImGui::SameLine(0.f, 6.f);
+        }
+        {
+            const std::string score = fmtPoints(mine.score, false);
+            const float big = font->FontSize * 1.3f;
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            dl->AddText(font, big, ImVec2(at.x, at.y + (lineH - big) * 0.5f), isRed ? cRed : cBlue, score.c_str());
+            ImGui::Dummy(ImVec2(font->CalcTextSizeA(big, FLT_MAX, 0.f, score.c_str()).x, lineH));
+        }
+        const float lead = mine.score - theirs.score;
+        if (std::fabs(lead) >= 0.5f)
+        {
+            ImGui::SameLine(0.f, 8.f);
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const float s = 5.f, cy = at.y + lineH * 0.5f;
+            const ImU32 col = ImGui::ColorConvertFloat4ToU32(lead > 0.f ? kGain : kCost);
+            if (lead > 0.f) dl->AddTriangleFilled(ImVec2(at.x, cy + s * 0.5f), ImVec2(at.x + s * 2.f, cy + s * 0.5f), ImVec2(at.x + s, cy - s * 0.7f), col);
+            else            dl->AddTriangleFilled(ImVec2(at.x, cy - s * 0.5f), ImVec2(at.x + s * 2.f, cy - s * 0.5f), ImVec2(at.x + s, cy + s * 0.7f), col);
+            ImGui::Dummy(ImVec2(s * 2.f + 3.f, lineH));
+            ImGui::SameLine(0.f, 2.f);
+            const std::string diff = fmtPoints(std::fabs(lead), false);
+            const ImVec2 at2 = ImGui::GetCursorScreenPos();
+            dl->AddText(ImVec2(at2.x, at2.y + (lineH - font->FontSize) * 0.5f), col, diff.c_str());
+            ImGui::Dummy(ImVec2(ImGui::CalcTextSize(diff.c_str()).x, lineH));
+        }
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.f);
+            ImGui::TextColored(kGold, "Aggressiveness - %s", who.c_str());
+            ImGui::Text("%s at %s, %s %s.", fmtPoints(mine.score, false).c_str(),
+                        std::format("{}:{:02}", (int)curTime / 60, (int)curTime % 60).c_str(),
+                        lead > 0.f ? "ahead of" : lead < 0.f ? "behind" : "level with", other.c_str());
+            if (std::fabs(lead) >= 0.5f) ImGui::Text("Gap: %s points.", fmtPoints(std::fabs(lead), false).c_str());
+            ImGui::Spacing();
+            ImGui::TextColored(kDim, "If neither Guild Lord dies, the team with more aggressiveness at 28:00 wins. "
+                                     "Score = damage on the enemy lord + 20%% of it under his Entourage + 30 per blind miss + 20 per blocked "
+                                     "attack - 50 per enchantment or weapon spell on your own lord (-300 while its Entourage is up).");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+
+        // One icon per cause, its points beside it, details on hover.
+        struct Chip { Cause cause; ImTextureID icon; const char* title; const char* rule; bool counted; };
+        const bool lordIsRed = Team::IndexIsRed(idx);
+        std::vector<Chip> chips = {
+            { Cause::Damage, LoadFlagIcon(dev, "damagedone.png"), "Damage on the enemy lord",
+              "+1 per point of damage: normal, critical and armour-ignoring hits. Damage his Amulet of Protection heals back still counts.", true },
+            { Cause::EntourageDamage, LoadFlagIcon(dev, lordIsRed ? "redguildlord.png" : "blueguildlord.png"), "Damage under Entourage",
+              "Damage that lands while the enemy lord's Entourage is up counts 20%. He can only cast it while his pit NPCs outnumber the attackers in the pit.", true },
+        };
+        // Blind always has its chip; a recording made before the blind effect was logged (Oct 8, 2026)
+        // can't tell a blind miss from a block, so there it stays dimmed with a "?".
+        chips.push_back({ Cause::BlindMiss, skillIcon(479), "Blind misses",
+              m_lordAggr.blindKnown
+                ? "+30 for each attack on the enemy lord that missed while the attacker was Blinded."
+                : "+30 for each attack on the enemy lord that missed while the attacker was Blinded. "
+                  "This recording was made before blind was logged (Oct 8, 2026), so its blind misses are counted with the blocks.", true });
+        chips.push_back({ Cause::BlockOrMiss, skillIcon(810), m_lordAggr.blindKnown ? "Blocked attacks" : "Blocked or missed attacks",
+              m_lordAggr.blindKnown
+                ? "+20 for each attack on the enemy lord that was blocked or missed. The blocking team loses nothing for it."
+                : "+20 for each attack on the enemy lord that was blocked or missed. The blocking team loses nothing for it. "
+                  "Recordings made before Oct 8, 2026 don't show blind, so blind misses are counted here too.", true });
+        chips.push_back({ Cause::Enchantment, sIconEnchanted, "Enchantments on own lord",
+              "-50 for each enchantment this team's players cast on their own lord, -300 if it lands while the lord's Entourage is up.", true });
+        chips.push_back({ Cause::WeaponSpell, sIconWeaponSpell, "Weapon spells on own lord",
+              "-50 for each weapon spell this team's players cast on their own lord, -300 if it lands while the lord's Entourage is up.", true });
+        chips.push_back({ Cause::LifeSteal, skillIcon(657), "Life steal",
+              "Health stolen from the enemy lord is not counted.", false });
+
+        // Chips sized to their number and flowed left to right, wrapping only when the column is full.
+        const float chipH = 22.f, ico = 18.f, chipGap = 4.f;
+        const float x0 = ImGui::GetCursorPosX(), y0 = ImGui::GetCursorPosY() + 3.f;
+        const float availW = ImGui::GetContentRegionAvail().x;
+        float cx = 0.f, cy = 0.f;
+        for (size_t i = 0; i < chips.size(); ++i)
+        {
+            const Chip& c = chips[i];
+            const auto& line = mine.by[(size_t)c.cause];
+            const bool active = line.count > 0;
+            const bool unknown = c.cause == Cause::BlindMiss && !m_lordAggr.blindKnown;
+            const std::string val = unknown ? "?" : c.counted ? fmtPoints(line.points, true) : fmtPoints(line.health, false);
+            const float chipW = 2.f + ico + 4.f + ImGui::CalcTextSize(val.c_str()).x + 6.f;
+            if (cx > 0.f && cx + chipW > availW) { cx = 0.f; cy += chipH + 2.f; }
+            ImGui::SetCursorPos(ImVec2(x0 + cx, y0 + cy));
+            cx += chipW + chipGap;
+            ImGui::PushID((int)c.cause + idx * 100);
+            ImGui::InvisibleButton("##chip", ImVec2(chipW, chipH));
+            const bool hovered = ImGui::IsItemHovered();
+            const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+            dl->AddRectFilled(r0, r1, hovered ? IM_COL32(255, 255, 255, 26) : IM_COL32(255, 255, 255, 8), 3.f);
+            const ImVec2 i0(r0.x + 2.f, r0.y + (r1.y - r0.y - ico) * 0.5f);
+            if (c.icon)
+                dl->AddImage(c.icon, i0, ImVec2(i0.x + ico, i0.y + ico), ImVec2(0, 0), ImVec2(1, 1),
+                             active ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 70));
+            const ImVec4 valCol = !active ? kDim : !c.counted ? kDim : line.points < 0.f ? kCost : kGain;
+            dl->AddText(ImVec2(i0.x + ico + 4.f, r0.y + (r1.y - r0.y - font->FontSize) * 0.5f),
+                        ImGui::ColorConvertFloat4ToU32(valCol), val.c_str());
+            if (hovered)
+            {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.f);
+                tipIcon(c.icon, 20.f);
+                ImGui::TextColored(kGold, "%s", c.title);
+                ImGui::TextColored(kDim, "%s", c.rule);
+                ImGui::Spacing();
+                switch (c.cause)
+                {
+                case Cause::Damage:
+                    ImGui::Text("%s HP in %d hits: %s points.", fmtPoints(line.health, false).c_str(), line.count, fmtPoints(line.points, true).c_str());
+                    break;
+                case Cause::EntourageDamage:
+                    ImGui::Text("%s HP in %d hits under Entourage: %s points.", fmtPoints(line.health, false).c_str(), line.count, fmtPoints(line.points, true).c_str());
+                    break;
+                case Cause::LifeSteal:
+                    ImGui::Text("%s HP stolen in %d hits: not counted.", fmtPoints(line.health, false).c_str(), line.count);
+                    break;
+                case Cause::BlindMiss:
+                case Cause::BlockOrMiss:
+                    ImGui::Text("%d attacks: %s points.", line.count, fmtPoints(line.points, true).c_str());
+                    break;
+                default:
+                {
+                    ImGui::Text("%d casts: %s points.", line.count, fmtPoints(line.points, true).c_str());
+                    int underEnt = 0;
+                    for (const auto& ev : m_lordAggr.events)
+                    {
+                        if (ev.time > curTime) break;
+                        if (ev.team == team && ev.cause == c.cause && ev.underEntourage) ++underEnt;
+                    }
+                    if (underEnt > 0)
+                        ImGui::TextColored(kCost, "%d of them while the lord's Entourage was up: -300 each.", underEnt);
+                }
+                    break;
+                }
+                const auto groups = groupsOf(team, c.cause);
+                if (!groups.empty())
+                {
+                    ImGui::Separator();
+                    const size_t shown = std::min<size_t>(groups.size(), 8);
+                    for (size_t k = 0; k < shown; ++k)
+                    {
+                        const AggrGroup& g = groups[k];
+                        switch (c.cause)
+                        {
+                        case Cause::Enchantment:
+                        case Cause::WeaponSpell:
+                            tipIcon(skillIcon(g.skill), 16.f);
+                            ImGui::Text("%s x%d", skillName(g.skill).c_str(), g.count);
+                            ImGui::SameLine(0.f, 6.f);
+                            tipIcon(profIconOf(g.actor), 16.f);
+                            ImGui::Text("%s", agentName(g.actor).c_str());
+                            ImGui::SameLine(0.f, 8.f);
+                            ImGui::TextColored(kCost, "%s", fmtPoints(g.points, true).c_str());
+                            break;
+                        case Cause::BlindMiss:
+                            tipIcon(profIconOf(g.actor), 16.f);
+                            ImGui::Text("%s x%d, blinded by", agentName(g.actor).c_str(), g.count);
+                            ImGui::SameLine(0.f, 6.f);
+                            tipIcon(skillIcon(g.skill), 16.f);
+                            ImGui::Text("%s", g.source ? agentName(g.source).c_str() : "unknown");
+                            ImGui::SameLine(0.f, 8.f);
+                            ImGui::TextColored(kGain, "%s", fmtPoints(g.points, true).c_str());
+                            break;
+                        case Cause::BlockOrMiss:
+                            tipIcon(profIconOf(g.actor), 16.f);
+                            ImGui::Text("%s x%d", agentName(g.actor).c_str(), g.count);
+                            ImGui::SameLine(0.f, 6.f);
+                            if (g.source)
+                            {
+                                ImGui::TextColored(kDim, "likely");
+                                ImGui::SameLine(0.f, 5.f);
+                                tipIcon(skillIcon(g.skill), 16.f);
+                                ImGui::Text("%s", agentName(g.source).c_str());
+                            }
+                            else
+                                ImGui::TextColored(kDim, "no block effect seen");
+                            ImGui::SameLine(0.f, 8.f);
+                            ImGui::TextColored(kGain, "%s", fmtPoints(g.points, true).c_str());
+                            break;
+                        default:
+                            tipIcon(profIconOf(g.actor), 16.f);
+                            ImGui::Text("%s", agentName(g.actor).c_str());
+                            ImGui::SameLine(0.f, 8.f);
+                            ImGui::TextColored(c.counted ? kGain : kDim, "%s HP", fmtPoints(g.health, false).c_str());
+                            break;
+                        }
+                    }
+                    if (groups.size() > shown)
+                        ImGui::TextColored(kDim, "and %d more", (int)(groups.size() - shown));
+                    if (c.cause == Cause::BlockOrMiss)
+                        ImGui::TextColored(kDim, "The game doesn't say which defence blocked: the blocker is the block effect last put on the lord.");
+                }
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            ImGui::PopID();
+        }
+        ImGui::SetCursorPos(ImVec2(x0, y0 + cy + chipH + 2.f));
+        ImGui::Dummy(ImVec2(0.f, 0.f));
+    };
+
     // ===== LAYOUT =====
 
     // Row 1: Lord headers (two columns)
@@ -447,12 +759,12 @@ void ReplayWindow::DrawLordDamagePanel()
     DrawLordHeader(1, col1X);
     float afterHdr1Y = ImGui::GetCursorPosY();
 
-    ImGui::SetCursorPosY(std::max(afterHdr0Y, afterHdr1Y) + 4.f);
+    ImGui::SetCursorPosY(std::max(afterHdr0Y, afterHdr1Y) + 2.f);
     ImGui::Separator();
 
     // Row 2: Timeline strip (full width, stable position)
     {
-        float stripH = 24.f;
+        float stripH = 14.f;   // two bands of 7 px: red lord on top, blue below
         float stripW = std::max(1.f, ImGui::GetContentRegionAvail().x);
         ImVec2 stripP = ImGui::GetCursorScreenPos();
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -473,7 +785,7 @@ void ReplayWindow::DrawLordDamagePanel()
         for (int b = 0; b < (int)m_lordDmg[1].damageBuckets.size(); ++b)
         {
             ImVec2 bMin(stripP.x + b * bw, stripP.y);
-            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 12.f);
+            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + stripH * 0.5f);
             ImU32 col = m_lordDmg[1].damageBuckets[b]
                 ? IM_COL32(208, 72, 72, 204)
                 : IM_COL32(255, 255, 255, 10);
@@ -482,16 +794,16 @@ void ReplayWindow::DrawLordDamagePanel()
 
         for (int b = 0; b < (int)m_lordDmg[0].damageBuckets.size(); ++b)
         {
-            ImVec2 bMin(stripP.x + b * bw, stripP.y + 12.f);
-            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + 24.f);
+            ImVec2 bMin(stripP.x + b * bw, stripP.y + stripH * 0.5f);
+            ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + stripH);
             ImU32 col = m_lordDmg[0].damageBuckets[b]
                 ? IM_COL32(74, 144, 216, 204)
                 : IM_COL32(255, 255, 255, 10);
             dl->AddRectFilled(bMin, bMax, col);
         }
 
-        dl->AddLine(ImVec2(stripP.x, stripP.y + 12.f),
-                    ImVec2(stripP.x + stripW, stripP.y + 12.f),
+        dl->AddLine(ImVec2(stripP.x, stripP.y + stripH * 0.5f),
+                    ImVec2(stripP.x + stripW, stripP.y + stripH * 0.5f),
                     IM_COL32(255, 255, 255, 25));
 
         float phX = stripP.x + (m_debugTimeline / maxT) * stripW;
@@ -501,7 +813,23 @@ void ReplayWindow::DrawLordDamagePanel()
 
     ImGui::Separator();
 
-    // Row 3: Attacker lists (two columns, grows with content)
+    // Row 3: aggressiveness, the 28:00 tiebreak score, and its causes (two columns)
+    // Each column is its own child window: a tree node's click area runs to its window's edge, and
+    // one shared window would let the left column's rows cover the right column's.
+    {
+        const ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground;
+        ImGui::SetCursorPosX(col0X);
+        if (ImGui::BeginChild("##lord_score_0", ImVec2(colW, 0.f), ImGuiChildFlags_AutoResizeY, childFlags))
+            DrawAggressiveness(0);
+        ImGui::EndChild();
+        ImGui::SameLine(col1X);
+        if (ImGui::BeginChild("##lord_score_1", ImVec2(colW, 0.f), ImGuiChildFlags_AutoResizeY, childFlags))
+            DrawAggressiveness(1);
+        ImGui::EndChild();
+        ImGui::Separator();
+    }
+
+    // Row 4: Attacker lists (two columns, grows with content)
     float atkSavedY = ImGui::GetCursorPosY();
 
     DrawLordAttackers(0, col0X);
@@ -543,6 +871,8 @@ void ReplayWindow::BuildLordDamageData()
         m_lordDmg[idx].lordAgentId = nid;
     }
 
+    BuildLordAggressiveness();
+
     float maxT = m_replayCtx.maxReplayTime;
     int bucketCount = std::max(1, (int)std::ceil(maxT / 5.f));
 
@@ -574,22 +904,26 @@ void ReplayWindow::BuildLordDamageData()
             if (s.health_pct < ld.lowPointHp && s.health_pct >= 0.f)
                 ld.lowPointHp = s.health_pct;
 
-        // Use lord_events.txt data (server-computed integer damage)
+        // Hits from the tiebreak events: each one in Health at the lord's maximum when it landed
+        // (morale boosts and Deep Wound move it), life steal left out as the tiebreak leaves it out.
+        // The recorder's own lord_events assumed 1680 throughout.
         std::unordered_map<int, int> attackerDmg;
         std::vector<float> hitTimes;
+        const int lordTeam = lordArd.teamId == 2 ? 2 : 1;
 
-        for (const auto& le : m_replayCtx.stocData.lordDamage)
+        for (const auto& ev : m_lordAggr.events)
         {
-            if (le.target_id != ld.lordAgentId) continue;
-            if (le.damage <= 0) continue;
-
-            int rawDmg = le.damage;
+            using LordAggressiveness::Cause;
+            if (ev.team != 3 - lordTeam) continue;
+            if (ev.cause != Cause::Damage && ev.cause != Cause::EntourageDamage) continue;
+            const int rawDmg = (int)std::lround(ev.health);
+            if (rawDmg <= 0) continue;
             ld.totalDmgAbs += rawDmg;
-            attackerDmg[le.caster_id] += rawDmg;
-            hitTimes.push_back(le.time);
-            ld.hits.push_back({ le.time, le.caster_id, rawDmg });
+            attackerDmg[ev.actor] += rawDmg;
+            hitTimes.push_back(ev.time);
+            ld.hits.push_back({ ev.time, ev.actor, rawDmg });
 
-            int bucket = std::clamp((int)(le.time / 5.f), 0, bucketCount - 1);
+            int bucket = std::clamp((int)(ev.time / 5.f), 0, bucketCount - 1);
             ld.damageBuckets[bucket] = true;
         }
 
@@ -627,4 +961,98 @@ void ReplayWindow::BuildLordDamageData()
     }
 
     // Lord damage panel is toggled via menu, not auto-shown
+}
+
+// ---------------------------------------------------------------------------
+// BuildLordAggressiveness — the recording's records handed to the private tiebreak formula
+// ---------------------------------------------------------------------------
+void ReplayWindow::BuildLordAggressiveness()
+{
+    using namespace LordAggressiveness;
+    const StoCData& stoc = m_replayCtx.stocData;
+    const auto& agents = m_replayCtx.agents;
+
+    Inputs in;
+    for (const auto& ld : m_lordDmg)
+    {
+        auto it = agents.find(ld.lordAgentId);
+        if (ld.lordAgentId >= 0 && it != agents.end())
+            in.lord[it->second.teamId == 2 ? 2 : 1] = ld.lordAgentId;
+    }
+    in.teamOf = [&agents](int a) {
+        auto it = agents.find(a);
+        return it != agents.end() ? (int)it->second.teamId : 0;
+    };
+    in.isPlayer = [&agents](int a) {
+        auto it = agents.find(a);
+        return it != agents.end() && it->second.type == AgentType::Player;
+    };
+    in.skillType = [this](int skillId) {
+        const SkillInfo* si = m_skillView.Get(skillId);
+        return si ? si->type : 0;
+    };
+    in.distance = [&agents](int a, int b, float t) {
+        auto ia = agents.find(a), ib = agents.find(b);
+        if (ia == agents.end() || ib == agents.end()) return -1.f;
+        const AgentSnapshot* sa = FindSnapshotAtTime(ia->second, t);
+        const AgentSnapshot* sb = FindSnapshotAtTime(ib->second, t);
+        if (!sa || !sb) return -1.f;
+        return std::hypot(sa->x - sb->x, sa->y - sb->y);
+    };
+
+    in.packets.reserve(stoc.combat.size());
+    for (const CombatEvent& ce : stoc.combat)
+        if (ce.IsDamageOrHeal())
+            in.packets.push_back({ ce.time, ce.type == "HEAL", ce.caster_id, ce.target_id, ce.value, ce.damage_type });
+    for (const BasicAttackEvent& b : stoc.basicAttack)
+    {
+        if (b.type == "ATTACK_STARTED") in.swings.push_back({ b.time, b.caster_id, b.target_id, false });
+        else if (b.type == "ATTACK_STOPPED") in.swings.push_back({ b.time, b.caster_id, b.target_id, true });
+    }
+    for (const SkillActivationEvent& s : stoc.skill)
+    {
+        if (s.type == "SKILL_ACTIVATED") in.casts.push_back({ s.time, s.skill_id, s.caster_id, s.target_id, false });
+        else if (s.type == "INSTANT_SKILL_USED") in.casts.push_back({ s.time, s.skill_id, s.caster_id, s.target_id, true });
+    }
+    // Jumbo party values: the first party of the instance is team 1, the second team 2.
+    for (const JumboMessageEvent& j : stoc.jumbo)
+    {
+        if (j.message != "MORALE_BOOST") continue;
+        if (j.party_value == 1635021873) in.moraleBoosts[1].push_back(j.time);
+        else if (j.party_value == 1635021874) in.moraleBoosts[2].push_back(j.time);
+    }
+    for (int team = 1; team <= 2; ++team)
+    {
+        auto it = agents.find(in.lord[team]);
+        if (it == agents.end()) continue;
+        for (const AgentSnapshot& s : it->second.snapshots)
+            in.lordDeepWound[team].push_back({ s.time, s.has_deep_wound });
+    }
+    // Older recordings have no visual effect log; without it a blind miss can't be told from a block.
+    in.visualsRecorded = !stoc.visualEffects.empty();
+    for (const VisualEffectEvent& v : stoc.visualEffects)
+    {
+        using K = VisualEffectEvent::Kind;
+        if (v.kind == K::Add) in.visuals.push_back({ v.time, Visual::Kind::Add, v.agentId, v.value, v.otherId });
+        else if (v.kind == K::Remove) in.visuals.push_back({ v.time, Visual::Kind::Remove, v.agentId, v.value, v.otherId });
+        else if (v.kind == K::OnTarget) in.visuals.push_back({ v.time, Visual::Kind::OnTarget, v.agentId, v.value, v.otherId });
+    }
+
+    m_lordAggr = Build(in);
+}
+
+// ---------------------------------------------------------------------------
+// TeamMoraleBoostsAt — morale boosts a team has earned by time t
+// ---------------------------------------------------------------------------
+// The jumbo MORALE_BOOST banners name the party: the instance's first party is team 1, the second
+// team 2. A Guild Lord's maximum Health steps up with each (LordAggressiveness::kLordHealthByBoosts).
+int ReplayWindow::TeamMoraleBoostsAt(int team, float t) const
+{
+    const int party = team == 1 ? 1635021873 : team == 2 ? 1635021874 : 0;
+    if (!party) return 0;
+    int n = 0;
+    for (const JumboMessageEvent& j : m_replayCtx.stocData.jumbo)
+        if (j.time <= t && j.party_value == party && j.message == "MORALE_BOOST")
+            ++n;
+    return n;
 }

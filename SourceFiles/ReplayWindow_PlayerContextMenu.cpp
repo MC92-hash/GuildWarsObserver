@@ -180,10 +180,7 @@ void ReplayWindow::OpenPlayerCombatLog(int agentId, bool damage)
     m_clFilterHeals     = !damage;
     m_clFilterSkills    = false;
     m_clFilterInterrupt = false;
-    m_clFilterCancel    = false;
     m_clFilterDeaths    = false;
-    m_clFilterAttacks   = false;
-    m_clFilterJumbo     = false;
     m_clSelectedRowIdx  = -1;
     m_clAutoScroll      = true;
     m_clScrollToSelected = true;
@@ -515,15 +512,15 @@ void ReplayWindow::DrawPlayerContextMenu()
                             if (h.casterId == id) lordDmg += h.rawDmg;
                         }
                 const std::string lordShort = hasLord ? (lordDmg > 0 ? WithThousands(lordDmg) : "none yet") : "";
-                if (IconMenuItem(dev, RibbonArt::LordDamage, "Lord damage...", lordShort.c_str(), false, hasLord))
+                if (IconMenuItem(dev, RibbonArt::LordDamage, "Aggressiveness...", lordShort.c_str(), false, hasLord))
                 {
                     m_showLordDamagePanel = true;
                     m_lordDmgHighlightAgent = id;
-                    m_pendingWindowFocus = "Lord Damage##lord_dmg";
+                    m_pendingWindowFocus = "Aggressiveness##lord_dmg";
                     m_playerMenuActionTookFocus = true;
                 }
                 if (!m_combatLogBuilt || !m_lordDamageBuilt)
-                    MenuNote("Lord damage needs the combat data, still being prepared.");
+                    MenuNote("Aggressiveness needs the combat data, still being prepared.");
                 else if (!hasLord)
                     MenuNote("No Guild Lord was found in this match.");
                 ImGui::EndMenu();

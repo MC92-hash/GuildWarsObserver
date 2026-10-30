@@ -345,6 +345,7 @@ void ReplayWindow::DrawAgentOverlay()
         {
             if (!m_fogGhostMode) continue;
         }
+        if (HighlightsHidesAgent(agentId)) continue;
 
         float sx, sy, sz;
         InterpolateAgentPosition(ard, m_debugTimeline, is, sx, sy, sz);
@@ -481,7 +482,7 @@ void ReplayWindow::DrawAgentOverlay()
         }
 
         // Floating skill icon + cast bar above agent (players/NPCs, alive only)
-        if (m_showSkillIcons && !dead && (ard.type == AgentType::Player || ard.type == AgentType::NPC))
+        if (m_showSkillIcons && HighlightsOverheadMode() < 2 && !dead && (ard.type == AgentType::Player || ard.type == AgentType::NPC))
         {
             auto sv = ard.skillVisualAtTime(m_debugTimeline);
             if (sv.skillId > 0 && sv.alpha > 0.f)

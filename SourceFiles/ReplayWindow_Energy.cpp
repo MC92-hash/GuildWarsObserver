@@ -24,13 +24,16 @@ void ReplayWindow::BuildEnergyTracks() const
     in.attributeRank = [this](int agentId, int attribute) -> int {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return -1;
-        auto a = it->second.attributes.find(attribute);
-        if (a == it->second.attributes.end() || a->second.budgetOnly) return -1;
-        return a->second.best;
+        const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
+        return a ? a->best : -1;
     };
     in.attributeRange = [this](int agentId, int attribute, int& lo, int& hi) -> bool {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return false;
+        if (const AttributeModel::AttributeRange* s = AttributeModel::SolvedRange(&it->second, attribute)) {
+            lo = s->lo; hi = s->hi;
+            return true;
+        }
         auto a = it->second.attributes.find(attribute);
         if (a == it->second.attributes.end()) return false;
         lo = a->second.lo; hi = a->second.hi;
@@ -53,6 +56,9 @@ void ReplayWindow::BuildEnergyTracks() const
         const auto s = ResolveMaxHp(it->second, t);
         return { s.value, s.estimated };
     };
+
+    // All In: a player under it pays a quarter less; one the recording cannot place widens the band.
+    in.allIn = m_allInBuilt ? &m_allIn : nullptr;
 
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyTracks.merge(EnergyModel::BuildHenchmen(m_replayCtx.agents, in));
@@ -311,6 +317,15 @@ void ReplayWindow::DrawEnergyDoubts(const EnergyModel::Track& track, float t)
             Txt(kTipPlain, "Spirit Siphon not watched: ");
             Icon(texEnergy);
             Txt(kTipPlain, " estimated from the spirit's refill");
+            break;
+        case DoubtKind::UnseenGain:
+            Txt(kTipPlain, "A gain paid on an event the recording does not show: ");
+            Icon(texEnergy);
+            Txt(kTipPlain, " may be higher");
+            break;
+        case DoubtKind::AllIn:
+            Txt(kTipPlain, "All In not known for this player: skills may have cost 25% less ");
+            Icon(texEnergy);
             break;
         }
         Br();

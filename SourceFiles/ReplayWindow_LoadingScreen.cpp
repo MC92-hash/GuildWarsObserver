@@ -10,6 +10,7 @@
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
+#include "LaunchScreenPath.h"
 #include "MapBrowser.h"
 #include "TextureCache.h"
 #include "CursorSystem.h"
@@ -97,16 +98,12 @@ std::string ReplayWindow::GetMatchLoadingBgPath() const
             if (std::filesystem::exists(p))
                 return p.string();
         }
-        // Fallback: main splash screen
-        auto fb = dir / "Textures" / "Launch_screen" / "GWOBS_Loading_Screen_1.png";
-        if (std::filesystem::exists(fb))
-            return fb.string();
-
         if (!dir.has_parent_path() || dir == dir.parent_path())
             break;
         dir = dir.parent_path();
     }
-    return "";
+    // Fallback: main splash screen (seasonal when in season)
+    return GetLaunchScreenPath();
 }
 // FindGuildByTagStatic: hoisted to file scope (declared in ReplayWindow_Internal.h)
 const GuildMeta* FindGuildByTagStatic(const MatchMeta& m, const std::string& tag)

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "TeamColors.h"
 #include "ReplayWindow.h"
+#include "MatchStats.h"
 #include "AssetBlacklist.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
@@ -207,6 +208,403 @@ void ReplayWindow::BuildTimelineData()
 
     std::sort(m_timeline.events.begin(), m_timeline.events.end(),
         [](const TimelineEvent& a, const TimelineEvent& b) { return a.time < b.time; });
+}
+
+
+// ---------------------------------------------------------------------------
+// ExportMatchAnalysis - the Library's cached copy of the event timeline
+//
+// Written next to the recording by `--export-match-analysis`, so the Library can show deaths,
+// flag captures and the rest on its interval strip without opening the replay. Times are on the
+// DISPLAYED clock, the one the Library's match length is on: 0:00 is the gate opening, and the
+// minute before it (gate_seconds) is kept, as the replay shows it, with negative times.
+// Bump kVersion whenever the content changes; the Library re-runs the export on a mismatch.
+// ---------------------------------------------------------------------------
+bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
+{
+    static constexpr int kVersion = 12;   // 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice
+
+    auto typeName = [](TimelineEventType t) -> const char* {
+        switch (t)
+        {
+        case TimelineEventType::Death:             return "death";
+        case TimelineEventType::Resurrection:      return "resurrection";
+        case TimelineEventType::FlagCapture:       return "flag_capture";
+        case TimelineEventType::FlagReturn:        return "flag_return";
+        case TimelineEventType::MoraleBoost:       return "morale_boost";
+        case TimelineEventType::LordAttacked:      return "lord_attacked";
+        case TimelineEventType::Victory:           return "victory";
+        case TimelineEventType::ShrineCaptured:    return "shrine_captured";
+        case TimelineEventType::ShrineNeutralized: return "shrine_neutralized";
+        case TimelineEventType::ObeliskCapture:    return "obelisk_capture";
+        case TimelineEventType::Catapult:          return "catapult";
+        }
+        return "other";
+    };
+
+    nlohmann::json events = nlohmann::json::array();
+    for (const auto& e : m_timeline.events)
+    {
+        events.push_back({
+            { "t",     e.time - m_displayTimeOffset },
+            { "type",  typeName(e.type) },
+            { "team",  e.teamId },
+            { "agent", e.agentId },
+            { "prof",  e.professionId },
+            { "label", e.label },
+        });
+    }
+
+    // Team health per second of the recording, the gate minute included (0-100, whole percent):
+    // the curves the timeline draws. Team 1 is blue, team 2 red, as in BuildTimelineData.
+    const int gate = std::max(0, (int)std::lround(m_displayTimeOffset));
+    auto healthCurve = [](const std::vector<float>& perSecond) {
+        nlohmann::json out = nlohmann::json::array();
+        for (size_t s = 0; s < perSecond.size(); ++s)
+            out.push_back((int)std::lround(std::clamp(perSecond[s], 0.f, 100.f)));
+        return out;
+    };
+
+    // Positions once per second of the recording, from its start (raw snapshot coordinates, before
+    // the map transform), flattened as x, y, z, state: 0 alive, 1 dead, 2 not there (before the
+    // agent appears or after it leaves). The Library's Map tab places them on the map's top-down
+    // picture (Textures/Map_Pictures, made by CaptureTopDownMapImage).
+    const int seconds = std::max(0, (int)std::ceil(m_replayCtx.maxReplayTime));
+    auto track = [&](const AgentReplayData& ard) {
+        std::vector<int> pos;
+        pos.reserve((size_t)(seconds + 1) * 4);
+        const float first = ard.snapshots.front().time, last = ard.snapshots.back().time;
+        for (int s = 0; s <= seconds; ++s)
+        {
+            const float t = (float)s;
+            float x, y, z;
+            InterpolateAgentPosition(ard, t, m_replayCtx.interpSettings, x, y, z);
+            const AgentSnapshot* snap = FindSnapshotAtTime(ard, t);
+            pos.push_back((int)std::lround(x));
+            pos.push_back((int)std::lround(y));
+            pos.push_back((int)std::lround(z));
+            pos.push_back(ard.type != AgentType::Player && (t < first || t > last) ? 2
+                          : snap && snap->is_dead ? 1 : 0);
+        }
+        return pos;
+    };
+    nlohmann::json players = nlohmann::json::array();
+    auto addTeam = [&](const std::vector<int>& ids, int team) {
+        for (int id : ids)
+        {
+            auto it = m_replayCtx.agents.find(id);
+            if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+            const AgentReplayData& ard = it->second;
+            std::vector<int> pos = track(ard);
+            players.push_back({
+                { "agent", id },
+                { "team",  team },
+                { "prof",  ard.primaryProf },
+                { "name",  ard.playerName.empty() ? ard.partyBarLabel : ard.playerName },
+                { "pos",   std::move(pos) },
+            });
+        }
+    };
+    addTeam(m_team1PlayerIds, 1);
+    addTeam(m_team2PlayerIds, 2);
+
+    // NPCs, as the replay minimap shows them: guild lords, guards, archers, bodyguards...
+    nlohmann::json npcs = nlohmann::json::array();
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.type != AgentType::NPC || ard.snapshots.empty()) continue;
+        npcs.push_back({
+            { "team", (int)ard.teamId },
+            { "lord", ard.categoryName.find("Guild Lord") != std::string::npos },
+            { "name", GetAgentLabel(ard) },
+            { "pos",  track(ard) },
+        });
+    }
+
+    // Fixed landmarks for the Map tab: guild lords and flag stands, where they first stood.
+    nlohmann::json landmarks = nlohmann::json::array();
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        const char* kind = nullptr;
+        if (ard.categoryName.find("Guild Lord") != std::string::npos)  kind = "lord";
+        else if (ard.categoryName == "Tower Flag Stand")                kind = "flag_stand";
+        else if (ard.type == AgentType::ObeliskFlagStand
+                 || ard.categoryName == "Obelisk Flag Stand")           kind = "obelisk_stand";
+        if (!kind) continue;
+        const auto& s0 = ard.snapshots.front();
+        landmarks.push_back({ { "kind", kind }, { "team", (int)ard.teamId },
+                              { "x", (int)std::lround(s0.x) }, { "y", (int)std::lround(s0.y) },
+                              { "z", (int)std::lround(s0.z) } });
+    }
+
+    // ── Map objects, by the replay minimap's rules (ReplayWindow_Minimap.cpp) ──
+    // Each state is sampled once per second of the recording and stored as its changes:
+    // [display time, value]. Positions are raw snapshot coordinates.
+    const float dispOff = m_displayTimeOffset;
+    auto changes = [&](auto valueAt) {
+        nlohmann::json out = nlohmann::json::array();
+        int last = INT_MIN;
+        for (int s = 0; s <= seconds; ++s)
+        {
+            const int v = valueAt((float)s);
+            if (v != last) { out.push_back({ s - dispOff, v }); last = v; }
+        }
+        return out;
+    };
+    auto ownerTeam = [](StandOwner o) { return o == StandOwner::Red ? (int)Team::Red
+                                             : o == StandOwner::Blue ? (int)Team::Blue : 0; };
+    nlohmann::json objects = nlohmann::json::object();
+
+    // Flag stand and obelisk stand: who holds them.
+    if (m_flagTimelineBuilt && m_flagTimeline.valid)
+    {
+        objects["stand_owner"] = changes([&](float t) { return ownerTeam(m_flagTimeline.stand.ownerAtTime(t)); });
+        if (m_flagTimeline.obelisk.standAgentId >= 0)
+            objects["obelisk_owner"] = changes([&](float t) { return ownerTeam(m_flagTimeline.obelisk.ownerAtTime(t)); });
+
+        // Each team's flag while it is off its stand: x, y, z, state (0 hidden - on a stand,
+        // 1 carried - at its carrier, 2 at its base or on the ground).
+        nlohmann::json flags = nlohmann::json::array();
+        for (int ti = 0; ti < 2; ++ti)
+        {
+            const auto& ft = m_flagTimeline.teams[ti];
+            if (ft.events.empty()) continue;
+            std::vector<int> pos;
+            pos.reserve((size_t)(seconds + 1) * 4);
+            for (int s = 0; s <= seconds; ++s)
+            {
+                const float t = (float)s;
+                const FlagLocation loc = ft.locationAtTime(t);
+                float x = 0, y = 0, z = 0;
+                int state = 0;
+                if (loc != FlagLocation::Stand)
+                {
+                    const int carrier = loc == FlagLocation::Carried ? ft.carrierAtTime(t) : -1;
+                    auto cit = carrier >= 0 ? m_replayCtx.agents.find(carrier) : m_replayCtx.agents.end();
+                    if (cit != m_replayCtx.agents.end() && !cit->second.snapshots.empty())
+                        InterpolateAgentPosition(cit->second, t, m_replayCtx.interpSettings, x, y, z);
+                    else
+                        ft.positionAtTime(t, x, y, z);
+                    state = loc == FlagLocation::Carried ? 1 : 2;
+                }
+                pos.push_back((int)std::lround(x)); pos.push_back((int)std::lround(y));
+                pos.push_back((int)std::lround(z)); pos.push_back(state);
+            }
+            flags.push_back({ { "team", Team::IndexIsRed(ti) ? (int)Team::Red : (int)Team::Blue },
+                              { "pos", std::move(pos) } });
+        }
+        objects["flags"] = std::move(flags);
+
+        // Vine seeds and repair kits: gone once spent; not shown at an unresolved spawn.
+        nlohmann::json bundles = nlohmann::json::array();
+        for (const auto& bundle : m_flagTimeline.bundles)
+        {
+            if (bundle.events.empty()) continue;
+            if (bundle.type != BundleType::VineSeed && bundle.type != BundleType::RepairKit) continue;
+            std::vector<int> pos;
+            pos.reserve((size_t)(seconds + 1) * 4);
+            for (int s = 0; s <= seconds; ++s)
+            {
+                const float t = (float)s;
+                const BundleLocation loc = bundle.locationAtTime(t);
+                float x = 0, y = 0, z = 0;
+                int state = 0;
+                if (loc != BundleLocation::Consumed && !(loc == BundleLocation::Base && !bundle.spawnResolved))
+                {
+                    const int carrier = loc == BundleLocation::Carried ? bundle.carrierAtTime(t) : -1;
+                    auto cit = carrier >= 0 ? m_replayCtx.agents.find(carrier) : m_replayCtx.agents.end();
+                    if (cit != m_replayCtx.agents.end() && !cit->second.snapshots.empty())
+                        InterpolateAgentPosition(cit->second, t, m_replayCtx.interpSettings, x, y, z);
+                    else
+                        bundle.positionAtTime(t, x, y, z);
+                    state = loc == BundleLocation::Carried ? 1 : 2;
+                }
+                pos.push_back((int)std::lround(x)); pos.push_back((int)std::lround(y));
+                pos.push_back((int)std::lround(z)); pos.push_back(state);
+            }
+            bundles.push_back({ { "type", bundle.type == BundleType::VineSeed ? "seed" : "kit" },
+                                { "pos", std::move(pos) } });
+        }
+        objects["bundles"] = std::move(bundles);
+    }
+
+    // Isle of Wurms southern health shrine: its owner.
+    if (!m_wurmsShrineSamples.empty())
+    {
+        const int lastIdx = (int)m_wurmsShrineSamples.size() - 1;
+        objects["shrine_owner"] = changes([&](float t) {
+            return (int)m_wurmsShrineSamples[std::clamp((int)(t / m_wurmsShrineSampleDt), 0, lastIdx)].ownerTeam;
+        });
+    }
+
+    // Gates, doors and vine bridges: open (1) or closed (0) per door type, through the same rule
+    // that animates them in the replay (DoorStatesAt). Their positions come with the map picture.
+    {
+        nlohmann::json doors = nlohmann::json::array();
+        bool prev[kDoorTypeCount];
+        bool cur[kDoorTypeCount];
+        for (int s = 0; s <= seconds; ++s)
+        {
+            DoorStatesAt((float)s, cur);
+            for (int d = 1; d < kDoorTypeCount; ++d)
+                if (s == 0 || cur[d] != prev[d])
+                    doors.push_back({ s - dispOff, d, cur[d] ? 1 : 0 });
+            std::copy(std::begin(cur), std::end(cur), std::begin(prev));
+        }
+        objects["doors"] = std::move(doors);
+    }
+
+    // Warrior's Isle catapult levers: shown once repaired, the border following the firing cycle.
+    if (m_replayCtx.mapId == kWarriorsIsleMapId)
+    {
+        nlohmann::json catapults = nlohmann::json::array();
+        for (const auto& cl : m_catapultLevers)
+        {
+            auto csIt = m_catapultStates.find(cl.objectId);
+            nlohmann::json states = nlohmann::json::array();
+            int last = -1;
+            // Loading is derived from the time since the load, so sample finer than a second.
+            for (float t = 0.f; t <= (float)seconds; t += 0.25f)
+            {
+                const int st = (int)(csIt != m_catapultStates.end() ? csIt->second.GetState(t) : CatapultState::Repaired);
+                if (st != last) { states.push_back({ t - dispOff, st }); last = st; }
+            }
+            catapults.push_back({ { "x", (int)std::lround(cl.x) }, { "y", (int)std::lround(cl.y) },
+                                  { "z", (int)std::lround(cl.z) }, { "repaired", cl.repairedTime - dispOff },
+                                  { "states", std::move(states) } });
+        }
+        objects["catapults"] = std::move(catapults);
+    }
+
+    // Shrines as fixed landmarks: the southern health shrine, and resurrection shrines with
+    // the team of the nearest guild lord (as the minimap attributes them).
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty()) continue;
+        const auto& s0 = ard.snapshots.front();
+        const bool health = ard.categoryName == "Southern Health Shrine";
+        const bool res = ard.categoryName == "Resurrection Shrine";
+        if (!health && !res) continue;
+        int team = 0;
+        if (res)
+        {
+            float best = FLT_MAX;
+            for (const auto& [lid, lord] : m_replayCtx.agents)
+            {
+                if (lord.snapshots.empty() || lord.categoryName.find("Guild Lord") == std::string::npos) continue;
+                const auto& l0 = lord.snapshots.front();
+                const float dx = l0.x - s0.x, dy = l0.y - s0.y, dz = l0.z - s0.z;
+                const float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < best) { best = d2; team = (int)lord.teamId; }
+            }
+        }
+        landmarks.push_back({ { "kind", health ? "health_shrine" : "res_shrine" }, { "team", team },
+                              { "x", (int)std::lround(s0.x) }, { "y", (int)std::lround(s0.y) },
+                              { "z", (int)std::lround(s0.z) } });
+    }
+
+    // The Damage & Healing ledger (ReplayWindow_BattleLedger.cpp), for the Library's Stats tab: its
+    // lines, interrupt attempts and the players' skill uses, times in milliseconds on the displayed
+    // clock, and every agent they name. Flat arrays: a match holds tens of thousands of lines.
+    if (!m_ledgerBuilt || (!m_ledgerUsedAttributes && m_attributesDeduced)) BuildBattleLedger();
+    nlohmann::json ledger = nlohmann::json::object();
+    {
+        const BattleLedger::Data& d = m_ledgerData;
+        auto ms = [&](float t) { return (int)std::lround((t - dispOff) * 1000.f); };
+        std::unordered_set<int> named(d.players.begin(), d.players.end());
+        nlohmann::json lines = nlohmann::json::array();
+        for (const auto& ln : d.lines)
+        {
+            lines.push_back({ ms(ln.t), (int)ln.kind, ln.src, ln.dst, ln.amount, ln.skillId, ln.rowKey,
+                              (ln.weaponHit ? 1 : 0) | (ln.estimated ? 2 : 0), ln.count, (int)ln.preventGroup });
+            named.insert(ln.src); named.insert(ln.dst);
+        }
+        nlohmann::json ints = nlohmann::json::array();
+        for (const auto& li : d.ints)
+        {
+            ints.push_back({ ms(li.t), li.src, li.dst, li.skillId, (int)li.outcome, li.lostSkill, li.afterMs, li.reflexMs });
+            named.insert(li.src); named.insert(li.dst);
+        }
+        nlohmann::json uses = nlohmann::json::array();
+        for (const auto& [pid, list] : d.uses)
+            for (const auto& u : list)
+            {
+                uses.push_back({ pid, ms(u.start), ms(u.end), u.skillId, u.target, (u.interrupted ? 1 : 0) | (u.cancelled ? 2 : 0) });
+                named.insert(u.target);
+            }
+        nlohmann::json agents = nlohmann::json::array();
+        for (int id : named)
+            if (auto it = d.agents.find(id); it != d.agents.end())
+                agents.push_back({ id, it->second.name, it->second.team, it->second.prof, it->second.sec, it->second.lord ? 1 : 0 });
+        ledger = { { "players", d.players }, { "agents", std::move(agents) }, { "lines", std::move(lines) },
+                   { "ints", std::move(ints) }, { "uses", std::move(uses) },
+                   { "guilds", { d.guild[0], d.guild[1] } }, { "tags", { d.tag[0], d.tag[1] } } };
+    }
+
+    // The Stats tab's extra columns (MatchStats): per stat key, its records as flat arrays
+    // [ms, agent, value, dur ms, other, skill, flag], times on the displayed clock.
+    nlohmann::json stats = nlohmann::json::object();
+    {
+        auto ms = [&](float t) { return (int)std::lround((t - dispOff) * 1000.f); };
+        MatchStats::Inputs in;
+        FillMatchStatsInputs(in);
+        for (const auto& [key, recs] : MatchStats::Build(in))
+        {
+            nlohmann::json list = nlohmann::json::array();
+            for (const auto& r : recs)
+                list.push_back({ ms(r.t), r.agent, std::round(r.value * 1000.f) / 1000.f, (int)std::lround(r.dur * 1000.f),
+                                 r.other, r.skill, r.flag });
+            stats[key] = std::move(list);
+        }
+    }
+
+    // The solved builds, the --export-attributes file verbatim: the Library's Overview shows each
+    // player's attributes and copies them into the template. null when nothing was solved.
+    nlohmann::json attributes = nullptr;
+    {
+        std::filesystem::path attrTmp = outPath;
+        attrTmp += ".attributes.tmp";
+        if (ExportAttributes(attrTmp))
+        {
+            std::ifstream in(attrTmp, std::ios::binary);
+            attributes = nlohmann::json::parse(in, nullptr, false);
+            if (attributes.is_discarded()) attributes = nullptr;
+        }
+        std::error_code ec;
+        std::filesystem::remove(attrTmp, ec);
+    }
+
+    nlohmann::json root = {
+        { "version",        kVersion },
+        { "attributes",     std::move(attributes) },
+        { "display_offset", m_displayTimeOffset },
+        { "gate_seconds",   gate },
+        { "replay_length",  m_replayCtx.maxReplayTime },
+        { "map_id",         m_replayCtx.mapId },
+        { "events",         std::move(events) },
+        { "health_team1",   healthCurve(m_timeline.blueHealth) },
+        { "health_team2",   healthCurve(m_timeline.redHealth) },
+        { "players",        std::move(players) },
+        { "npcs",           std::move(npcs) },
+        { "landmarks",      std::move(landmarks) },
+        { "objects",        std::move(objects) },
+        { "ledger",         std::move(ledger) },
+        { "stats",          std::move(stats) },
+    };
+
+    // Written beside and renamed over, so a reader never sees half a file.
+    std::filesystem::path tmp = outPath;
+    tmp += ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << root.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        if (!f) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, outPath, ec);
+    return !ec;
 }
 
 

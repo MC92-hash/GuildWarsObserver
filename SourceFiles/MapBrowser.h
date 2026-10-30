@@ -161,6 +161,7 @@ private:
         CloudReplayProvider::DownloadResult result;
         MatchMeta originalMatch;
         std::string errorMsg;
+        bool openReplay = true;   // false: download only, for the Library's analysis tabs
     };
     PlayDownloadCtx m_playDl;
     void ProcessCloudDownloadResult();
@@ -177,6 +178,7 @@ private:
         size_t next = 0;
         ReplayWindow* current = nullptr;
         std::chrono::steady_clock::time_point openedAt;
+        bool mapPictures = false;   // GWO_MAP_PICTURES: done once the map picture is saved
     };
     AttrBatch m_attrBatch;
     void StartAttrBatchFromEnv();

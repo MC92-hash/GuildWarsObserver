@@ -9,6 +9,7 @@
 #include "Terrain.h"
 #include "ReplayMapData.h"
 #include "ReplayLibrary.h"
+#include "SeasonalEvents.h"
 #include "GuildCapeCache.h"
 #include "FFNA_MapFile.h"
 #include "FFNA_ModelFile.h"
@@ -32,12 +33,17 @@
 #include "ReplayPanelLayout.h"
 #include <chrono>
 #include "BitmapFont.h"
+#include "BattleLedger.h"
 #include "AttributeDeducer.h"
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "EnergyModel.h"
+#include "FluxAllIn.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
+#include "LordAggressiveness.h"
+
+namespace MatchStats { struct Inputs; }
 #include "EchoSlots.h"
 #include "ThieverySlots.h"
 #include "OverheadFloaters.h"
@@ -62,6 +68,8 @@ namespace PlayerVisuals { class Set; class ReplayWeapons; }
 namespace AgentEffects { class Player; }
 // The projectiles in flight: opaque here too.
 namespace ReplayProjectiles { class State; }
+// The prints characters leave on the ground: opaque too (private).
+namespace Footprints { struct State; }
 // The match's sounds - the recording's own and the scheduled ones: opaque too (private).
 namespace ReplaySounds { class State; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
@@ -143,6 +151,27 @@ public:
     // False when nothing was solved or the file could not be written.
     bool ExportAttributes(const std::filesystem::path& outPath) const;
 
+    // Write the sealed Iris pack (the in-game HUD's data for this match, ReplayWindow_IrisPack.cpp).
+    // False when the analysis left nothing to export or the file could not be written.
+    bool ExportIrisPack(const std::filesystem::path& outPath) const;
+
+    // The event timeline has been built (deaths, flag captures, morale boosts, victory...).
+    // ... and the passes the match analysis also reads (flags, seeds, kits, catapults).
+    bool TimelineBuilt() const { return m_timeline.computed && m_flagTimelineBuilt && m_bundleCarryBuilt; }
+
+    // Write the match events the Library's analysis tabs read (match_analysis.json), with times
+    // on the displayed match clock. False when the file could not be written.
+    bool ExportMatchAnalysis(const std::filesystem::path& outPath) const;
+    // The Library Stats tab's extra columns: the replay's models for MatchStats::Build
+    // (ReplayWindow_MatchStats.cpp). MatchStats.h stays out of this header on purpose.
+    void FillMatchStatsInputs(MatchStats::Inputs& in) const;
+    // The Combat Log panel's entries as text (--export-combat-log), for checking them on the archive.
+    bool CombatLogBuilt() const { return m_combatLogBuilt; }
+    bool ExportCombatLogView(const std::filesystem::path& outPath);
+    // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
+    // damage/healing over time, bundles), appended to the open JSON object.
+    void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
+
     ~ReplayWindow();
 
     ReplayWindow(const ReplayWindow&) = delete;
@@ -168,6 +197,9 @@ public:
 
     // DEV TOOL: set by the attribute batch so its windows open minimised without taking focus.
     static inline bool s_openWithoutFocus = false;
+    // DEV TOOL (GWO_MAP_PICTURES): write map pictures here, the folder that ships them,
+    // even when the map already has one.
+    static inline std::filesystem::path s_mapPictureOutDir;
 
     // DEV TOOL (GWO_CLIP_SELFTEST, with GWO_ATTR_BATCH): each window the batch opens renders one
     // GIF clip through the real export path, without a dialog, and the batch waits for it. The
@@ -318,6 +350,8 @@ private:
 
     ReplayContext m_replayCtx;
     MatchMeta m_matchMeta;
+    // GvG NPCs wear their Halloween disguises in matches played during the event.
+    bool IsHalloweenMatch() const { return IsHalloweenDate(m_matchMeta.month, m_matchMeta.day); }
     SkillDatabaseView m_skillView;
     std::unique_ptr<Terrain> m_terrain;
 
@@ -535,6 +569,7 @@ private:
     void WriteCombatLogValueDump() const;   // GWO_DAMAGE_DEBUG: the combat log's damage and heal values
     mutable DamageAttribution::Table m_damageAttribution;
     mutable bool m_damageAttributionBuilt = false;
+    mutable bool m_damageAttributionUsedAttributes = false;   // built with the solved ranks (rules read them)
 
     // The skill effects on each player and when each ends (EffectTimeline, private), from the
     // recording's visual effects, the casts, the combat packets and the attack-speed snapshots.
@@ -672,15 +707,52 @@ private:
     // --- Combat Log ---
     bool m_showCombatLog     = false;
     bool m_combatLogBuilt    = false;
-    std::vector<CombatLogRow> m_combatLog;
+    std::vector<CombatLogRow> m_combatLog;   // raw rows: the attribute solver, max HP, Iris and Skill Analytics read them
+
+    // What the panel shows: one entry per thing that happened, built from the cast history (the
+    // cast bars' own outcome), the damage attribution (each number's skill) and the interrupt
+    // causes (who interrupted). m_combatLog is left as it is for its other readers.
+    enum class CombatLogKind : uint8_t { Cast, Damage, Heal, Interrupt, Cancel, Death, Jumbo };
+    struct CombatLogHit
+    {
+        int   targetId = 0;
+        int   amount   = 0;      // Health, 0 when the victim's maximum is unknown
+        float pct      = 0.f;    // fraction of maximum Health, always positive
+        int   bonus    = 0;      // of `amount`, the Divine Favor bonus heal
+    };
+    struct CombatLogEntry
+    {
+        float time      = 0.f;   // when it happened (a cast: when it completed)
+        float start     = 0.f;   // where a click seeks to (a cast: its start)
+        CombatLogKind kind = CombatLogKind::Cast;
+        int   sourceId  = 0;     // caster / attacker / interrupter (0 unknown) / the agent who died
+        int   targetId  = 0;     // 0 or the source himself for an untargeted use; Interrupt: the victim
+        int   skillId   = 0;     // Interrupt: the interrupter's skill
+        bool  fromCast  = false; // Damage / Heal carried by a cast of `skillId`
+        bool  weaponHit = false;
+        std::vector<CombatLogHit> hits;
+        int   cutSkillId = 0;    // Interrupt: the cast cut short, 0 for an attack or unknown action
+        bool  knockdown  = false;// Interrupt: a knockdown stopped it
+        int   repeat     = 1;    // Cancel: the same skill cancelled N times in a row
+        bool  feint      = false;// Cancel: an enemy interrupt was on its way (a fake cast)
+        int   threatId   = 0, threatSkillId = 0;
+        int   jumboTeam  = 0;
+        std::string jumbo;
+    };
+    std::vector<CombatLogEntry> m_combatLogView;
+    bool m_combatLogViewBuilt = false;
+    bool m_combatLogViewUsedAttributes = false;
+    std::unordered_set<int> m_clExpanded;    // group entries opened to their targets
+    void BuildCombatLogView();
+
     bool m_clFilterDamage     = true;
     bool m_clFilterHeals      = true;
     bool m_clFilterSkills     = true;
     bool m_clFilterInterrupt  = true;
-    bool m_clFilterCancel     = true;
-    bool m_clFilterDeaths     = true;
-    bool m_clFilterAttacks    = false;
-    bool m_clFilterJumbo      = true;
+    bool m_clFilterDeaths     = true;    // deaths and objectives
+    bool m_clShowCancels      = false;   // the Cancels pill: every cancel (fake casts also show under Interrupts)
+    int  m_clTeamFilter       = 0;       // 0 both, 1 blue, 2 red
+    bool m_clFollowCamera     = false;   // only entries involving the followed player
     int  m_clFilterPlayerId   = -1;
     bool m_clAutoScroll       = true;
     int  m_clSelectedRowIdx   = -1;
@@ -839,6 +911,10 @@ private:
 
     // --- Door animation state tracking (per door type, not per object) ---
     static constexpr int kDoorTypeCount = 32;
+    // Which door types are open at replay time t (the rule UpdateDoorAnimations animates by,
+    // also read by the match analysis export).
+    void DoorStatesAt(float t, bool* open) const;
+    int   m_mapImageReadyFrames = 0;   // frames rendered since Ready, for CaptureTopDownMapImage
     bool  m_doorTypeOpen[kDoorTypeCount] = {};    // index 1 = IoM doors, index 2 = IoM gate locks, index 3 = Imperial Isle event doors, index 4 = Imperial Isle auto-open doors, index 5/6 = Burning Isle doors (0x1F23F / 0x1F247), index 7 = Uncharted Isle door 0x3C163, index 8 = Uncharted Isle door 0x32F3A, index 9 = Uncharted Isle slide gate 0x32F0C, index 10 = Uncharted Isle slide gate 0x336BB, index 11 = Nomad's Isle doors (0x19750/0x197A9), index 12 = Nomad's Isle looping doors (0x22143), index 13 = Isle of Wurms doors (0x330F7/0x331A4), index 14 = Isle of Jade doors (0x285E7/0x265B5), index 15 = Isle of the Dead doors (0x1F294/0x1F291/0x1F281/0x1E820), index 16 = Isle of Solitude doors (0x33CD5/0x3323B), index 17 = Isle of the Weeping Stone auto-open doors (0x2858E/0x28578), index 18 = Isle of the Weeping Stone event gates (0x1EAFB, ids 147/9305/30563/4417), index 19 = Isle of the Weeping Stone lever door (0x1EAFB nearest the flag stand, object 122), index 20 = Frozen Isle doors (0x1F251/0x1F252), index 21 = Frozen Isle lever gate door 1 (0x255BE, obj 61318, red side), index 22 = Frozen Isle lever gate door 2 (0x255BE, obj 11692, blue side), index 23 = Frozen Isle lever gate door 3 (0x57B57, obj 56526, red side), index 24 = Frozen Isle lever gate door 4 (0x57B57, obj 12669, blue side), index 25 = Corrupted Isle doors (0x330EA/0x32F5C), index 26 = Druid's Isle vine bridge nearest the red lord (obj 39278), index 27 = Druid's Isle vine bridge nearest the blue lord (obj 51238), index 28 = Warrior's Isle base gates (objs 11692/12669/56526/61318, all four open together one minute in)
     float m_doorLastScanTime = -1.f;
     int   m_doorAnimPropCount = 0;
@@ -883,6 +959,8 @@ private:
     size_t m_occlusionPropsBuiltFrom = 0;   // GetPropsMeshIds().size() the list was built from
     void ResetPropOcclusion();
     void UpdatePropOcclusion(float dt);
+    bool SegmentHitsOcclusionProp(const OcclusionProp& prop, const DirectX::XMFLOAT3& from, const DirectX::XMFLOAT3& to) const;
+    int  CountBlockedSightLines(const DirectX::XMFLOAT3& eye, const std::vector<DirectX::XMFLOAT3>& points) const;
 
     // Frozen Isle lever gates (0x255BE = doors 1/2, 0x57B57 = doors 3/4). Each model has
     // two instances that toggle independently from different levers, so each needs its own
@@ -1041,6 +1119,7 @@ private:
     bool m_showDamageMeter = false;
     bool m_showHealMeter   = false;
     bool m_showPartyEnergy = true;    // calculated energy strips under the players' health bars
+    bool m_showPartyEffects = false;  // morale + effects beside each player row, as in Iris
     bool m_showAbsoluteHp  = true;
 
     struct MeterEntry { int value = 0; };
@@ -1237,9 +1316,14 @@ public:
         std::vector<LordHitEvent> hits;
     };
     LordDamageData m_lordDmg[2];
+    // The 28:00 tiebreak score, every point with its cause and who caused it (private formula).
+    LordAggressiveness::Result m_lordAggr;
     bool m_showLordDamagePanel = false;
     bool m_lordDamageBuilt = false;
     void BuildLordDamageData();
+    void BuildLordAggressiveness();
+    // Morale boosts team 1 or 2 has earned by time t (jumbo MORALE_BOOST messages).
+    int TeamMoraleBoostsAt(int team, float t) const;
     void DrawLordDamagePanel();
 
     // --- Event Timeline ---
@@ -1762,6 +1846,19 @@ private:
     void ReleaseAgentEffects();   // match teardown
     std::shared_ptr<AgentEffects::Player> m_agentEffects;
 
+    // The prints characters leave on sand, snow and soft ground (the graphics detail "Footprints",
+    // which only the High preset sets). The transform pass hands over each animated character's
+    // pose; the prints are drawn once per view, before the shadows. Defined in the private module.
+    // `facing` is the agent's heading on the ground (x, z), `gwX/gwY` its position in game units.
+    void FootprintsObserve(int agentId, const AgentModelInstance& tmpl,
+                           const GW::Animation::AnimationController& pose,
+                           const DirectX::XMFLOAT4X4& characterWorld, const DirectX::XMFLOAT3& position,
+                           const DirectX::XMFLOAT2& facing, float gwX, float gwY, float standInHeight,
+                           bool composed, bool female);
+    void DrawFootprints();
+    void ReleaseFootprints();     // match teardown
+    std::shared_ptr<Footprints::State> m_footprints;
+
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,
     // once per view, after DrawAgentEffects.
@@ -2088,8 +2185,97 @@ private:
     bool  m_pianoRollTeam1Open  = true;
     bool  m_pianoRollTeam2Open  = true;
     float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
+    std::vector<int> m_pianoRollPinned;  // players picked on the roll (ctrl+click adds): their casts are linked
+    int   m_pianoRollPinDir     = 0;     // what the picked players show: 0 both ways, 1 their casts out, 2 the casts on them
+    bool  m_pianoRollPinFromSpike = false; // the pick came from a spike (bar, arrows): it follows the card
+    bool  m_pianoRollHideRest   = false; // the casts outside the pick hidden instead of faded
+    bool  m_pianoRollFollowSpikes = true; // the card (and a pick made from it) moves to the spike at the playhead
+    bool  m_pianoRollLanes      = true;  // the thin "incoming" lane under each player row
+    int   m_pianoRollSpikeSel   = -1;    // spike picked with the card's arrows or the spike bar
+    int   m_pianoRollMonkSel    = -1;    // Monk card picked: the spike bar marks the spikes they answered
+
+    // One cast for the shared hover table: the event and who cast it.
+    struct CastRef { const SkillUseEvent* ev; int casterId; };
+
+    // Spikes: 3+ enemy damage skills hitting one player within 1.5 s (owner's definition), with the
+    // allied prots and heals cast on that player around it. Built once per match.
+    struct SpikeInfo
+    {
+        int   target   = -1;
+        float cue      = 0.f;   // first enemy cast START - the moment a Monk can read it
+        float firstHit = 0.f;
+        float lastHit  = 0.f;
+        std::vector<CastRef> hits;      // the enemy damage skills, in hit order
+        std::vector<CastRef> answers;   // allied prots / heals on the target, in start order
+        float lowHp = -1.f;             // lowest health fraction from the first cast to 1 s after the last hit
+    };
+    std::vector<SpikeInfo> m_spikes;
+    bool m_spikesBuilt = false;
+    void BuildSpikes();
+    bool IsSpikeDamageSkill(int skillId) const;
+    bool IsSpikeAnswerSkill(int skillId) const;
+    int  PianoRollCardSpike(float now) const;
+    void DrawPianoRollSpikeBar(float winStart, float winEnd, int cardSpike);
+    void DrawPianoRollSpikeCard(int cardSpike);
+    void DrawPianoRollMonkCards();
+    // What one prot did while it was up on the player: the enemy hits it was there for, and the
+    // Health its own heal packets gave back (Spirit Bond, Reversal of Fortune, Life Sheath, Shielding
+    // Hands' end). isProt is false for a cast that put no effect on the player (a plain heal).
+    struct ProtUse { bool isProt = false; int hits = 0; int healedBack = 0; float start = 0.f, end = 0.f;
+                     // What it spared the player (ProtEfficiency, private): the kind of prot and its figures.
+                     int kind = 0; int reversed = 0, offset = 0, prevented = 0, endHeal = 0, healBoost = 0, capped = 0;
+                     bool estimate = false; };
+    ProtUse PianoRollProtUse(const CastRef& answer, int target) const;
 
     void DrawPianoRollPanel();
+
+    // --- Highlights: play only the key moments of the match (ReplayWindow_Highlights.cpp) ---
+    // The state lives in the .cpp; the follow camera reads m_followCenterBias, the playback engine
+    // HighlightsPlaybackSpeed, the agent draws HighlightsHidesAgent.
+    struct HighlightsState;
+    struct HighlightsStateDeleter { void operator()(HighlightsState* p) const; };
+    std::unique_ptr<HighlightsState, HighlightsStateDeleter> m_hl;
+    DirectX::XMFLOAT3 m_followCenterBias{0.f, 0.f, 0.f};   // added to the follow orbit's centre
+    HighlightsState& HL();
+    bool  HighlightsActive() const;
+    float HighlightsMomentSpeed() const;
+    void  LoadHighlightsSettings();
+    void  SaveHighlightsSettings() const;
+    void  BuildHighlights();
+    void  RefreshHighlightsSelection();
+    void  ToggleHighlights();
+    void  HighlightsStep(int dir);
+    void  JumpToHighlight(int index);
+    float HighlightsPlaybackSpeed(float dt);
+    void  UpdateHighlights(float dt);
+    bool  HighlightsHidesAgent(int agentId) const;
+    void  DrawHighlightsFilter();
+    void  BuildHighlightsMask(std::vector<DirectX::XMFLOAT4>& out) const;
+    void  DrawHighlightsButton(float x, float y, float h);
+    void  DrawHighlightsTimelineMarkers(float trackX, float trackW, float trackY, float trackH, float maxT);
+    std::string HighlightsSpeedLabel() const;
+    void  DrawHighlightsCard();
+    void  DrawHighlightsPanel();
+    void  ConfigureClipForHighlight(int index);
+    void  OpenHighlightClip(int index);
+    bool  HighlightsBatchRunning() const;
+    void  StartHighlightsBatch();
+    void  UpdateHighlightsBatch();
+    void  WriteHighlightsDebug();   // GWO_HIGHLIGHTS_DEBUG: %TEMP%\gwo_highlights_<match>.txt
+    struct HighlightShot;
+    bool  FrameHighlight(int index, float t, float refYaw, float aspect, HighlightShot& out) const;
+    void  UpdateHighlightsSecond(float dt, const DirectX::XMFLOAT3& mainTarget, float fullAspect);
+    void  RenderHighlightsSecondView();
+    void  DrawHighlightsSplit();
+    void  ProbeHighlightAngle(int slot, const HighlightShot& shot, float dt);
+    bool  HighlightPlaying(int i, float t) const;
+    bool  HighlightOver(int i, float t) const;
+    bool  HighlightsRelated(int a, int b) const;
+    int   HighlightsOverheadMode() const;
+    bool  HighlightsHidesInterface() const;
+    bool  LeaveHighlightsCleanScreen();
+    void  ApplyHighlightsMouseBlock();
+    void  FilterHighlightsDrawData(ImDrawData* dd);
 
     // Cached from ImGui overlay for use in Update() (suppresses camera keys)
     bool m_imguiWantTextInput = false;
@@ -2156,6 +2342,12 @@ private:
     void InitMinimapResources();
     void RenderMinimap();
     void DrawMinimapPanel();
+    // Saves the whole map from above once per map, for the Library's Map tab.
+    void CaptureTopDownMapImage();
+    bool m_mapImageCaptureTried = false;
+public:
+    bool MapImageCaptureTried() const { return m_mapImageCaptureTried; }
+private:
 
     // --- Picture-in-Picture (Split Camera) ---
     bool  m_pipEnabled       = false;
@@ -2185,6 +2377,8 @@ private:
 
     void InitPiPResources();
     void RenderPiP();
+    void RenderSecondaryView(const DirectX::XMFLOAT3& camPos, float yaw, float pitch, float fovRad, int width, int height,
+                             ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, DirectX::XMFLOAT4X4* outViewProj);
     void UpdatePiPTarget();
     void DrawPiPPanel();
     // The watched player's HUD along the bottom of the split camera's image: name, effects,
@@ -2280,12 +2474,29 @@ private:
     void DrawFocusedPlayerHud();
     void DrawFocusHudWeaponSets(int agentId);
     void DrawFocusHudSkillBar(int agentId);
+    // Right of the skill bar: the casts aimed at the followed player (top row, piles stacking
+    // upwards) and their own casts (bottom row) on one short timeline around the playhead,
+    // future included.
+    bool  m_showFocusCasts = true;
+    float m_focusHudRightLimitX = 0.f;   // left edge of the weapon sets this frame (the strip stops there)
+    void DrawFocusHudCastStrip(int agentId, ImVec2 tl, float width, float height, float slot);
+    void DrawCastTableTooltip(std::vector<CastRef> rows, const char* headline = nullptr);
     // The eight slots alone (icons, frames, recharge, markers, in-use sparkle), top-left at rowTL.
     void DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 rowTL, float slot, float scale, bool hoverable);
     // `rowTopLeft` is the bottom row's; full rows wrap upwards. Returns the rows used.
     int  DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float side, float rowWidth);
     int  m_focusHudEffectRows = 1;   // last frame's effect rows: the skill bar window's height
     float DrawFocusHudFixedEffects(int agentId, ImVec2 rowTopLeft, float side);   // returns the width used
+    // The tooltips of an effect icon and of the morale icon, shared by the HUD and the party strip.
+    void DrawEffectIconTooltip(const EffectTimeline::Effect& e, int agentId, bool removed);
+    void DrawMoraleTooltip(int morale, int deaths, int boosts);
+    // Morale + effects beside a party window row, as Iris draws them beside GW's party window: the
+    // icons start at anchorX and run away from the window (leftwards when toLeft), centred on the
+    // row; clipY0..clipY1 is the window's visible band. Icon size and the widest strip below.
+    static float PartyEffectIconSize(float rowH) { return std::round(std::clamp(rowH * 0.95f, 12.f, 26.f)); }
+    static constexpr int kPartyEffectsMax = 8;   // "+N" past this many effects
+    static float PartyEffectStripWidest(float rowH) { return (kPartyEffectsMax + 3) * (PartyEffectIconSize(rowH) + 1.f) + 6.f; }
+    void DrawPartyEffectStrip(int agentId, float anchorX, bool toLeft, float rowY, float rowH, float clipY0, float clipY1);
     // `usedAt`: the instant whose rank the green numbers read (a signet can scale on another
     // attribute for a while); negative = the replay's current time.
     void DrawGameSkillTooltip(int skillId, int agentId, const SkillCooldownState* cd, float usedAt = -1.f);
@@ -2336,6 +2547,11 @@ private:
     };
 
     bool  m_showSkillAnalytics      = false;
+    // The Stats panel: the Library's Stats table over the replay (ReplayWindow_BattleLedger.cpp).
+    bool  m_showStatsPanel          = false;
+    int   m_statsPanelScope         = 1;   // 0 full match, 1 up to now, 2 last 30 s
+    int   m_statsFileState          = 0;   // 0 not read, 1 reading next frame, 2 ready, 3 unavailable
+    std::shared_ptr<struct StatsTableFile> m_statsFile;
     bool  m_analyticsShowTeam[2]    = { true, true };
     bool  m_analyticsProfFilter[10] = { true, true, true, true, true, true, true, true, true, true };
     float m_analyticsCacheTime      = -1.f;
@@ -2346,6 +2562,40 @@ private:
     std::vector<PlayerAnalytics> BuildAllPlayerAnalytics(float currentTime) const;
     void DrawSkillAnalyticsPanel();
     void DrawSkillAnalyticsPlayerPopups();
+
+public:
+    // --- Damage & Healing panel (the Battle Ledger, ReplayWindow_BattleLedger.cpp) ---
+    // One line per damage / heal / prevention packet, with the number its floater showed and the
+    // skill the damage attribution named, and one per interrupt attempt. Built once per match.
+    // The types and the view are shared with the Library's Stats tab (BattleLedger.h).
+    using LedgerKind      = BattleLedger::Kind;
+    using LedgerLine      = BattleLedger::Line;
+    using LedgerInterrupt = BattleLedger::Interrupt;
+    static constexpr int kLedgerRowMinions      = BattleLedger::kRowMinions;
+    static constexpr int kLedgerRowPets         = BattleLedger::kRowPets;
+    static constexpr int kLedgerRowDegenUnknown = BattleLedger::kRowDegenUnknown;
+    static constexpr int kLedgerRowCatapult = BattleLedger::kRowCatapult;
+    static constexpr int kLedgerRowCoral    = BattleLedger::kRowCoral;
+    static constexpr int kLedgerRowAcid     = BattleLedger::kRowAcid;
+    static constexpr int kLedgerRowFlux     = BattleLedger::kRowFlux;
+    static constexpr int kLedgerRowMiasma   = BattleLedger::kRowMiasma;
+    static constexpr int kLedgerRowWater    = BattleLedger::kRowWater;
+    static constexpr bool IsLedgerMapRow(int key) { return BattleLedger::IsMapRow(key); }
+    static constexpr int LedgerDegenRow(int condition, int cause) { return BattleLedger::DegenRow(condition, cause); }
+    static constexpr bool IsLedgerDegenRow(int key) { return BattleLedger::IsDegenRow(key); }
+    static constexpr int LedgerDegenCondition(int key) { return BattleLedger::DegenCondition(key); }
+    static constexpr int LedgerDegenCause(int key) { return BattleLedger::DegenCause(key); }
+private:
+    void BuildBattleLedger() const;
+    void DrawBattleLedgerPanel();
+    void DrawStatsPanel();
+    mutable std::vector<LedgerLine> m_ledger;
+    mutable std::vector<LedgerInterrupt> m_ledgerInts;
+    mutable bool m_ledgerBuilt = false;
+    mutable bool m_ledgerUsedAttributes = false;
+    // The view's copy: the lines, who is who, the players' skill uses (FillLedgerData).
+    mutable BattleLedger::Data m_ledgerData;
+    void FillLedgerData() const;
 
     // --- Incoming effect display ---
     enum class IncomingEffectType { Damage, Heal, Interrupt, Condition, Hex, BasicAttack, Energy };
@@ -2360,6 +2610,7 @@ private:
         float           boxWidth    = 0.f;
         float           baseScale   = 1.f;
         OverheadFloaters::Motion motion = OverheadFloaters::Motion::Loss;
+        bool            dealt       = false;   // damage the followed player dealt: the yellow digits
     };
     static constexpr float kEffectLifetime  = OverheadFloaters::kLifetime;
     std::vector<IncomingEffect> m_incomingEffects;
@@ -2387,6 +2638,7 @@ private:
     BitmapFont m_damageBitmapFont;
     BitmapFont m_healBitmapFont;
     BitmapFont m_energyBitmapFont;   // the client's purple digits (texture 265569), energy gains
+    BitmapFont m_dealtBitmapFont;    // the client's yellow digits (texture 265568), damage the followed player deals
     void EnsureBitmapFontsLoaded();
 
     void UpdateIncomingEffects();
@@ -2397,6 +2649,11 @@ private:
     // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
     void RenderEnergyPopsOverPlayers();
     void RenderIncomingEffects();
+    // A second view (the Split Camera, Highlights' right half): what floats over its picture, and
+    // the numbers over the one agent it watches, in a list of its own.
+    void DrawSecondaryViewOverlay(ImDrawList* dl, const DirectX::XMFLOAT4X4& viewProj, ImVec2 imgPos, float imgW, float imgH,
+                                  int floaterAgent, const std::vector<IncomingEffect>* floaters);
+    void UpdateSecondaryFloaters(int agent, std::vector<IncomingEffect>& effects, int& trackedAgent, float& lastScan, bool& toggle);
     void DrawFollowedAgentHUD();
     int  GetFocusedAgentId() const;
 
@@ -2446,6 +2703,17 @@ private:
     size_t m_bossClaimScanCursor = 0;          // speech-bubble scan position in m_bossClaims
     void   BuildBossTimeline();
     const BossTenure* FindBossTenure(int agentId, float t) const;
+
+    // All In (November flux): who carries it, from the bar, the quiet regeneration and the armour
+    // (private FluxAllIn.h). Built once before the armour solve; empty in any other month.
+    AllIn::Table m_allIn;
+    bool m_allInBuilt = false;
+    AttributeModel::Flux MatchFlux() const;
+    void BuildAllInStatus();
+    // The status to show for this agent, or null when the match is not All In or he is not a player.
+    const AllIn::Status* AllInStatusFor(int agentId) const;
+    void DrawAllInTooltipLines(const AllIn::Status& s) const;
+    void WriteAllInDebugDump() const;
 
     // --- Spatial Audio ---
     // The recording's own sounds (StoC/sound_events.txt: what the recording client played, mostly

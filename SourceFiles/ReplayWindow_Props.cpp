@@ -4112,6 +4112,47 @@ static int GetDoorType(uint32_t datMapId, uint32_t objectId)
     return 0;
 }
 
+void ReplayWindow::DoorStatesAt(float curTime, bool* open) const
+{
+    std::fill(open, open + kDoorTypeCount, false);
+
+    // Frozen Isle lever gates start with doors 1 & 2 OPEN and doors 3 & 4 CLOSED
+    // (confirmed in door_events: the match-start events for 61318/11692 carry status
+    // 1=open, 56526/12669 carry status 2=closed). Those initial events are stage 3 and
+    // are skipped by the stage-2 filter below, so seed the open pair here; the per-event
+    // toggles after t=0 take over from there.
+    if (m_replayCtx.datMapId == 0x1F265)
+    {
+        open[21] = true;   // door 1 (61318) open at start
+        open[22] = true;   // door 2 (11692) open at start
+    }
+
+    open[4] = (curTime >= 1.0f);
+
+    for (const auto& ev : m_replayCtx.stocData.doorEvents)
+    {
+        if (ev.time > curTime)
+            break;
+
+        if (ev.isState)
+            continue;
+        if (ev.animation_stage != 2)
+            continue;
+
+        int dt = GetDoorType(m_replayCtx.datMapId, ev.object_id);
+        if (dt == 0)
+            continue;
+
+        open[dt] = (ev.status == 1);
+    }
+
+    // Isle of the Weeping Stone auto-open doors: the StoC door-event object ids don't map
+    // cleanly to these gates, so open them purely on the timeline instead. Replay time is
+    // 0-based (0 = start of replay, in seconds), so open them 5 s after the replay begins.
+    if (m_replayCtx.datMapId == 0x2661F)
+        open[17] = (curTime >= 5.0f);
+}
+
 void ReplayWindow::UpdateDoorAnimations()
 {
     if (!m_mapRenderer || !m_replayCtx.stocLoaded || m_doorAnimPropCount == 0)
@@ -4131,47 +4172,8 @@ void ReplayWindow::UpdateDoorAnimations()
     bool prevOpen[kDoorTypeCount];
     std::copy(std::begin(m_doorTypeOpen), std::end(m_doorTypeOpen), std::begin(prevOpen));
 
-    if (seeked)
-    {
-        std::fill(std::begin(m_doorTypeOpen), std::end(m_doorTypeOpen), false);
-
-        // Frozen Isle lever gates start with doors 1 & 2 OPEN and doors 3 & 4 CLOSED
-        // (confirmed in door_events: the match-start events for 61318/11692 carry status
-        // 1=open, 56526/12669 carry status 2=closed). Those initial events are stage 3 and
-        // are skipped by the stage-2 filter below, so seed the open pair here; the per-event
-        // toggles after t=0 take over from there.
-        if (m_replayCtx.datMapId == 0x1F265)
-        {
-            m_doorTypeOpen[21] = true;   // door 1 (61318) open at start
-            m_doorTypeOpen[22] = true;   // door 2 (11692) open at start
-        }
-    }
-
-    m_doorTypeOpen[4] = (curTime >= 1.0f);
-
-    for (const auto& ev : doorEvents)
-    {
-        if (ev.time > curTime)
-            break;
-
-        if (ev.isState)
-            continue;
-        if (ev.animation_stage != 2)
-            continue;
-
-        int dt = GetDoorType(m_replayCtx.datMapId, ev.object_id);
-        if (dt == 0)
-            continue;
-
-        m_doorTypeOpen[dt] = (ev.status == 1);
-    }
-
-    // Isle of the Weeping Stone auto-open doors: the StoC door-event object ids don't map
-    // cleanly to these gates, so open them purely on the timeline instead. m_debugTimeline
-    // is 0-based (0 = start of replay, in seconds, only advancing while playing), so open
-    // them 5 s after the replay begins.
-    if (m_replayCtx.datMapId == 0x2661F)
-        m_doorTypeOpen[17] = (curTime >= 5.0f);
+    // Every event up to now is replayed each frame, so the states can be computed from scratch.
+    DoorStatesAt(curTime, m_doorTypeOpen);
 
     float frameDt = static_cast<float>(m_timer.GetElapsedSeconds());
 

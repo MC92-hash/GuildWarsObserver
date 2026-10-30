@@ -153,14 +153,13 @@ void ReplayWindow::BuildEffectTimeline() const
         if (it != facts.end()) return &it->second;
         const SkillInfo* si = m_skillView.Get(skillId);
         if (!si) return nullptr;
-        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->attribute, si->upkeep, si->name, si->concise, si->recharge }).first->second;
+        return &facts.emplace(skillId, SkillFacts{ si->type, si->profession, si->attribute, si->upkeep, si->name, si->concise, si->recharge, si->adrenaline }).first->second;
     };
     in.rank = [this](int agentId, int attribute) -> int {
         auto it = m_attrProfiles.find(agentId);
         if (it == m_attrProfiles.end()) return -1;
-        auto a = it->second.attributes.find(attribute);
-        if (a == it->second.attributes.end() || a->second.budgetOnly) return -1;
-        return a->second.best;
+        const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
+        return a ? a->best : -1;
     };
 
     in.skillHealth = &m_skillHealthSpans;
