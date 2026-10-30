@@ -5520,6 +5520,8 @@ void ReplayWindow::Tick()
         // Only agents that are a flag for their whole recorded life qualify: the
         // server hands the same agent id to a flag and then to a repair kit, and
         // leaving those joined hides the kit and drags the flag to the kit's spot.
+        // It hands it to spirits and minions too, which carry no item id but a model
+        // id: kept joined, they are classified as the flag and never drawn.
         std::unordered_set<int> flagAgentSkipIds;
         for (auto& [id, ard] : m_replayCtx.agents)
         {
@@ -5529,7 +5531,12 @@ void ReplayWindow::Tick()
             bool flagThroughout = true;
             for (auto& s : ard.snapshots)
             {
-                if (s.item_id == 0) continue;   // gap between incarnations
+                if (s.item_id == 0)
+                {
+                    if (s.model_id == 0) continue;   // gap between incarnations
+                    flagThroughout = false;          // a living agent took the id
+                    break;
+                }
                 if (m_flagItems.IsFlagAt(s.item_id, s.time)) continue;
                 flagThroughout = false;
                 break;
