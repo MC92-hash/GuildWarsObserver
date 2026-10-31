@@ -7559,6 +7559,9 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::SliderFloat("Model Scale", &m_agentModelScale, 0.1f, 5.0f, "%.2f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Scale factor for agent 3D models");
+            ImGui::Checkbox("Smooth animation blending", &m_gwAnimationBlending);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Blend between animations as Guild Wars does: 0.2 s crossfades, smoothed loops and hit flinches.\nOff: every change cuts straight to the new pose.");
 
             ImGui::Checkbox("Character shadows (preview)", &m_showAgentShadows);
             if (ImGui::IsItemHovered())

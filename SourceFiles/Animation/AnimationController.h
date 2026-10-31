@@ -65,6 +65,7 @@ public:
      */
     void Initialize(std::shared_ptr<AnimationClip> clip)
     {
+        m_seqBlend = SequenceBlend{};
         m_clip = clip;
         m_currentSequenceIndex = 0;
         m_currentGroupIndex = 0;
@@ -252,6 +253,12 @@ public:
      */
     void Update(float deltaTime)
     {
+        if (m_gwBlending && m_playbackMode == PlaybackMode::SegmentLoop && m_clip)
+        {
+            UpdateGwSegment(deltaTime);
+            return;
+        }
+
         if (!m_clip || m_state != PlaybackState::Playing)
         {
             return;
@@ -557,6 +564,116 @@ public:
      * @brief Gets the current segment index.
      */
     size_t GetCurrentSegmentIndex() const { return m_currentSegmentIndex; }
+
+    // ---- Gw.exe sequence blending (Engine\Model\MdlSeq.cpp) ----------------------------------
+    //
+    // The client never cuts from one character animation to the next. Model::PlaySequence
+    // (0x791800) keeps the outgoing sequence in a second, "previous" slot that goes on playing,
+    // and fades it out linearly over 0.2 s; the pose is mixed bone by bone (0x77DBE0). A looping
+    // sequence with no intro part also gets its seam smoothed, and a hit lays a short flinch over
+    // whatever is playing (0x791030). Off unless a caller turns it on: every other user of this
+    // controller keeps the plain single-clip playback.
+
+    /**
+     * @brief Turns the client's blending on or off (SegmentLoop playback only).
+     *
+     * On, looping segments also wrap the way the client does: by modulo into the loop region, so
+     * the time past the end carries over instead of being dropped (0x77F360).
+     */
+    void SetGwSequenceBlending(bool on)
+    {
+        if (m_gwBlending == on)
+        {
+            return;
+        }
+        m_gwBlending = on;
+        if (!on)
+        {
+            const bool wasMixing = m_seqBlend.weight > 0.0f;
+            m_seqBlend = SequenceBlend{};
+            if (wasMixing)
+            {
+                EvaluateBoneMatrices();
+            }
+        }
+    }
+    bool IsGwSequenceBlending() const { return m_gwBlending; }
+
+    /**
+     * @brief Starts a segment, switching clips when it lives in another one.
+     *
+     * With blending on and `blend` set, this is Model::PlaySequence without its no-blend flag:
+     * the outgoing pose becomes the previous layer and fades out over 0.2 s while it keeps
+     * playing. A new start less than 0.1 s into a fade (the old pose still weighs 0.5 or more)
+     * only changes the target, so a burst of switches fades out the pose they started from.
+     * Otherwise a hard cut, exactly as Initialize + SetPlaybackMode(SegmentLoop) + SetSegment.
+     */
+    void PlaySegment(const std::shared_ptr<AnimationClip>& clip, size_t segmentIndex, bool blend)
+    {
+        if (!clip)
+        {
+            return;
+        }
+
+        if (m_gwBlending && blend && m_clip)
+        {
+            BeginSequenceFade();
+        }
+        else
+        {
+            m_seqBlend = SequenceBlend{};   // flag 2: no blend, and any overlay is dropped
+        }
+
+        if (clip != m_clip)
+        {
+            SequenceBlend keep = std::move(m_seqBlend);
+            Initialize(clip);
+            SetPlaybackMode(PlaybackMode::SegmentLoop);
+            m_seqBlend = std::move(keep);
+        }
+        SetSegment(segmentIndex);
+    }
+
+    /**
+     * @brief Lays a segment over the current one for a moment (Gw.exe 0x791030, the hit flinch).
+     *
+     * The overlay takes the previous slot: its weight ramps from 0 to `ratio` over `rampIn`
+     * seconds and back to 0 over `rampOut`, while the current segment plays on underneath. One
+     * at a time; a fade still running is dropped, as in the client.
+     */
+    bool PlayOverlay(const std::shared_ptr<AnimationClip>& clip, size_t segmentIndex,
+                     float offsetSeconds, float rampInSeconds, float rampOutSeconds, float ratio)
+    {
+        if (!m_gwBlending || !clip || segmentIndex >= clip->animationSegments.size() ||
+            m_seqBlend.overlay || ratio <= 0.0f)
+        {
+            return false;
+        }
+
+        const auto& seg = clip->animationSegments[segmentIndex];
+        BlendLayer layer;
+        layer.clip = clip;
+        layer.start = static_cast<float>(seg.startTime);
+        layer.end = static_cast<float>(seg.endTime);
+        layer.loopStart = LoopStartOf(seg, layer.start, layer.end);
+        layer.looping = true;   // the slot is started with no flags
+        layer.time = std::min(layer.start + offsetSeconds * kTimeUnitsPerSecond, layer.end);
+
+        m_seqBlend.prev = std::move(layer);
+        m_seqBlend.rampIn = rampInSeconds * kTimeUnitsPerSecond;
+        m_seqBlend.rampOut = rampOutSeconds * kTimeUnitsPerSecond;
+        m_seqBlend.duration = m_seqBlend.rampIn + m_seqBlend.rampOut;
+        m_seqBlend.ratio = ratio;
+        m_seqBlend.elapsed = 0.0f;
+        m_seqBlend.overlay = true;
+        m_seqBlend.weight = EnvelopeWeight() * ratio;
+        return true;
+    }
+
+    /**
+     * @brief The previous layer's share of the pose this frame (0 = the current segment alone).
+     */
+    float GetSequenceBlendWeight() const { return m_seqBlend.weight; }
 
     /**
      * @brief Updates the time range based on current playback mode.
@@ -878,10 +995,276 @@ private:
         }
     }
 
+    // ---- Gw.exe sequence blending: the slot, the envelope and the per-frame advance -------------
+
+    static constexpr float kTimeUnitsPerSecond = 100000.0f;
+    static constexpr float kFadeTime = 20000.0f;      // 0.2 s (PlaySequence: duration and ramp-out)
+    static constexpr float kFadeGuard = 0.5f;         // 0x9448CC: no new fade while the old pose weighs this
+    static constexpr float kSeamWindow = 10000.0f;    // 0.1 s either side of a loop seam
+
+    // One sequence playing in a slot: the client's (flags, time, sequence) triple.
+    struct BlendLayer
+    {
+        std::shared_ptr<AnimationClip> clip;
+        float time = 0.0f;
+        float start = 0.0f;
+        float end = 0.0f;
+        float loopStart = 0.0f;
+        bool looping = true;
+    };
+
+    // The model's previous slot (+0x70..+0x78) and its envelope (+0x48..+0x58).
+    struct SequenceBlend
+    {
+        BlendLayer prev;
+        float elapsed = 0.0f;
+        float duration = 0.0f;    // 0 = no fade and no overlay running
+        float rampIn = 0.0f;
+        float rampOut = 0.0f;
+        float ratio = 0.0f;       // the envelope's peak
+        bool overlay = false;     // flag 0x10000: the slot holds a hit flinch, not an outgoing pose
+        float weight = 0.0f;      // the previous slot's share of the pose this frame
+    };
+
+    static float LoopStartOf(const AnimationSegmentEntry& seg, float start, float end)
+    {
+        const float candidate = start + static_cast<float>(seg.GetLoopStartOffset());
+        return (candidate >= start && candidate < end) ? candidate : start;
+    }
+
+    BlendLayer CurrentLayer() const
+    {
+        BlendLayer layer;
+        layer.clip = m_clip;
+        layer.time = m_currentTime;
+        layer.start = m_sequenceStartTime;
+        layer.end = m_sequenceEndTime;
+        layer.loopStart = m_sequenceStartTime;
+        if (m_clip && m_currentSegmentIndex < m_clip->animationSegments.size())
+        {
+            layer.loopStart = LoopStartOf(m_clip->animationSegments[m_currentSegmentIndex],
+                                          m_sequenceStartTime, m_sequenceEndTime);
+        }
+        layer.looping = m_looping;
+        return layer;
+    }
+
+    // 0x77F360: past the end a looping sequence wraps by modulo into [loopStart, end); one played
+    // once holds its last frame.
+    static float AdvanceLayerTime(float time, float dt, float start, float end, float loopStart, bool looping)
+    {
+        time += dt;
+        if (time < start)
+        {
+            return start;
+        }
+        if (time < end)
+        {
+            return time;
+        }
+        if (!looping)
+        {
+            return end;
+        }
+        const float span = end - loopStart;
+        if (span <= 0.0f)
+        {
+            return loopStart;
+        }
+        return loopStart + std::fmod(time - loopStart, span);
+    }
+
+    // 0x780950: linear ramps in and out, 1 in between.
+    float EnvelopeWeight() const
+    {
+        const auto& b = m_seqBlend;
+        if (b.elapsed < b.rampIn)
+        {
+            return b.rampIn > 0.0f ? b.elapsed / b.rampIn : 1.0f;
+        }
+        if (b.elapsed > b.duration - b.rampOut)
+        {
+            return b.rampOut > 0.0f ? 1.0f - (b.elapsed - (b.duration - b.rampOut)) / b.rampOut : 0.0f;
+        }
+        return 1.0f;
+    }
+
+    // Model::PlaySequence (0x791800), the blending half.
+    void BeginSequenceFade()
+    {
+        auto& b = m_seqBlend;
+        if (b.overlay)
+        {
+            // Under a flinch: while it still weighs half or more the flinch plays on; otherwise the
+            // outgoing pose takes the slot at what the flinch left of it, and fades out over the
+            // share of 0.2 s that remains. The flinch's elapsed time is kept (0x7918BD).
+            const float w = EnvelopeWeight() * b.ratio;
+            if (w >= kFadeGuard)
+            {
+                return;
+            }
+            b.prev = CurrentLayer();
+            b.ratio = 1.0f - w;
+            b.duration = w * kFadeTime;
+            b.rampIn = 0.0f;
+            b.rampOut = b.duration;
+            b.weight = EnvelopeWeight() * b.ratio;
+            return;
+        }
+
+        const float w = (b.elapsed < b.duration) ? EnvelopeWeight() * b.ratio : 0.0f;
+        if (w >= kFadeGuard)
+        {
+            return;   // less than 0.1 s into a fade: the older pose keeps fading out
+        }
+        b.prev = CurrentLayer();
+        b.elapsed = 0.0f;
+        b.duration = kFadeTime;
+        b.rampIn = 0.0f;
+        b.rampOut = kFadeTime;
+        b.ratio = 1.0f;
+        b.weight = 1.0f;
+    }
+
+    // Model advance (0x780280): the fade or flinch runs its envelope while the previous slot keeps
+    // playing; with neither, a looping sequence without an intro part gets its seam smoothed by
+    // mixing in the pose from its other end for 0.1 s either side, half and half at the seam.
+    void AdvanceSequenceBlend(float dt)
+    {
+        auto& b = m_seqBlend;
+        b.weight = 0.0f;
+
+        if (b.duration > 0.0f)
+        {
+            if (dt <= 0.0f)
+            {
+                b.weight = EnvelopeWeight() * b.ratio;   // paused: hold the mix
+                return;
+            }
+            b.elapsed += dt;
+            if (b.elapsed < b.duration)
+            {
+                b.weight = EnvelopeWeight() * b.ratio;
+                b.prev.time = AdvanceLayerTime(b.prev.time, dt, b.prev.start, b.prev.end,
+                                               b.prev.loopStart, b.prev.looping);
+                return;
+            }
+            const bool wasOverlay = b.overlay;
+            b.elapsed = 0.0f;
+            b.duration = 0.0f;
+            b.overlay = false;
+            if (!wasOverlay)
+            {
+                return;   // a fade's last frame shows the current sequence alone
+            }
+        }
+
+        if (!m_looping || m_state != PlaybackState::Playing || !m_clip ||
+            m_currentSegmentIndex >= m_clip->animationSegments.size() ||
+            m_clip->animationSegments[m_currentSegmentIndex].GetLoopStartOffset() != 0 ||
+            m_sequenceEndTime - m_sequenceStartTime <= 2.0f * kSeamWindow)
+        {
+            return;
+        }
+
+        const float fromStart = m_currentTime - m_sequenceStartTime;
+        const float toEnd = m_sequenceEndTime - m_currentTime;
+        if (fromStart < kSeamWindow)
+        {
+            b.prev = CurrentLayer();
+            b.prev.time = m_sequenceEndTime;
+            b.weight = 0.5f - fromStart / (2.0f * kSeamWindow);
+        }
+        else if (toEnd < kSeamWindow)
+        {
+            b.prev = CurrentLayer();
+            b.prev.time = m_sequenceStartTime;
+            b.weight = 0.5f - toEnd / (2.0f * kSeamWindow);
+        }
+    }
+
+    // Update() for SegmentLoop with blending on. The time step is the model's, already scaled by
+    // the playback rate, so a fade runs on the rate of the sequence it fades into, as in the client.
+    void UpdateGwSegment(float deltaTime)
+    {
+        if (m_state != PlaybackState::Playing && m_seqBlend.duration <= 0.0f)
+        {
+            return;
+        }
+
+        const float dt = deltaTime * m_playbackSpeed;
+        if (m_state == PlaybackState::Playing)
+        {
+            const float loopStart = CurrentLayer().loopStart;
+            if (dt < 0.0f)
+            {
+                m_currentTime = std::max(m_sequenceStartTime, m_currentTime + dt);
+            }
+            else if (m_currentTime + dt >= m_sequenceEndTime)
+            {
+                if (m_looping)
+                {
+                    m_currentTime = AdvanceLayerTime(m_currentTime, dt, m_sequenceStartTime,
+                                                     m_sequenceEndTime, loopStart, true);
+                    NotifyCallback("segment_loop");
+                }
+                else
+                {
+                    m_currentTime = m_sequenceEndTime;
+                    m_state = PlaybackState::Stopped;
+                    NotifyCallback("segment_finished");
+                }
+            }
+            else
+            {
+                m_currentTime += dt;
+            }
+        }
+
+        AdvanceSequenceBlend(dt);
+        UpdateCurrentPhaseFromTime();
+        EvaluateBoneMatrices();
+    }
+
+    // The pose with the previous slot mixed in, bone by bone in local space, then the hierarchy
+    // and skinning exactly as the single-clip path below computes them.
+    void EvaluateBlendedBoneMatrices()
+    {
+        const auto& b = m_seqBlend;
+        m_evaluator.EvaluateLocalTransforms(*m_clip, m_currentTime, m_blendLocals);
+        m_evaluator.EvaluateLocalTransforms(*b.prev.clip, b.prev.time, m_blendPrevLocals);
+        AnimationEvaluator::BlendLocalTransforms(m_blendLocals, m_blendPrevLocals, b.weight);
+
+        const std::vector<uint32_t>* lockedPtr = m_lockedBones.empty() ? nullptr : &m_lockedBones;
+        m_evaluator.EvaluateHierarchicalFromLocals(*m_clip, m_blendLocals, m_boneWorldPositions,
+                                                   m_boneWorldRotations, nullptr, m_lockRootPosition, lockedPtr);
+        if (m_useMatrixStackSkinning)
+        {
+            m_evaluator.ComputeSkinningMatrixStackFromLocals(*m_clip, m_blendLocals, m_boneMatrices,
+                                                             m_lockRootPosition, m_lockedBonesSet);
+            return;
+        }
+
+        m_blendBindPositions.clear();
+        m_blendBindPositions.reserve(m_clip->boneTracks.size());
+        for (const auto& track : m_clip->boneTracks)
+        {
+            m_blendBindPositions.push_back(track.basePosition);
+        }
+        m_evaluator.ComputeSkinningFromWorldTransforms(*m_clip, m_boneWorldPositions, m_boneWorldRotations,
+                                                       m_blendBindPositions, m_boneMatrices);
+    }
+
     void EvaluateBoneMatrices()
     {
         if (!m_clip)
         {
+            return;
+        }
+
+        if (m_gwBlending && m_seqBlend.weight > 0.0f && m_seqBlend.prev.clip)
+        {
+            EvaluateBlendedBoneMatrices();
             return;
         }
 
@@ -946,6 +1329,13 @@ private:
     std::vector<XMFLOAT3> m_boneWorldPositions;  // Actual world positions for visualization
     std::vector<XMFLOAT4> m_boneWorldRotations;  // World rotations for debugging
     AnimationCallback m_callback;
+
+    // Gw.exe sequence blending (off unless SetGwSequenceBlending turns it on)
+    bool m_gwBlending = false;
+    SequenceBlend m_seqBlend;
+    std::vector<AnimationEvaluator::BoneTransform> m_blendLocals;      // scratch, reused per frame
+    std::vector<AnimationEvaluator::BoneTransform> m_blendPrevLocals;
+    std::vector<XMFLOAT3> m_blendBindPositions;
 };
 
 } // namespace GW::Animation

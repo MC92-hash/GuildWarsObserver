@@ -1524,6 +1524,9 @@ private:
     bool m_useAgentModels = false;
     bool m_agentModelsLoaded = false;
     float m_agentModelScale = 1.0f;
+    // Blend between animations as Gw.exe does (0.2 s crossfades, smoothed loop seams, hit
+    // flinches) instead of cutting straight to the new pose.
+    bool m_gwAnimationBlending = true;
 
     // Async loading infrastructure
     std::thread m_agentModelLoadThread;
@@ -1660,6 +1663,9 @@ private:
         int   currentMovementTableIdx = -1;
         bool  isPlayingMovementAnim = false;
         bool  isPlayingIdleAnim = false;
+        // Whether the recording carries the agent's own velocity (move_x/move_y), the vector the
+        // client picks walk/run/strafe from: -1 not looked at yet, 0 no, 1 yes.
+        int   hasMoveVector = -1;
 
         // Snapshot index DrawAgentModels resolved for this agent this frame. DrawWeaponModels
         // runs straight after it and reuses the result rather than repeating the binary search.
