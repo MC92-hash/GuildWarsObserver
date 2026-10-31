@@ -38,6 +38,7 @@
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "EnergyModel.h"
+#include "AdrenalineModel.h"
 #include "FluxAllIn.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
@@ -168,6 +169,8 @@ public:
     // The Combat Log panel's entries as text (--export-combat-log), for checking them on the archive.
     bool CombatLogBuilt() const { return m_combatLogBuilt; }
     bool ExportCombatLogView(const std::filesystem::path& outPath);
+    // The adrenaline model's per-player report (--export-adrenaline), for the audit of the archive.
+    bool ExportAdrenaline(const std::filesystem::path& outPath);
     // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
     // damage/healing over time, bundles), appended to the open JSON object.
     void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
@@ -560,6 +563,20 @@ private:
     mutable std::unordered_map<int, EnergyModel::Track> m_energyTracks;
     mutable bool m_energyBuilt = false;
     mutable bool m_energyUsedAttributes = false;
+
+    // Each player's adrenaline per skill slot, calculated forward from the match start
+    // (AdrenalineModel, private). Built lazily like the energy tracks and rebuilt once the
+    // attribute solve lands (rank-scaled skill gains read it).
+    void BuildAdrenalineTracks() const;
+    const AdrenalineModel::Track* AdrenalineTrackFor(int agentId) const;
+    mutable std::unordered_map<int, AdrenalineModel::Track> m_adrenalineTracks;
+    mutable bool m_adrenalineBuilt = false;
+    mutable bool m_adrenalineUsedAttributes = false;
+    // The client's flame effect over a charging slot (multiply blend), and the tooltip line.
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_adrenalineMultiplyBlend;
+    ID3D11BlendState* AdrenalineMultiplyBlend();
+    void DrawAdrenalineOverlay(ImDrawList* dl, int agentId, int skillId, ImVec2 tl, ImVec2 br, bool inUse);
+    void DrawAdrenalineTooltipLine(int agentId, int skillId);
 
     // Which skill each damage and heal packet came from (DamageAttribution, private): one table
     // over the whole match, built once the skill-use timeline exists. The pops over the followed

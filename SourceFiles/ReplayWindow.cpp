@@ -6101,7 +6101,9 @@ void ReplayWindow::Tick()
         // 3) Sort each agent's timeline by startTime
         for (auto& [id, ard] : m_replayCtx.agents)
         {
-            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+            // Stable: two uses in one millisecond keep the recording's order ("Make Your Time!"
+            // recorded before "The Power Is Yours!" pays first).
+            std::stable_sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
                       [](const SkillUseEvent& a, const SkillUseEvent& b) {
                           return a.startTime < b.startTime;
                       });
@@ -6240,7 +6242,7 @@ void ReplayWindow::Tick()
         // Sort each agent's skillUseHistory by startTime so binary searches
         // and cursor-based audio scanning work correctly.
         for (auto& [id, ard] : m_replayCtx.agents) {
-            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+            std::stable_sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
                 [](const SkillUseEvent& a, const SkillUseEvent& b) {
                     return a.startTime < b.startTime;
                 });
@@ -6782,6 +6784,10 @@ void ReplayWindow::Tick()
         char energyFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
             (void)EnergyTrackFor(0);
+        // And the adrenaline dump (GWO_ADRENALINE_DEBUG).
+        char adrenalineFlag[16] = {};
+        if (GetEnvironmentVariableA("GWO_ADRENALINE_DEBUG", adrenalineFlag, (DWORD)sizeof(adrenalineFlag)) != 0)
+            (void)AdrenalineTrackFor(0);
         // And the key moments (GWO_HIGHLIGHTS_DEBUG).
         WriteHighlightsDebug();
         // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.

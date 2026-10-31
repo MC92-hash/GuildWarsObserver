@@ -1087,6 +1087,10 @@ void ReplayWindow::DrawPlayerInfoPanel()
             if (skillTex)
                 dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
                              ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1));
+            // Adrenaline: the client's flames over a charging slot (not over an Echo copy).
+            if (skillTex && shownSkill == sl.skillId)
+                DrawAdrenalineOverlay(dl, ard.agent_id, shownSkill, ImVec2(ix + 1, iy + 1),
+                                      ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1), false);
 
             // ── Recharge / disable sweep ──
             const SkillCooldownState& cd = cooldowns[i];
@@ -1181,6 +1185,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             {
                 const char* modTip = (!cd.modifierText.empty()) ? cd.modifierText.c_str() : nullptr;
                 DrawPipSkillTooltip(shownSkill, skillTex, modTip);
+                if (shownSkill == sl.skillId) DrawAdrenalineTooltipLine(ard.agent_id, shownSkill);
             }
 
             // Cast counter text

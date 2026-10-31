@@ -1041,6 +1041,10 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         }
         else if (ImTextureID tex = LoadSkillIcon(this, dev, shown, m_skillIconIndex, m_skillIconCache))
             dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+        // Adrenaline: the client's flames over a charging slot, hidden under the in-use sparkle. An
+        // Echo copy carries no adrenaline, so only the slot's own skill shows it.
+        if (filled && shown == bar[i])
+            DrawAdrenalineOverlay(dl, agentId, shown, tl, br, texSparkle && shown == usingSkill && cds[i].castingNow);
         if (texSlots) {
             ImVec2 uv0, uv1;
             FrameCellUV(si && si->is_elite ? 1 : 0, uv0, uv1);
@@ -1092,7 +1096,10 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
 
         if (hoverable && ImGui::IsMouseHoveringRect(tl, br)) {
             if (shown == SkillCooldownState::kUnknownSkill) ImGui::SetTooltip("%s", cd.slotNote.c_str());
-            else DrawGameSkillTooltip(shown, agentId, &cd);
+            else {
+                DrawGameSkillTooltip(shown, agentId, &cd);
+                if (shown == bar[i]) DrawAdrenalineTooltipLine(agentId, shown);
+            }
         }
     }
 
