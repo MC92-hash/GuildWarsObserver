@@ -284,6 +284,7 @@ def watch(install: Path, workdir: Path, log: Log, timeout: float, env: dict) -> 
 
     exe_before = sha256_file(exe)
     size_before = exe.stat().st_size
+    mtime_before = exe.stat().st_mtime_ns
     baseline_pids = running_pids()
 
     proc = subprocess.Popen([str(exe)], cwd=str(install), env=env)
@@ -332,7 +333,10 @@ def watch(install: Path, workdir: Path, log: Log, timeout: float, env: dict) -> 
 
         if not seen["swap"]:
             try:
-                if exe.stat().st_size != size_before or sha256_file(exe) != exe_before:
+                # stat only: a read handle on the exe makes tar's delete-and-replace of it fail,
+                # which failed 2 of 3 rehearsals for 3.6.0 with "tar failed with errorlevel 1"
+                st = exe.stat()
+                if st.st_size != size_before or st.st_mtime_ns != mtime_before:
                     seen["swap"] = True
                     log("extract", f"{EXE_NAME} replaced ({exe.stat().st_size:,} bytes)")
             except OSError:
@@ -552,6 +556,10 @@ def main() -> None:
         log("preflight", f"{args.to_tag} asset matches the local package ({local:,} bytes)")
 
     env = child_env(args.shadow_tar)
+    # A released client only sees a prerelease through GWO_UPDATE_TAG; without it it checks
+    # /releases/latest and offers nothing
+    env.setdefault("GWO_UPDATE_TAG", args.to_tag)
+    log("env", f"GWO_UPDATE_TAG={env['GWO_UPDATE_TAG']}")
     if args.shadow_tar:
         log("env", f"shadowing PATH with {args.shadow_tar} on purpose")
     source = fetch_release(args.from_tag, cache, log)
