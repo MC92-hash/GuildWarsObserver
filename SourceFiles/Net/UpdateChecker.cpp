@@ -284,7 +284,7 @@ void UpdateChecker::DebugSimulate(State targetState)
                          "- The update UI panel and all states\n"
                          "- No actual download or install will happen";
         m_downloadUrl = "https://example.com/fake.exe";
-        m_releaseUrl = "https://github.com/MC92-hash/gwobserver/releases/tag/v99.0.0";
+        m_releaseUrl = "https://gwobserver.com/releases/99.0.0/";
         m_lastError = (targetState == State::Error) ? "Simulated error for debug testing" : "";
     }
 
@@ -473,7 +473,6 @@ void UpdateChecker::CheckThread()
         auto j = json::parse(body);
 
         std::string tagName = j.value("tag_name", "");
-        std::string htmlUrl = j.value("html_url", "");
         std::string releaseBody = j.value("body", "");
         std::string downloadUrl;
         bool isZip = false;
@@ -510,7 +509,8 @@ void UpdateChecker::CheckThread()
 
             std::lock_guard<std::mutex> lock(m_mutex);
             m_latestVersion = tagName;
-            m_releaseUrl = htmlUrl;
+            // The illustrated notes on the website, not the GitHub release page
+            m_releaseUrl = "https://gwobserver.com/releases/" + tagName + "/";
             m_releaseNotes = releaseBody;
             m_downloadUrl = downloadUrl;
             m_isZipUpdate = isZip;
