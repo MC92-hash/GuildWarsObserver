@@ -725,19 +725,19 @@ void ReplayWindow::DrawPlayerInfoPanel()
                 auto sample = ResolveMaxHp(ait->second, m_debugTimeline);
                 if (sample.value > 0)
                 {
-                    uint32_t displayHp = (uint32_t)(hpPct * sample.value);
+                    uint32_t displayHp = AgentReplayData::DisplayHp(*snap, sample.value);
                     if (sample.estimated)
                         snprintf(hpBuf, sizeof(hpBuf), "~%u / ~%u", displayHp, sample.value);
                     else
                         snprintf(hpBuf, sizeof(hpBuf), "%u / %u", displayHp, sample.value);
                 }
                 else if (snap->max_hp > 0)
-                    snprintf(hpBuf, sizeof(hpBuf), "%d / %d", (int)(hpPct * snap->max_hp), (int)snap->max_hp);
+                    snprintf(hpBuf, sizeof(hpBuf), "%u / %u", AgentReplayData::DisplayHp(*snap, snap->max_hp), snap->max_hp);
                 else
                     snprintf(hpBuf, sizeof(hpBuf), "%d%%", (int)(hpPct * 100));
             }
             else if (snap->max_hp > 0)
-                snprintf(hpBuf, sizeof(hpBuf), "%d / %d", (int)(hpPct * snap->max_hp), (int)snap->max_hp);
+                snprintf(hpBuf, sizeof(hpBuf), "%u / %u", AgentReplayData::DisplayHp(*snap, snap->max_hp), snap->max_hp);
             else
                 snprintf(hpBuf, sizeof(hpBuf), "%d%%", (int)(hpPct * 100));
             ImVec2 textPos(innerTL.x + 4.f, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
@@ -1087,6 +1087,10 @@ void ReplayWindow::DrawPlayerInfoPanel()
             if (skillTex)
                 dl->AddImage(skillTex, ImVec2(ix + 1, iy + 1),
                              ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1));
+            // Adrenaline: the client's flames over a charging slot (not over an Echo copy).
+            if (skillTex && shownSkill == sl.skillId)
+                DrawAdrenalineOverlay(dl, ard.agent_id, shownSkill, ImVec2(ix + 1, iy + 1),
+                                      ImVec2(ix + kSkIconSz - 1, iy + kSkIconSz - 1), false);
 
             // ── Recharge / disable sweep ──
             const SkillCooldownState& cd = cooldowns[i];
@@ -1181,6 +1185,7 @@ void ReplayWindow::DrawPlayerInfoPanel()
             {
                 const char* modTip = (!cd.modifierText.empty()) ? cd.modifierText.c_str() : nullptr;
                 DrawPipSkillTooltip(shownSkill, skillTex, modTip);
+                if (shownSkill == sl.skillId) DrawAdrenalineTooltipLine(ard.agent_id, shownSkill);
             }
 
             // Cast counter text

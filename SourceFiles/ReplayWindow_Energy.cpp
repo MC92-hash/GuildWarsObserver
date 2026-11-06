@@ -60,6 +60,8 @@ void ReplayWindow::BuildEnergyTracks() const
     // All In: a player under it pays a quarter less; one the recording cannot place widens the band.
     in.allIn = m_allInBuilt ? &m_allIn : nullptr;
 
+    in.mapId = m_replayCtx.mapId;
+
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyTracks.merge(EnergyModel::BuildHenchmen(m_replayCtx.agents, in));
     m_energyBuilt = true;

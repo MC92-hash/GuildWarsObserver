@@ -367,6 +367,8 @@
     <ClInclude Include="SourceFiles\ArmourNames.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HealthModel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AdrenalineModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AdrenalineCosts.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\FluxAllIn.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\IrisPack.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\IrisPackKey.h" />
@@ -679,6 +681,7 @@
     <ClCompile Include="SourceFiles\ReplayWindow_Morale.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_SkillCooldowns.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Energy.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Adrenaline.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_DamageAttribution.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_EffectTimeline.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_PianoRoll.cpp" />
@@ -726,6 +729,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HealthModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AdrenalineModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\FluxAllIn.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\IrisPack.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_IrisPack.cpp" />

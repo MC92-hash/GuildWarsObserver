@@ -1077,56 +1077,17 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
     EnsureBitmapFontsLoaded();
     if (!m_energyBitmapFont.srv.Get()) return;
 
+    UpdateFloatersOverPlayers();
+
     const float now = m_debugTimeline;
     const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float vpW = vp->Size.x, vpH = vp->Size.y;
     const float iconSz = std::clamp(vpH * 0.020f, 12.f, 20.f);
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    std::vector<IncomingEffect> live, batch;
 
-    // One agent's pops in time order: his energy changes and the followed player's heals and damage
-    // on him. `draw` is false for a pop that only links the run (a zero or followed-only energy change).
-    struct Pop { float time; bool draw; IncomingEffect eff; };
-    std::vector<Pop> run;
-    constexpr float kRunLookback = 60.f;   // how far back a run of overlapping pops is replayed
-    const int healer = m_focusedAgentId;
-
-    // The players, and any other agent the followed player has hit in the last lifetime.
-    std::vector<int> targets(m_playerIds.begin(), m_playerIds.end());
-    if (healer >= 0)
+    for (const auto& [pid, floaters] : m_floatersOverPlayers)
     {
-        const auto& combat = m_replayCtx.stocData.combat;
-        for (auto c = std::upper_bound(combat.begin(), combat.end(), now - kEffectLifetime,
-                                       [](float v, const CombatEvent& x) { return v < x.time; });
-             c != combat.end() && c->time <= now; ++c)
-            if (c->caster_id == healer && c->IsDamageOrHeal()
-                && std::find(targets.begin(), targets.end(), c->target_id) == targets.end())
-                targets.push_back(c->target_id);
-    }
-
-    for (int pid : targets)
-    {
-        if (pid == m_focusedAgentId) continue;
-        const EnergyModel::Track* track = EnergyTrackFor(pid);
-        static const std::vector<DamagePop> kNoPops;
-        const std::vector<DamagePop>& pops = healer >= 0 ? DamagePopsOn(pid) : kNoPops;
-
-        // Anything spawned in the last lifetime?
-        bool any = false;
-        if (track)
-        {
-            auto g = std::upper_bound(track->gains.begin(), track->gains.end(), now - kEffectLifetime,
-                                      [](float v, const EnergyModel::Gain& x) { return v < x.time; });
-            any = g != track->gains.end() && g->time <= now;
-        }
-        if (!any)
-            for (auto h = std::upper_bound(pops.begin(), pops.end(), now - kEffectLifetime,
-                                           [](float v, const DamagePop& x) { return v < x.time; });
-                 h != pops.end() && h->time <= now; ++h)
-                if (h->casterId == healer) { any = true; break; }
-        if (!any) continue;
-
         auto it = m_replayCtx.agents.find(pid);
         if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
         const AgentReplayData& ard = it->second;
@@ -1141,57 +1102,88 @@ void ReplayWindow::RenderEnergyPopsOverPlayers()
         if (!ProjectToScreen(viewProj, vpW, vpH, XMFLOAT3{ worldPos.x, topY, worldPos.z }, ax, ay)) continue;
         ay -= iconSz + 8.f;
 
-        run.clear();
-        if (track)
-            for (auto g = std::lower_bound(track->gains.begin(), track->gains.end(), now - kRunLookback,
-                                           [](const EnergyModel::Gain& x, float v) { return x.time < v; });
+        for (const IncomingEffect& e : floaters.live)
+            DrawFloater(dl, e, now, ax, ay, 1.f);
+    }
+}
+
+// Expired numbers drop and the ones spawned since the last frame are laid out among the live ones.
+// A new followed player, a seek back or a jump past a lifetime starts over from what the last
+// lifetime spawned.
+void ReplayWindow::UpdateFloatersOverPlayers()
+{
+    const float now = m_debugTimeline;
+    const int followed = m_focusedAgentId;
+
+    float from = m_floatersOverPlayersScanTime;
+    if (followed != m_floatersOverPlayersFollowed || now < from || now - from > kEffectLifetime)
+    {
+        m_floatersOverPlayers.clear();
+        m_floatersOverPlayersFollowed = followed;
+        from = now - kEffectLifetime;
+    }
+    m_floatersOverPlayersScanTime = now;
+
+    std::erase_if(m_floatersOverPlayers, [&](auto& entry) {
+        std::erase_if(entry.second.live, [&](const IncomingEffect& e) { return now - e.spawnTime >= kEffectLifetime; });
+        return entry.second.live.empty();
+    });
+    if (now <= from) return;
+
+    // The players, and any other agent the followed player hit since the last scan.
+    std::vector<int> targets(m_playerIds.begin(), m_playerIds.end());
+    if (followed >= 0)
+    {
+        const auto& combat = m_replayCtx.stocData.combat;
+        for (auto c = std::upper_bound(combat.begin(), combat.end(), from,
+                                       [](float v, const CombatEvent& x) { return v < x.time; });
+             c != combat.end() && c->time <= now; ++c)
+            if (c->caster_id == followed && c->IsDamageOrHeal()
+                && std::find(targets.begin(), targets.end(), c->target_id) == targets.end())
+                targets.push_back(c->target_id);
+    }
+
+    std::vector<IncomingEffect> batch;
+    for (int pid : targets)
+    {
+        if (pid == followed) continue;
+        batch.clear();
+
+        if (const EnergyModel::Track* track = EnergyTrackFor(pid))
+            for (auto g = std::upper_bound(track->gains.begin(), track->gains.end(), from,
+                                           [](float v, const EnergyModel::Gain& x) { return v < x.time; });
                  g != track->gains.end() && g->time <= now; ++g)
             {
                 const int amount = static_cast<int>(std::lround(g->amount));
-                Pop p{ g->time, amount != 0 && !g->focusOnly, {} };   // focusOnly: over the followed player only
-                p.eff.spawnTime = g->time;
-                p.eff.type = IncomingEffectType::Energy;
-                p.eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
-                run.push_back(std::move(p));
+                if (amount == 0 || g->focusOnly) continue;   // focusOnly: over the followed player only
+                IncomingEffect eff;
+                eff.spawnTime = g->time;
+                eff.type = IncomingEffectType::Energy;
+                eff.label = std::format("{}{}", amount > 0 ? "+" : "-", std::abs(amount));
+                batch.push_back(std::move(eff));
             }
-        const size_t energyCount = run.size();
-        for (auto h = std::lower_bound(pops.begin(), pops.end(), now - kRunLookback,
-                                       [](const DamagePop& x, float v) { return x.time < v; });
-             h != pops.end() && h->time <= now; ++h)
+        if (followed >= 0)
         {
-            if (h->casterId != healer) continue;
-            Pop p{ h->time, true, {} };
-            p.eff.spawnTime = h->time;
-            p.eff.skillId = h->skillId;
-            p.eff.type = h->weaponHit ? IncomingEffectType::BasicAttack
-                       : h->heal      ? IncomingEffectType::Heal
-                                      : IncomingEffectType::Damage;
-            p.eff.dealt = !h->heal;
-            p.eff.label = FloaterPopLabel(pid, *h);
-            run.push_back(std::move(p));
+            const std::vector<DamagePop>& pops = DamagePopsOn(pid);
+            for (auto h = std::upper_bound(pops.begin(), pops.end(), from,
+                                           [](float v, const DamagePop& x) { return v < x.time; });
+                 h != pops.end() && h->time <= now; ++h)
+            {
+                if (h->casterId != followed) continue;
+                IncomingEffect eff;
+                eff.spawnTime = h->time;
+                eff.skillId = h->skillId;
+                eff.type = h->weaponHit ? IncomingEffectType::BasicAttack
+                         : h->heal      ? IncomingEffectType::Heal
+                                        : IncomingEffectType::Damage;
+                eff.dealt = !h->heal;
+                eff.label = FloaterPopLabel(pid, *h);
+                batch.push_back(std::move(eff));
+            }
         }
-        if (run.size() > energyCount)
-            std::stable_sort(run.begin(), run.end(), [](const Pop& a, const Pop& b) { return a.time < b.time; });
+        if (batch.empty()) continue;
 
-        // Nothing is kept between frames here, so the layout is replayed from the start of the
-        // current run of overlapping pops: back to a pop that spawned when every earlier one had
-        // expired. The side switch starts afresh there; the same frame always gives the same layout.
-        size_t start = 0;
-        while (start < run.size() && run[start].time <= now - kEffectLifetime) ++start;
-        if (start == run.size()) continue;
-        while (start > 0 && run[start - 1].time > run[start].time - kEffectLifetime) --start;
-
-        live.clear();
-        batch.clear();
-        bool toggle = false;
-        const float scale = FloaterBaseScale(pid, now);
-        for (size_t k = start; k < run.size(); ++k)
-        {
-            if (!run[k].draw) continue;
-            batch.push_back(std::move(run[k].eff));
-            PlaceFloaters(live, batch, toggle, scale);
-        }
-        for (const IncomingEffect& e : live)
-            DrawFloater(dl, e, now, ax, ay, 1.f);
+        AgentFloaters& floaters = m_floatersOverPlayers[pid];
+        PlaceFloaters(floaters.live, batch, floaters.toggle, FloaterBaseScale(pid, now));
     }
 }

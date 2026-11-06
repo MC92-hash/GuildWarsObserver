@@ -106,6 +106,72 @@ float4 PSMain(VS_OUT i) : SV_Target
 
 static constexpr int kAgentModelBatchSize = 2;
 
+// Gw.exe 0x7F9D70: which of the eight movement directions a velocity is, against the facing (the
+// cos and sin of the agent's rotation). 0 = forward, 4 = back, 1-3 on one side and 7-5 on the
+// other, in the order of the client's movement tables (g_movementTables is a copy of them).
+static int MovementDirectionIndex(float velX, float velY, float rotation)
+{
+    const float len = std::sqrt(velX * velX + velY * velY);
+    const float nx = velX / len, ny = velY / len;
+    const float c = std::cos(rotation), s = std::sin(rotation);
+    const float along = nx * c + ny * s;
+    const bool otherSide = c * ny - s * nx >= 0.f;
+    if (along > 0.92388f) return 0;                   // within 22.5 degrees of the facing
+    if (along < -0.92388f) return 4;
+    if (along > 0.38268f) return otherSide ? 7 : 1;   // within 67.5
+    if (along <= -0.38268f) return otherSide ? 5 : 3;
+    return otherSide ? 6 : 2;
+}
+
+// The hit flinch on a model: the sequence of AvChar row 53 (hash 0x338019B5) under the stance letter
+// of the segment the agent is playing, else the plain 'u' one (Gw.exe 0x7EFF00). Banks keep it as a
+// held pose of 0.03-0.17 s. Hashed the client's way (0x7F2230: base * 23 + letter index +
+// 0xE0000000); an external segment only through the bank's redirect, never in place.
+template <class ModelTemplate, class Ref>
+static bool ResolveHitFlinch(const ModelTemplate& tmpl, const GW::Animation::AnimationController& ctrl, Ref& out)
+{
+    constexpr uint32_t kHitFlinchHash = 0x338019B5u;
+    constexpr uint32_t kInverse23 = 0xE9BD37A7u;   // 23 * this = 1 (mod 2^32)
+    auto letterIndex = [](char c) {
+        return static_cast<uint32_t>(c) - 0x61u -
+               static_cast<uint32_t>(GW::Animation::ComputeBoneSlotAdjustment(c));
+    };
+
+    char letter = 'u';
+    const auto playingClip = ctrl.GetClip();
+    if (playingClip && ctrl.GetCurrentSegmentIndex() < playingClip->animationSegments.size()) {
+        const uint32_t playing = playingClip->animationSegments[ctrl.GetCurrentSegmentIndex()].hash;
+        for (char c : GW::Animation::g_boneSlotChars) {
+            const uint32_t base = (playing - letterIndex(c) - 0xE0000000u) * kInverse23;
+            const bool known = std::any_of(std::begin(GW::Animation::g_animationStateTable),
+                                           std::end(GW::Animation::g_animationStateTable),
+                                           [base](const auto& e) { return e.primaryHash == base; });
+            if (known) { letter = c; break; }
+        }
+    }
+
+    for (char c : { letter, 'u' }) {
+        const uint32_t wanted = kHitFlinchHash * 23u + letterIndex(c) + 0xE0000000u;
+        for (int ci : tmpl.clipOrder) {
+            const auto& clip = tmpl.allClips[ci].clip;
+            for (size_t si = 0; si < clip->animationSegments.size(); si++) {
+                if (clip->animationSegments[si].hash != wanted) continue;
+                if (clip->GetSegmentSourceType(si) != 0) {
+                    if (ci == tmpl.bankClipIndex && si < tmpl.bankSegmentRefs.size() &&
+                        tmpl.bankSegmentRefs[si].clipIndex >= 0) {
+                        out = tmpl.bankSegmentRefs[si];
+                        return true;
+                    }
+                    continue;
+                }
+                out = { ci, static_cast<int>(si) };
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ReplayWindow:: member functions; only their definitions live here.
 // ---------------------------------------------------------------------------
 
@@ -1948,6 +2014,14 @@ void ReplayWindow::DrawAgentModels()
 
             auto& animState = animIt->second;
 
+            // The timeline this agent's animation last saw, read before the velocity block below
+            // moves it on: the window the codes and hits since the last frame fall in, and the test
+            // for a jump. Only playback stepping forward blends; a seek, a scrub while paused or
+            // the first frame shows the new pose at once.
+            const float animPrevTime = animState.prevTime;
+            const bool blendTransitions = m_gwAnimationBlending && m_replayCtx.isPlaying &&
+                animPrevTime >= 0.f && m_debugTimeline >= animPrevTime && m_debugTimeline - animPrevTime < 1.0f;
+
             // Compute velocity from interpolated position deltas (game coordinates)
             float moveDx = 0.f, moveDy = 0.f;
             float frameVelocity = 0.f;
@@ -1971,8 +2045,24 @@ void ReplayWindow::DrawAgentModels()
             const auto& snap = ard.snapshots[snapIdx];
 
             if (tmplIt != m_agentModelTemplates.end() && ctrl) {
-                uint32_t animCode = snap.animation_code;
-                if (animCode != animState.lastAnimCode && animCode != 0) {
+                ctrl->SetGwSequenceBlending(m_gwAnimationBlending);
+
+                // Starts a segment of this model, switching the controller to its clip when it
+                // lives in another one. Blended like Gw.exe's PlaySequence while playback steps
+                // forward (see AnimationController::PlaySegment), a cut otherwise.
+                auto playSegment = [&](const SegmentRef& ref) {
+                    std::shared_ptr<GW::Animation::AnimationClip> clip = ctrl->GetClip();
+                    if (ref.clipIndex != animState.currentClipIndex && ref.clipIndex >= 0 &&
+                        ref.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
+                        clip = tmplIt->second.allClips[ref.clipIndex].clip;
+                        animState.currentClipIndex = ref.clipIndex;
+                    }
+                    ctrl->PlaySegment(clip, static_cast<size_t>(ref.segmentIndex), blendTransitions);
+                };
+
+                // One recorded animation code: resolve it to a segment of this model and start it.
+                auto applyAnimCode = [&](const AgentSnapshot& codeSnap) {
+                    const uint32_t animCode = codeSnap.animation_code;
                     auto& codeMap = tmplIt->second.animCodeToSegment;
                     bool resolved = false;
                     SegmentRef resolvedRef{};
@@ -1993,7 +2083,7 @@ void ReplayWindow::DrawAgentModels()
                     // the index contradicts.
                     {
                         const auto& bankRefs = tmplIt->second.bankSegmentRefs;
-                        const uint32_t id = snap.animation_id;
+                        const uint32_t id = codeSnap.animation_id;
                         if (id < bankRefs.size() && bankRefs[id].clipIndex >= 0 &&
                             tmplIt->second.bankClipIndex >= 0) {
                             const auto& bankSegs =
@@ -2077,20 +2167,12 @@ void ReplayWindow::DrawAgentModels()
                     }
 
                     if (resolved) {
-                        if (resolvedRef.clipIndex != animState.currentClipIndex &&
-                            resolvedRef.clipIndex >= 0 &&
-                            resolvedRef.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
-                            const auto& newClip = tmplIt->second.allClips[resolvedRef.clipIndex].clip;
-                            ctrl->Initialize(newClip);
-                            ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
-                            animState.currentClipIndex = resolvedRef.clipIndex;
-                        }
                         animState.wasCasting = false;
-                        bool stillKD = snap.is_knocked;
+                        bool stillKD = codeSnap.is_knocked;
                         animState.postKdGetUp = animState.wasKnockedDown && !stillKD;
                         animState.wasKnockedDown = false;
-                        ctrl->SetSegment(resolvedRef.segmentIndex);
-                        bool playOnce = dead || (snap.is_casting && !stillKD) || animState.postKdGetUp;
+                        playSegment(resolvedRef);
+                        bool playOnce = dead || (codeSnap.is_casting && !stillKD) || animState.postKdGetUp;
                         ctrl->SetLooping(!playOnce);
                         ctrl->Play();
                     }
@@ -2099,32 +2181,57 @@ void ReplayWindow::DrawAgentModels()
                     animState.lastAnimCode = animCode;
                     animState.isPlayingMovementAnim = false;
                     animState.isPlayingIdleAnim = false;
-                }
+                };
 
-                // Movement / idle animation when server sends no animation code
+                // Every code the client played since the last frame, in order. The recorder writes
+                // a line on each change, and a walk blip between two run lines (the client drops
+                // the speed under 150 for one frame at each movement update) lasts ~17 ms, so it
+                // often falls between two of our frames - but the client restarted the run behind
+                // it all the same, under the crossfade.
+                if (blendTransitions && animState.lastAnimCode != UINT32_MAX && snapIdx > 0) {
+                    const int first = std::max(FindSnapshotIndex(ard.snapshots, animPrevTime) + 1, snapIdx - 8);
+                    for (int i = std::max(first, 0); i < snapIdx; i++) {
+                        const AgentSnapshot& between = ard.snapshots[i];
+                        if (between.time > animPrevTime && between.animation_code != 0 &&
+                            between.animation_code != animState.lastAnimCode)
+                            applyAnimCode(between);
+                    }
+                }
+                const uint32_t animCode = snap.animation_code;
+                if (animCode != animState.lastAnimCode && animCode != 0)
+                    applyAnimCode(snap);
+
+                // Movement / idle animation when the recording has no animation code (made before
+                // the recorder wrote it): the client's own pick, Gw.exe 0x7F9D70.
                 constexpr float kMovingThreshold = 15.f;
                 if (animCode == 0 && !dead && !snap.is_casting && !animState.wasCasting
                     && !animState.postKdGetUp && !ard.isKnockedDownAtTime(m_debugTimeline))
                 {
-                    bool isMoving = animState.smoothVelocity > kMovingThreshold;
+                    // The velocity it reads is the agent's own (move_x/move_y). Recordings without
+                    // it fall back on the smoothed change of position.
+                    if (animState.hasMoveVector < 0) {
+                        animState.hasMoveVector = std::any_of(ard.snapshots.begin(), ard.snapshots.end(),
+                            [](const AgentSnapshot& s) { return s.move_x != 0.f || s.move_y != 0.f; }) ? 1 : 0;
+                    }
+                    const bool recordedVelocity = animState.hasMoveVector > 0;
+                    const float velX = recordedVelocity ? snap.move_x : moveDx;
+                    const float velY = recordedVelocity ? snap.move_y : moveDy;
+                    const float v = recordedVelocity ? std::sqrt(velX * velX + velY * velY)
+                                                     : animState.smoothVelocity;
+                    bool isMoving = recordedVelocity ? v > 0.f : v > kMovingThreshold;
                     auto& codeMap = tmplIt->second.animCodeToSegment;
 
                     if (isMoving) {
-                        // Compute movement heading from position delta
-                        float moveHeading = std::atan2(moveDx, moveDy);
-                        float relAngle = moveHeading - rotRad;
-                        // Normalize to [-PI, PI]
-                        while (relAngle > XM_PI)  relAngle -= XM_2PI;
-                        while (relAngle < -XM_PI) relAngle += XM_2PI;
+                        // The direction against the facing, in the client's eight sectors. A frame
+                        // with no position change (the PiP pass) keeps the one already playing.
+                        int dirIndex = animState.currentMovementDirIndex >= 0 ? animState.currentMovementDirIndex : 0;
+                        if (velX * velX + velY * velY > 1e-6f)
+                            dirIndex = MovementDirectionIndex(velX, velY, rotRad);
 
-                        // Quantize to 8 compass sectors (each 45 deg)
-                        int dirIndex = (static_cast<int>(std::round(relAngle / (XM_PI / 4.f))) + 8) % 8;
-
-                        // The client picks the ANIMATION by speed (Gw.exe 0x7FC490): walk below
+                        // The client picks the ANIMATION by speed (Gw.exe 0x7F9D70): walk below
                         // 150 u/s, run up to 315, the player fast run above (when the bank has
                         // it). g_movementTables rows: 4 = walk, 2 = run, 1 = fast run.
                         constexpr int kWalkTableIdx = 4, kRunTableIdx = 2, kFastRunTableIdx = 1;
-                        const float v = animState.smoothVelocity;
                         auto findMoveSeg = [&](int tableIdx) -> decltype(codeMap.end()) {
                             uint8_t stateIdx = GW::Animation::g_movementTables[tableIdx].indices[dirIndex];
                             if (stateIdx >= GW::Animation::g_animationStateCount) return codeMap.end();
@@ -2139,15 +2246,7 @@ void ReplayWindow::DrawAgentModels()
                             {
                                 auto segIt = findMoveSeg(tableIdx);
                                 if (segIt != codeMap.end()) {
-                                    SegmentRef ref = segIt->second;
-                                    if (ref.clipIndex != animState.currentClipIndex &&
-                                        ref.clipIndex >= 0 &&
-                                        ref.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
-                                        ctrl->Initialize(tmplIt->second.allClips[ref.clipIndex].clip);
-                                        ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
-                                        animState.currentClipIndex = ref.clipIndex;
-                                    }
-                                    ctrl->SetSegment(ref.segmentIndex);
+                                    playSegment(segIt->second);
                                     ctrl->SetLooping(true);
                                     ctrl->Play();
                                 }
@@ -2162,21 +2261,36 @@ void ReplayWindow::DrawAgentModels()
                         constexpr uint32_t kIdlePrimaryHash = 0x365C0E24u;
                         auto segIt = codeMap.find(kIdlePrimaryHash);
                         if (segIt != codeMap.end()) {
-                            SegmentRef ref = segIt->second;
-                            if (ref.clipIndex != animState.currentClipIndex &&
-                                ref.clipIndex >= 0 &&
-                                ref.clipIndex < static_cast<int>(tmplIt->second.allClips.size())) {
-                                ctrl->Initialize(tmplIt->second.allClips[ref.clipIndex].clip);
-                                ctrl->SetPlaybackMode(GW::Animation::PlaybackMode::SegmentLoop);
-                                animState.currentClipIndex = ref.clipIndex;
-                            }
-                            ctrl->SetSegment(ref.segmentIndex);
+                            playSegment(segIt->second);
                             ctrl->SetLooping(true);
                             ctrl->Play();
                         }
                         animState.isPlayingIdleAnim = true;
                         animState.isPlayingMovementAnim = false;
                         animState.currentMovementDirIndex = -1;
+                    }
+                }
+
+                // Hit flinches. Each damage packet with a cause makes the client lay the hit
+                // sequence over whatever the victim is playing for a moment (Gw.exe AvChar damage
+                // handler 0x7F8970 -> 0x7F2F10 -> Model 0x791030): a critical hit at up to 0.8
+                // weight, 0.1 s in and 0.3 s out, any other at 0.5, 0.05 s in and 0.2 s out.
+                // One at a time; a hit during one is not shown.
+                if (blendTransitions && !dead && !ard.isKnockedDownAtTime(m_debugTimeline)) {
+                    const auto& combat = m_replayCtx.stocData.combat;
+                    auto hit = std::upper_bound(combat.begin(), combat.end(), animPrevTime,
+                        [](float t, const CombatEvent& e) { return t < e.time; });
+                    for (; hit != combat.end() && hit->time <= m_debugTimeline; ++hit) {
+                        if (hit->target_id != agentId || hit->caster_id == 0 || hit->value >= 0.f ||
+                            hit->type != "DAMAGE")
+                            continue;
+                        SegmentRef flinch{};
+                        if (!ResolveHitFlinch(tmplIt->second, *ctrl, flinch)) break;
+                        const bool critical = hit->damage_type == 17;   // GenericValueID critical
+                        ctrl->PlayOverlay(tmplIt->second.allClips[flinch.clipIndex].clip,
+                                          static_cast<size_t>(flinch.segmentIndex), 0.f,
+                                          critical ? 0.1f : 0.05f, critical ? 0.3f : 0.2f,
+                                          critical ? 0.8f : 0.5f);
                     }
                 }
 

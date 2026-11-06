@@ -1229,6 +1229,22 @@ struct AgentReplayData
         return (m > cut) ? (m - cut) : 1u;
     }
 
+    // Whole health shown on every bar, so that no two bars can disagree about the same player.
+    //
+    // ROUNDED, not truncated: the recorder stores the fraction with three decimals, so a true
+    // 5/550 comes back as 0.009 and 4.95 HP. Truncating read 33-49% of whole values 1 HP low;
+    // rounding recovers all of them for any maximum below 1000.
+    //
+    // Only a dead agent reads 0. A recording holds 0.000 for a living player both when under 0.05%
+    // of his health is left and while the client's own value is 0 ahead of the death flag, and
+    // measured players came back from 0.000 up to 5 s later.
+    static uint32_t DisplayHp(const AgentSnapshot& snap, uint32_t maxHp)
+    {
+        if (snap.is_dead || maxHp == 0) return 0;
+        const long hp = std::lround(std::clamp(snap.health_pct, 0.f, 1.f) * static_cast<float>(maxHp));
+        return std::max<uint32_t>(1, static_cast<uint32_t>(hp));
+    }
+
     // max_hp as it read just before the Deep Wound episode covering t began.
     // Used to tell an unreduced value from one the recording already reduced,
     // so the 20% is never applied twice.

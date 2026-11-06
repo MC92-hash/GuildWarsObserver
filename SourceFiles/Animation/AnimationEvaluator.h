@@ -7,6 +7,7 @@
 #include <vector>
 #include <set>
 #include <cstdint>
+#include <cmath>
 #include <algorithm>
 
 using namespace DirectX;
@@ -154,6 +155,77 @@ public:
                               bool lockRootPosition = false,
                               const std::vector<uint32_t>* lockedBones = nullptr)
     {
+        std::vector<BoneTransform> localTransforms;
+        EvaluateLocalTransforms(clip, time, localTransforms);
+        EvaluateHierarchicalFromLocals(clip, localTransforms, outWorldPositions, outWorldRotations,
+                                       customBindPositions, lockRootPosition, lockedBones);
+    }
+
+    /**
+     * @brief Evaluates every bone's local transform (animation delta, rotation, scale) at a time.
+     */
+    void EvaluateLocalTransforms(const AnimationClip& clip, float time,
+                                 std::vector<BoneTransform>& outLocalTransforms)
+    {
+        outLocalTransforms.resize(clip.boneTracks.size());
+        for (size_t i = 0; i < clip.boneTracks.size(); i++)
+        {
+            outLocalTransforms[i] = EvaluateBoneTrack(clip.boneTracks[i], time);
+        }
+    }
+
+    /**
+     * @brief Mixes a second pose into the first, bone by bone, the way Gw.exe does (0x77DBE0).
+     *
+     * `weight` is the second pose's share. Positions and scales are lerped; rotations are
+     * nlerped (0x781F60): the second quaternion is flipped onto the first one's hemisphere, the
+     * two are mixed linearly and the result normalised. Bones only the first pose has keep it.
+     */
+    static void BlendLocalTransforms(std::vector<BoneTransform>& inOutLocals,
+                                     const std::vector<BoneTransform>& otherLocals, float weight)
+    {
+        const float w = std::clamp(weight, 0.0f, 1.0f);
+        const float k = 1.0f - w;
+        const size_t count = std::min(inOutLocals.size(), otherLocals.size());
+        for (size_t i = 0; i < count; i++)
+        {
+            BoneTransform& a = inOutLocals[i];
+            const BoneTransform& b = otherLocals[i];
+            a.position = { k * a.position.x + w * b.position.x,
+                           k * a.position.y + w * b.position.y,
+                           k * a.position.z + w * b.position.z };
+            a.scale = { k * a.scale.x + w * b.scale.x,
+                        k * a.scale.y + w * b.scale.y,
+                        k * a.scale.z + w * b.scale.z };
+
+            XMFLOAT4 q = b.rotation;
+            const float dot = a.rotation.x * q.x + a.rotation.y * q.y + a.rotation.z * q.z + a.rotation.w * q.w;
+            if (dot < 0.0f)
+            {
+                q = { -q.x, -q.y, -q.z, -q.w };
+            }
+            XMFLOAT4 r = { k * a.rotation.x + w * q.x, k * a.rotation.y + w * q.y,
+                           k * a.rotation.z + w * q.z, k * a.rotation.w + w * q.w };
+            const float len = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
+            if (len > 1e-8f)
+            {
+                r = { r.x / len, r.y / len, r.z / len, r.w / len };
+                a.rotation = r;
+            }
+        }
+    }
+
+    /**
+     * @brief EvaluateHierarchical on local transforms the caller already has (a blended pose).
+     */
+    void EvaluateHierarchicalFromLocals(const AnimationClip& clip,
+                                        const std::vector<BoneTransform>& localTransforms,
+                                        std::vector<XMFLOAT3>& outWorldPositions,
+                                        std::vector<XMFLOAT4>& outWorldRotations,
+                                        const std::vector<XMFLOAT3>* customBindPositions = nullptr,
+                                        bool lockRootPosition = false,
+                                        const std::vector<uint32_t>* lockedBones = nullptr)
+    {
         size_t boneCount = clip.boneTracks.size();
         outWorldPositions.resize(boneCount);
         outWorldRotations.resize(boneCount);
@@ -202,7 +274,7 @@ public:
         // Evaluate each bone
         for (size_t i = 0; i < boneCount; i++)
         {
-            BoneTransform localTransform = EvaluateBoneTrack(clip.boneTracks[i], time);
+            BoneTransform localTransform = i < localTransforms.size() ? localTransforms[i] : BoneTransform{};
             if (isBoneLocked(i))
             {
                 // Freeze to bind pose: zero position delta, identity rotation.
@@ -341,7 +413,20 @@ public:
         std::vector<XMFLOAT3> worldPositions;
         std::vector<XMFLOAT4> worldRotations;
         EvaluateHierarchical(clip, time, worldPositions, worldRotations, nullptr, lockRootPosition, lockedBones);
+        ComputeSkinningFromWorldTransforms(clip, worldPositions, worldRotations, customBindPositions,
+                                           outSkinningMatrices);
+    }
 
+    /**
+     * @brief The skinning half of ComputeSkinningWithCustomBindPositions, on world transforms the
+     * caller already evaluated (EvaluateHierarchical or EvaluateHierarchicalFromLocals).
+     */
+    void ComputeSkinningFromWorldTransforms(const AnimationClip& clip,
+                                            const std::vector<XMFLOAT3>& worldPositions,
+                                            const std::vector<XMFLOAT4>& worldRotations,
+                                            const std::vector<XMFLOAT3>& customBindPositions,
+                                            std::vector<XMFLOAT4X4>& outSkinningMatrices)
+    {
         size_t boneCount = clip.boneTracks.size();
 
         // Ghidra RE (Model_UpdateSkeletonTransforms @ 0x00754720):
@@ -450,14 +535,23 @@ public:
                                      bool lockRootPosition = false,
                                      const std::set<uint32_t>* lockedBones = nullptr)
     {
-        size_t boneCount = clip.boneTracks.size();
-
         // Evaluate local transforms for all bones
-        std::vector<BoneTransform> localTransforms(boneCount);
-        for (size_t i = 0; i < boneCount; i++)
-        {
-            localTransforms[i] = EvaluateBoneTrack(clip.boneTracks[i], time);
-        }
+        std::vector<BoneTransform> localTransforms;
+        EvaluateLocalTransforms(clip, time, localTransforms);
+        ComputeSkinningMatrixStackFromLocals(clip, localTransforms, outSkinningMatrices,
+                                             lockRootPosition, lockedBones);
+    }
+
+    /**
+     * @brief ComputeSkinningMatrixStack on local transforms the caller already has.
+     */
+    void ComputeSkinningMatrixStackFromLocals(const AnimationClip& clip,
+                                              const std::vector<BoneTransform>& localTransforms,
+                                              std::vector<XMFLOAT4X4>& outSkinningMatrices,
+                                              bool lockRootPosition = false,
+                                              const std::set<uint32_t>* lockedBones = nullptr)
+    {
+        size_t boneCount = std::min(clip.boneTracks.size(), localTransforms.size());
 
         // The matrix stack: each entry is the accumulated matrix AFTER T(-basePos),
         // which is what child bones inherit from their parent.

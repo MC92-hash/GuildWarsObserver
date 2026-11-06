@@ -310,6 +310,9 @@ extern "C"
 //                                                       (default match_analysis.json)
 //   GuildWarsObserver.exe --export-combat-log <match folder> [--out <file>]
 //                                                       (default combat_log.tsv; a developer check)
+//   GuildWarsObserver.exe --export-adrenaline <match folder> [<out file> | --out <file>]
+//                                                       (default adrenaline.txt; the adrenaline
+//                                                       model's per-player audit, AdrenalineModel)
 //
 // The Iris pack is the in-game HUD's data for one match (ReplayWindow_IrisPack.cpp), sealed so that
 // only Iris reads it. The upload step publishes it next to the recording.
@@ -333,7 +336,7 @@ extern "C"
 //   6  solved nothing worth writing, or the file could not be written
 // ---------------------------------------------------------------------------
 
-enum class HeadlessExport { Attributes, IrisPack, MatchAnalysis, CombatLog };
+enum class HeadlessExport { Attributes, IrisPack, MatchAnalysis, CombatLog, Adrenaline };
 
 static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::wstring& outArg, HeadlessExport kind)
 {
@@ -350,6 +353,7 @@ static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::
     const char* tag = kind == HeadlessExport::IrisPack      ? "export-iris-pack"
                     : kind == HeadlessExport::MatchAnalysis ? "export-match-analysis"
                     : kind == HeadlessExport::CombatLog     ? "export-combat-log"
+                    : kind == HeadlessExport::Adrenaline    ? "export-adrenaline"
                                                             : "export-attributes";
     std::error_code ec;
     if (!std::filesystem::is_directory(folder, ec))
@@ -436,12 +440,14 @@ static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::
         const char* defaultName = kind == HeadlessExport::IrisPack      ? "iris.pack"
                                 : kind == HeadlessExport::MatchAnalysis ? "match_analysis.json"
                                 : kind == HeadlessExport::CombatLog     ? "combat_log.tsv"
+                                : kind == HeadlessExport::Adrenaline    ? "adrenaline.txt"
                                                                         : "attributes.json";
         const std::filesystem::path out = !outArg.empty() ? std::filesystem::path(outArg)
                                         : folder / defaultName;
         const bool written = kind == HeadlessExport::IrisPack      ? rw->ExportIrisPack(out)
                            : kind == HeadlessExport::MatchAnalysis ? rw->ExportMatchAnalysis(out)
                            : kind == HeadlessExport::CombatLog     ? rw->ExportCombatLogView(out)
+                           : kind == HeadlessExport::Adrenaline    ? rw->ExportAdrenaline(out)
                                                                    : rw->ExportAttributes(out);
         if (written)
         {
@@ -483,6 +489,13 @@ static bool TryHeadlessCommandLine(LPWSTR lpCmdLine, int& exitCode)
         else if (wcscmp(argv[i], L"--export-iris-pack") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::IrisPack; }
         else if (wcscmp(argv[i], L"--export-match-analysis") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::MatchAnalysis; }
         else if (wcscmp(argv[i], L"--export-combat-log") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::CombatLog; }
+        else if (wcscmp(argv[i], L"--export-adrenaline") == 0 && i + 1 < argc)
+        {
+            folder = argv[++i];
+            kind = HeadlessExport::Adrenaline;
+            // The output may follow the folder directly: --export-adrenaline <folder> <out.txt>.
+            if (i + 1 < argc && wcsncmp(argv[i + 1], L"--", 2) != 0) out = argv[++i];
+        }
         else if (wcscmp(argv[i], L"--out") == 0 && i + 1 < argc)          out    = argv[++i];
     }
     LocalFree(argv);

@@ -6101,7 +6101,9 @@ void ReplayWindow::Tick()
         // 3) Sort each agent's timeline by startTime
         for (auto& [id, ard] : m_replayCtx.agents)
         {
-            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+            // Stable: two uses in one millisecond keep the recording's order ("Make Your Time!"
+            // recorded before "The Power Is Yours!" pays first).
+            std::stable_sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
                       [](const SkillUseEvent& a, const SkillUseEvent& b) {
                           return a.startTime < b.startTime;
                       });
@@ -6240,7 +6242,7 @@ void ReplayWindow::Tick()
         // Sort each agent's skillUseHistory by startTime so binary searches
         // and cursor-based audio scanning work correctly.
         for (auto& [id, ard] : m_replayCtx.agents) {
-            std::sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
+            std::stable_sort(ard.skillUseHistory.begin(), ard.skillUseHistory.end(),
                 [](const SkillUseEvent& a, const SkillUseEvent& b) {
                     return a.startTime < b.startTime;
                 });
@@ -6721,6 +6723,8 @@ void ReplayWindow::Tick()
     if (m_combatLogBuilt && m_maxHpBreakpointSolved && m_armourSolved && m_modelChangesBuilt &&
         !m_attributesDeduced)
     {
+        EnergyModel::DropQuicksandSamples(m_replayCtx.stocData, m_replayCtx.agents, m_replayCtx.mapId);
+
         AttributeModel::Inputs attrInputs;
         attrInputs.skills    = &m_skillView;
         attrInputs.combatLog = &m_combatLog;
@@ -6782,6 +6786,10 @@ void ReplayWindow::Tick()
         char energyFlag[16] = {};
         if (GetEnvironmentVariableA("GWO_ENERGY_DEBUG", energyFlag, (DWORD)sizeof(energyFlag)) != 0)
             (void)EnergyTrackFor(0);
+        // And the adrenaline dump (GWO_ADRENALINE_DEBUG).
+        char adrenalineFlag[16] = {};
+        if (GetEnvironmentVariableA("GWO_ADRENALINE_DEBUG", adrenalineFlag, (DWORD)sizeof(adrenalineFlag)) != 0)
+            (void)AdrenalineTrackFor(0);
         // And the key moments (GWO_HIGHLIGHTS_DEBUG).
         WriteHighlightsDebug();
         // And the damage dump (GWO_DAMAGE_DEBUG), written when the attribution table is built.
@@ -7360,6 +7368,7 @@ void ReplayWindow::Render()
     // The props between the camera and the fight, over everything the frame has drawn so far.
     m_mapRenderer->RenderGhostMeshes(SceneRTV(), SceneDSV());
 
+
     DrawAgentCylinders();
 
     // The scene is finished: stretch it over the back buffer when it was drawn smaller.
@@ -7553,6 +7562,9 @@ void ReplayWindow::DrawImGuiOverlay()
             ImGui::SliderFloat("Model Scale", &m_agentModelScale, 0.1f, 5.0f, "%.2f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Scale factor for agent 3D models");
+            ImGui::Checkbox("Smooth animation blending", &m_gwAnimationBlending);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Blend between animations as Guild Wars does: 0.2 s crossfades, smoothed loops and hit flinches.\nOff: every change cuts straight to the new pose.");
 
             ImGui::Checkbox("Character shadows (preview)", &m_showAgentShadows);
             if (ImGui::IsItemHovered())
@@ -10410,7 +10422,7 @@ void DrawPartyHealthBar(
     if (absMaxHp > 0)
     {
         const float iconSz = std::min(innerH - 2.f, 18.f);
-        uint32_t displayHp = isDead ? 0u : (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
+        uint32_t displayHp = AgentReplayData::DisplayHp(*snap, absMaxHp);
         char hpStr[32];
         if (hpEstimated)
             snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);

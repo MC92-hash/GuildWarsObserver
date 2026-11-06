@@ -38,6 +38,7 @@
 #include "SkillCooldowns.h"
 #include "HealthModel.h"
 #include "EnergyModel.h"
+#include "AdrenalineModel.h"
 #include "FluxAllIn.h"
 #include "DamageAttribution.h"
 #include "EffectTimeline.h"
@@ -51,6 +52,7 @@ namespace MatchStats { struct Inputs; }
 #include "CatapultDangerZone.h"
 #include "SkillDatabase.h"
 #include <string>
+#include <map>
 #include <memory>
 #include <utility>
 #include <variant>
@@ -168,6 +170,8 @@ public:
     // The Combat Log panel's entries as text (--export-combat-log), for checking them on the archive.
     bool CombatLogBuilt() const { return m_combatLogBuilt; }
     bool ExportCombatLogView(const std::filesystem::path& outPath);
+    // The adrenaline model's per-player report (--export-adrenaline), for the audit of the archive.
+    bool ExportAdrenaline(const std::filesystem::path& outPath);
     // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
     // damage/healing over time, bundles), appended to the open JSON object.
     void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;
@@ -560,6 +564,20 @@ private:
     mutable std::unordered_map<int, EnergyModel::Track> m_energyTracks;
     mutable bool m_energyBuilt = false;
     mutable bool m_energyUsedAttributes = false;
+
+    // Each player's adrenaline per skill slot, calculated forward from the match start
+    // (AdrenalineModel, private). Built lazily like the energy tracks and rebuilt once the
+    // attribute solve lands (rank-scaled skill gains read it).
+    void BuildAdrenalineTracks() const;
+    const AdrenalineModel::Track* AdrenalineTrackFor(int agentId) const;
+    mutable std::unordered_map<int, AdrenalineModel::Track> m_adrenalineTracks;
+    mutable bool m_adrenalineBuilt = false;
+    mutable bool m_adrenalineUsedAttributes = false;
+    // The client's flame effect over a charging slot (multiply blend), and the tooltip line.
+    Microsoft::WRL::ComPtr<ID3D11BlendState> m_adrenalineMultiplyBlend;
+    ID3D11BlendState* AdrenalineMultiplyBlend();
+    void DrawAdrenalineOverlay(ImDrawList* dl, int agentId, int skillId, ImVec2 tl, ImVec2 br, bool inUse);
+    void DrawAdrenalineTooltipLine(int agentId, int skillId);
 
     // Which skill each damage and heal packet came from (DamageAttribution, private): one table
     // over the whole match, built once the skill-use timeline exists. The pops over the followed
@@ -1507,6 +1525,9 @@ private:
     bool m_useAgentModels = false;
     bool m_agentModelsLoaded = false;
     float m_agentModelScale = 1.0f;
+    // Blend between animations as Gw.exe does (0.2 s crossfades, smoothed loop seams, hit
+    // flinches) instead of cutting straight to the new pose.
+    bool m_gwAnimationBlending = true;
 
     // Async loading infrastructure
     std::thread m_agentModelLoadThread;
@@ -1643,6 +1664,9 @@ private:
         int   currentMovementTableIdx = -1;
         bool  isPlayingMovementAnim = false;
         bool  isPlayingIdleAnim = false;
+        // Whether the recording carries the agent's own velocity (move_x/move_y), the vector the
+        // client picks walk/run/strafe from: -1 not looked at yet, 0 no, 1 yes.
+        int   hasMoveVector = -1;
 
         // Snapshot index DrawAgentModels resolved for this agent this frame. DrawWeaponModels
         // runs straight after it and reuses the result rather than repeating the binary search.
@@ -2618,6 +2642,16 @@ private:
     int   m_focusedAgentId     = -1;
     bool  m_floaterToggle      = false;   // the client's left/right switch, flips on every spawn
 
+    // The numbers over everyone but the followed player, per agent. Each keeps the place and size it
+    // spawned with, as the followed player's do.
+    struct AgentFloaters {
+        std::vector<IncomingEffect> live;
+        bool toggle = false;
+    };
+    std::map<int, AgentFloaters> m_floatersOverPlayers;
+    float m_floatersOverPlayersScanTime = -1.f;
+    int   m_floatersOverPlayersFollowed = -1;
+
     // The client's layout of new floaters among the live ones on the same agent: `batch` is placed
     // in time order and appended to `live`.
     void  PlaceFloaters(std::vector<IncomingEffect>& live, std::vector<IncomingEffect>& batch,
@@ -2648,6 +2682,7 @@ private:
     // The energy model's gains and drains over every OTHER player on screen (the followed one has
     // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
     void RenderEnergyPopsOverPlayers();
+    void UpdateFloatersOverPlayers();
     void RenderIncomingEffects();
     // A second view (the Split Camera, Highlights' right half): what floats over its picture, and
     // the numbers over the one agent it watches, in a list of its own.

@@ -260,8 +260,8 @@ void ReplayWindow::DrawLordDamagePanel()
             int lordMax = LordAggressiveness::kLordHealthByBoosts[std::min(10, TeamMoraleBoostsAt(idx + 1, curTime))];
             if (snap && snap->has_deep_wound) lordMax = (int)AgentReplayData::ApplyDeepWound((uint32_t)lordMax);
             char hpText[48];
-            snprintf(hpText, sizeof(hpText), "%s / %s", formatDmg((int)std::lround(hpPct * lordMax)).c_str(),
-                     formatDmg(lordMax).c_str());
+            const int lordHp = snap ? (int)AgentReplayData::DisplayHp(*snap, (uint32_t)lordMax) : lordMax;
+            snprintf(hpText, sizeof(hpText), "%s / %s", formatDmg(lordHp).c_str(), formatDmg(lordMax).c_str());
             ImVec2 hpSz = ImGui::CalcTextSize(hpText);
             ImVec2 hpPos(innerTL.x + 4.f, innerTL.y + (innerH - hpSz.y) * 0.5f);
             dl->AddText(ImVec2(hpPos.x + 1, hpPos.y + 1), IM_COL32(0, 0, 0, 0xCC), hpText);
