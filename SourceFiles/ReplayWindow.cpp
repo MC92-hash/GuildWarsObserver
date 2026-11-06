@@ -6723,6 +6723,8 @@ void ReplayWindow::Tick()
     if (m_combatLogBuilt && m_maxHpBreakpointSolved && m_armourSolved && m_modelChangesBuilt &&
         !m_attributesDeduced)
     {
+        EnergyModel::DropQuicksandSamples(m_replayCtx.stocData, m_replayCtx.agents, m_replayCtx.mapId);
+
         AttributeModel::Inputs attrInputs;
         attrInputs.skills    = &m_skillView;
         attrInputs.combatLog = &m_combatLog;
@@ -7365,6 +7367,7 @@ void ReplayWindow::Render()
 
     // The props between the camera and the fight, over everything the frame has drawn so far.
     m_mapRenderer->RenderGhostMeshes(SceneRTV(), SceneDSV());
+
 
     DrawAgentCylinders();
 

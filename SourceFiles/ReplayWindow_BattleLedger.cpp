@@ -3,6 +3,7 @@
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "SkillDatabase.h"
+#include "Quicksand.h"
 #include "StatsTableView.h"
 #include "GuiGlobalConstants.h"
 #include <filesystem>
@@ -368,7 +369,7 @@ void ReplayWindow::BuildBattleLedger() const
                 if (s.hp_pips <= 0.f || !s.is_alive || s.is_dead || s.health_pct <= 0.f || s.health_pct >= 0.999f) continue;
                 bool water = false;
                 for (const EffectTimeline::Effect* e : fx->ActiveAt(pid, s.time))
-                    if (e->kind == EffectTimeline::Kind::Terrain) { water = true; break; }
+                    if (e->kind == EffectTimeline::Kind::Terrain && e->skillId != Quicksand::kSkillId) { water = true; break; }
                 if (!water) continue;
                 const uint32_t mhp = FloaterMaxHp(pid, s.time);
                 if (!mhp || std::lround(s.hp_pips * (float)mhp / 2.f) < 1) continue;
