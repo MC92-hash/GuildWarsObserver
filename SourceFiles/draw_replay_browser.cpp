@@ -7303,7 +7303,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 12;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 13;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
