@@ -52,6 +52,7 @@ namespace MatchStats { struct Inputs; }
 #include "CatapultDangerZone.h"
 #include "SkillDatabase.h"
 #include <string>
+#include <map>
 #include <memory>
 #include <utility>
 #include <variant>
@@ -2641,6 +2642,16 @@ private:
     int   m_focusedAgentId     = -1;
     bool  m_floaterToggle      = false;   // the client's left/right switch, flips on every spawn
 
+    // The numbers over everyone but the followed player, per agent. Each keeps the place and size it
+    // spawned with, as the followed player's do.
+    struct AgentFloaters {
+        std::vector<IncomingEffect> live;
+        bool toggle = false;
+    };
+    std::map<int, AgentFloaters> m_floatersOverPlayers;
+    float m_floatersOverPlayersScanTime = -1.f;
+    int   m_floatersOverPlayersFollowed = -1;
+
     // The client's layout of new floaters among the live ones on the same agent: `batch` is placed
     // in time order and appended to `live`.
     void  PlaceFloaters(std::vector<IncomingEffect>& live, std::vector<IncomingEffect>& batch,
@@ -2671,6 +2682,7 @@ private:
     // The energy model's gains and drains over every OTHER player on screen (the followed one has
     // them among its incoming effects): a "Fear Me!" shows its "-4" over each foe it reached.
     void RenderEnergyPopsOverPlayers();
+    void UpdateFloatersOverPlayers();
     void RenderIncomingEffects();
     // A second view (the Split Camera, Highlights' right half): what floats over its picture, and
     // the numbers over the one agent it watches, in a list of its own.
