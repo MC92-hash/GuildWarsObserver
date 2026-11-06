@@ -1786,7 +1786,7 @@ void ReplayWindow::DrawFocusHudHealthBar(const AgentReplayData& ard, ImVec2 b0, 
 
     const float cx = std::round((b0.x + b1.x) * 0.5f), cy = (b0.y + b1.y) * 0.5f;
     char num[16];
-    snprintf(num, sizeof(num), "%d", static_cast<int>(std::lround(hp * static_cast<float>(mhp.value))));
+    snprintf(num, sizeof(num), "%u", AgentReplayData::DisplayHp(*snap, mhp.value));
     // The bar scales with the window and the text with it: never taller than the bar allows.
     ImFont* font = ImGui::GetFont();
     const float fs = std::min(ImGui::GetFontSize(), std::max(8.f, std::round(b1.y - b0.y)));

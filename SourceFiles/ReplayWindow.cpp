@@ -10419,7 +10419,7 @@ void DrawPartyHealthBar(
     if (absMaxHp > 0)
     {
         const float iconSz = std::min(innerH - 2.f, 18.f);
-        uint32_t displayHp = isDead ? 0u : (uint32_t)(std::clamp(snap->health_pct, 0.f, 1.f) * absMaxHp);
+        uint32_t displayHp = AgentReplayData::DisplayHp(*snap, absMaxHp);
         char hpStr[32];
         if (hpEstimated)
             snprintf(hpStr, sizeof(hpStr), "~%u/%u", displayHp, absMaxHp);
