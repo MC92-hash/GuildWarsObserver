@@ -7619,8 +7619,9 @@ static bool StartAnalysisProcess(const std::filesystem::path& folder)
 static void ForgetMapPicture();   // Map tab, below
 
 // Advances the job for the selected match by one step. Called every frame an analysis tab
-// is showing.
-static void UpdateMatchAnalysis(const MatchMeta& m)
+// is showing. A cloud-only match is downloaded only when allowDownload is set (the Stats and
+// Map tabs); the Overview never downloads, it only reads matches already on disk.
+static void UpdateMatchAnalysis(const MatchMeta& m, bool allowDownload = true)
 {
     using State = MatchAnalysisJob::State;
     if (s_analysis.folderName != m.folder_name)
@@ -7638,6 +7639,7 @@ static void UpdateMatchAnalysis(const MatchMeta& m)
     {
         if (m.is_cloud_only)
         {
+            if (!allowDownload) return;
             // The replay button's download is single-slot: wait for one already running.
             if (g_cloudDownloadInProgress || g_pendingReplay.requested) return;
             g_pendingReplay.requested = true;
@@ -9660,8 +9662,9 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
 
     if (s_state.detailTab == DetailTab_Overview)
     {
-        // The attributes need the match read, as the other tabs do: selecting a match starts it.
-        UpdateMatchAnalysis(m);
+        // The attributes need the match read. Selecting a match reads it when it is on disk,
+        // but never downloads it: that waits for Replay or the Stats/Map tabs.
+        UpdateMatchAnalysis(m, false);
         OverviewBuilds ob;
         using State = MatchAnalysisJob::State;
         if (s_analysis.folderName == m.folder_name && s_analysis.state == State::Ready)
@@ -9669,7 +9672,9 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
             ob.builds = &s_analysis.builds;
         }
         else
-            ob.pending = s_analysis.state == State::Downloading ? "Downloading the match..."
+            ob.pending = s_analysis.state == State::Idle && m.is_cloud_only
+                                                          ? "Attributes are read once the match is downloaded"
+                       : s_analysis.state == State::Downloading ? "Downloading the match..."
                        : s_analysis.state == State::Failed      ? "Attributes unavailable"
                                                                 : "Solving attributes...";
         DrawMatchOverview(m, ob);
