@@ -330,6 +330,21 @@
     <ClInclude Include="SourceFiles\ui\app_navigation.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaStats.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModule.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModuleData.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaUi.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaMap.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -838,6 +853,21 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ui\ui_kit.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaStats.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModule.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaPanel.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaMap.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaSelftest.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp">

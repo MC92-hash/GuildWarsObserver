@@ -10,7 +10,7 @@
 // The approved D1 artwork is kept intact as an atlas. UV rectangles below use
 // its original 1536 x 1024 coordinates for texture and engraved corners.
 // Navigation emblems are drawn as paths, independently of the raster artwork.
-enum class AppTab { None = -1, Library, Scout, Wardrobe };
+enum class AppTab { None = -1, Library, Scout, Meta, Wardrobe };
 
 namespace app_navigation
 {
@@ -75,6 +75,20 @@ static void DrawEmblem(ImDrawList* dl, AppTab tab, ImVec2 origin, float size, Im
             panel({{.65f, 19.3f}, {6.5f, 16.8f}, {7.5f, 20}, {.65f, 23}});
         }
     }
+    else if (tab == AppTab::Meta)
+    {
+        // A skill tile: the square frame of an icon, with a four-point spark inside.
+        dl->AddRect(p(3.5f, 3.5f), p(20.5f, 20.5f), ink, 2.f * scale, 0, stroke);
+        for (int i = 0; i < 4; ++i)
+        {
+            auto q = [&](float x, float y) {
+                for (int j = 0; j < i; ++j) { const float tmp = x; x = -y; y = tmp; }
+                return p(12 + x, 12 + y);
+            };
+            dl->AddTriangleFilled(q(0, -6.5f), q(1.6f, -1.6f), q(-1.6f, -1.6f), ink);
+        }
+        dl->AddRectFilled(p(10.4f, 10.4f), p(13.6f, 13.6f), ink);
+    }
 }
 
 struct Layout
@@ -103,7 +117,7 @@ static Layout GetLayout()
     const float menuX = compact ? creditX : creditX - menuWidth - 16.f * s;
     const bool brand = menuX >= 580.f * s;
     const float navX = brand ? 196.f * s : 30.f * s;
-    const float tabWidth = std::min(164.f * s, std::max(1.f, (menuX - navX - 8.f * s) / 3.f));
+    const float tabWidth = std::min(164.f * s, std::max(1.f, (menuX - navX - 8.f * s) / 4.f));
     return { s, 64.f * s, menuWidth, menuX, navX, tabWidth, brand, tabWidth >= 120.f * s,
         creditX, creditWidth, compact };
 }
@@ -224,10 +238,11 @@ static AppTab draw_app_ribbon(AppTab current)
         static const Tab tabs[] = {
             { "Library", "Your matches" },
             { "Scout", "What they run, and what beats them" },
+            { "Meta", "How skills are used across every recorded match" },
             { "Wardrobe", "Create a character and dress it" },
         };
         ImFont* font = ImGui::GetFont();
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
             const auto& tab = tabs[i];
             const bool active = static_cast<AppTab>(i) == current;

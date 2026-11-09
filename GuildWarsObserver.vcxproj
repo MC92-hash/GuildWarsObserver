@@ -290,6 +290,11 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterStage.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\WardrobeRules.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaStats.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModule.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModuleData.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaUi.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaMap.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeThumbnails.h" />
@@ -580,6 +585,11 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\PartLoader.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\CharacterStage.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\WardrobeRules.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaStats.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaModule.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaPanel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaMap.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaSelftest.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeLogic.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeMap.cpp" />

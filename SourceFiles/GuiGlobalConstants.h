@@ -19,6 +19,7 @@
 enum class AppScreen
 {
 	Library,
+	Meta,
 	Wardrobe,
 };
 
