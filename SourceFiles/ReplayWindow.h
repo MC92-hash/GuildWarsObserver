@@ -2804,6 +2804,7 @@ private:
 
     void InitAudioEngine();
     void UpdateAudioPlayback(float currentTime, float dt);
+    void SaveSoundSettingsIfChanged();
     void BuildSkillSoundTimeline();
 
     // --- Heatmap system ---

@@ -7750,6 +7750,7 @@ void ReplayWindow::DrawImGuiOverlay()
     m_annotationMgr.RenderToolbar(&m_panelLayout);
     m_annotationMgr.RenderDrawModeIndicator();
     DrawSoundFxPanel(m_audioEngine.get(), m_showSoundFxPanel);
+    SaveSoundSettingsIfChanged();
 
     // Everything below paints into the background draw list, so the panels
     // stay readable on top of it.  Call order is the stacking order there:

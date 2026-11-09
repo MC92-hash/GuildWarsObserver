@@ -225,6 +225,7 @@ public:
     void ResetCategoryStats() { for (auto& s : m_categoryStats) s = CategoryStats{}; }
     // Silences the output without touching the levels (a hidden verification run).
     void SetOutputMuted(bool muted) { m_outputMuted = muted; }
+    bool IsOutputMuted() const { return m_outputMuted; }
     const SoundCache* GetSoundCache() const { return m_soundCache.get(); }
 
 private:
