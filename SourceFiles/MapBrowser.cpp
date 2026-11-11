@@ -23,6 +23,7 @@
 #include "CursorSystem.h"
 #include "RunLog.h"
 #include "WardrobeApp.h"
+#include "Meta/MetaModule.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -341,6 +342,7 @@ MapBrowser::~MapBrowser()
     // The Wardrobe closes first, while the renderer, the device and the interface it draws with
     // still exist: what it keeps lives past this object, and must not reach back into it.
     shutdown_wardrobe_app(m_map_renderer.get());
+    shutdown_meta_module();
 
     if (s_activeInstance == this)
         s_activeInstance = nullptr;
@@ -739,7 +741,10 @@ void MapBrowser::Tick()
         return;
     }
 
-    if (!is_extracting) {
+    // DEV TOOL (GWO_META_SELFTEST): it draws in a hidden window, so never takes the foreground.
+    const bool meta_selftest = GuiGlobalConstants::IsDeveloperMode() && meta_module_selftest_requested();
+
+    if (!is_extracting && !meta_selftest) {
         if (IsIconic(m_deviceResources->GetWindow())) {
             return;
         }
@@ -1188,6 +1193,8 @@ void MapBrowser::Render()
     // --- Start ImGui Frame ---
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    if (GuiGlobalConstants::IsDeveloperMode())
+        meta_module_selftest_input();   // after the backend, so its mouse wins over the real one
     ImGui::NewFrame();
 
     bool msaa_changed = false;

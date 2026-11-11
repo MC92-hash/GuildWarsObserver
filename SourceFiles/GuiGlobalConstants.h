@@ -4,6 +4,8 @@
 #include <fstream>
 #include <string>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <algorithm>
 #include <cstdlib>
 #include <system_error>
@@ -19,6 +21,7 @@
 enum class AppScreen
 {
 	Library,
+	Meta,
 	Wardrobe,
 };
 
@@ -318,6 +321,12 @@ public:
 	static constexpr float kMinReplayCameraFovDegrees     = 30.0f;
 	static constexpr float kMaxReplayCameraFovDegrees     = 90.0f;
 	inline static float replay_camera_fov_degrees = kDefaultReplayCameraFovDegrees;
+
+	// The replay's mute and Sound FX panel, kept across matches and sessions: every replay window
+	// builds its own audio engine, so this is what carries them over. Holds only what differs from
+	// the defaults, so retuning a default still reaches every slider its owner never moved. The
+	// keys and their ranges are ReplayWindow_Audio.cpp's.
+	inline static std::map<std::string, float, std::less<>> replay_sound_settings;
 
 	static float ClampReplayCameraFovDegrees(float degrees)
 	{
@@ -761,6 +770,8 @@ public:
 		file << "map_light_gain_classic=" << map_light_gain_classic << "\n";
 		file << "map_light_gain_client=" << map_light_gain_client << "\n";
 		file << "replay_camera_fov_degrees=" << replay_camera_fov_degrees << "\n";
+		for (const auto& [soundKey, soundValue] : replay_sound_settings)
+			file << "replay_sound_" << soundKey << "=" << soundValue << "\n";
 		file << "replay_camera_pan_speed_multiplier=" << replay_camera_pan_speed_multiplier << "\n";
 		file << "replay_camera_rotation_speed_multiplier=" << replay_camera_rotation_speed_multiplier << "\n";
 		file << "replay_camera_zoom_speed_multiplier=" << replay_camera_zoom_speed_multiplier << "\n";
@@ -860,6 +871,12 @@ public:
 			if (key == "replay_camera_fov_degrees") {
 				try {
 					replay_camera_fov_degrees = ClampReplayCameraFovDegrees(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
+			if (key.rfind("replay_sound_", 0) == 0) {
+				try {
+					replay_sound_settings[key.substr(13)] = std::stof(val_str);
 				} catch (...) {}
 				continue;
 			}

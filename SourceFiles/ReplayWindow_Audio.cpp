@@ -27,6 +27,7 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include <string_view>
 #include <json.hpp>
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -43,6 +44,59 @@ static std::filesystem::path GetSkillSoundsJsonPath()
     return dir / "settings" / "skill_sounds.json";
 }
 
+// The Sound FX panel's settings as gui_settings.ini keeps them, with the ranges its sliders allow.
+namespace
+{
+    struct SoundSetting { const char* key; float AudioConfig::* field; float lo, hi; };
+    constexpr SoundSetting kSoundSettings[] = {
+        { "master_volume",           &AudioConfig::master_volume,           0.f,    1.f },
+        { "background_volume",       &AudioConfig::background_volume,       0.f,    1.f },
+        { "skills_volume",           &AudioConfig::skills_volume,           0.f,    1.f },
+        { "attacks_volume",          &AudioConfig::attacks_volume,          0.f,    1.f },
+        { "voices_volume",           &AudioConfig::voices_volume,           0.f,    1.f },
+        { "ambient_volume",          &AudioConfig::ambient_volume,          0.f,    1.f },
+        { "ui_volume",               &AudioConfig::ui_volume,               0.f,    1.f },
+        { "music_volume",            &AudioConfig::music_volume,            0.f,    1.f },
+        { "hearing_distance_scale",  &AudioConfig::hearing_distance_scale,  0.10f,  3.f },
+        { "vertical_distance_scale", &AudioConfig::vertical_distance_scale, 0.f,    1.f },
+        { "near_field_fraction",     &AudioConfig::near_field_fraction,     0.005f, 0.40f },
+        { "distance_rolloff",        &AudioConfig::distance_rolloff,        0.05f,  3.f },
+    };
+    constexpr const char* kSwapStereoKey = "swap_stereo";
+    constexpr const char* kMutedKey      = "muted";
+
+    float StoredSound(const char* key, float fallback)
+    {
+        const auto& stored = GuiGlobalConstants::replay_sound_settings;
+        const auto it = stored.find(std::string_view(key));
+        return it != stored.end() ? it->second : fallback;
+    }
+}
+
+void ReplayWindow::SaveSoundSettingsIfChanged()
+{
+    if (!m_audioInitialized || !m_audioEngine || m_audioEngine->IsOutputMuted()) return;
+
+    const AudioConfig& cfg = m_audioEngine->GetConfig();
+    const AudioConfig defaults;
+
+    bool same = cfg.swap_stereo == (StoredSound(kSwapStereoKey, 0.f) != 0.f) &&
+                m_audioEnabled == (StoredSound(kMutedKey, 0.f) == 0.f);
+    for (const SoundSetting& s : kSoundSettings)
+        same = same && cfg.*s.field == StoredSound(s.key, defaults.*s.field);
+
+    // Once the slider is let go, rather than rewriting the file on every frame of a drag.
+    if (same || ImGui::IsAnyItemActive()) return;
+
+    auto& stored = GuiGlobalConstants::replay_sound_settings;
+    stored.clear();
+    for (const SoundSetting& s : kSoundSettings)
+        if (cfg.*s.field != defaults.*s.field) stored[s.key] = cfg.*s.field;
+    if (cfg.swap_stereo)  stored[kSwapStereoKey] = 1.f;
+    if (!m_audioEnabled)  stored[kMutedKey] = 1.f;
+    GuiGlobalConstants::SaveSettings();
+}
+
 void ReplayWindow::InitAudioEngine()
 {
     if (m_audioInitialized || !m_datManager) return;
@@ -54,9 +108,21 @@ void ReplayWindow::InitAudioEngine()
         return;
     }
 
-    // A hidden verification run (GWO_AUDIO_MUTE set): silent output, the levels left as they are.
+    // A hidden verification run (GWO_AUDIO_MUTE set): silent output, the default levels, so that
+    // what it measures does not depend on the owner's mix or whether they left the sound muted.
     if (GetEnvironmentVariableA("GWO_AUDIO_MUTE", nullptr, 0) > 0)
+    {
         m_audioEngine->SetOutputMuted(true);
+    }
+    else
+    {
+        AudioConfig& cfg = m_audioEngine->GetConfig();
+        const AudioConfig defaults;
+        for (const SoundSetting& s : kSoundSettings)
+            cfg.*s.field = std::clamp(StoredSound(s.key, defaults.*s.field), s.lo, s.hi);
+        cfg.swap_stereo = StoredSound(kSwapStereoKey, 0.f) != 0.f;
+        m_audioEnabled  = StoredSound(kMutedKey, 0.f) == 0.f;
+    }
 
     m_skillSoundTable = std::make_unique<SkillSoundTable>();
     m_skillSoundTable->Load(GetSkillSoundsJsonPath().string());

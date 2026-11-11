@@ -4,6 +4,7 @@
 #include "pch.h"
 #include "MapBrowser.h"
 #include "GuiGlobalConstants.h"
+#include "Meta/MetaModule.h"
 #include "InputManager.h"
 #include "ModelViewer/ModelViewer.h"
 #include "Extract_BASS_DLL_resource.h"
@@ -589,6 +590,9 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         if (GuiGlobalConstants::window_width != -1 && GuiGlobalConstants::window_maximized) {
             showCmd = SW_SHOWMAXIMIZED;
         }
+        // DEV TOOL: a self test never shows itself, whatever state the window was last left in.
+        if (GuiGlobalConstants::IsDeveloperMode() && meta_module_selftest_requested())
+            showCmd = SW_HIDE;
         ShowWindow(hwnd, showCmd);
         // TODO: Change nCmdShow to SW_SHOWMAXIMIZED to default to fullscreen.
 

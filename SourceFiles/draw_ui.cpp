@@ -15,6 +15,7 @@
 // The Wardrobe is a private sub-application: the public tree carries its declaration and the
 // switch that reaches it, and nothing else about it.
 #include "WardrobeApp.h"
+#include "Meta/MetaModule.h"
 #include "GuiGlobalConstants.h"
 #include "GraphicsSettingsUI.h"
 #include "ui/ui_kit.h"
@@ -1069,10 +1070,13 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 
 	// THE RIBBON [2026-09-30], and the tool it asks for. The Wardrobe is never switched off from
 	// outside: it is asked to leave, closes its visit itself (drafts written, scene released) and
-	// answers false, and only then does the Library - or Scout - come in.
+	// answers false, and only then does the Library, Scout or Meta comes in.
 	static AppTab s_afterWardrobe = AppTab::None;
 	{
+		if (GuiGlobalConstants::IsDeveloperMode())
+			meta_module_selftest_frame();
 		const AppTab current = GuiGlobalConstants::app_screen == AppScreen::Wardrobe ? AppTab::Wardrobe
+			: GuiGlobalConstants::app_screen == AppScreen::Meta ? AppTab::Meta
 			: (replay_browser_scout_mode() ? AppTab::Scout : AppTab::Library);
 		const AppTab clicked = draw_app_ribbon(current);
 		drawHeaderMenus();
@@ -1087,8 +1091,15 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 			{
 				GuiGlobalConstants::app_screen = AppScreen::Wardrobe;
 			}
+			else if (clicked == AppTab::Meta)
+			{
+				GuiGlobalConstants::app_screen = AppScreen::Meta;
+				// The click focused the ribbon; the arrow keys belong to the table.
+				ImGui::SetWindowFocus("##meta_module");
+			}
 			else
 			{
+				GuiGlobalConstants::app_screen = AppScreen::Library;
 				replay_browser_set_scout_mode(clicked == AppTab::Scout);
 				// The click focused the ribbon; the keyboard goes back to the screen.
 				ImGui::SetWindowFocus("##replay_browser");
@@ -1096,7 +1107,7 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		}
 	}
 
-	// THE APP SWITCH. The Library and the Wardrobe are siblings: exactly one of them owns the
+	// THE APP SWITCH. The Library, Meta and the Wardrobe are siblings: exactly one of them owns the
 	// window below the ribbon on any frame. The Wardrobe answers false on the frame it has left -
 	// asked by the ribbon, or by Esc from its top screen - and has no way back of its own to show
 	// (nullptr): the ribbon is that.
@@ -1117,11 +1128,17 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		}
 		if (!stay)
 		{
-			GuiGlobalConstants::app_screen = AppScreen::Library;
-			if (s_afterWardrobe != AppTab::None)
+			GuiGlobalConstants::app_screen = s_afterWardrobe == AppTab::Meta ? AppScreen::Meta : AppScreen::Library;
+			if (s_afterWardrobe == AppTab::Meta)
+				ImGui::SetWindowFocus("##meta_module");
+			if (s_afterWardrobe == AppTab::Library || s_afterWardrobe == AppTab::Scout)
 				replay_browser_set_scout_mode(s_afterWardrobe == AppTab::Scout);
 			s_afterWardrobe = AppTab::None;
 		}
+	}
+	else if (GuiGlobalConstants::app_screen == AppScreen::Meta)
+	{
+		draw_meta_module(replay_library);
 	}
 	else
 	{

@@ -2208,6 +2208,8 @@ private:
     int   m_pianoRollHoverRow   = -1;  // agent id of hovered row (-1 = none)
     bool  m_pianoRollTeam1Open  = true;
     bool  m_pianoRollTeam2Open  = true;
+    bool  m_pianoRollCardOpen   = true;  // the spike card on the right (hidden behind a bar when false)
+    bool  m_pianoRollMonksOpen  = true;  // the Monk cards at the bottom
     float m_pianoRollZoomToast  = -10.f; // timestamp when zoom toast was triggered
     std::vector<int> m_pianoRollPinned;  // players picked on the roll (ctrl+click adds): their casts are linked
     int   m_pianoRollPinDir     = 0;     // what the picked players show: 0 both ways, 1 their casts out, 2 the casts on them
@@ -2804,6 +2806,7 @@ private:
 
     void InitAudioEngine();
     void UpdateAudioPlayback(float currentTime, float dt);
+    void SaveSoundSettingsIfChanged();
     void BuildSkillSoundTimeline();
 
     // --- Heatmap system ---
