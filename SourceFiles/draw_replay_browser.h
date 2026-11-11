@@ -23,3 +23,10 @@ void draw_replay_browser(ReplayLibrary& library);
 // and switches it here.
 bool replay_browser_scout_mode();
 void replay_browser_set_scout_mode(bool on);
+
+// The Library's skill hover card (icon, cost, description), for other screens' skill lists.
+void replay_browser_skill_tooltip(int skillId);
+
+// The ui_kit theme the Library draws with right now (its card gallery has its own), for screens
+// that dress like it.
+int replay_browser_active_theme();

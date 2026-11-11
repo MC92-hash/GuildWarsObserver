@@ -2108,6 +2108,10 @@ static bool DrawCalendarPicker(const char* id, DateVal& date, int& browseMonth, 
 
 static int GetOccasionOrder(const std::string& occasion);  // defined with the sort helpers
 
+void replay_browser_skill_tooltip(int skillId) { DrawSkillTooltip(skillId); }
+
+int replay_browser_active_theme() { return s_state.cardGalleryMode ? 1 : GuiGlobalConstants::replay_browser_theme; }
+
 // ─── Skill filter ────────────────────────────────────────────────────────────
 
 // Selected skills show as icons only; the dropdown shows icon + name.
@@ -9774,8 +9778,7 @@ void draw_replay_browser(ReplayLibrary& library)
     }
 
     // Card gallery always uses Watchtower theme; table view uses user's choice
-    int themeToApply = s_state.cardGalleryMode ? 1 : GuiGlobalConstants::replay_browser_theme;
-    ApplyBrowserTheme(themeToApply);
+    ApplyBrowserTheme(replay_browser_active_theme());
 
     const auto& matches = library.GetMatches();
     s_libraryGeneration = library.GetGeneration();
