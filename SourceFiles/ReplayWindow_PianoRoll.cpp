@@ -122,6 +122,42 @@ bool ReplayWindow::IsSpikeAnswerSkill(int skillId) const
     return false;
 }
 
+namespace
+{
+    // A thin bar that hides or shows a side of the Piano Roll: a vertical one beside the spike card, a
+    // horizontal one above the Monk cards. The triangle points where the click sends the panel. Returns
+    // true when clicked.
+    bool PrCollapseHandle(const char* id, ImVec2 size, bool vertical, bool open, const char* label, const char* tip)
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool clicked = ImGui::InvisibleButton(id, size);
+        const bool hov = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 rule = IM_COL32(0x66, 0x54, 0x26, 0x66);
+        dl->AddRectFilled(p, ImVec2(p.x + size.x, p.y + size.y), hov ? IM_COL32(0xE1, 0xBE, 0x50, 0x22) : IM_COL32(0, 0, 0, 0x30));
+        if (vertical) dl->AddLine(ImVec2(p.x + 0.5f, p.y), ImVec2(p.x + 0.5f, p.y + size.y), rule);
+        else          dl->AddLine(ImVec2(p.x, p.y + 0.5f), ImVec2(p.x + size.x, p.y + 0.5f), rule);
+
+        const ImU32 col = hov ? IM_COL32(0xE1, 0xBE, 0x50, 0xFF) : IM_COL32(0xA0, 0x90, 0x60, 0xC0);
+        constexpr float r = 4.f;
+        // Vertical: open points right (hide to the right), closed points left. Horizontal: open points
+        // down (hide downwards), closed points up.
+        const ImVec2 c = vertical ? ImVec2(p.x + size.x * 0.5f, p.y + 14.f) : ImVec2(p.x + 14.f, p.y + size.y * 0.5f);
+        if (vertical && open)   dl->AddTriangleFilled(ImVec2(c.x + r, c.y), ImVec2(c.x - r, c.y - r), ImVec2(c.x - r, c.y + r), col);
+        if (vertical && !open)  dl->AddTriangleFilled(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y + r), ImVec2(c.x + r, c.y - r), col);
+        if (!vertical && open)  dl->AddTriangleFilled(ImVec2(c.x, c.y + r), ImVec2(c.x + r, c.y - r), ImVec2(c.x - r, c.y - r), col);
+        if (!vertical && !open) dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y + r), col);
+        if (!vertical && label)
+        {
+            ImFont* font = ImGui::GetFont();
+            const float fs = font->FontSize * 0.9f;
+            dl->AddText(font, fs, ImVec2(c.x + 10.f, p.y + (size.y - fs) * 0.5f), col, label);
+        }
+        if (hov) ImGui::SetTooltip("%s", tip);
+        return clicked;
+    }
+}
+
 void ReplayWindow::BuildSpikes()
 {
     m_spikesBuilt = true;
@@ -208,6 +244,10 @@ void ReplayWindow::DrawPianoRollPanel()
     constexpr float kSpikeBarH  = 54.f;
     constexpr float kCardW      = 320.f;
     constexpr float kMonkH      = 124.f;
+    constexpr float kHandleW    = 14.f;    // the bar that hides / shows the spike card
+    constexpr float kHandleH    = 18.f;    // the bar that hides / shows the Monk cards
+    const float monkH = m_pianoRollMonksOpen ? kMonkH : 0.f;
+    const float cardW = m_pianoRollCardOpen ? kCardW : 0.f;
 
     const int nBlue = (int)m_team1PlayerIds.size();
     const int nRed  = (int)m_team2PlayerIds.size();
@@ -215,7 +255,7 @@ void ReplayWindow::DrawPianoRollPanel()
     const int nRedRows  = m_pianoRollTeam2Open ? nRed  : 0;
     const int nRows = std::max(1, nBlueRows + nRedRows);
     const float minRowH = m_pianoRollLanes ? 32.f : 26.f;
-    const float totalH = 90.f + kSpikeBarH + kTimeAxisH + 2.f * kTeamLabelH + nRows * minRowH * 1.3f + kMonkH;
+    const float totalH = 90.f + kSpikeBarH + kTimeAxisH + 2.f * kTeamLabelH + nRows * minRowH * 1.3f + kHandleH + monkH;
 
     const float screenW = io.DisplaySize.x;
 
@@ -619,8 +659,8 @@ void ReplayWindow::DrawPianoRollPanel()
     }
 
     const float availH = ImGui::GetContentRegionAvail().y;
-    const float rollH = std::max(100.f, availH - kMonkH);
-    const float rollW = std::max(300.f, ImGui::GetContentRegionAvail().x - kCardW);
+    const float rollH = std::max(100.f, availH - kHandleH - ImGui::GetStyle().ItemSpacing.y - monkH);
+    const float rollW = std::max(300.f, ImGui::GetContentRegionAvail().x - kHandleW - cardW);
     const float fitRowH = (rollH - kTimeAxisH - 2.f * kTeamLabelH - 2.f) / nRows;
     const float kRowH = std::floor(std::clamp(fitRowH, minRowH, m_pianoRollLanes ? 44.f : 34.f));
     const float kInLaneH = m_pianoRollLanes ? std::round(std::clamp(kRowH * 0.24f, 8.f, 11.f)) : 0.f;
@@ -1019,12 +1059,24 @@ void ReplayWindow::DrawPianoRollPanel()
     ImGui::Dummy(ImVec2(panelW, 1.f));
     ImGui::EndChild();
 
-    // The spike at the playhead, beside the roll; the Monks under both.
+    // The spike at the playhead, beside the roll; the Monks under both. Each behind a bar that hides it.
     ImGui::SameLine(0.f, 0.f);
-    ImGui::BeginChild("##pr_card", ImVec2(0.f, rollH), false);
-    DrawPianoRollSpikeCard(cardSpike);
-    ImGui::EndChild();
-    DrawPianoRollMonkCards();
+    if (PrCollapseHandle("##pr_card_toggle", ImVec2(kHandleW, rollH), true, m_pianoRollCardOpen, nullptr,
+                         m_pianoRollCardOpen ? "Hide the spike card" : "Show the spike card"))
+        m_pianoRollCardOpen = !m_pianoRollCardOpen;
+    if (m_pianoRollCardOpen)
+    {
+        ImGui::SameLine(0.f, 0.f);
+        ImGui::BeginChild("##pr_card", ImVec2(0.f, rollH), false);
+        DrawPianoRollSpikeCard(cardSpike);
+        ImGui::EndChild();
+    }
+    if (PrCollapseHandle("##pr_monks_toggle", ImVec2(ImGui::GetContentRegionAvail().x, kHandleH), false, m_pianoRollMonksOpen,
+                         m_pianoRollMonksOpen ? "Monk cards" : "Monk cards (hidden)",
+                         m_pianoRollMonksOpen ? "Hide the Monk cards" : "Show the Monk cards"))
+        m_pianoRollMonksOpen = !m_pianoRollMonksOpen;
+    if (m_pianoRollMonksOpen)
+        DrawPianoRollMonkCards();
 
     if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
         m_pianoRollHoverRow = -1;

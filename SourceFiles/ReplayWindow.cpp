@@ -277,6 +277,8 @@ uint64_t ReplayWindow::ComputePanelStateHash() const
     hashInt(m_pianoRollZoomIdx);
     hashBool(m_pianoRollTeam1Open);
     hashBool(m_pianoRollTeam2Open);
+    hashBool(m_pianoRollCardOpen);
+    hashBool(m_pianoRollMonksOpen);
     hashInt(m_fogPerspective);
     hashBool(m_fogGhostMode);
     hashInt(m_fogLastActive);
@@ -380,6 +382,8 @@ void ReplayWindow::SaveUILayout()
     ps["pianoRollZoomIdx"]    = m_pianoRollZoomIdx;
     ps["pianoRollTeam1Open"]  = m_pianoRollTeam1Open;
     ps["pianoRollTeam2Open"]  = m_pianoRollTeam2Open;
+    ps["pianoRollCardOpen"]   = m_pianoRollCardOpen;
+    ps["pianoRollMonksOpen"]  = m_pianoRollMonksOpen;
 
     // Fog of War state
     ps["fogPerspective"]      = m_fogPerspective;
@@ -512,6 +516,8 @@ void ReplayWindow::LoadUILayout()
             iv("pianoRollZoomIdx",   m_pianoRollZoomIdx);
             bv("pianoRollTeam1Open", m_pianoRollTeam1Open);
             bv("pianoRollTeam2Open", m_pianoRollTeam2Open);
+            bv("pianoRollCardOpen",  m_pianoRollCardOpen);
+            bv("pianoRollMonksOpen", m_pianoRollMonksOpen);
 
             // Fog of War state
             iv("fogPerspective",  m_fogPerspective);
