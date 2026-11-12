@@ -320,7 +320,11 @@ void ReplayWindow::DrawPartyWindows()
             // Enter/Space on the focused row follows too (a mouse press is already handled above).
             const bool navActivated = rowPressed && !ImGui::IsMouseReleased(ImGuiMouseButton_Left);
             if ((ImGui::IsItemClicked(ImGuiMouseButton_Left) || navActivated) && !drawMode)
-                EnterFollowMode(agentId);
+            {
+                // A live match: a row is a target, as in the game; the camera stays on the player.
+                if (m_liveMode) LiveClickAgent(agentId);
+                else EnterFollowMode(agentId);
+            }
             if (isPlayerRow && !drawMode)
             {
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -374,7 +378,7 @@ void ReplayWindow::DrawPartyWindows()
             DrawPartyHealthBar(dl, cursor, availW, barH,
                                snap, ard.teamId, isDead,
                                barLabel, icons,
-                               m_followedAgentId, agentId, isFogHidden,
+                               m_liveMode ? m_liveTargetId : m_followedAgentId, agentId, isFogHidden,
                                carriedFlagTex, absMaxHp, hpEstimated,
                                dev, m_debugTimeline);
 

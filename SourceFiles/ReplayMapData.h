@@ -48,6 +48,7 @@ inline uint32_t GetDatMapId(int metadataMapId)
     case 534: return 0x3321C;  // Isle of Wurms
     case 541: return 0x3314E;  // Corrupted Isle
     case 542: return 0x334A2;  // Isle of Solitude
+    case 2:   return 0x2FED;   // DEV Test Arena (the Trials sandbox, maps_constant_data.h)
     default:  return 0;
     }
 }
@@ -660,10 +661,21 @@ inline bool LookupHalloweenHandBones(uint32_t fileHash, int32_t& negativeX, int3
     return false;
 }
 
+// THE TRIALS MANNEQUIN. Reserved pseudo model ids no recording carries: a live match (Trials) gives
+// them to the agents it draws with the training mannequin's mesh, whatever their type.
+inline constexpr uint32_t kTrialsMannequinModelIdFirst = 0x7FFF0001u;
+inline constexpr uint32_t kTrialsMannequinModelIdLast  = 0x7FFF00FFu;
+inline constexpr uint32_t kTrialsMannequinFileHash     = 0x29966u;
+inline bool IsTrialsMannequinModelId(uint32_t modelId)
+{
+    return modelId >= kTrialsMannequinModelIdFirst && modelId <= kTrialsMannequinModelIdLast;
+}
+
 inline uint32_t LookupAgentFileHash(AgentType type, uint32_t modelId,
                                      int primaryProf = 0, bool isFemale = false,
                                      bool halloween = false)
 {
+    if (IsTrialsMannequinModelId(modelId)) return kTrialsMannequinFileHash;
     if (halloween && type == AgentType::NPC)
         if (uint32_t disguise = LookupHalloweenNpcFileHash(modelId)) return disguise;
     if (type == AgentType::Player)
@@ -726,6 +738,7 @@ inline AgentModelInfo LookupAgentModelInfo(AgentType type, uint32_t modelId,
                                             int primaryProf = 0, bool isFemale = false,
                                             bool halloween = false)
 {
+    if (IsTrialsMannequinModelId(modelId)) return { kTrialsMannequinFileHash, 0.f, 1.0f };
     // A disguise is drawn at its own native size, times the NPC's own adjustment (the Guild
     // Lord's 130% belongs to his NPC record, which the transmog keeps).
     if (halloween && type == AgentType::NPC) {

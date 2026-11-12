@@ -24,6 +24,8 @@
 #include "RunLog.h"
 #include "WardrobeApp.h"
 #include "Meta/MetaModule.h"
+#include "Trials/TrialsModule.h"
+#include "LiveSource.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -343,6 +345,7 @@ MapBrowser::~MapBrowser()
     // still exist: what it keeps lives past this object, and must not reach back into it.
     shutdown_wardrobe_app(m_map_renderer.get());
     shutdown_meta_module();
+    shutdown_trials_module();
 
     if (s_activeInstance == this)
         s_activeInstance = nullptr;
@@ -645,6 +648,41 @@ void MapBrowser::Tick()
     ProcessPendingReplayRequest();
     ProcessCloudDownloadResult();
     ProcessAttrBatch();
+
+    // THE LIVE WINDOW (Trials, LiveSource.h): at most one. Closed on request, opened on request when
+    // none is open; ticked with the others below.
+    {
+        ReplayWindow* live = nullptr;
+        for (const auto& rw : m_replay_windows)
+            if (rw && rw->IsAlive() && rw->IsLive()) live = rw.get();
+        if (g_pendingLiveReplay.closeRequested)
+        {
+            g_pendingLiveReplay.closeRequested = false;
+            if (live) DestroyWindow(live->GetHWND());
+            live = nullptr;
+        }
+        // Waits for gw.dat: the request stays until the hash index is built.
+        if (g_pendingLiveReplay.openRequested && !live && m_dat_managers[0] && !m_hash_index.empty() &&
+            m_dat_managers[0]->m_initialization_state >= InitializationState::IndexReady)
+        {
+            g_pendingLiveReplay.openRequested = false;
+            std::shared_ptr<ILiveSource> source = std::move(g_pendingLiveReplay.source);
+            if (source)
+            {
+                HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetWindowLongPtr(m_deviceResources->GetWindow(), GWLP_HINSTANCE));
+                ReplayWindow* rw = ReplayWindow::CreateLive(hInst, source, g_pendingLiveReplay.mapId,
+                    m_dat_managers[0].get(), m_hash_index, g_pendingLiveReplay.offscreen);
+                if (rw)
+                {
+                    m_replay_windows.emplace_back(rw);
+                    live = rw;
+                }
+            }
+        }
+        else if (g_pendingLiveReplay.openRequested && live)
+            g_pendingLiveReplay.openRequested = false;   // one live window: the open one stays
+        g_liveReplayOpen = live != nullptr;
+    }
     TickReplayWindows();
 
     // Busy latch for the hourglass. Set here rather than during render so it
@@ -742,7 +780,19 @@ void MapBrowser::Tick()
     }
 
     // DEV TOOL (GWO_META_SELFTEST): it draws in a hidden window, so never takes the foreground.
-    const bool meta_selftest = GuiGlobalConstants::IsDeveloperMode() && meta_module_selftest_requested();
+    const bool meta_selftest = GuiGlobalConstants::IsDeveloperMode() &&
+                               (meta_module_selftest_requested() || trials_module_selftest_requested());
+#if GWO_DEVELOPER
+    // DEV TOOL (GWO_TRIALS_SELFTEST): once the arena window is open the hidden main window draws
+    // nothing, as it does when a replay window is in front, so the frame times measured are the
+    // arena's own. The script still runs.
+    if (trials_module_selftest_requested() && g_liveReplayOpen)
+    {
+        trials_module_selftest_frame();
+        last_frame_time = high_resolution_clock::now();
+        return;
+    }
+#endif
 
     if (!is_extracting && !meta_selftest) {
         if (IsIconic(m_deviceResources->GetWindow())) {

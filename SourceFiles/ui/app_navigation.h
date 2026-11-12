@@ -10,7 +10,14 @@
 // The approved D1 artwork is kept intact as an atlas. UV rectangles below use
 // its original 1536 x 1024 coordinates for texture and engraved corners.
 // Navigation emblems are drawn as paths, independently of the raster artwork.
-enum class AppTab { None = -1, Library, Scout, Meta, Wardrobe };
+enum class AppTab { None = -1, Library, Scout, Meta, Wardrobe, Trials };
+
+// Trials (the fifth tab) is a developer-build module for now, gated like the weather.
+#if GWO_DEVELOPER
+inline constexpr int kAppTabCount = 5;
+#else
+inline constexpr int kAppTabCount = 4;
+#endif
 
 namespace app_navigation
 {
@@ -89,6 +96,19 @@ static void DrawEmblem(ImDrawList* dl, AppTab tab, ImVec2 origin, float size, Im
         }
         dl->AddRectFilled(p(10.4f, 10.4f), p(13.6f, 13.6f), ink);
     }
+    else if (tab == AppTab::Trials)
+    {
+        // A shield on a laurel: the arena's emblem.
+        dl->PathLineTo(p(12, 3));
+        dl->PathLineTo(p(19, 5.5f));
+        dl->PathLineTo(p(18.2f, 13));
+        dl->PathBezierCubicCurveTo(p(17, 17), p(14.5f, 19.5f), p(12, 21));
+        dl->PathBezierCubicCurveTo(p(9.5f, 19.5f), p(7, 17), p(5.8f, 13));
+        dl->PathLineTo(p(5, 5.5f));
+        dl->PathStroke(ink, ImDrawFlags_Closed, stroke);
+        line(12, 7, 12, 17);
+        line(8.5f, 10.5f, 15.5f, 10.5f);
+    }
 }
 
 struct Layout
@@ -117,7 +137,7 @@ static Layout GetLayout()
     const float menuX = compact ? creditX : creditX - menuWidth - 16.f * s;
     const bool brand = menuX >= 580.f * s;
     const float navX = brand ? 196.f * s : 30.f * s;
-    const float tabWidth = std::min(164.f * s, std::max(1.f, (menuX - navX - 8.f * s) / 4.f));
+    const float tabWidth = std::min(164.f * s, std::max(1.f, (menuX - navX - 8.f * s) / static_cast<float>(kAppTabCount)));
     return { s, 64.f * s, menuWidth, menuX, navX, tabWidth, brand, tabWidth >= 120.f * s,
         creditX, creditWidth, compact };
 }
@@ -240,9 +260,10 @@ static AppTab draw_app_ribbon(AppTab current)
             { "Scout", "What they run, and what beats them" },
             { "Meta", "How skills are used across every recorded match" },
             { "Wardrobe", "Create a character and dress it" },
+            { "Trials", "Zaishen Trials: play the infuser (developer build)" },
         };
         ImFont* font = ImGui::GetFont();
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < kAppTabCount; ++i)
         {
             const auto& tab = tabs[i];
             const bool active = static_cast<AppTab>(i) == current;

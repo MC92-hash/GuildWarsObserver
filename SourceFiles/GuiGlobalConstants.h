@@ -23,6 +23,7 @@ enum class AppScreen
 	Library,
 	Meta,
 	Wardrobe,
+	Trials,   // developer builds only (GWO_DEVELOPER), the fifth ribbon tab
 };
 
 // THE DISPLAY TYPE LADDER. Dear ImGui 1.90 bakes every font into the atlas as a bitmap at ONE size;

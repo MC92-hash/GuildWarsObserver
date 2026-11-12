@@ -688,7 +688,12 @@ void ReplayWindow::DrawAgentOverlay()
             {
                 m_hoveredAgentId = agentId;
 
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && m_liveMode)
+                {
+                    // A live match: the click is the player's target, the camera stays on them.
+                    LiveClickAgent(agentId);
+                }
+                else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 {
                     // Follows only, like a party-row click: player info opens from the context menu.
                     EnterFollowMode(agentId);

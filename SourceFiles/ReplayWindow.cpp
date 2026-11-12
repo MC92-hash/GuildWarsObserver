@@ -42,6 +42,7 @@
 #include <map>
 #include <json.hpp>
 #include "ReplaySync.h"
+#include "LiveSource.h"
 #pragma comment(lib, "d3dcompiler.lib")
 
 using namespace DirectX;
@@ -80,6 +81,8 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
         return '0' + (imguiKey - ImGuiKey_0);
     if (imguiKey >= ImGuiKey_Keypad0 && imguiKey <= ImGuiKey_Keypad9)
         return VK_NUMPAD0 + (imguiKey - ImGuiKey_Keypad0);
+    if (imguiKey >= ImGuiKey_F1 && imguiKey <= ImGuiKey_F12)
+        return VK_F1 + (imguiKey - ImGuiKey_F1);
     switch (imguiKey)
     {
     case ImGuiKey_Space:       return VK_SPACE;
@@ -155,7 +158,21 @@ void ReplayHotkeys::Save() const
       << "  \"camStrafeLeft\": "       << camStrafeLeft       << ",\n"
       << "  \"camStrafeRight\": "      << camStrafeRight      << ",\n"
       << "  \"invertMouseX\": "        << (invertMouseX ? 1 : 0) << ",\n"
-      << "  \"invertMouseY\": "        << (invertMouseY ? 1 : 0) << "\n"
+      << "  \"invertMouseY\": "        << (invertMouseY ? 1 : 0) << ",\n";
+    // The Trials group, as one object.
+    f << "  \"trials\": {\n"
+      << "    \"forward\": "     << trForward     << ",\n"
+      << "    \"backward\": "    << trBackward    << ",\n"
+      << "    \"strafeLeft\": "  << trStrafeLeft  << ",\n"
+      << "    \"strafeRight\": " << trStrafeRight << ",\n"
+      << "    \"turnLeft\": "    << trTurnLeft    << ",\n"
+      << "    \"turnRight\": "   << trTurnRight   << ",\n"
+      << "    \"clearTarget\": " << trClearTarget << ",\n";
+    f << "    \"skills\": [";
+    for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trSkill[i];
+    f << "],\n    \"party\": [";
+    for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trParty[i];
+    f << "]\n  }\n"
       << "}\n";
 }
 
@@ -204,6 +221,31 @@ void ReplayHotkeys::Load()
         readKey("camStrafeRight",      camStrafeRight);
         if (j.contains("invertMouseX")) invertMouseX = j["invertMouseX"].get<int>() != 0;
         if (j.contains("invertMouseY")) invertMouseY = j["invertMouseY"].get<int>() != 0;
+        if (j.contains("trials") && j["trials"].is_object())
+        {
+            const auto& t = j["trials"];
+            auto readTrialsKey = [&](const char* name, int& field) {
+                if (!t.contains(name) || !t[name].is_number_integer()) return;
+                const int v = t[name].get<int>();
+                if (IsValidBindableKey(v)) field = v;
+            };
+            readTrialsKey("forward",     trForward);
+            readTrialsKey("backward",    trBackward);
+            readTrialsKey("strafeLeft",  trStrafeLeft);
+            readTrialsKey("strafeRight", trStrafeRight);
+            readTrialsKey("turnLeft",    trTurnLeft);
+            readTrialsKey("turnRight",   trTurnRight);
+            readTrialsKey("clearTarget", trClearTarget);
+            auto readTrialsRow = [&](const char* name, int (&row)[8]) {
+                if (!t.contains(name) || !t[name].is_array()) return;
+                const auto& a = t[name];
+                for (size_t i = 0; i < 8 && i < a.size(); ++i)
+                    if (a[i].is_number_integer() && IsValidBindableKey(a[i].get<int>()))
+                        row[i] = a[i].get<int>();
+            };
+            readTrialsRow("skills", trSkill);
+            readTrialsRow("party",  trParty);
+        }
     } catch (...) {
         // File corrupted — reset everything to defaults
         *this = ReplayHotkeys{};
@@ -901,6 +943,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    if (m_live) m_live->OnWindowClosed();
     ReleasePlayerVisuals();
     ReleaseAgentEffects();
     ReleaseFootprints();
@@ -5460,7 +5503,7 @@ void ReplayWindow::StepPlaceProps()
                 m_loadTiming.propModelSec, m_loadTiming.placePropSec).c_str());
         }
 
-        SetWindowTextW(m_hwnd, BuildWindowTitle(m_matchMeta).c_str());
+        SetWindowTextW(m_hwnd, m_liveMode ? L"Trials - DEV Test Arena (developer)" : BuildWindowTitle(m_matchMeta).c_str());
     }
 }
 
@@ -5471,6 +5514,10 @@ void ReplayWindow::StepPlaceProps()
 void ReplayWindow::Tick()
 {
     if (!m_alive) return;
+
+    // A live window has no files to parse: its source writes the match once the map is in.
+    if (m_liveMode)
+        LiveSeedIfReady();
 
     // Poll async agent snapshot parsing
     PollAgentParseCompletion(m_replayCtx);
@@ -5635,9 +5682,13 @@ void ReplayWindow::Tick()
                 ard.isFemale      = (pm->gender == "Female");
 
                 char buf[256];
-                snprintf(buf, sizeof(buf), "%s/%s%d %s",
-                         ProfShort(pm->primary), ProfShort(pm->secondary),
-                         pm->level, ard.playerName.c_str());
+                // A live match (Trials) knows a character with no secondary: "Mo20", not "Mo/?20".
+                if (m_liveMode && pm->secondary <= 0)
+                    snprintf(buf, sizeof(buf), "%s%d %s", ProfShort(pm->primary), pm->level, ard.playerName.c_str());
+                else
+                    snprintf(buf, sizeof(buf), "%s/%s%d %s",
+                             ProfShort(pm->primary), ProfShort(pm->secondary),
+                             pm->level, ard.playerName.c_str());
                 ard.partyBarLabel = buf;
             }
             else
@@ -6934,8 +6985,9 @@ void ReplayWindow::Tick()
             Update(m_timer.GetElapsedSeconds() * 1000.0);
     });
 
-    // Playback engine: advance timeline when playing
-    if (m_replayCtx.isPlaying && m_loadingPhase == LoadingPhase::Ready)
+    // Playback engine: advance timeline when playing. A live window's clock is its source's
+    // (LiveUpdate, inside Update above).
+    if (m_replayCtx.isPlaying && m_loadingPhase == LoadingPhase::Ready && !m_liveMode)
     {
         float dt = static_cast<float>(m_timer.GetElapsedSeconds());
         float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
@@ -6955,7 +7007,7 @@ void ReplayWindow::Tick()
 
     // The Library's Stats tab follows this replay and may ask it to jump (ReplaySync.h). Times
     // cross on the displayed clock.
-    if (m_loadingPhase == LoadingPhase::Ready)
+    if (m_loadingPhase == LoadingPhase::Ready && !m_liveMode)
     {
         float seekT = 0.f;
         if (ReplaySync::TakeSeek(m_matchMeta.folder_name, seekT))
@@ -6964,7 +7016,7 @@ void ReplayWindow::Tick()
     }
 
     // The clip export's exact frame time, or the clip preview's loop.
-    if (m_loadingPhase == LoadingPhase::Ready)
+    if (m_loadingPhase == LoadingPhase::Ready && !m_liveMode)
     {
         ProcessClipSelfTest();
         UpdateClipPlayback();
@@ -7099,6 +7151,9 @@ void ReplayWindow::Update(double elapsedMs)
         UpdateHighlights(dt);
     if (!m_topViewActive)
         UpdateAutoCamera(dt);
+    // A live match: the player's input, the source's step (the clock) and the chase camera.
+    if (m_liveMode)
+        LiveUpdate(dt);
     if (!m_topViewActive && !m_topViewTransitioning)
         UpdateFollowCamera(dt);
     // The follow orbit never goes underground (UpdateFollowCamera lifts it); the free camera goes
@@ -7507,11 +7562,15 @@ void ReplayWindow::DrawImGuiOverlay()
         ImGui::EndMainMenuBar();
     }
 
-    DrawRibbonToolbar();
-
-    DrawTimelineController();
+    // A live match has no recording to scrub: no ribbon, transport or event timeline.
+    if (!m_liveMode)
+    {
+        DrawRibbonToolbar();
+        DrawTimelineController();
+    }
     DrawAgentModelLoadingBanner();
-    DrawEventTimeline();
+    if (!m_liveMode)
+        DrawEventTimeline();
 
     if (m_showAgentDataWindow)
         DrawAgentDataWindow();
@@ -7795,7 +7854,8 @@ void ReplayWindow::DrawImGuiOverlay()
     DrawAutoCameraPanel();
     DrawAutoCameraDebugPanel();
 
-    DrawMatchTimer();
+    if (!m_liveMode)   // a live match has no countdown or match clock
+        DrawMatchTimer();
     DrawFlagEventMessages();
     DrawJumboMessages();
     DrawMoraleBoostTimers();
@@ -7840,7 +7900,8 @@ void ReplayWindow::DrawImGuiOverlay()
         // cancelled its export must not also drop follow mode.
         UpdateClipHotkeys(processActive);
 
-        if (processActive && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused && !IsClipRendering() && !m_clip.dialogOpen)
+        // A live window's keys are the Trials group's (the source reads them); none of these fire.
+        if (processActive && !m_liveMode && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused && !IsClipRendering() && !m_clip.dialogOpen)
         {
             const auto& hk = ReplayHotkeys::Get();
 
@@ -8038,6 +8099,8 @@ void ReplayWindow::DrawImGuiOverlay()
     m_imguiWantTextInput = ImGui::GetIO().WantTextInput;
 
     // Draw post-loading match info overlay (synced to replay timeline)
+    if (m_liveMode)
+        m_matchOverlayActive = false;
     if (m_matchOverlayActive)
     {
         constexpr float kOverlayVisibleSec = 2.0f;
@@ -8057,6 +8120,9 @@ void ReplayWindow::DrawImGuiOverlay()
         }
     }
 
+    if (m_liveMode)
+        DrawLiveHud();
+
     // Last, so the clip's box sits over every panel and its tag over the whole interface.
     DrawClipEditor();
 
@@ -8064,6 +8130,8 @@ void ReplayWindow::DrawImGuiOverlay()
     // Highlights' clean screen leaves only what floats over the world and the moment cards.
     FilterHighlightsDrawData(ImGui::GetDrawData());
     RenderImGuiWithClipCapture(ImGui::GetDrawData());
+    if (m_liveMode)
+        LiveAfterRender();
 
     ImGui::SetCurrentContext(prevCtx);
 }

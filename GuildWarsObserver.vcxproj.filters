@@ -345,6 +345,36 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaMap.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsModule.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsShared.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimRng.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimData.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimSkills.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimCore.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimArena.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArena.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
+    <ClInclude Include="SourceFiles\LiveSource.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -868,6 +898,36 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Meta\MetaSelftest.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsModule.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsSelftest.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimData.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimSkills.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimCore.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimArena.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArena.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimTest.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="SourceFiles\ReplayWindow_Live.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp">

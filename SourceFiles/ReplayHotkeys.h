@@ -39,6 +39,21 @@ struct ReplayHotkeys
     bool invertMouseX = false;
     bool invertMouseY = false;
 
+    // Trials (developer builds): the player's own character in a live match. Its own group, read
+    // only while a live window has the keyboard, so Z / S / Q / D are shared with the camera keys
+    // on purpose. Saved under "trials".
+    int trForward    = ImGuiKey_Z;   // AZERTY: Z Q S D, as the camera keys
+    int trBackward   = ImGuiKey_S;
+    int trStrafeLeft = ImGuiKey_Q;
+    int trStrafeRight = ImGuiKey_D;
+    int trTurnLeft   = ImGuiKey_A;
+    int trTurnRight  = ImGuiKey_E;
+    int trClearTarget = ImGuiKey_Escape;
+    int trSkill[8] = { ImGuiKey_1, ImGuiKey_2, ImGuiKey_3, ImGuiKey_4,
+                       ImGuiKey_5, ImGuiKey_6, ImGuiKey_7, ImGuiKey_8 };
+    int trParty[8] = { ImGuiKey_F1, ImGuiKey_F2, ImGuiKey_F3, ImGuiKey_F4,
+                       ImGuiKey_F5, ImGuiKey_F6, ImGuiKey_F7, ImGuiKey_F8 };
+
     void ResetToDefaults() { *this = ReplayHotkeys{}; }
 
     static ReplayHotkeys& Get();

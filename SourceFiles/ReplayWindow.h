@@ -74,6 +74,9 @@ namespace ReplayProjectiles { class State; }
 namespace Footprints { struct State; }
 // The match's sounds - the recording's own and the scheduled ones: opaque too (private).
 namespace ReplaySounds { class State; }
+// A match written while it is watched (LiveSource.h, ReplayWindow_Live.cpp).
+class ILiveSource;
+struct LiveAppended;
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -138,6 +141,15 @@ public:
     // Drive it with TickHeadless() until AnalysisComplete(), then ExportAttributes().
     static ReplayWindow* CreateHeadless(const MatchMeta& match, DATManager* sharedDatManager,
                                         const std::unordered_map<int, std::vector<int>>& hashIndex);
+
+    // A LIVE window (ReplayWindow_Live.cpp): no recording, the map `mapId`, and a source that writes
+    // the match into the window's context while it plays (LiveSource.h). The scrub and playback
+    // interface is hidden; the clock is the source's. `offscreen` = the self-test placement.
+    static ReplayWindow* CreateLive(HINSTANCE hInstance, std::shared_ptr<ILiveSource> source, int mapId,
+                                    DATManager* sharedDatManager,
+                                    const std::unordered_map<int, std::vector<int>>& hashIndex,
+                                    bool offscreen);
+    bool IsLive() const { return m_liveMode; }
 
     // One analysis step. Same passes Tick() runs, stopping before anything that wants a device.
     void TickHeadless();
@@ -1882,6 +1894,34 @@ private:
     void DrawFootprints();
     void ReleaseFootprints();     // match teardown
     std::shared_ptr<Footprints::State> m_footprints;
+
+    // ---- Live mode (ReplayWindow_Live.cpp): a match a source writes while it is watched ----
+    std::shared_ptr<ILiveSource> m_live;
+    bool m_liveMode = false;
+    bool m_liveSeeded = false;
+    bool m_liveModelsReported = false;
+    bool m_liveCameraPlaced = false;
+    int  m_liveClickedAgent = -1;           // a click this frame (character or party row)
+    int  m_liveTargetId = -1;               // the player's target, copied from the source each frame
+    double m_liveLastFrameQpc = 0.0;        // seconds, for the frame-time readout
+    std::vector<float> m_liveFrameMs;       // the last frames' durations (ring)
+    size_t m_liveFrameNext = 0;
+    void LiveSeedIfReady();                 // Tick: once the map is loaded
+    void LiveUpdate(float dt);              // Update: input, the source's step, the chase camera
+    void LiveInvalidate(const LiveAppended& appended);
+    void LiveClickAgent(int agentId);       // a left click on a character or a party row
+    void DrawLiveHud();                     // the FPS readout and the source's own HUD
+    void LiveAfterRender();                 // the source's capture request
+    void LiveReportModels();                // once: which models were built, the mannequin's clips
+    // Each animation code/id pair a live agent plays, once: is the code the segment of the agent's
+    // own bank at that id, and does it resolve to a segment with keys (the self-test's bank check).
+    void LiveCheckAnimCode(int agentId, const AgentModelInstance& tmpl, uint32_t code, uint32_t id, bool resolved,
+                           const SegmentRef& ref);
+    std::unordered_set<uint64_t> m_liveAnimChecked;
+    // The private schedules built once from the whole recording, rebuilt after an append
+    // (Character/ReplayWindow_AgentEffects.cpp, Character/ReplayWindow_Sounds.cpp).
+    void LiveRebuildEffectSchedules();
+    void LiveRebuildSoundPlan();
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

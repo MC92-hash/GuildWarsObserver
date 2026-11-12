@@ -581,7 +581,8 @@ void ReplayWindow::LoadAgentModelsAsync()
     for (auto& [agentId, ard] : m_replayCtx.agents)
     {
         uint32_t fileHash = 0;
-        if (ard.type == AgentType::Player) {
+        // A live match's mannequins are players drawn with a fixed mesh (LookupAgentFileHash).
+        if (ard.type == AgentType::Player && !IsTrialsMannequinModelId(ard.modelId)) {
             uint64_t key = ((uint64_t)ard.primaryProf << 1) | (ard.isFemale ? 1 : 0);
             auto it = profGenderShuffled.find(key);
             if (it != profGenderShuffled.end() && !it->second.empty()) {
@@ -1937,6 +1938,20 @@ void ReplayWindow::DrawAgentModels()
 
         // Get rotation from nearest snapshot
         float rotRad = ard.snapshots[snapIdx].rotation;
+        // Live mode only: the sim turns bodies smoothly (casts, turn keys) and writes every tick it
+        // turns, so the facing is interpolated between the two snapshots, on the shortest arc.
+        if (m_liveMode && snapIdx + 1 < static_cast<int>(ard.snapshots.size())) {
+            const AgentSnapshot& r0 = ard.snapshots[snapIdx];
+            const AgentSnapshot& r1 = ard.snapshots[snapIdx + 1];
+            const float span = r1.time - r0.time;
+            if (span > 1e-4f) {
+                const float k = std::clamp((m_debugTimeline - r0.time) / span, 0.f, 1.f);
+                float d = r1.rotation - r0.rotation;
+                while (d > XM_PI) d -= XM_2PI;
+                while (d < -XM_PI) d += XM_2PI;
+                rotRad = r0.rotation + d * k;
+            }
+        }
 
         // Scale: FFNA models are already in game units; only apply the GW NPC adjustment
         auto hashIt = m_agentFileHashCache.find(slotKey);
@@ -2166,6 +2181,9 @@ void ReplayWindow::DrawAgentModels()
                         }
                     }
 
+                    if (m_liveMode)
+                        LiveCheckAnimCode(agentId, tmplIt->second, animCode, codeSnap.animation_id, resolved,
+                                          resolvedRef);
                     if (resolved) {
                         animState.wasCasting = false;
                         bool stillKD = codeSnap.is_knocked;
@@ -2260,6 +2278,10 @@ void ReplayWindow::DrawAgentModels()
                         // Switch to idle when stopped
                         constexpr uint32_t kIdlePrimaryHash = 0x365C0E24u;
                         auto segIt = codeMap.find(kIdlePrimaryHash);
+                        // The Trials mannequin (0x29966) has no locomotion idle: its bank's own
+                        // "Idle (Both hands open)" stands in for it, or it would hold the bind pose.
+                        if (segIt == codeMap.end() && IsTrialsMannequinModelId(ard.modelId))
+                            segIt = codeMap.find(0x8985FC38u);
                         if (segIt != codeMap.end()) {
                             playSegment(segIt->second);
                             ctrl->SetLooping(true);

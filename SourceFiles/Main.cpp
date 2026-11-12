@@ -5,6 +5,8 @@
 #include "MapBrowser.h"
 #include "GuiGlobalConstants.h"
 #include "Meta/MetaModule.h"
+#include "Trials/TrialsModule.h"
+#include "LiveSource.h"
 #include "InputManager.h"
 #include "ModelViewer/ModelViewer.h"
 #include "Extract_BASS_DLL_resource.h"
@@ -519,6 +521,9 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         int exitCode = 0;
         if (TryHeadlessCommandLine(lpCmdLine, exitCode))
             return exitCode;
+        // DEV TOOL: the Trials sim core's headless self-test (GWO_TRIALS_SIMTEST, private Trials/Sim).
+        if (GuiGlobalConstants::IsDeveloperMode() && trials_module_simtest(exitCode))
+            return exitCode;
     }
 
     if (! XMVerifyCPUSupport())
@@ -591,7 +596,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
             showCmd = SW_SHOWMAXIMIZED;
         }
         // DEV TOOL: a self test never shows itself, whatever state the window was last left in.
-        if (GuiGlobalConstants::IsDeveloperMode() && meta_module_selftest_requested())
+        if (GuiGlobalConstants::IsDeveloperMode() &&
+            (meta_module_selftest_requested() || trials_module_selftest_requested()))
             showCmd = SW_HIDE;
         ShowWindow(hwnd, showCmd);
         // TODO: Change nCmdShow to SW_SHOWMAXIMIZED to default to fullscreen.
@@ -685,7 +691,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
         else
         {
-            const int fpsLimit = GuiGlobalConstants::frame_limit_fps;
+            int fpsLimit = GuiGlobalConstants::frame_limit_fps;
+            // A live arena (Trials) is played, not watched: never held under 120 frames a second.
+            if (g_liveReplayOpen && fpsLimit > 0 && fpsLimit < 120)
+                fpsLimit = 120;
             if (fpsLimit > 0 && frameTimer && !g_AppBusy && !GuiGlobalConstants::frame_limit_bypass)
             {
                 LARGE_INTEGER now;

@@ -16,6 +16,7 @@
 // switch that reaches it, and nothing else about it.
 #include "WardrobeApp.h"
 #include "Meta/MetaModule.h"
+#include "Trials/TrialsModule.h"
 #include "GuiGlobalConstants.h"
 #include "GraphicsSettingsUI.h"
 #include "ui/ui_kit.h"
@@ -716,6 +717,48 @@ static void draw_settings_window()
 		ImGui::TextColored(ImVec4(0.63f, 0.63f, 0.67f, 1.f), "%s", shortcutRow.what);
 	}
 
+#if GWO_DEVELOPER
+	// Trials: the player's own keys in a live arena. A group of its own, read only while the arena
+	// window has the keyboard, so it shares W / S / Q / D with the camera on purpose and stays out
+	// of the duplicate check below (it has its own).
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Trials (developer)");
+	ImGui::Dummy(ImVec2(0, 2.f));
+	ImGui::PushID("trials");
+	HotkeyInput("Move Forward",  &editingKeys.trForward);
+	HotkeyInput("Move Backward", &editingKeys.trBackward);
+	HotkeyInput("Strafe Left",   &editingKeys.trStrafeLeft);
+	HotkeyInput("Strafe Right",  &editingKeys.trStrafeRight);
+	HotkeyInput("Turn Left",     &editingKeys.trTurnLeft);
+	HotkeyInput("Turn Right",    &editingKeys.trTurnRight);
+	HotkeyInput("Clear Target",  &editingKeys.trClearTarget);
+	for (int i = 0; i < 8; ++i)
+	{
+		char label[32];
+		snprintf(label, sizeof(label), "Skill %d", i + 1);
+		HotkeyInput(label, &editingKeys.trSkill[i]);
+	}
+	for (int i = 0; i < 8; ++i)
+	{
+		char label[32];
+		snprintf(label, sizeof(label), "Party Member %d", i + 1);
+		HotkeyInput(label, &editingKeys.trParty[i]);
+	}
+	ImGui::PopID();
+	{
+		std::vector<int> trialsKeys = { editingKeys.trForward, editingKeys.trBackward, editingKeys.trStrafeLeft,
+			editingKeys.trStrafeRight, editingKeys.trTurnLeft, editingKeys.trTurnRight, editingKeys.trClearTarget };
+		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trSkill), std::end(editingKeys.trSkill));
+		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trParty), std::end(editingKeys.trParty));
+		bool trialsDupe = false;
+		for (size_t i = 0; i < trialsKeys.size() && !trialsDupe; i++)
+			for (size_t j = i + 1; j < trialsKeys.size() && !trialsDupe; j++)
+				if (trialsKeys[i] > 0 && trialsKeys[i] == trialsKeys[j]) trialsDupe = true;
+		if (trialsDupe)
+			ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f), "Warning: duplicate Trials key bindings.");
+	}
+#endif
+
 	ImGui::Spacing();
 	ImGui::Separator();
 	ImGui::Spacing();
@@ -1075,13 +1118,22 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	{
 		if (GuiGlobalConstants::IsDeveloperMode())
 			meta_module_selftest_frame();
+#if GWO_DEVELOPER
+		trials_module_selftest_frame();
+#endif
 		const AppTab current = GuiGlobalConstants::app_screen == AppScreen::Wardrobe ? AppTab::Wardrobe
 			: GuiGlobalConstants::app_screen == AppScreen::Meta ? AppTab::Meta
+			: GuiGlobalConstants::app_screen == AppScreen::Trials ? AppTab::Trials
 			: (replay_browser_scout_mode() ? AppTab::Scout : AppTab::Library);
 		const AppTab clicked = draw_app_ribbon(current);
 		drawHeaderMenus();
 		if (clicked != AppTab::None && clicked != current)
 		{
+#if GWO_DEVELOPER
+			// Leaving Trials closes its arena window.
+			if (current == AppTab::Trials)
+				trials_module_leave();
+#endif
 			if (current == AppTab::Wardrobe)
 			{
 				s_afterWardrobe = clicked;
@@ -1096,6 +1148,11 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 				GuiGlobalConstants::app_screen = AppScreen::Meta;
 				// The click focused the ribbon; the arrow keys belong to the table.
 				ImGui::SetWindowFocus("##meta_module");
+			}
+			else if (clicked == AppTab::Trials)
+			{
+				GuiGlobalConstants::app_screen = AppScreen::Trials;
+				ImGui::SetWindowFocus("##trials_module");
 			}
 			else
 			{
@@ -1128,7 +1185,8 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 		}
 		if (!stay)
 		{
-			GuiGlobalConstants::app_screen = s_afterWardrobe == AppTab::Meta ? AppScreen::Meta : AppScreen::Library;
+			GuiGlobalConstants::app_screen = s_afterWardrobe == AppTab::Meta ? AppScreen::Meta
+				: s_afterWardrobe == AppTab::Trials ? AppScreen::Trials : AppScreen::Library;
 			if (s_afterWardrobe == AppTab::Meta)
 				ImGui::SetWindowFocus("##meta_module");
 			if (s_afterWardrobe == AppTab::Library || s_afterWardrobe == AppTab::Scout)
@@ -1140,6 +1198,12 @@ void draw_ui(std::map<int, std::unique_ptr<DATManager>>& dat_managers, int& dat_
 	{
 		draw_meta_module(replay_library);
 	}
+#if GWO_DEVELOPER
+	else if (GuiGlobalConstants::app_screen == AppScreen::Trials)
+	{
+		draw_trials_module();
+	}
+#endif
 	else
 	{
 		// Replay browser (available regardless of DAT state)
