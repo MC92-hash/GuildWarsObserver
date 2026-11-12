@@ -436,7 +436,8 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     if (agentIt == m_replayCtx.agents.end()) return;
     const AgentReplayData& ard = agentIt->second;
 
-    if (SkillBarDisplayOrder(agentId).empty()) return;
+    int liveBar[8] = {};
+    if (!LivePlayerBar(agentId, liveBar) && SkillBarDisplayOrder(agentId).empty()) return;
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float slot  = std::round(std::clamp(kRefSlot * vp->Size.y / kRefHeight, 40.f, 84.f));
@@ -992,9 +993,27 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
     if (agentIt == m_replayCtx.agents.end()) return;
     const AgentReplayData& ard = agentIt->second;
 
-    std::vector<int> bar = SkillBarDisplayOrder(agentId);
-    if (bar.empty()) return;
-    if (bar.size() > kBarSlots) bar.resize(kBarSlots);
+    // Slot i shows bar[slotToBar[i]], or nothing at -1. A recording packs its bar from the left in
+    // display order; a live player's bar is the source's own, slot for slot, gaps included.
+    std::vector<int> bar;
+    int slotToBar[kBarSlots];
+    int liveBar[kBarSlots] = {};
+    const bool live = LivePlayerBar(agentId, liveBar);
+    if (live)
+    {
+        for (int i = 0; i < kBarSlots; ++i)
+        {
+            slotToBar[i] = liveBar[i] > 0 ? static_cast<int>(bar.size()) : -1;
+            if (liveBar[i] > 0) bar.push_back(liveBar[i]);
+        }
+    }
+    else
+    {
+        bar = SkillBarDisplayOrder(agentId);
+        if (bar.empty()) return;
+        if (bar.size() > kBarSlots) bar.resize(kBarSlots);
+        for (int i = 0; i < kBarSlots; ++i) slotToBar[i] = i < static_cast<int>(bar.size()) ? i : -1;
+    }
 
     const float t = m_debugTimeline;
     const std::vector<SkillCooldownState> cds = ComputeSkillCooldowns(ard, bar, t);
@@ -1023,9 +1042,12 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
     {
         const ImVec2 tl(rowTL.x + i * slot, rowTL.y);
         const ImVec2 br(tl.x + slot, tl.y + slot);
-        const bool filled = i < static_cast<int>(bar.size());
+        const int bi = slotToBar[i];
+        const bool filled = bi >= 0;
+        // A live player's slot is a button: a click uses the skill, a drag rearranges the bar.
+        if (live) LiveSkillSlotInput(i, filled ? bar[bi] : 0, tl, br);
         // The skill the slot shows: Echo / Arcane Echo show the copy they hold.
-        const int shown = filled ? cds[i].shownSkillId : 0;
+        const int shown = filled ? cds[bi].shownSkillId : 0;
         const SkillInfo* si = filled ? m_skillView.Get(shown) : nullptr;
 
         // Icon (or the empty slot's grey), then the slot frame over it.
@@ -1043,8 +1065,8 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
             dl->AddImage(tex, tl, br, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
         // Adrenaline: the client's flames over a charging slot, hidden under the in-use sparkle. An
         // Echo copy carries no adrenaline, so only the slot's own skill shows it.
-        if (filled && shown == bar[i])
-            DrawAdrenalineOverlay(dl, agentId, shown, tl, br, texSparkle && shown == usingSkill && cds[i].castingNow);
+        if (filled && shown == bar[bi])
+            DrawAdrenalineOverlay(dl, agentId, shown, tl, br, texSparkle && shown == usingSkill && cds[bi].castingNow);
         if (texSlots) {
             ImVec2 uv0, uv1;
             FrameCellUV(si && si->is_elite ? 1 : 0, uv0, uv1);
@@ -1052,7 +1074,7 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
         }
         if (!filled) continue;
 
-        const SkillCooldownState& cd = cds[i];
+        const SkillCooldownState& cd = cds[bi];
         const bool disabled = cd.state == CdState::Disabled;
 
         // Skill in use: the client's looping sparkle.
@@ -1098,7 +1120,7 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
             if (shown == SkillCooldownState::kUnknownSkill) ImGui::SetTooltip("%s", cd.slotNote.c_str());
             else {
                 DrawGameSkillTooltip(shown, agentId, &cd);
-                if (shown == bar[i]) DrawAdrenalineTooltipLine(agentId, shown);
+                if (shown == bar[bi]) DrawAdrenalineTooltipLine(agentId, shown);
             }
         }
     }

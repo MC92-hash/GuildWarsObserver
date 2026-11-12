@@ -30,6 +30,36 @@ struct LiveFrameInput
     // The camera's forward, as a facing (radians, game coordinates). While the camera orbits, the
     // player turns with it, as GW's right-drag mouse look does.
     float cameraFacing = 0.f;
+    float cameraYaw = 0.f;          // the chase camera's own yaw (the self-test checks a click leaves it)
+    // A left click on the ground (not on a character or a panel) this frame: the point under the
+    // cursor, game (x, y). While the button stays down the point under the cursor follows (held).
+    bool groundClicked = false;
+    float groundX = 0.f, groundY = 0.f;
+    bool groundHeld = false;
+    float heldX = 0.f, heldY = 0.f;
+    int clickedSkillSlot = -1;      // a click on a slot of the player's skill bar (0..7), else -1
+    bool setBar = false;            // the skills window rearranged the bar: the bar it asks for
+    int bar[8] = {};
+};
+
+// One skill the skills window lists, and whether the source can run it.
+struct LiveSkillOption
+{
+    int skill = 0;
+    bool simulated = false;
+};
+
+// A step of the source's self-test that the window performs with its own mouse: injected into the
+// window's ImGui context, so the click goes through the same code as a real one. Nothing reaches the OS.
+struct LiveScriptedUi
+{
+    // ClickBody: a click on the screen point of a character's body, (x, y) = its feet, game
+    // coordinates. ReportOverheads: the window reports the overhead bars it draws next frame.
+    enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads };
+    Kind kind = Kind::None;
+    float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates
+    int slot = -1;            // SkillSlotClick, DragSkillToSlot: the bar slot
+    int skill = 0;            // DragSkillToSlot: the skill dragged from the skills window's list
 };
 
 // What a step appended, so the window refreshes only the caches that read it.
@@ -89,6 +119,16 @@ public:
     virtual std::wstring TakeCaptureRequest() { return {}; }
     // A party row the source asks the window to click (the self-test), -1 = none. Row 0 = first.
     virtual int TakeScriptedPartyRowClick() { return -1; }
+    // A click or drag the source asks the window to perform with its mouse (the self-test).
+    virtual LiveScriptedUi TakeScriptedUi() { return {}; }
+
+    // The player's bar in slot order (0 = empty slot); false when the source has none.
+    virtual bool PlayerBar(int (&bar)[8]) const { (void)bar; return false; }
+    virtual bool PlayerCasting() const { return false; }
+    // The skills the skills window offers.
+    virtual void SkillOptions(std::vector<LiveSkillOption>& out) const { out.clear(); }
+    // The skills window key went down since the last call.
+    virtual bool TakeSkillsWindowToggle() { return false; }
 
     // A line of the window's own report (the models it built, the animations they carry).
     virtual void Report(const std::string& /*line*/) {}

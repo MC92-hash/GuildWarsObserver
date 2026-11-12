@@ -105,6 +105,13 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
     case ImGuiKey_KeypadMultiply: return VK_MULTIPLY;
     case ImGuiKey_KeypadDivide:   return VK_DIVIDE;
     case ImGuiKey_KeypadDecimal:  return VK_DECIMAL;
+    // Modifiers on their own (a Trials key may be Shift alone): GetAsyncKeyState reads either side.
+    case ImGuiKey_LeftShift:   return VK_LSHIFT;
+    case ImGuiKey_RightShift:  return VK_RSHIFT;
+    case ImGuiKey_LeftCtrl:    return VK_LCONTROL;
+    case ImGuiKey_RightCtrl:   return VK_RCONTROL;
+    case ImGuiKey_LeftAlt:     return VK_LMENU;
+    case ImGuiKey_RightAlt:    return VK_RMENU;
     case ImGuiKey_MouseRight:  return VK_RBUTTON;
     case ImGuiKey_MouseMiddle: return VK_MBUTTON;
     case ImGuiKey_MouseX1:     return VK_XBUTTON1;
@@ -115,7 +122,8 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
 
 bool ReplayHotkeys::IsValidBindableKey(int k)
 {
-    // Keyboard keys
+    // Keyboard keys, the left and right modifiers alone among them (ImGuiKey_LeftCtrl..RightSuper
+    // sit in this range; the ImGuiMod_ flags and ReservedForMod keys do not)
     if (k >= ImGuiKey_NamedKey_BEGIN && k < ImGuiKey_MouseLeft)
         return true;
     // Mouse buttons (right, middle, X1, X2) — but not left-click or wheel
@@ -167,7 +175,14 @@ void ReplayHotkeys::Save() const
       << "    \"strafeRight\": " << trStrafeRight << ",\n"
       << "    \"turnLeft\": "    << trTurnLeft    << ",\n"
       << "    \"turnRight\": "   << trTurnRight   << ",\n"
-      << "    \"clearTarget\": " << trClearTarget << ",\n";
+      << "    \"clearTarget\": " << trClearTarget << ",\n"
+      << "    \"autorun\": "     << trAutorun     << ",\n"
+      << "    \"cancelAction\": " << trCancelAction << ",\n"
+      << "    \"skillsWindow\": " << trSkillsWindow << ",\n"
+      << "    \"targetSelf\": "   << trTargetSelf   << ",\n"
+      << "    \"attack\": "       << trAttack       << ",\n"
+      << "    \"nearestEnemy\": " << trNearestEnemy << ",\n"
+      << "    \"nearestAlly\": "  << trNearestAlly  << ",\n";
     f << "    \"skills\": [";
     for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trSkill[i];
     f << "],\n    \"party\": [";
@@ -236,6 +251,13 @@ void ReplayHotkeys::Load()
             readTrialsKey("turnLeft",    trTurnLeft);
             readTrialsKey("turnRight",   trTurnRight);
             readTrialsKey("clearTarget", trClearTarget);
+            readTrialsKey("autorun",      trAutorun);
+            readTrialsKey("cancelAction", trCancelAction);
+            readTrialsKey("skillsWindow", trSkillsWindow);
+            readTrialsKey("targetSelf",   trTargetSelf);
+            readTrialsKey("attack",       trAttack);
+            readTrialsKey("nearestEnemy", trNearestEnemy);
+            readTrialsKey("nearestAlly",  trNearestAlly);
             auto readTrialsRow = [&](const char* name, int (&row)[8]) {
                 if (!t.contains(name) || !t[name].is_array()) return;
                 const auto& a = t[name];
@@ -7482,6 +7504,8 @@ void ReplayWindow::DrawImGuiOverlay()
     }
 
     ApplyHighlightsMouseBlock();   // the clean screen's hidden panels take no mouse
+    if (m_liveMode)
+        LiveFeedScriptedMouse();   // the Trials self-test's clicks, into this window's ImGui only
     ImGui::NewFrame();
 
     // Top menu bar

@@ -11,8 +11,11 @@
 
 #include <DirectXTex.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <format>
+#include <map>
 
 // =================================================================================================
 // LIVE MODE (LiveSource.h)
@@ -24,6 +27,8 @@
 //     always has two snapshots and every event lands later than the frame that shows it;
 //   - the caches built once from the whole recording are invalidated, or rebuilt, after an append;
 //   - the camera is the GW chase camera on the player; a click picks a target instead of following;
+//   - a click on the ground walks there, a click on the skill bar uses the skill, the skills window
+//     rearranges the bar (all handed to the source, which decides);
 //   - the scrub and playback interface, the intro overlay and the replay hotkeys are off.
 // =================================================================================================
 
@@ -50,6 +55,8 @@ constexpr float kLiveCameraPitch = 0.30f;
 constexpr float kLiveCameraEase = 5.0f;          // 1/s, the yaw's approach to "behind"
 constexpr float kLiveCameraLookHeight = 70.f;    // ~0.92 of a character's height
 constexpr size_t kLiveFrameRing = 240;
+// The drag-and-drop payload of a skill: { skill id, bar slot it comes from or -1 from the list }.
+constexpr const char* kTrialsSkillPayload = "TRIALS_SKILL";
 }
 
 ReplayWindow* ReplayWindow::CreateLive(HINSTANCE hInstance, std::shared_ptr<ILiveSource> source, int mapId,
@@ -180,9 +187,28 @@ void ReplayWindow::LiveUpdate(float dt)
     in.cameraOrbiting = m_rightMouseDown;
     // The inverse of the chase camera's "behind" rule below.
     in.cameraFacing = std::atan2(-std::cos(m_followYaw), -std::sin(m_followYaw));
+    in.cameraYaw = m_followYaw;
+    in.groundClicked = m_liveGroundClicked;
+    in.groundX = m_liveGroundX;
+    in.groundY = m_liveGroundY;
+    in.groundHeld = m_liveGroundHeld && m_liveHeldValid;
+    in.heldX = m_liveHeldX;
+    in.heldY = m_liveHeldY;
+    in.clickedSkillSlot = m_liveClickedSlot;
+    in.setBar = m_liveSetBar;
+    for (int i = 0; i < 8; ++i) in.bar[i] = m_liveNewBar[i];
     m_liveClickedAgent = -1;
+    m_liveGroundClicked = false;
+    m_liveClickedSlot = -1;
+    m_liveSetBar = false;
 
     m_live->Advance(in, m_replayCtx);
+    if (m_live->TakeSkillsWindowToggle())
+    {
+        m_liveSkillsOpen = !m_liveSkillsOpen;
+        m_live->Report(m_liveSkillsOpen ? "ui: skills window opened" : "ui: skills window closed");
+    }
+    LiveTakeScriptedUi();
     m_debugTimeline = static_cast<float>(m_live->DisplayTime());
     m_replayCtx.maxReplayTime = std::max(m_replayCtx.maxReplayTime, static_cast<float>(m_live->SimTime()));
     m_replayCtx.isPlaying = true;
@@ -195,7 +221,9 @@ void ReplayWindow::LiveUpdate(float dt)
         LiveReportModels();
 
     // THE CHASE CAMERA: always on the player; GW's distance and pitch the first time, then the
-    // user's (wheel, right drag), with the yaw eased behind the heading while the player steers.
+    // user's (wheel, right drag), with the yaw eased behind the heading while the player steers with
+    // the keys or autorun. A walk to a clicked point (and the auto-attack's run into range) is not
+    // steering: the camera keeps its yaw and only follows the position (the source says which).
     const int playerId = m_live->PlayerAgentId();
     const float behind = [&] {
         const float f = m_live->PlayerFacing();
@@ -290,7 +318,570 @@ void ReplayWindow::DrawLiveHud()
     }
     ImGui::End();
 
-    if (m_live) m_live->DrawHud();
+    if (!m_live) return;
+    m_live->DrawHud();
+    DrawLiveSkillsWindow();
+
+    // A slot dragged off the bar and let go anywhere but on a slot or the skills window: cleared.
+    if (const ImGuiPayload* p = ImGui::GetDragDropPayload();
+        p && p->IsDataType(kTrialsSkillPayload) && !p->Delivery && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+    {
+        int data[2] = {};
+        std::memcpy(data, p->Data, sizeof(data));
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        bool onSlot = false;
+        for (const ImVec4& r : m_liveSlotRects)
+            onSlot = onSlot || (m.x >= r.x && m.x < r.z && m.y >= r.y && m.y < r.w);
+        int bar[8] = {};
+        if (data[1] >= 0 && data[1] < 8 && !onSlot && m_live->PlayerBar(bar))
+        {
+            for (int i = 0; i < 8; ++i) m_liveNewBar[i] = bar[i];
+            m_liveNewBar[data[1]] = 0;
+            m_liveSetBar = true;
+        }
+    }
+    m_liveDragFromSlot = -1;
+    LiveGroundInput();
+    DrawLiveGroundMarker();
+}
+
+// THE CLICK-TO-MOVE MARKER. Gw.exe: the ground click (0x534550) calls AvSelect.cpp 0x7E4D70, which
+// destroys the previous marker, snaps the point to the ground and spawns model 9097 there
+// (s_targetCursor, 0xA951D4) as a one-shot: three bones, one green chevron each (texture 31186, a
+// 128x64 arrowhead pointing to u = 0), keys over about 0.75 s, cleared by its own end (0x7E4610), by
+// the next click or by the map's teardown - not by arrival or a cancel. Here the chevron is the DAT's
+// own texture; the model's motion is not decoded, so the three converge on the point and fade out
+// over 0.8 s (an imitation of the keys), the bones' layout (three at 120 degrees, radius ~20) kept.
+void ReplayWindow::DrawLiveGroundMarker()
+{
+    if (!m_liveMarkerOn || !m_mapRenderer || !m_deviceResources) return;
+    constexpr double kLife = 0.8;
+    const double age = QpcSeconds() - m_liveMarkerStart;
+    if (age > kLife || age < 0.0)
+    {
+        m_liveMarkerOn = false;
+        return;
+    }
+    if (!m_liveMarkerTextureAttempted)
+    {
+        m_liveMarkerTextureAttempted = true;
+        constexpr int kChevronFile = 31186;
+        const auto it = m_hashIndex && m_datManager ? m_hashIndex->find(kChevronFile) : std::unordered_map<int, std::vector<int>>::const_iterator{};
+        if (m_hashIndex && m_datManager && it != m_hashIndex->end() && !it->second.empty())
+        {
+            const int index = it->second.at(0);
+            m_datManager->EnsureTypeClassified(index);
+            DatTexture dt = m_datManager->parse_ffna_texture_file(index);
+            int texId = -1;
+            if (dt.width > 0 && dt.height > 0 &&
+                SUCCEEDED(m_mapRenderer->GetTextureManager()->CreateTextureFromRGBA(dt.width, dt.height, dt.rgba_data.data(),
+                                                                                    &texId, kChevronFile)) &&
+                texId >= 0)
+                m_liveMarkerTexture = m_mapRenderer->GetTextureManager()->GetTexture(texId);
+        }
+        RunLog::Line("live: click marker texture %d %s", kChevronFile, m_liveMarkerTexture ? "loaded" : "NOT found (drawn plain)");
+    }
+    float h = 0.f;
+    if (!m_mapRenderer->TryGetGroundHeight(m_liveMarkerX, m_liveMarkerY, h)) return;
+    Camera* cam = m_mapRenderer->GetCamera();
+    const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
+    const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
+    const float t = static_cast<float>(age / kLife);
+    const float radius = 34.f - 18.f * t;                      // converging on the point
+    const float alpha = t < 0.6f ? 1.f : 1.f - (t - 0.6f) / 0.4f;
+    // Each chevron leans in: its tip at the ground, its tail raised (the game's arrows point down
+    // at the point, the owner's screenshot), so a low chase camera still sees them.
+    constexpr float kLength = 36.f, kWidth = 18.f, kLift = 2.f, kTailRise = 24.f;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.f));
+    int drawn = 0;
+    float firstX = 0.f, firstY = 0.f;
+    for (int k = 0; k < 3; ++k)
+    {
+        const float a = DirectX::XM_PIDIV2 + k * DirectX::XM_2PI / 3.f;
+        const float cx = std::cos(a), cy = std::sin(a);    // outward
+        const float px = -cy, py = cx;                     // across
+        auto at = [&](float along, float across, ImVec2& out) {
+            const float gx = m_liveMarkerX + cx * along + px * across, gy = m_liveMarkerY + cy * along + py * across;
+            float sx = 0.f, sy = 0.f;
+            const float rise = along > radius + 1.f ? kTailRise : 0.f;
+            if (!ProjectToScreen(viewProj, vp.Width, vp.Height, XMFLOAT3(gx, h + kLift + rise, gy), sx, sy)) return false;
+            out = ImVec2(sx, sy);
+            return true;
+        };
+        ImVec2 tipA, tipB, tailB, tailA;
+        if (!at(radius, kWidth * 0.5f, tipA) || !at(radius, -kWidth * 0.5f, tipB) ||
+            !at(radius + kLength, -kWidth * 0.5f, tailB) || !at(radius + kLength, kWidth * 0.5f, tailA))
+            continue;
+        if (m_liveMarkerTexture)
+            dl->AddImageQuad((ImTextureID)m_liveMarkerTexture, tipA, tipB, tailB, tailA, ImVec2(0.f, 0.f), ImVec2(0.f, 1.f),
+                             ImVec2(1.f, 1.f), ImVec2(1.f, 0.f), col);
+        else
+        {
+            ImVec2 tip;
+            if (!at(radius, 0.f, tip)) continue;
+            dl->AddTriangleFilled(tip, tailA, tailB, IM_COL32(40, 200, 40, static_cast<int>(alpha * 200.f)));
+        }
+        if (!drawn) { firstX = tipA.x; firstY = tipA.y; }
+        ++drawn;
+    }
+    if (!m_liveMarkerReported && drawn > 0 && m_live)
+    {
+        m_liveMarkerReported = true;
+        m_live->Report(std::format("marker: drawn at ({:.0f}, {:.0f}), {} chevron(s), texture 31186 {}, first tip at screen ({:.0f}, {:.0f})",
+                                   m_liveMarkerX, m_liveMarkerY, drawn, m_liveMarkerTexture ? "yes" : "no", firstX, firstY));
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// THE PLAYER'S CONTROLS: click to move, the skill bar, the skills window (Trials).
+// -------------------------------------------------------------------------------------------------
+bool ReplayWindow::LivePlayerBar(int agentId, int (&bar)[8]) const
+{
+    if (!m_liveMode || !m_live || agentId != m_live->PlayerAgentId()) return false;
+    return m_live->PlayerBar(bar);
+}
+
+// The ground under the cursor, game (x, y): the camera ray marched against the terrain, then halved
+// down to a tenth of a unit. World (x, z) is game (x, y) under the default map transform, the one the
+// live seed places agents with.
+bool ReplayWindow::LivePickGround(float mouseX, float mouseY, float& gameX, float& gameY) const
+{
+    if (!m_mapRenderer || !m_deviceResources) return false;
+    Camera* cam = m_mapRenderer->GetCamera();
+    const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
+    if (!cam || vp.Width <= 0.f || vp.Height <= 0.f) return false;
+    const XMMATRIX inv = XMMatrixInverse(nullptr, cam->GetView() * cam->GetProj());
+    const float ndcX = (mouseX - vp.TopLeftX) / vp.Width * 2.f - 1.f;
+    const float ndcY = 1.f - (mouseY - vp.TopLeftY) / vp.Height * 2.f;
+    const XMVECTOR a = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 0.1f, 1.f), inv);
+    const XMVECTOR b = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 0.9f, 1.f), inv);
+    XMVECTOR dir = XMVector3Normalize(XMVectorSubtract(b, a));
+    if (XMVectorGetX(XMVector3Dot(dir, cam->GetLook())) < 0.f) dir = XMVectorNegate(dir);
+    const XMVECTOR origin = cam->GetPosition();
+    auto above = [&](float t, float& x, float& z) {
+        const XMVECTOR p = XMVectorAdd(origin, XMVectorScale(dir, t));
+        x = XMVectorGetX(p);
+        z = XMVectorGetZ(p);
+        float h = 0.f;
+        if (!m_mapRenderer->TryGetGroundHeight(x, z, h)) return true;
+        return XMVectorGetY(p) > h;
+    };
+    float x = 0.f, z = 0.f;
+    if (!above(0.f, x, z)) return false;   // the camera itself is under the ground
+    float lo = 0.f, hi = 0.f, step = 16.f;
+    bool hit = false;
+    while (hi < 40000.f)
+    {
+        lo = hi;
+        hi += step;
+        step = std::min(step * 1.03f, 96.f);
+        if (!above(hi, x, z)) { hit = true; break; }
+    }
+    if (!hit) return false;
+    for (int i = 0; i < 20 && hi - lo > 0.1f; ++i)
+    {
+        const float mid = 0.5f * (lo + hi);
+        if (above(mid, x, z)) lo = mid; else hi = mid;
+    }
+    above(hi, x, z);
+    gameX = x;
+    gameY = z;
+    return true;
+}
+
+// A left click on the ground, not on a character, a panel or a drag: the point to walk to. While
+// the button stays down the point under the cursor goes along each frame (the client steers so).
+void ReplayWindow::LiveGroundInput()
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool free = !io.WantCaptureMouse && !m_rightMouseDown && m_hoveredAgentId < 0 &&
+                      !m_annotationMgr.IsDrawModeActive() && !ImGui::GetDragDropPayload();
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && m_live && m_liveMouseNext < m_liveMouseSteps.size())
+    {
+        // The self-test's click: what the window saw, so a refused click says why.
+        float gx = 0.f, gy = 0.f;
+        const bool picked = LivePickGround(io.MousePos.x, io.MousePos.y, gx, gy);
+        m_live->Report(std::format("ui: scripted click at ({:.0f}, {:.0f}): panel {}, right button {}, character {}, "
+                                   "drawing {}, drag {}, ground {}",
+                                   io.MousePos.x, io.MousePos.y, io.WantCaptureMouse ? "yes" : "no", m_rightMouseDown ? "yes" : "no",
+                                   m_hoveredAgentId, m_annotationMgr.IsDrawModeActive() ? "yes" : "no",
+                                   ImGui::GetDragDropPayload() ? "yes" : "no",
+                                   picked ? std::format("({:.0f}, {:.0f})", gx, gy) : std::string("none")));
+    }
+    if (free && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        float gx = 0.f, gy = 0.f;
+        if (LivePickGround(io.MousePos.x, io.MousePos.y, gx, gy))
+        {
+            m_liveGroundClicked = true;
+            m_liveGroundX = gx;
+            m_liveGroundY = gy;
+            m_liveGroundHeld = true;
+            // The game's marker, at the clicked point (a held button moves the walk, not the marker).
+            m_liveMarkerOn = true;
+            m_liveMarkerX = gx;
+            m_liveMarkerY = gy;
+            m_liveMarkerStart = QpcSeconds();
+            m_liveMarkerReported = false;
+        }
+    }
+    if (m_liveGroundHeld && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_liveGroundHeld = false;
+    m_liveHeldValid = false;
+    if (m_liveGroundHeld && !m_liveGroundClicked)
+        m_liveHeldValid = LivePickGround(io.MousePos.x, io.MousePos.y, m_liveHeldX, m_liveHeldY);
+}
+
+// One slot of the player's bar, inside the focus HUD's bar window. Closed skills window: the press
+// uses the skill, as the client does. Open: a press and release uses it, a drag carries it to
+// another slot (the two swap) or off the bar (cleared), and the slot takes a skill dropped on it.
+void ReplayWindow::LiveSkillSlotInput(int slot, int skill, ImVec2 tl, ImVec2 br)
+{
+    if (slot < 0 || slot >= 8 || !m_live) return;
+    m_liveSlotRects[slot] = ImVec4(tl.x, tl.y, br.x, br.y);
+    ImGui::PushID("trials_slot");
+    ImGui::PushID(slot);
+    ImGui::SetCursorScreenPos(tl);
+    ImGui::InvisibleButton("##slot", ImVec2(br.x - tl.x, br.y - tl.y));
+    if (skill > 0)
+    {
+        if (ImGui::IsItemActivated())
+        {
+            m_liveSlotDragged = false;
+            if (!m_liveSkillsOpen) m_liveClickedSlot = slot;
+        }
+        if (m_liveSkillsOpen && ImGui::BeginDragDropSource())
+        {
+            const int payload[2] = { skill, slot };
+            ImGui::SetDragDropPayload(kTrialsSkillPayload, payload, sizeof(payload));
+            ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+            if (ImTextureID tex = LoadSkillIcon(this, dev, skill, m_skillIconIndex, m_skillIconCache))
+                ImGui::Image(tex, ImVec2(40.f, 40.f), ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+            const SkillInfo* si = m_skillView.Get(skill);
+            ImGui::TextUnformatted(si ? si->name.c_str() : "skill");
+            ImGui::EndDragDropSource();
+            m_liveDragFromSlot = slot;
+            m_liveSlotDragged = true;
+        }
+        if (m_liveSkillsOpen && ImGui::IsItemDeactivated() && ImGui::IsItemHovered() && !m_liveSlotDragged)
+            m_liveClickedSlot = slot;
+    }
+    if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kTrialsSkillPayload))
+        {
+            int data[2] = {};
+            std::memcpy(data, p->Data, sizeof(data));
+            int bar[8] = {};
+            if (m_live->PlayerBar(bar))
+            {
+                int next[8];
+                for (int i = 0; i < 8; ++i) next[i] = bar[i];
+                if (data[1] >= 0 && data[1] < 8)
+                    std::swap(next[data[1]], next[slot]);
+                else
+                {
+                    // From the list: a skill already on the bar moves here, the one here goes there.
+                    for (int i = 0; i < 8; ++i)
+                        if (i != slot && next[i] == data[0]) next[i] = next[slot];
+                    next[slot] = data[0];
+                }
+                for (int i = 0; i < 8; ++i) m_liveNewBar[i] = next[i];
+                m_liveSetBar = true;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+}
+
+// THE SKILLS WINDOW (the client's K): the skills of the player's professions by attribute, with
+// a search box. A simulated skill drags onto the bar; one the simulation cannot run yet is greyed
+// and does not drag. The game's window frame, as the party window draws it.
+void ReplayWindow::DrawLiveSkillsWindow()
+{
+    static std::vector<LiveSkillOption> s_options;
+    static bool s_loaded = false;
+    if (!m_liveSkillsOpen)
+    {
+        m_liveListRects.clear();
+        s_loaded = false;
+        return;
+    }
+    if (!s_loaded)
+    {
+        m_live->SkillOptions(s_options);
+        s_loaded = true;
+    }
+    int bar[8] = {};
+    const bool haveBar = m_live->PlayerBar(bar);
+    const bool casting = m_live->PlayerCasting();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    EnsureSkillIconIndex();
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float winW = 400.f, winH = std::min(600.f, vp->Size.y - 140.f);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f + 140.f, vp->Pos.y + 70.f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(winW, winH), ImGuiCond_Appearing);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.f, 0.f, 0.f, 0.f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.89f, 0.71f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 14.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    bool open = true;
+    if (ImGui::Begin("Skills##trials_skills", &open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar))
+    {
+        // The frame: dark body, the team frame art, the title bar with its close button.
+        const ImVec2 A0 = ImGui::GetWindowPos();
+        const ImVec2 A1(A0.x + ImGui::GetWindowSize().x, A0.y + ImGui::GetWindowSize().y);
+        ImDrawList* fdl = ImGui::GetWindowDrawList();
+        fdl->PushClipRect(A0, A1, false);
+        fdl->AddRectFilled(ImVec2(A0.x + 10.f, A0.y + 32.f), ImVec2(A1.x - 10.f, A1.y - 14.f), IM_COL32(14, 14, 18, 0xEE));
+        DrawGameNineSlice(fdl, LoadGameUITexture(dev, "Window\\ui_window_frame_team.png"), ImVec2(A0.x, A0.y + 32.f), A1, 128.f, 128.f);
+        DrawGameNineSlice(fdl, LoadGameUITexture(dev, "Window\\ui_window_titlebar.png"), A0, ImVec2(A1.x, A0.y + 32.f), 128.f, 32.f);
+        const float bandY = A0.y + 12.f;
+        fdl->AddText(ImVec2(A0.x + 19.f, bandY + (20.f - ImGui::GetFontSize()) * 0.5f), IM_COL32(0xDC, 0xDC, 0xDC, 0xFF), "Skills");
+        const ImVec2 x0(A1.x - 3.f - 24.f, bandY + 2.f), x1(x0.x + 16.f, x0.y + 16.f);
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool xHover = ImGui::IsWindowHovered() && io.MousePos.x >= x0.x && io.MousePos.x < x1.x &&
+                            io.MousePos.y >= x0.y && io.MousePos.y < x1.y;
+        if (ImTextureID btn = LoadGameUITexture(dev, "Window\\ui_window_buttons.png"))
+        {
+            const int cell = xHover ? (io.MouseDown[0] ? 2 : 1) : 0;
+            fdl->AddImage(btn, x0, x1, ImVec2(cell * 16.f / 128.f, 0.f), ImVec2((cell + 1) * 16.f / 128.f, 1.f));
+        }
+        if (xHover && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) open = false;
+        fdl->PopClipRect();
+
+        ImGui::SetCursorPosY(40.f);
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputTextWithHint("##trials_skill_search", "Search skills", m_liveSkillSearch, sizeof(m_liveSkillSearch));
+        ImGui::TextDisabled(casting ? "Casting: the bar cannot change now" : "Drag a skill onto the bar. Grey: not simulated yet");
+
+        // The list, by attribute; a row drops back a dragged slot (cleared).
+        std::string needle(m_liveSkillSearch);
+        std::transform(needle.begin(), needle.end(), needle.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::map<int, std::vector<const SkillInfo*>> byAttribute;
+        for (const LiveSkillOption& o : s_options)
+        {
+            const SkillInfo* si = m_skillView.Get(o.skill);
+            if (!si) continue;
+            if (!needle.empty())
+            {
+                std::string name = si->name;
+                std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (name.find(needle) == std::string::npos) continue;
+            }
+            byAttribute[si->attribute].push_back(si);
+        }
+        m_liveListRects.clear();
+        ImGui::BeginChild("##trials_skill_list", ImVec2(0.f, 0.f), false);
+        const float rowH = 36.f;
+        for (auto& [attribute, skills] : byAttribute)
+        {
+            std::sort(skills.begin(), skills.end(), [](const SkillInfo* a, const SkillInfo* b) { return a->name < b->name; });
+            const char* attrName = SkillDatabase::GetAttributeName(attribute);
+            ImGui::SeparatorText(attrName && *attrName ? attrName : "No Attribute");
+            for (const SkillInfo* si : skills)
+            {
+                const bool simulated = std::any_of(s_options.begin(), s_options.end(),
+                                                   [&](const LiveSkillOption& o) { return o.skill == si->id && o.simulated; });
+                bool onBar = false;
+                for (int i = 0; i < 8 && haveBar; ++i) onBar = onBar || bar[i] == si->id;
+                const ImVec2 r0 = ImGui::GetCursorScreenPos();
+                const ImVec2 r1(r0.x + ImGui::GetContentRegionAvail().x, r0.y + rowH);
+                ImGui::PushID(si->id);
+                ImGui::InvisibleButton("##row", ImVec2(r1.x - r0.x, rowH));
+                const bool hovered = ImGui::IsItemHovered();
+                m_liveListRects[si->id] = ImVec4(r0.x, r0.y, r1.x, r1.y);
+                if (simulated && ImGui::BeginDragDropSource())
+                {
+                    const int payload[2] = { si->id, -1 };
+                    ImGui::SetDragDropPayload(kTrialsSkillPayload, payload, sizeof(payload));
+                    if (ImTextureID tex = LoadSkillIcon(this, dev, si->id, m_skillIconIndex, m_skillIconCache))
+                        ImGui::Image(tex, ImVec2(40.f, 40.f), ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f));
+                    ImGui::TextUnformatted(si->name.c_str());
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginDragDropTarget())
+                {
+                    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kTrialsSkillPayload))
+                    {
+                        int data[2] = {};
+                        std::memcpy(data, p->Data, sizeof(data));
+                        if (data[1] >= 0 && data[1] < 8 && haveBar)
+                        {
+                            for (int i = 0; i < 8; ++i) m_liveNewBar[i] = bar[i];
+                            m_liveNewBar[data[1]] = 0;
+                            m_liveSetBar = true;
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                ImGui::PopID();
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                if (hovered) dl->AddRectFilled(r0, r1, IM_COL32(255, 255, 255, 18), 3.f);
+                const ImVec2 i0(r0.x + 2.f, r0.y + 2.f), i1(i0.x + rowH - 4.f, i0.y + rowH - 4.f);
+                const ImU32 tint = simulated ? IM_COL32_WHITE : IM_COL32(110, 110, 110, 150);
+                if (ImTextureID tex = LoadSkillIcon(this, dev, si->id, m_skillIconIndex, m_skillIconCache))
+                    dl->AddImage(tex, i0, i1, ImVec2(0.0625f, 0.0625f), ImVec2(0.9375f, 0.9375f), tint);
+                if (si->is_elite) dl->AddRect(i0, i1, IM_COL32(0xE8, 0xC0, 0x40, simulated ? 0xFF : 0x70), 0.f, 0, 1.5f);
+                if (onBar) dl->AddRect(ImVec2(i0.x - 1.f, i0.y - 1.f), ImVec2(i1.x + 1.f, i1.y + 1.f), IM_COL32(0x70, 0xD0, 0x70, 0xFF), 0.f, 0, 2.f);
+                const ImU32 text = simulated ? IM_COL32(0xF4, 0xE3, 0xB5, 0xFF) : IM_COL32(0x80, 0x80, 0x80, 0xFF);
+                dl->AddText(ImVec2(i1.x + 8.f, r0.y + (rowH - ImGui::GetFontSize()) * 0.5f), text, si->name.c_str());
+                if (!simulated)
+                    dl->AddText(ImVec2(r1.x - ImGui::CalcTextSize("not simulated").x - 6.f, r0.y + (rowH - ImGui::GetFontSize()) * 0.5f),
+                                IM_COL32(0x90, 0x70, 0x60, 0xFF), "not simulated");
+                if (hovered && !ImGui::GetDragDropPayload())
+                {
+                    if (simulated)
+                        DrawGameSkillTooltip(si->id, m_live->PlayerAgentId(), nullptr);
+                    else
+                        ImGui::SetTooltip("%s: not simulated yet", si->name.c_str());
+                }
+            }
+        }
+        if (byAttribute.empty()) ImGui::TextDisabled("No skill matches");
+        ImGui::EndChild();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (!open)
+    {
+        m_liveSkillsOpen = false;
+        m_live->Report("ui: skills window closed");
+    }
+}
+
+// THE SELF-TEST'S MOUSE. The source names a click or a drag; the window turns it into mouse steps,
+// one a frame, resolved against what it drew the frame before (a slot, a row of the skills window,
+// a point of the ground projected onto the screen) and fed into this window's own ImGui context
+// before its NewFrame. No OS input is read or sent; the real cursor never moves.
+void ReplayWindow::LiveTakeScriptedUi()
+{
+    if (!m_live || m_liveMouseNext < m_liveMouseSteps.size()) return;
+    const LiveScriptedUi ui = m_live->TakeScriptedUi();
+    if (ui.kind == LiveScriptedUi::Kind::None) return;
+    m_liveMouseSteps.clear();
+    m_liveMouseNext = 0;
+    auto at = [&](int ref, int id, float x, float y, float lerp) { m_liveMouseSteps.push_back({ ref, id, x, y, lerp, -1 }); };
+    auto button = [&](bool down) { m_liveMouseSteps.push_back({ -1, 0, 0.f, 0.f, 1.f, down ? 1 : 0 }); };
+    auto wait = [&] { m_liveMouseSteps.push_back({ -1, 0, 0.f, 0.f, 1.f, -1 }); };
+    switch (ui.kind)
+    {
+    case LiveScriptedUi::Kind::GroundClick:
+    {
+        float h = 0.f, sx = 0.f, sy = 0.f;
+        const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
+        Camera* cam = m_mapRenderer->GetCamera();
+        const bool onScreen = m_mapRenderer->TryGetGroundHeight(ui.x, ui.y, h) &&
+                              ProjectToScreen(cam->GetView() * cam->GetProj(), vp.Width, vp.Height, XMFLOAT3(ui.x, h, ui.y), sx, sy);
+        if (!onScreen)
+        {
+            m_live->Report(std::format("ui: ground click at ({:.0f}, {:.0f}) is not on the screen", ui.x, ui.y));
+            return;
+        }
+        at(0, 0, sx, sy, 1.f);
+        button(true);
+        button(false);
+        m_liveScriptNote = std::format("ui: ground click at ({:.0f}, {:.0f}) -> screen ({:.0f}, {:.0f})", ui.x, ui.y, sx, sy);
+        break;
+    }
+    case LiveScriptedUi::Kind::ClickBody:
+    {
+        // The middle of the body: 60 units over the feet (a character is about 120 high).
+        float h = 0.f, sx = 0.f, sy = 0.f;
+        const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
+        Camera* cam = m_mapRenderer->GetCamera();
+        const bool onScreen = m_mapRenderer->TryGetGroundHeight(ui.x, ui.y, h) &&
+                              ProjectToScreen(cam->GetView() * cam->GetProj(), vp.Width, vp.Height, XMFLOAT3(ui.x, h + 60.f, ui.y), sx, sy);
+        if (!onScreen)
+        {
+            m_live->Report(std::format("ui: body click at ({:.0f}, {:.0f}) is not on the screen", ui.x, ui.y));
+            return;
+        }
+        at(0, 0, sx, sy, 1.f);
+        button(true);
+        button(false);
+        m_liveScriptNote = std::format("ui: body click at ({:.0f}, {:.0f}) -> screen ({:.0f}, {:.0f})", ui.x, ui.y, sx, sy);
+        break;
+    }
+    case LiveScriptedUi::Kind::ReportOverheads:
+        m_liveReportOverheads = true;
+        return;
+    case LiveScriptedUi::Kind::SkillSlotClick:
+        at(2, ui.slot, 0.f, 0.f, 1.f);
+        button(true);
+        button(false);
+        m_liveScriptNote = std::format("ui: skill bar click on slot {}", ui.slot + 1);
+        break;
+    case LiveScriptedUi::Kind::DragSkillToSlot:
+    {
+        m_liveSkillsOpen = true;
+        const SkillInfo* si = m_skillView.Get(ui.skill);
+        snprintf(m_liveSkillSearch, sizeof(m_liveSkillSearch), "%s", si ? si->name.c_str() : "");
+        wait();
+        wait();
+        wait();
+        at(1, ui.skill, 0.f, 0.f, 1.f);
+        button(true);
+        for (float f : { 0.2f, 0.25f, 0.333f, 0.5f, 1.f }) at(2, ui.slot, 0.f, 0.f, f);
+        at(2, ui.slot, 0.f, 0.f, 1.f);
+        button(false);
+        wait();
+        m_liveScriptNote = std::format("ui: dragged {} from the skills window to slot {}", si ? si->name : std::string("?"), ui.slot + 1);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void ReplayWindow::LiveFeedScriptedMouse()
+{
+    if (m_liveMouseNext >= m_liveMouseSteps.size()) return;
+    const LiveMouseStep s = m_liveMouseSteps[m_liveMouseNext++];
+    ImGuiIO& io = ImGui::GetIO();
+    if (s.ref >= 0)
+    {
+        float tx = s.x, ty = s.y;
+        bool known = true;
+        if (s.ref == 1)
+        {
+            const auto it = m_liveListRects.find(s.id);
+            known = it != m_liveListRects.end();
+            if (known)
+            {
+                tx = it->second.x + 20.f;
+                ty = 0.5f * (it->second.y + it->second.w);
+            }
+        }
+        else if (s.ref == 2 && s.id >= 0 && s.id < 8)
+        {
+            const ImVec4& r = m_liveSlotRects[s.id];
+            known = r.z > r.x;
+            tx = 0.5f * (r.x + r.z);
+            ty = 0.5f * (r.y + r.w);
+        }
+        if (!known && m_live)
+            m_live->Report(std::format("ui: scripted mouse target {} {} not drawn", s.ref == 1 ? "row" : "slot", s.id));
+        m_liveMouseX += (tx - m_liveMouseX) * s.lerp;
+        m_liveMouseY += (ty - m_liveMouseY) * s.lerp;
+        io.AddMousePosEvent(m_liveMouseX, m_liveMouseY);
+    }
+    if (s.button >= 0) io.AddMouseButtonEvent(ImGuiMouseButton_Left, s.button == 1);
+    if (m_liveMouseNext >= m_liveMouseSteps.size())
+    {
+        if (m_live && !m_liveScriptNote.empty()) m_live->Report(m_liveScriptNote);
+        // A drag leaves the list whole again for the next picture.
+        if (m_liveScriptNote.rfind("ui: dragged", 0) == 0) m_liveSkillSearch[0] = '\0';
+        m_liveScriptNote.clear();
+        m_liveMouseSteps.clear();
+        m_liveMouseNext = 0;
+    }
 }
 
 void ReplayWindow::LiveAfterRender()

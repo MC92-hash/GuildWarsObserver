@@ -53,6 +53,13 @@ struct ReplayHotkeys
                        ImGuiKey_5, ImGuiKey_6, ImGuiKey_7, ImGuiKey_8 };
     int trParty[8] = { ImGuiKey_F1, ImGuiKey_F2, ImGuiKey_F3, ImGuiKey_F4,
                        ImGuiKey_F5, ImGuiKey_F6, ImGuiKey_F7, ImGuiKey_F8 };
+    int trAutorun      = ImGuiKey_R;           // run forward until pressed again (or forward / back)
+    int trCancelAction = ImGuiKey_LeftShift;   // stop the cast, else stop walking
+    int trSkillsWindow = ImGuiKey_K;           // the skills window: drag skills onto the bar
+    int trTargetSelf   = ImGuiKey_F;           // target yourself
+    int trAttack       = ImGuiKey_Space;       // attack the target (GW's Interact, control action 0x80)
+    int trNearestEnemy = ImGuiKey_C;           // target the nearest living foe
+    int trNearestAlly  = ImGuiKey_V;           // target the nearest living ally (never yourself)
 
     void ResetToDefaults() { *this = ReplayHotkeys{}; }
 

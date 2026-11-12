@@ -1922,6 +1922,48 @@ private:
     // (Character/ReplayWindow_AgentEffects.cpp, Character/ReplayWindow_Sounds.cpp).
     void LiveRebuildEffectSchedules();
     void LiveRebuildSoundPlan();
+    // The player's controls in a live match (ReplayWindow_Live.cpp): click to move, the skill bar's
+    // clicks and drags, the skills window, and the self-test's scripted mouse. Recordings never
+    // reach any of it.
+    bool LivePlayerBar(int agentId, int (&bar)[8]) const;   // the source's bar when agentId is its player
+    void LiveSkillSlotInput(int slot, int skill, ImVec2 tl, ImVec2 br);   // inside the focus HUD's bar window
+    void LiveGroundInput();                 // DrawLiveHud: a click on the ground, and the held button
+    bool LivePickGround(float mouseX, float mouseY, float& gameX, float& gameY) const;
+    void DrawLiveSkillsWindow();
+    void LiveTakeScriptedUi();              // LiveUpdate: the source's next scripted click or drag
+    void LiveFeedScriptedMouse();           // before NewFrame: its next step, into this window's ImGui
+    int  m_liveClickedSlot = -1;            // a click on the player's skill bar this frame
+    bool m_liveGroundClicked = false, m_liveGroundHeld = false, m_liveHeldValid = false;
+    float m_liveGroundX = 0.f, m_liveGroundY = 0.f, m_liveHeldX = 0.f, m_liveHeldY = 0.f;
+    bool m_liveSetBar = false;              // the skills window asks for a new bar
+    int  m_liveNewBar[8] = {};
+    bool m_liveSkillsOpen = false;
+    char m_liveSkillSearch[64] = {};
+    ImVec4 m_liveSlotRects[8] = {};                    // the bar's slots, last frame (x0, y0, x1, y1)
+    std::unordered_map<int, ImVec4> m_liveListRects;   // the skills window's rows by skill, last frame
+    int  m_liveDragFromSlot = -1;           // a bar slot dragged this frame
+    bool m_liveSlotDragged = false;         // the press on a slot became a drag (no use on release)
+    // ref: 0 a point (x, y), 1 a row of the skills window (id = skill), 2 a bar slot (id = slot);
+    // lerp: the share of the way from the previous position; button: -1 none, 0 up, 1 down.
+    struct LiveMouseStep { int ref = 0; int id = 0; float x = 0.f, y = 0.f; float lerp = 1.f; int button = -1; };
+    std::vector<LiveMouseStep> m_liveMouseSteps;
+    size_t m_liveMouseNext = 0;
+    float m_liveMouseX = 0.f, m_liveMouseY = 0.f;
+    std::string m_liveScriptNote;           // reported once its steps are played
+    // Live overheads (ReplayWindow_AgentOverlay.cpp): the target triangle atlas, and a report of
+    // what the next frame draws (the self-test asks for it).
+    ComPtr<ID3D11ShaderResourceView> m_liveTargetMarkerAtlas;
+    bool m_liveOverheadAtlasAttempted = false;
+    bool m_liveReportOverheads = false;
+    // The click-to-move marker (Gw.exe AvSelect.cpp s_targetCursor, model 9097, texture 31186): where
+    // and when the last ground click was, its texture from the DAT.
+    void DrawLiveGroundMarker();
+    bool m_liveMarkerOn = false;
+    float m_liveMarkerX = 0.f, m_liveMarkerY = 0.f;
+    double m_liveMarkerStart = 0.0;
+    bool m_liveMarkerReported = false;
+    ID3D11ShaderResourceView* m_liveMarkerTexture = nullptr;   // owned by the map's texture manager
+    bool m_liveMarkerTextureAttempted = false;
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

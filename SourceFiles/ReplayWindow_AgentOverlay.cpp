@@ -20,6 +20,7 @@
 #include "Parsers/BB9AnimationParser.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
+#include "LiveSource.h"
 #include "../ThirdParty/nanosvg/nanosvg.h"
 #include "../ThirdParty/nanosvg/nanosvgrast.h"
 #include <d3dcompiler.h>
@@ -153,6 +154,40 @@ void DrawOverheadHealthBar(ImDrawList* dl, ImTextureID atlas, ImVec2 topLeft,
     part(0, 7, 7, 25, 0, row + 7, 7, row + 25, white);
     part(249, 7, 256, 25, 249, row + 7, 256, row + 25, white);
 }
+
+// A live match (Trials): the bar as Gw.exe draws it (AvChar.cpp, 0x7F4570 / 0x7F08B5): the atlas's
+// grey fill strip (rows 71-89) and frame, both multiplied by one tint from 0x7F3F00 - green
+// 0xFF00FF00 for allies, red 0xFFFF0000 for foes. No gradient of its own: the strip carries it.
+void DrawLiveOverheadBar(ImDrawList* dl, ImTextureID atlas, ImVec2 topLeft, float width, float health,
+                         bool highlighted, ImU32 tint)
+{
+    const float scale = width / 256.f;
+    const float heightScale = scale * (2.f / 3.f);
+    const float row = highlighted ? 32.f : 0.f;
+    auto part = [&](float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, ImU32 color)
+    {
+        dl->AddImage(atlas, ImVec2(topLeft.x + x0 * scale, topLeft.y + y0 * heightScale),
+            ImVec2(topLeft.x + x1 * scale, topLeft.y + y1 * heightScale),
+            ImVec2(u0 / 256.f, v0 / 128.f), ImVec2(u1 / 256.f, v1 / 128.f), color);
+    };
+    if (health > 0.f)
+    {
+        const float end = 7.f + 242.f * health;
+        part(7.f, 7.f, end, 25.f, 7.f, 71.f, end, 89.f, tint);
+    }
+    constexpr ImU32 white = IM_COL32_WHITE;
+    part(0, 0, 256, 7, 0, row, 256, row + 7, white);
+    part(0, 25, 256, 32, 0, row + 25, 256, row + 32, white);
+    part(0, 7, 7, 25, 0, row + 7, 7, row + 25, white);
+    part(249, 7, 256, 25, 249, row + 7, 256, row + 25, white);
+}
+}
+
+namespace
+{
+// Gw.exe 0x7F3F00: an enemy's overhead tint, everyone else's.
+constexpr ImU32 kLiveAllyTint = IM_COL32(0, 255, 0, 255);
+constexpr ImU32 kLiveFoeTint = IM_COL32(255, 0, 0, 255);
 }
 
 // Whether an agent is on stage at time t: the rules every view applies before drawing anything of
@@ -417,8 +452,10 @@ void ReplayWindow::DrawAgentOverlay()
 
         // Collect now, draw after picking so only the final hovered player
         // receives the highlight, including on the first frame of a hover.
-        if (ard.type == AgentType::Player && (ard.teamId == 1 || ard.teamId == 2)
-            && m_debugTimeline >= ard.snapshots.front().time)
+        const bool livePlayer = m_liveMode && m_live && agentId == m_live->PlayerAgentId();
+        // A live match draws the bar over the arena's henchman foes too (NPCs on a team).
+        if ((ard.type == AgentType::Player || (m_liveMode && ard.type == AgentType::NPC)) && (ard.teamId == 1 || ard.teamId == 2)
+            && m_debugTimeline >= ard.snapshots.front().time && !livePlayer)
         {
             const float hp = dead ? 0.f : ard.healthPctAtTime(m_debugTimeline);
             float modelTop = AgentModelTopY(agentId, ard, pos.y, m_debugTimeline);
@@ -662,7 +699,21 @@ void ReplayWindow::DrawAgentOverlay()
         {
             bool hit = false;
 
-            if (!showDot && is3DAgent)
+            if (livePlayer)
+            {
+                // A live match: the player's own body lets the click through to the ground (the click
+                // walks there, as in the game). Only the name under the model picks it, and only while
+                // the player is already the target and names are drawn.
+                if (m_show3DLabels && !m_hiddenNameAgents.count(agentId) && m_liveTargetId == agentId)
+                {
+                    const std::string label = GetAgentLabel(ard);
+                    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
+                    const float lx = scrX - ts.x * 0.5f, ly = scrY + dotRadius + labelOffY;
+                    hit = mousePos.x >= lx - 2.f && mousePos.x <= lx + ts.x + 2.f && mousePos.y >= ly - 2.f &&
+                          mousePos.y <= ly + ts.y + 2.f;
+                }
+            }
+            else if (!showDot && is3DAgent)
             {
                 constexpr float HOVER_H = 120.f;
                 XMFLOAT3 topPos = { pos.x, pos.y + HOVER_H, pos.z };
@@ -781,9 +832,15 @@ void ReplayWindow::DrawAgentOverlay()
     std::sort(healthBars.begin(), healthBars.end(), [](const auto& a, const auto& b) {
         return a.depth > b.depth;
     });
+    const int liveSide = m_liveMode && m_live ? [&] {
+        const auto it = m_replayCtx.agents.find(m_live->PlayerAgentId());
+        return it != m_replayCtx.agents.end() ? static_cast<int>(it->second.teamId) : 1;
+    }() : 0;
+    std::string liveOverheads;
     for (const auto& bar : healthBars)
     {
-        const bool highlighted = bar.agentId == m_hoveredAgentId || bar.agentId == focusedAgent;
+        const int markedAgent = m_liveMode ? m_liveTargetId : focusedAgent;
+        const bool highlighted = bar.agentId == m_hoveredAgentId || bar.agentId == markedAgent;
         if (!highlighted && bar.health >= 0.90f) continue;
         if (!m_overheadHealthAtlasAttempted)
         {
@@ -805,6 +862,40 @@ void ReplayWindow::DrawAgentOverlay()
             const float width = bar.width * (highlighted ? 1.f : 0.70f);
             const ImVec2 topLeft(bar.x + (bar.width - width) * 0.5f,
                 bar.y + (bar.width - width) / 12.f);
+            if (m_liveMode)
+            {
+                const ImU32 tint = bar.team == liveSide ? kLiveAllyTint : kLiveFoeTint;
+                DrawLiveOverheadBar(dl, (ImTextureID)m_overheadHealthAtlas.Get(), topLeft, width, bar.health, highlighted, tint);
+                if (!m_liveOverheadAtlasAttempted)
+                {
+                    m_liveOverheadAtlasAttempted = true;
+                    const auto dir = FindTexturesDDSDir();
+                    DirectX::ScratchImage tri;
+                    if (!dir.empty() && SUCCEEDED(DirectX::LoadFromDDSFile((dir / L"texture_104587.dds").c_str(),
+                        DirectX::DDS_FLAGS_NONE, nullptr, tri)))
+                        DirectX::CreateShaderResourceView(m_deviceResources->GetD3DDevice(), tri.GetImages(),
+                            tri.GetImageCount(), tri.GetMetadata(), m_liveTargetMarkerAtlas.ReleaseAndGetAddressOf());
+                }
+                const bool marked = bar.agentId == markedAgent;
+                liveOverheads += std::format("{}{}:{}{}", liveOverheads.empty() ? "" : " ", bar.agentId,
+                    tint == kLiveAllyTint ? "green" : "red", marked ? "+marker" : "");
+                if (marked && m_liveTargetMarkerAtlas)
+                {
+                    // The target triangle (texture 104587: the gold frame left, the fill mask right),
+                    // its fill in the bar's tint, bobbing as the replay's does.
+                    const float markerWidth = width * 0.22f;
+                    const float markerHeight = markerWidth * (21.f / 32.f);
+                    const float centre = topLeft.x + width * 0.5f;
+                    const float phase = static_cast<float>(ImGui::GetTime()) * (2.f * DirectX::XM_PI / 1.35f);
+                    const float motion = 0.5f - 0.5f * cosf(phase);
+                    const float bottom = topLeft.y - std::max(2.f, width * 0.025f) - motion * std::clamp(width * 0.045f, 2.f, 6.f);
+                    const ImVec2 m0(centre - markerWidth * 0.5f, bottom - markerHeight), m1(centre + markerWidth * 0.5f, bottom);
+                    const ImTextureID tex = (ImTextureID)m_liveTargetMarkerAtlas.Get();
+                    dl->AddImage(tex, m0, m1, ImVec2(0.f, 10.f / 32.f), ImVec2(0.5f, 31.f / 32.f));
+                    dl->AddImage(tex, m0, m1, ImVec2(0.5f, 10.f / 32.f), ImVec2(1.f, 31.f / 32.f), tint);
+                }
+                continue;
+            }
             DrawOverheadHealthBar(dl, (ImTextureID)m_overheadHealthAtlas.Get(),
                 topLeft, width, bar.health, highlighted, bar.team);
             if (bar.agentId == focusedAgent)
@@ -833,6 +924,13 @@ void ReplayWindow::DrawAgentOverlay()
                 }
             }
         }
+    }
+
+    if (m_liveMode && m_live && m_liveReportOverheads)
+    {
+        m_liveReportOverheads = false;
+        m_live->Report(std::format("overheads: player {} target {}: {}", m_live->PlayerAgentId(), m_liveTargetId,
+                                   liveOverheads.empty() ? std::string("none") : liveOverheads));
     }
 
     // Top View: draw agent name tooltip on hover (skip when names already visible)

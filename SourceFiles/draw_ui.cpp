@@ -732,6 +732,13 @@ static void draw_settings_window()
 	HotkeyInput("Turn Left",     &editingKeys.trTurnLeft);
 	HotkeyInput("Turn Right",    &editingKeys.trTurnRight);
 	HotkeyInput("Clear Target",  &editingKeys.trClearTarget);
+	HotkeyInput("Autorun",       &editingKeys.trAutorun);
+	HotkeyInput("Cancel Action", &editingKeys.trCancelAction);
+	HotkeyInput("Skills Window", &editingKeys.trSkillsWindow);
+	HotkeyInput("Target Yourself", &editingKeys.trTargetSelf);
+	HotkeyInput("Attack Target", &editingKeys.trAttack);
+	HotkeyInput("Nearest Foe",   &editingKeys.trNearestEnemy);
+	HotkeyInput("Nearest Ally",  &editingKeys.trNearestAlly);
 	for (int i = 0; i < 8; ++i)
 	{
 		char label[32];
@@ -747,7 +754,9 @@ static void draw_settings_window()
 	ImGui::PopID();
 	{
 		std::vector<int> trialsKeys = { editingKeys.trForward, editingKeys.trBackward, editingKeys.trStrafeLeft,
-			editingKeys.trStrafeRight, editingKeys.trTurnLeft, editingKeys.trTurnRight, editingKeys.trClearTarget };
+			editingKeys.trStrafeRight, editingKeys.trTurnLeft, editingKeys.trTurnRight, editingKeys.trClearTarget,
+			editingKeys.trAutorun, editingKeys.trCancelAction, editingKeys.trSkillsWindow, editingKeys.trTargetSelf,
+			editingKeys.trAttack, editingKeys.trNearestEnemy, editingKeys.trNearestAlly };
 		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trSkill), std::end(editingKeys.trSkill));
 		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trParty), std::end(editingKeys.trParty));
 		bool trialsDupe = false;
