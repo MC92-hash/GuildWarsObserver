@@ -1955,15 +1955,27 @@ private:
     ComPtr<ID3D11ShaderResourceView> m_liveTargetMarkerAtlas;
     bool m_liveOverheadAtlasAttempted = false;
     bool m_liveReportOverheads = false;
-    // The click-to-move marker (Gw.exe AvSelect.cpp s_targetCursor, model 9097, texture 31186): where
-    // and when the last ground click was, its texture from the DAT.
-    void DrawLiveGroundMarker();
-    bool m_liveMarkerOn = false;
+    // The click-to-move marker (Gw.exe AvSelect.cpp s_targetCursor): the game's own model 9097 with
+    // its own clip, played once at the clicked point by the effect player (private,
+    // Character/ReplayWindow_AgentEffects.cpp). The next click replaces it.
+    void LiveSpawnGroundMarker(float gameX, float gameY);
+    std::string LiveGroundMarkerState() const;   // the self-test's line: model, age, the three pivots
+    void LiveReportGroundMarker();                // while one plays and the source asked: its state
+    int m_liveMarkerCount = 0;
     float m_liveMarkerX = 0.f, m_liveMarkerY = 0.f;
-    double m_liveMarkerStart = 0.0;
-    bool m_liveMarkerReported = false;
-    ID3D11ShaderResourceView* m_liveMarkerTexture = nullptr;   // owned by the map's texture manager
-    bool m_liveMarkerTextureAttempted = false;
+    bool m_liveMarkerReport = false;
+    // The top bar is the target's in a live match (GW's target frame), with its cast bar under it;
+    // the player's own cast bar stands over the skill bar (ReplayWindow_Live.cpp).
+    void DrawLiveTargetFrame();
+    void DrawLivePlayerCastBar(int agentId, float centreX, float bottomY);
+    void DrawLiveCastRow(ImDrawList* dl, const AgentReplayData& ard, ImVec2 topLeft, float width, const char* who);
+    bool m_liveReportHud = false;                 // the source asked: report what the next frame draws
+    std::string m_liveHudReport;
+    // The sounds: the plan's state (private, Character/ReplayWindow_Sounds.cpp), and each cue it
+    // sends to the engine as a report line while the source collects them.
+    std::string LiveSoundState() const;
+    void LiveReportAudio();                       // LiveUpdate: once, then on a change
+    std::string m_liveAudioFlags;
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

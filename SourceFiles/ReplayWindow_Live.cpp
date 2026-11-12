@@ -219,6 +219,7 @@ void ReplayWindow::LiveUpdate(float dt)
 
     if (m_agentModelsLoaded && !m_liveModelsReported)
         LiveReportModels();
+    LiveReportAudio();
 
     // THE CHASE CAMERA: always on the player; GW's distance and pitch the first time, then the
     // user's (wheel, right drag), with the yaw eased behind the heading while the player steers with
@@ -342,95 +343,142 @@ void ReplayWindow::DrawLiveHud()
     }
     m_liveDragFromSlot = -1;
     LiveGroundInput();
-    DrawLiveGroundMarker();
+    LiveReportGroundMarker();
+    if (m_liveReportHud)
+    {
+        m_liveReportHud = false;
+        m_live->Report("hud: " + m_liveHudReport + "sound " + LiveSoundState());
+        m_liveHudReport.clear();
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// THE TOP BAR IS GW'S TARGET FRAME. Gw.exe GmAgentStatus.cpp binds it to the current target (0x7DF310 ->
+// 0x7E4840, read at 0x516546 / 0x5166FA). Its health fill does not follow the allegiance: 0x517160 picks
+// it from the target's own state, the same for yourself, an ally and a foe - poison 205433, bleeding
+// 205426, a degeneration hex 205427, otherwise 205431 (the red health fill) - deep wound caps the bar at
+// 0.8 (0x94525C) and a dead target reads empty. That is the party row's recipe with the red fill
+// (DrawPartyHealthBar), the name white. No target, no frame. The target's cast bar stands under it as
+// the replay's top bar draws one; the player's own stands over the skill bar.
+// -------------------------------------------------------------------------------------------------
+void ReplayWindow::DrawLiveTargetFrame()
+{
+    const auto it = m_replayCtx.agents.find(m_liveTargetId);
+    const AgentSnapshot* snap = m_liveTargetId >= 0 && it != m_replayCtx.agents.end() && !it->second.snapshots.empty()
+                                    ? FindSnapshotAtTime(it->second, m_debugTimeline) : nullptr;
+    if (!snap)
+    {
+        if (m_liveReportHud) m_liveHudReport += "target frame none; ";
+        return;
+    }
+    const AgentReplayData& ard = it->second;
+    constexpr float kBarW = 320.f, kBarH = 26.f, kTopY = 42.f, kCastGap = 5.f;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2 tl(std::round(vp->Pos.x + (vp->Size.x - kBarW) * 0.5f), vp->Pos.y + kTopY);
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    const PartyIcons icons = LoadAllPartyIcons(dev);
+    const std::string name = GetAgentLabel(ard);
+    const bool dead = snap->is_dead;
+    // Its own fill state, apart from the party row's (which keys its cross-fade by the agent id).
+    constexpr int kFrameKey = 0x40000000;
+    DrawPartyHealthBar(dl, tl, kBarW, kBarH, snap, 2, dead, name.c_str(), icons, -1, kFrameKey | m_liveTargetId, false,
+                       CarriedBundleIcon(dev, m_liveTargetId), 0, false, dev, m_debugTimeline);
+    if (m_liveReportHud)
+    {
+        const char* fill = dead ? "empty (dead)" : snap->has_poison ? "205433 poison" : snap->has_bleeding ? "205426 bleeding"
+                         : snap->has_degen_hex ? "205427 hexed" : "205431 health (red)";
+        const int playerTeam = [&] {
+            const auto p = m_replayCtx.agents.find(m_live ? m_live->PlayerAgentId() : -1);
+            return p != m_replayCtx.agents.end() ? static_cast<int>(p->second.teamId) : 0;
+        }();
+        const char* who = m_live && m_liveTargetId == m_live->PlayerAgentId() ? "self"
+                        : static_cast<int>(ard.teamId) == playerTeam ? "ally" : "foe";
+        m_liveHudReport += std::format("target frame {} '{}' {} hp {:.3f} fill {} at ({:.0f}, {:.0f}) {:.0f}x{:.0f}; ", m_liveTargetId,
+                                       name, who, dead ? 0.f : snap->health_pct, fill, tl.x, tl.y, kBarW, kBarH);
+    }
+    DrawLiveCastRow(dl, ard, ImVec2(tl.x, tl.y + kBarH + kCastGap), kBarW, "target cast");
+}
+
+// The player's own cast bar: centred over the skill bar's window (its effect row), the row's look.
+void ReplayWindow::DrawLivePlayerCastBar(int agentId, float centreX, float bottomY)
+{
+    const auto it = m_replayCtx.agents.find(agentId);
+    if (it == m_replayCtx.agents.end()) return;
+    constexpr float kW = 320.f, kH = 34.f, kGap = 8.f;
+    DrawLiveCastRow(ImGui::GetBackgroundDrawList(), it->second, ImVec2(std::round(centreX - kW * 0.5f), bottomY - kGap - kH), kW,
+                    "player cast");
+}
+
+// One cast row: the skill's icon, the game's cast bar (DrawGameCastBar: fill, outcome colour, fade) and
+// the skill's name, as the replay's top bar draws it.
+void ReplayWindow::DrawLiveCastRow(ImDrawList* dl, const AgentReplayData& ard, ImVec2 topLeft, float width, const char* who)
+{
+    const AgentReplayData::SkillVisual sv = ard.skillVisualAtTime(m_debugTimeline);
+    if (sv.skillId <= 0 || sv.alpha <= 0.f)
+    {
+        if (m_liveReportHud) m_liveHudReport += std::format("{} none; ", who);
+        return;
+    }
+    constexpr float kIcon = 34.f, kGap = 5.f, kBarH = 18.f;
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    const uint8_t alpha = static_cast<uint8_t>(sv.alpha * 255.f);
+    EnsureSkillIconIndex();
+    if (ImTextureID tex = LoadSkillIcon(this, dev, sv.skillId, m_skillIconIndex, m_skillIconCache))
+        dl->AddImage(tex, topLeft, ImVec2(topLeft.x + kIcon, topLeft.y + kIcon), ImVec2(0, 0), ImVec2(1, 1),
+                     IM_COL32(255, 255, 255, alpha));
+    const ImVec2 b0(topLeft.x + kIcon + kGap, topLeft.y + (kIcon - kBarH) * 0.5f);
+    const ImVec2 b1(topLeft.x + width, b0.y + kBarH);
+    DrawGameCastBar(dl, b0, b1, sv);
+    const SkillInfo* si = m_skillView.Get(sv.skillId);
+    if (si && !si->name.empty())
+    {
+        ImFont* font = ImGui::GetFont();
+        constexpr float fs = 11.f;
+        const ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.f, si->name.c_str());
+        const ImVec2 tp(b0.x + (b1.x - b0.x - ts.x) * 0.5f, b0.y + (kBarH - ts.y) * 0.5f);
+        dl->AddText(font, fs, ImVec2(tp.x + 1.f, tp.y + 1.f), IM_COL32(0, 0, 0, alpha), si->name.c_str());
+        dl->AddText(font, fs, tp, IM_COL32(0xFF, 0xFF, 0xFF, alpha), si->name.c_str());
+    }
+    if (m_liveReportHud)
+        m_liveHudReport += std::format("{} agent {} skill {} ({}) progress {:.2f} alpha {:.2f} {} at ({:.0f}, {:.0f}); ", who,
+                                       ard.agent_id, sv.skillId, si ? si->name : std::string("?"), sv.progress, sv.alpha,
+                                       sv.isCasting ? "casting" : "done", b0.x, b0.y);
+}
+
+// The sound path's state, reported once and on every change (the self-test reads it: a live match
+// has no recording, so every sound is the plan's).
+void ReplayWindow::LiveReportAudio()
+{
+    if (!m_live) return;
+    const std::string flags = std::format(
+        "audio: initialized {}, engine {}, enabled {}, timeline {} (skill uses {}, boss {}, bundles {})",
+        m_audioInitialized ? "yes" : "no", m_audioEngine ? "yes" : "no", m_audioEnabled ? "yes" : "no",
+        m_audioSkillTimelineBuilt ? "yes" : "no", m_skillUseTimelineBuilt ? "yes" : "no", m_bossTimelineBuilt ? "yes" : "no",
+        m_bundleCarryBuilt ? "yes" : "no");
+    // The plan's counters move every cast: a change of the flags is what is worth a line.
+    if (flags == m_liveAudioFlags) return;
+    m_liveAudioFlags = flags;
+    const std::string line = flags + ", plan " + LiveSoundState();
+    RunLog::Line("live: %s", line.c_str());
+    m_live->Report(line);
 }
 
 // THE CLICK-TO-MOVE MARKER. Gw.exe: the ground click (0x534550) calls AvSelect.cpp 0x7E4D70, which
-// destroys the previous marker, snaps the point to the ground and spawns model 9097 there
-// (s_targetCursor, 0xA951D4) as a one-shot: three bones, one green chevron each (texture 31186, a
-// 128x64 arrowhead pointing to u = 0), keys over about 0.75 s, cleared by its own end (0x7E4610), by
-// the next click or by the map's teardown - not by arrival or a cancel. Here the chevron is the DAT's
-// own texture; the model's motion is not decoded, so the three converge on the point and fade out
-// over 0.8 s (an imitation of the keys), the bones' layout (three at 120 degrees, radius ~20) kept.
-void ReplayWindow::DrawLiveGroundMarker()
+// destroys the previous marker, snaps the point to the ground (0x7E36C0 -> the map height 0x708720, no
+// offset) and creates file 9097 (s_targetCursor, 0xA951D4) through AvGhost 0x7E8B10 as a FREE model:
+// scale 1, the world's axes (0xBFBC78 / 0xBFBC6C), not the camera's or the player's; its clip's first
+// segment (0xD2AA1677, 0.733 s) played once (mode 6); the ghost's timer ends it with the clip (0x7E9280,
+// no emitters), the next click sooner. No tint or fade from AvSelect: the file's own cut-out layer
+// (blend state 8, texture 31186) and its three bones' rotation keys (each chevron turns 135 degrees
+// about its hinge) are the whole look. Here the effect player plays that file, at that point, with
+// that clip (LiveSpawnGroundMarker, private); this function only reports it for the self-test.
+void ReplayWindow::LiveReportGroundMarker()
 {
-    if (!m_liveMarkerOn || !m_mapRenderer || !m_deviceResources) return;
-    constexpr double kLife = 0.8;
-    const double age = QpcSeconds() - m_liveMarkerStart;
-    if (age > kLife || age < 0.0)
-    {
-        m_liveMarkerOn = false;
-        return;
-    }
-    if (!m_liveMarkerTextureAttempted)
-    {
-        m_liveMarkerTextureAttempted = true;
-        constexpr int kChevronFile = 31186;
-        const auto it = m_hashIndex && m_datManager ? m_hashIndex->find(kChevronFile) : std::unordered_map<int, std::vector<int>>::const_iterator{};
-        if (m_hashIndex && m_datManager && it != m_hashIndex->end() && !it->second.empty())
-        {
-            const int index = it->second.at(0);
-            m_datManager->EnsureTypeClassified(index);
-            DatTexture dt = m_datManager->parse_ffna_texture_file(index);
-            int texId = -1;
-            if (dt.width > 0 && dt.height > 0 &&
-                SUCCEEDED(m_mapRenderer->GetTextureManager()->CreateTextureFromRGBA(dt.width, dt.height, dt.rgba_data.data(),
-                                                                                    &texId, kChevronFile)) &&
-                texId >= 0)
-                m_liveMarkerTexture = m_mapRenderer->GetTextureManager()->GetTexture(texId);
-        }
-        RunLog::Line("live: click marker texture %d %s", kChevronFile, m_liveMarkerTexture ? "loaded" : "NOT found (drawn plain)");
-    }
-    float h = 0.f;
-    if (!m_mapRenderer->TryGetGroundHeight(m_liveMarkerX, m_liveMarkerY, h)) return;
-    Camera* cam = m_mapRenderer->GetCamera();
-    const D3D11_VIEWPORT vp = m_deviceResources->GetScreenViewport();
-    const XMMATRIX viewProj = cam->GetView() * cam->GetProj();
-    const float t = static_cast<float>(age / kLife);
-    const float radius = 34.f - 18.f * t;                      // converging on the point
-    const float alpha = t < 0.6f ? 1.f : 1.f - (t - 0.6f) / 0.4f;
-    // Each chevron leans in: its tip at the ground, its tail raised (the game's arrows point down
-    // at the point, the owner's screenshot), so a low chase camera still sees them.
-    constexpr float kLength = 36.f, kWidth = 18.f, kLift = 2.f, kTailRise = 24.f;
-    ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    const ImU32 col = IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.f));
-    int drawn = 0;
-    float firstX = 0.f, firstY = 0.f;
-    for (int k = 0; k < 3; ++k)
-    {
-        const float a = DirectX::XM_PIDIV2 + k * DirectX::XM_2PI / 3.f;
-        const float cx = std::cos(a), cy = std::sin(a);    // outward
-        const float px = -cy, py = cx;                     // across
-        auto at = [&](float along, float across, ImVec2& out) {
-            const float gx = m_liveMarkerX + cx * along + px * across, gy = m_liveMarkerY + cy * along + py * across;
-            float sx = 0.f, sy = 0.f;
-            const float rise = along > radius + 1.f ? kTailRise : 0.f;
-            if (!ProjectToScreen(viewProj, vp.Width, vp.Height, XMFLOAT3(gx, h + kLift + rise, gy), sx, sy)) return false;
-            out = ImVec2(sx, sy);
-            return true;
-        };
-        ImVec2 tipA, tipB, tailB, tailA;
-        if (!at(radius, kWidth * 0.5f, tipA) || !at(radius, -kWidth * 0.5f, tipB) ||
-            !at(radius + kLength, -kWidth * 0.5f, tailB) || !at(radius + kLength, kWidth * 0.5f, tailA))
-            continue;
-        if (m_liveMarkerTexture)
-            dl->AddImageQuad((ImTextureID)m_liveMarkerTexture, tipA, tipB, tailB, tailA, ImVec2(0.f, 0.f), ImVec2(0.f, 1.f),
-                             ImVec2(1.f, 1.f), ImVec2(1.f, 0.f), col);
-        else
-        {
-            ImVec2 tip;
-            if (!at(radius, 0.f, tip)) continue;
-            dl->AddTriangleFilled(tip, tailA, tailB, IM_COL32(40, 200, 40, static_cast<int>(alpha * 200.f)));
-        }
-        if (!drawn) { firstX = tipA.x; firstY = tipA.y; }
-        ++drawn;
-    }
-    if (!m_liveMarkerReported && drawn > 0 && m_live)
-    {
-        m_liveMarkerReported = true;
-        m_live->Report(std::format("marker: drawn at ({:.0f}, {:.0f}), {} chevron(s), texture 31186 {}, first tip at screen ({:.0f}, {:.0f})",
-                                   m_liveMarkerX, m_liveMarkerY, drawn, m_liveMarkerTexture ? "yes" : "no", firstX, firstY));
-    }
+    if (!m_liveMarkerReport || !m_live) return;
+    const std::string state = LiveGroundMarkerState();
+    m_live->Report("marker: " + state);
+    if (state.rfind("none", 0) == 0) m_liveMarkerReport = false;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -519,11 +567,9 @@ void ReplayWindow::LiveGroundInput()
             m_liveGroundY = gy;
             m_liveGroundHeld = true;
             // The game's marker, at the clicked point (a held button moves the walk, not the marker).
-            m_liveMarkerOn = true;
             m_liveMarkerX = gx;
             m_liveMarkerY = gy;
-            m_liveMarkerStart = QpcSeconds();
-            m_liveMarkerReported = false;
+            LiveSpawnGroundMarker(gx, gy);
         }
     }
     if (m_liveGroundHeld && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_liveGroundHeld = false;
@@ -811,6 +857,13 @@ void ReplayWindow::LiveTakeScriptedUi()
     }
     case LiveScriptedUi::Kind::ReportOverheads:
         m_liveReportOverheads = true;
+        return;
+    case LiveScriptedUi::Kind::ReportHud:
+        m_liveReportHud = true;
+        m_liveHudReport.clear();
+        return;
+    case LiveScriptedUi::Kind::ReportMarker:
+        m_liveMarkerReport = true;
         return;
     case LiveScriptedUi::Kind::SkillSlotClick:
         at(2, ui.slot, 0.f, 0.f, 1.f);

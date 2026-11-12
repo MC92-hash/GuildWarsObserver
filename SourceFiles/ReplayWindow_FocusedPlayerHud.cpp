@@ -512,6 +512,10 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     ImGui::End();
     ImGui::PopStyleVar(2);
 
+    // A live match: the player's own cast bar over the bar's window (the top bar is the target's).
+    if (m_liveMode)
+        DrawLivePlayerCastBar(agentId, posX + winW * 0.5f, posY);
+
     // The cast strip stands beside the bar, as tall as its frame, and stops short of the weapon sets.
     if (m_showFocusCasts)
     {

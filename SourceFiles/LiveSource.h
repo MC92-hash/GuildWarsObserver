@@ -55,7 +55,9 @@ struct LiveScriptedUi
 {
     // ClickBody: a click on the screen point of a character's body, (x, y) = its feet, game
     // coordinates. ReportOverheads: the window reports the overhead bars it draws next frame.
-    enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads };
+    // ReportHud: the target frame and the cast bars the next frame draws. ReportMarker: the click
+    // marker's state every frame until it ends.
+    enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads, ReportHud, ReportMarker };
     Kind kind = Kind::None;
     float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates
     int slot = -1;            // SkillSlotClick, DragSkillToSlot: the bar slot

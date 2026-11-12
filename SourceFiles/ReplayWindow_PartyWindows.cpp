@@ -70,6 +70,11 @@ ReplayWindow::MaxHpSample ReplayWindow::ResolveMaxHp(const AgentReplayData& ard,
     const AgentSnapshot* snap = FindSnapshotAtTime(ard, t);
     const bool deepWounded = snap && snap->has_deep_wound;
 
+    // A live match: the source writes every agent's maximum with each snapshot, exact (no model of
+    // a recording's gaps; the arena's henchman foes would read the 480 fallback otherwise).
+    if (m_liveMode && snap && snap->max_hp > 0)
+        return { snap->max_hp, false };
+
     // (0) Forward model: base + armour + weapon set + shrine, then morale, then Deep Wound.
     //
     // Preferred over everything below because it is the only source that follows a weapon swap the

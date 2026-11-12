@@ -76,6 +76,8 @@ namespace
 void ReplayWindow::SaveSoundSettingsIfChanged()
 {
     if (!m_audioInitialized || !m_audioEngine || m_audioEngine->IsOutputMuted()) return;
+    // A live window does not write the replays' sound settings (it ignores their mute, above).
+    if (m_liveMode) return;
 
     const AudioConfig& cfg = m_audioEngine->GetConfig();
     const AudioConfig defaults;
@@ -122,6 +124,9 @@ void ReplayWindow::InitAudioEngine()
             cfg.*s.field = std::clamp(StoredSound(s.key, defaults.*s.field), s.lo, s.hi);
         cfg.swap_stereo = StoredSound(kSwapStereoKey, 0.f) != 0.f;
         m_audioEnabled  = StoredSound(kMutedKey, 0.f) == 0.f;
+        // A live match (Trials) plays its sounds whatever a recording's mute was left at: the mute
+        // button is on the replay transport, which a live window does not show.
+        if (m_liveMode) m_audioEnabled = true;
     }
 
     m_skillSoundTable = std::make_unique<SkillSoundTable>();

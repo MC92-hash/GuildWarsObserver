@@ -830,6 +830,12 @@ void ReplayWindow::DrawAllInTooltipLines(const AllIn::Status& s) const
 
 void ReplayWindow::DrawFollowedAgentHUD()
 {
+    // A live match: the top bar is the player's target, as the game's target frame (ReplayWindow_Live.cpp).
+    if (m_liveMode)
+    {
+        DrawLiveTargetFrame();
+        return;
+    }
     int focused = GetFocusedAgentId();
     if (focused < 0) return;
 
