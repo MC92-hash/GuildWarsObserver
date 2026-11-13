@@ -739,6 +739,9 @@ static void draw_settings_window()
 	HotkeyInput("Attack Target", &editingKeys.trAttack);
 	HotkeyInput("Nearest Foe",   &editingKeys.trNearestEnemy);
 	HotkeyInput("Nearest Ally",  &editingKeys.trNearestAlly);
+	// GW's CameraRotationSpeed (25..175 %): the live camera's right drag.
+	ImGui::SetNextItemWidth(160.f);
+	ImGui::SliderInt("Camera rotation speed", &editingKeys.trCameraRotation, 25, 175, "%d %%");
 	for (int i = 0; i < 8; ++i)
 	{
 		char label[32];

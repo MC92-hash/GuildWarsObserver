@@ -55,8 +55,26 @@ float WrapAngle(float a)
 // The client's chase camera: about 450 units behind, a little above, eased behind the heading.
 constexpr float kLiveCameraDistance = 450.f;
 constexpr float kLiveCameraPitch = 0.30f;
-constexpr float kLiveCameraEase = 5.0f;          // 1/s, the yaw's approach to "behind"
 constexpr float kLiveCameraLookHeight = 70.f;    // ~0.92 of a character's height
+// Read statically from Gw.exe (2026-11-04 client, GmCam.cpp). The camera keeps a yaw, a pitch and a
+// distance, each with a TARGET (+0x5C, +0x60, +0x64) and a CURRENT value (+0x14, +0x18, +0x1C). Every
+// frame the mode's update (0x4F0680) moves the current value toward the target by
+// min(rate x dt, 1) of the difference (0x4F5ED0 for the angles, the short way round; 0x4F5FD0 for the
+// distance): rate 6 / s standing (mode 0, 0x4F20A0; the rate re-approaches 6 at min(dt, 1) of the gap
+// each frame) and 8 / s while the player moves with the keys (mode 5, 0x4F24F0, flag 4 from GmWalk
+// 0x5340DC). Moving with the keys, 0.25 s after the last mouse look (context +0x48, cleared by every
+// mouse event at 0x4F4720), the target becomes the character's facing (0x4F25E1 -> 0x4F73D0), and the
+// camera swings in behind at 8 / s. The wheel (0x4F6470) writes the target and the current distance alike.
+// THE MOUSE LOOK: the path read (0x4F6300 / 0x4F6400 -> 0x4F6180 -> 0x4F72C0 / 0x4F7350 with 1 as the
+// second argument) writes the current yaw and pitch too, which would stop the camera with the mouse; the
+// owner sees it coast on after a fast drag in the game, so that reading misses something (not found).
+// ASSUMED, the model that gives that coast: the drag moves the TARGETS only and the yaw and pitch catch
+// up at the mode's rate, 6 / s standing, 8 / s moving.
+constexpr float kGwLookRadPerCount = 0.0013962634f;   // 0.08 degree a mouse count (0x945E70), x CameraRotationSpeed
+constexpr float kGwPitchLimit = 0.9424779f;           // +-54 degrees on the pitch target (0x945E7C / 0x94D428)
+constexpr float kGwRateStanding = 6.f;                // 1 / s (0x945280)
+constexpr float kGwRateMoving = 8.f;                  // 1 / s (0x945790)
+constexpr float kGwFollowAfterLook = 0.25f;           // s (0x94524C against context +0x48 and +0x54)
 constexpr size_t kLiveFrameRing = 240;
 // The drag-and-drop payload of a skill: { skill id, bar slot it comes from or -1 from the list }.
 constexpr const char* kTrialsSkillPayload = "TRIALS_SKILL";
@@ -183,18 +201,38 @@ void ReplayWindow::LiveUpdate(float dt)
     if (row >= 0 && row < static_cast<int>(m_team1PartyIds.size()))
         LiveClickAgent(m_team1PartyIds[row]);
 
+    // The self-test's right drag: the buttons as it holds them, its movement through the raw input's code.
+    if (const LiveScriptedLook look = m_live->TakeScriptedLook(); look.active)
+    {
+        if (look.loseCapture)
+            LiveCursorLost(true);
+        else
+        {
+            if (look.right && !m_rightMouseDown) m_mouseDragOrigin = POINT{ look.pressX, look.pressY };
+            if (look.right != m_rightMouseDown) LiveRightButton(look.right, true);
+            m_rightMouseDown = look.right;
+        }
+        if (!look.loseCapture) m_liveLeftDown = look.left;
+        if (look.right && (look.dx != 0.f || look.dy != 0.f)) LiveMouseLook(look.dx, look.dy);
+    }
+    m_liveSinceLook += std::max(dt, 0.f);
+
     LiveFrameInput in;
     in.realDt = dt;
     in.keyboardAllowed = processActive && !m_imguiWantTextInput && !m_clSkillSearchFocused;
     in.clickedAgentId = m_liveClickedAgent;
     in.cameraOrbiting = m_rightMouseDown;
+    in.bothButtons = m_rightMouseDown && m_liveLeftDown;
     // The inverse of the chase camera's "behind" rule below.
     in.cameraFacing = std::atan2(-std::cos(m_followYaw), -std::sin(m_followYaw));
     in.cameraYaw = m_followYaw;
+    in.cameraYawTarget = m_liveYawTarget;
+    in.cameraRate = m_liveCameraRate;
     in.groundClicked = m_liveGroundClicked;
     in.groundX = m_liveGroundX;
     in.groundY = m_liveGroundY;
-    in.groundHeld = m_liveGroundHeld && m_liveHeldValid;
+    // Both buttons walk forward instead (0x5346A0 drops the held walk).
+    in.groundHeld = m_liveGroundHeld && m_liveHeldValid && !in.bothButtons;
     in.heldX = m_liveHeldX;
     in.heldY = m_liveHeldY;
     in.clickedSkillSlot = m_liveClickedSlot;
@@ -225,9 +263,12 @@ void ReplayWindow::LiveUpdate(float dt)
     LiveReportAudio();
 
     // THE CHASE CAMERA: always on the player; GW's distance and pitch the first time, then the
-    // user's (wheel, right drag), with the yaw eased behind the heading while the player steers with
-    // the keys or autorun. A walk to a clicked point (and the auto-attack's run into range) is not
-    // steering: the camera keeps its yaw and only follows the position (the source says which).
+    // user's (wheel, right drag). The yaw approaches its target as GmCam does (constants above): a
+    // mouse look moves both, so it stops with the mouse; while the player moves or turns with the keys
+    // or autorun, 0.25 s after the last mouse look, the target is "behind the heading" and the yaw swings
+    // in at 8 / s, then at a rate going back to 6 / s once the keys are let go. A walk to a clicked point
+    // (and the auto-attack's run into range) is not steering: the camera keeps its yaw and only follows
+    // the position (the source says which).
     const int playerId = m_live->PlayerAgentId();
     const float behind = [&] {
         const float f = m_live->PlayerFacing();
@@ -242,15 +283,97 @@ void ReplayWindow::LiveUpdate(float dt)
             m_followDist = m_followDistTarget = kLiveCameraDistance;
             m_followPitch = kLiveCameraPitch;
             m_followYaw = behind;
+            m_liveYawTarget = behind;
+            m_livePitchTarget = kLiveCameraPitch;
             m_liveCameraPlaced = true;
         }
     }
     m_followCenterBias = DirectX::XMFLOAT3(0.f, kLiveCameraLookHeight, 0.f);
-    if (m_live->PlayerSteering() && !m_rightMouseDown)
+    const bool moving = m_live->PlayerSteering();
+    if (moving && m_liveSinceLook >= kGwFollowAfterLook)
+        m_liveYawTarget = behind;
+    // The rate: 8 while moving; standing, 6 approached by min(dt, 1) of the gap a frame (0x4F076C).
+    if (moving)
+        m_liveCameraRate = kGwRateMoving;
+    else
+        m_liveCameraRate += (kGwRateStanding - m_liveCameraRate) * std::clamp(dt, 0.f, 1.f);
+    const float k = std::clamp(m_liveCameraRate * std::max(dt, 0.f), 0.f, 1.f);
+    m_followYaw = WrapAngle(m_followYaw + WrapAngle(m_liveYawTarget - m_followYaw) * k);
+    m_followPitch += (m_livePitchTarget - m_followPitch) * k;
+}
+
+// THE CURSOR DURING MOUSE LOOK (live mode). The window's right-button handler already holds the cursor
+// in place (ClipCursor to the press point, raw input for the movement, as the left-drag pan does); here
+// it is hidden while the button is down and put back at the press point on release, as the game shows it.
+void ReplayWindow::LiveRightButton(bool down, bool scripted)
+{
+    // Hide once, show once: ShowCursor is a counter, so every hide is paired with exactly one show.
+    if (scripted)
     {
-        const float k = 1.f - std::exp(-kLiveCameraEase * std::max(dt, 0.f));
-        m_followYaw = WrapAngle(m_followYaw + WrapAngle(behind - m_followYaw) * k);
+        if (down && !m_liveScriptCursorHidden)
+        {
+            m_liveScriptCursorHidden = true;
+            --m_liveScriptCursorCount;
+            if (m_live)
+                m_live->Report(std::format("cursor: would hide at ({}, {}), count {}", m_mouseDragOrigin.x, m_mouseDragOrigin.y,
+                                           m_liveScriptCursorCount));
+        }
+        else if (!down && m_liveScriptCursorHidden)
+        {
+            m_liveScriptCursorHidden = false;
+            ++m_liveScriptCursorCount;
+            if (m_live)
+                m_live->Report(std::format("cursor: would restore to ({}, {}), count {}", m_mouseDragOrigin.x, m_mouseDragOrigin.y,
+                                           m_liveScriptCursorCount));
+        }
+        return;
     }
+    if (down && !m_liveCursorHidden)
+    {
+        ShowCursor(FALSE);
+        m_liveCursorHidden = true;
+    }
+    else if (!down && m_liveCursorHidden)
+    {
+        SetCursorPos(m_mouseDragOrigin.x, m_mouseDragOrigin.y);
+        ShowCursor(TRUE);
+        m_liveCursorHidden = false;
+    }
+}
+
+void ReplayWindow::LiveCursorLost(bool scripted)
+{
+    const bool hidden = scripted ? m_liveScriptCursorHidden : m_liveCursorHidden;
+    if (!m_rightMouseDown && !hidden)
+        return;
+    if (scripted && m_live && hidden)
+        m_live->Report("cursor: capture lost during a right drag");
+    m_rightMouseDown = false;
+    m_liveLeftDown = false;
+    if (!scripted && !m_leftMouseDown)
+        ClipCursor(nullptr);
+    LiveRightButton(false, scripted);
+}
+
+// A right drag in live mode, in mouse counts: GW's mouse look (GmCam 0x4F6180): 0.08 degree a count times
+// CameraRotationSpeed (the Trials setting "Camera rotation speed", 25..175 %, preference 0x24 / 100 in the
+// game; not the replay's rotation multiplier), the pitch target kept within +-54 degrees. It
+// moves the targets; LiveUpdate brings the yaw and pitch after them (ASSUMED, see above). The raw mouse input
+// and the self-test's scripted drag both come here.
+void ReplayWindow::LiveMouseLook(float dx, float dy)
+{
+    const auto& hk = ReplayHotkeys::Get();
+    const float speed = static_cast<float>(std::clamp(hk.trCameraRotation, 25, 175)) / 100.f;
+    if (!m_liveLookSpeedReported && m_live)
+    {
+        m_liveLookSpeedReported = true;
+        m_live->Report(std::format("camera: rotation speed {} %", std::clamp(hk.trCameraRotation, 25, 175)));
+    }
+    const float radX = dx * kGwLookRadPerCount * speed * (hk.invertMouseX ? -1.f : 1.f);
+    const float radY = dy * kGwLookRadPerCount * speed * (hk.invertMouseY ? -1.f : 1.f);
+    m_liveYawTarget = WrapAngle(m_liveYawTarget + radX);
+    m_livePitchTarget = std::clamp(m_livePitchTarget + radY, std::max(kFollowMinPitch, -kGwPitchLimit), kGwPitchLimit);
+    m_liveSinceLook = 0.f;
 }
 
 void ReplayWindow::LiveInvalidate(const LiveAppended& a)

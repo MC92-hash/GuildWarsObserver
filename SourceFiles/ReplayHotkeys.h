@@ -60,6 +60,9 @@ struct ReplayHotkeys
     int trAttack       = ImGuiKey_Space;       // attack the target (GW's Interact, control action 0x80)
     int trNearestEnemy = ImGuiKey_C;           // target the nearest living foe
     int trNearestAlly  = ImGuiKey_V;           // target the nearest living ally (never yourself)
+    // The live camera's right-drag speed, GW's CameraRotationSpeed in percent (preference 0x24, 25..175):
+    // 0.08 degree a mouse count at 100. The owner's default is a little faster than the game's.
+    int trCameraRotation = 125;
 
     void ResetToDefaults() { *this = ReplayHotkeys{}; }
 

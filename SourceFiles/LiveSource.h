@@ -28,10 +28,14 @@ struct LiveFrameInput
     bool keyboardAllowed = false;   // our process is in front and no text field has the keyboard
     int clickedAgentId = -1;        // a left click on a character or a party row this frame, else -1
     bool cameraOrbiting = false;    // the right mouse button is held (the user steers the camera)
-    // The camera's forward, as a facing (radians, game coordinates). While the camera orbits, the
-    // player turns with it, as GW's right-drag mouse look does.
+    // Both mouse buttons held: GW walks forward (GmWalk 0x5346A0, the walk's "buttons & 5 == 5").
+    bool bothButtons = false;
+    // The camera's forward, as a facing (radians, game coordinates). It is the walk's direction when a
+    // movement key starts a walk, and while the camera orbits during a walk (GmWalk 0x5339F7, 0x4F6300).
     float cameraFacing = 0.f;
     float cameraYaw = 0.f;          // the chase camera's own yaw (the self-test checks a click leaves it)
+    float cameraYawTarget = 0.f;    // the yaw it approaches, and its rate (1/s) before this frame's update (the self-test)
+    float cameraRate = 0.f;
     // A left click on the ground (not on a character or a panel) this frame: the point under the
     // cursor, game (x, y). While the button stays down the point under the cursor follows (held).
     bool groundClicked = false;
@@ -65,6 +69,17 @@ struct LiveScriptedUi
     float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates
     int slot = -1;            // SkillSlotClick, DragSkillToSlot: the bar slot
     int skill = 0;            // DragSkillToSlot: the skill dragged from the skills window's list
+};
+
+// A right drag the source asks the window to perform (the self-test): the buttons' state for the frame and
+// the mouse's movement, in counts, fed to the same code the window's raw mouse input runs. Nothing reaches the OS.
+struct LiveScriptedLook
+{
+    bool active = false;   // false: the window's own buttons are left alone
+    bool right = false, left = false;
+    float dx = 0.f, dy = 0.f;
+    int pressX = 0, pressY = 0;   // the cursor's point when the scripted right button goes down
+    bool loseCapture = false;     // the drag ends without a button-up (capture or focus lost)
 };
 
 // What a step appended, so the window refreshes only the caches that read it.
@@ -156,6 +171,8 @@ public:
     virtual int TakeScriptedPartyRowClick() { return -1; }
     // A click or drag the source asks the window to perform with its mouse (the self-test).
     virtual LiveScriptedUi TakeScriptedUi() { return {}; }
+    // The mouse buttons and a right drag's movement for this frame (the self-test), active = false for none.
+    virtual LiveScriptedLook TakeScriptedLook() { return {}; }
 
     // The player's bar in slot order (0 = empty slot); false when the source has none.
     virtual bool PlayerBar(int (&bar)[8]) const { (void)bar; return false; }

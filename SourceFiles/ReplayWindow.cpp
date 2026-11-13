@@ -182,7 +182,8 @@ void ReplayHotkeys::Save() const
       << "    \"targetSelf\": "   << trTargetSelf   << ",\n"
       << "    \"attack\": "       << trAttack       << ",\n"
       << "    \"nearestEnemy\": " << trNearestEnemy << ",\n"
-      << "    \"nearestAlly\": "  << trNearestAlly  << ",\n";
+      << "    \"nearestAlly\": "  << trNearestAlly  << ",\n"
+      << "    \"cameraRotation\": " << trCameraRotation << ",\n";
     f << "    \"skills\": [";
     for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trSkill[i];
     f << "],\n    \"party\": [";
@@ -258,6 +259,8 @@ void ReplayHotkeys::Load()
             readTrialsKey("attack",       trAttack);
             readTrialsKey("nearestEnemy", trNearestEnemy);
             readTrialsKey("nearestAlly",  trNearestAlly);
+            if (t.contains("cameraRotation") && t["cameraRotation"].is_number_integer())
+                trCameraRotation = std::clamp(t["cameraRotation"].get<int>(), 25, 175);
             auto readTrialsRow = [&](const char* name, int (&row)[8]) {
                 if (!t.contains(name) || !t[name].is_array()) return;
                 const auto& a = t[name];
@@ -965,6 +968,7 @@ ReplayWindow* ReplayWindow::Create(HINSTANCE hInstance, const MatchMeta& match,
 
 ReplayWindow::~ReplayWindow()
 {
+    if (m_liveMode) LiveCursorLost(false);   // never leave the cursor hidden
     if (m_live) m_live->OnWindowClosed();
     ReleasePlayerVisuals();
     ReleaseAgentEffects();
@@ -11232,7 +11236,11 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                         cam->SetPosition(pos.x, pos.y, pos.z);
                     }
 
-                    if (rw->m_rightMouseDown && !rw->m_topViewActive)
+                    // Live mode: GW's own mouse look (ReplayWindow_Live.cpp LiveMouseLook).
+                    if (rw->m_rightMouseDown && !rw->m_topViewActive && rw->m_liveMode &&
+                        rw->m_cameraMode == CameraMode::FollowAgent)
+                        rw->LiveMouseLook(dx, dy);
+                    else if (rw->m_rightMouseDown && !rw->m_topViewActive)
                     {
                         const auto& hk = ReplayHotkeys::Get();
                         float radX = DirectX::XMConvertToRadians(0.25f * dx * rotMul) * (hk.invertMouseX ? -1.f : 1.f);
@@ -11257,6 +11265,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_LBUTTONDOWN:
+        // Live mode: the left button for "both buttons walk forward" (ReplayWindow_Live.cpp).
+        if (mouseAllowed && rw && rw->m_liveMode)
+            rw->m_liveLeftDown = true;
         if (mouseAllowed && rw && rw->m_cameraMode != CameraMode::FollowAgent
             && !rw->m_annotationMgr.IsDrawModeActive())
         {
@@ -11268,6 +11279,7 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
     case WM_LBUTTONUP:
         if (rw)
         {
+            rw->m_liveLeftDown = false;
             if (rw->m_leftClickPending)
                 rw->m_leftClickPending = false;
 
@@ -11302,6 +11314,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                 ClipCursor(&clip);
                 SetCapture(hWnd);
             }
+            // Live mode: no cursor during the mouse look (ReplayWindow_Live.cpp LiveRightButton).
+            if (rw->m_liveMode && !rw->m_leftMouseDown)
+                rw->LiveRightButton(true, false);
         }
         break;
 
@@ -11313,6 +11328,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             {
                 ClipCursor(nullptr);
                 ReleaseCapture();
+                // Live mode: the cursor back where the press was, shown again.
+                if (rw->m_liveMode)
+                    rw->LiveRightButton(false, false);
             }
         }
         break;
@@ -11343,6 +11361,14 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
                     : (1.f + (1.12f - 1.f) * zoomMul);
                 pos.y = std::max(200.f, pos.y * zoomFactor);
                 cam->SetPosition(pos.x, pos.y, pos.z);
+            }
+            else if (rw->m_cameraMode == CameraMode::FollowAgent && rw->m_liveMode)
+            {
+                // GW's wheel (GmCam 0x4F6470): 93.75 units a notch on the target and the current
+                // distance alike, no easing, at most 900 (ReplayWindow_Live.cpp).
+                const float d = std::clamp(rw->m_followDistTarget - delta * rw->kLiveZoomPerNotch * zoomMul,
+                                           rw->kFollowMinDist, rw->kLiveZoomMax);
+                rw->m_followDistTarget = rw->m_followDist = d;
             }
             else if (rw->m_cameraMode == CameraMode::FollowAgent)
             {
@@ -11415,6 +11441,9 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             }
             else
             {
+                // Live mode: a right drag cut off here gives the cursor back (ReplayWindow_Live.cpp).
+                if (rw->m_liveMode)
+                    rw->LiveCursorLost(false);
                 // Never leave the cursor pinned by a drag once we lose focus.
                 if (rw->m_leftMouseDown || rw->m_rightMouseDown)
                     ClipCursor(nullptr);
@@ -11429,7 +11458,26 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
             rw->OnWindowSizeChanged(LOWORD(lParam), HIWORD(lParam));
         break;
 
+    // Live mode: a right drag that ends without its button-up (the capture taken, the focus or the
+    // application gone) gives the cursor back, shown, at the press point (ReplayWindow_Live.cpp).
+    case WM_CAPTURECHANGED:
+        // Our own SetCapture (the right-button press itself) also arrives here, naming this window:
+        // only another window taking the mouse ends the drag.
+        if (rw && rw->m_liveMode && reinterpret_cast<HWND>(lParam) != hWnd)
+            rw->LiveCursorLost(false);
+        break;
+    case WM_KILLFOCUS:
+        if (rw && rw->m_liveMode)
+            rw->LiveCursorLost(false);
+        break;
+    case WM_ACTIVATEAPP:
+        if (rw && rw->m_liveMode && !wParam)
+            rw->LiveCursorLost(false);
+        break;
+
     case WM_DESTROY:
+        if (rw && rw->m_liveMode)
+            rw->LiveCursorLost(false);
         if (rw) rw->OnDestroy();
         break;
 

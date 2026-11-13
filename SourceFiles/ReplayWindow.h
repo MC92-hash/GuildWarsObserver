@@ -1903,6 +1903,26 @@ private:
     bool m_liveSeeded = false;
     bool m_liveModelsReported = false;
     bool m_liveCameraPlaced = false;
+    // GW's chase camera (GmCam.cpp, ReplayWindow_Live.cpp LiveUpdate): the yaw it approaches, the
+    // approach's rate (1/s) and the seconds since the last mouse look; the left button for "both buttons".
+    float m_liveYawTarget = 0.f;
+    float m_livePitchTarget = 0.f;
+    float m_liveCameraRate = 6.f;
+    float m_liveSinceLook = 1000.f;
+    bool m_liveLeftDown = false;
+    void LiveMouseLook(float dx, float dy);  // a right drag's movement in mouse counts (live mode)
+    // The right button for mouse look (live mode): down hides the cursor (it is already held in place),
+    // up puts it back where the press was. Scripted (the self-test): only says what it would do.
+    void LiveRightButton(bool down, bool scripted);
+    // The drag ended without a button-up (capture or focus lost, the window going): the cursor shown,
+    // unclipped and put back at the press point, once.
+    void LiveCursorLost(bool scripted);
+    bool m_liveCursorHidden = false;
+    bool m_liveScriptCursorHidden = false;   // the test seam's own state, and its ShowCursor-like count
+    int m_liveScriptCursorCount = 0;
+    bool m_liveLookSpeedReported = false;
+    static constexpr float kLiveZoomPerNotch = 93.75f;   // GW's wheel: units a notch (GmCam 0x94D388), no easing
+    static constexpr float kLiveZoomMax = 900.f;         // GW's farthest (0x94D3FC)
     int  m_liveClickedAgent = -1;           // a click this frame (character or party row)
     int  m_liveTargetId = -1;               // the player's target, copied from the source each frame
     double m_liveLastFrameQpc = 0.0;        // seconds, for the frame-time readout
@@ -1962,6 +1982,7 @@ private:
     // Character/ReplayWindow_AgentEffects.cpp). The next click replaces it.
     void LiveSpawnGroundMarker(float gameX, float gameY);
     std::string LiveGroundMarkerState() const;   // the self-test's line: model, age, the three pivots
+    void LiveDumpMarkerTexture();                 // the self-test: the marker's texture 31186 as decoded, every mip
     void LiveReportGroundMarker();                // while one plays and the source asked: its state
     int m_liveMarkerCount = 0;
     float m_liveMarkerX = 0.f, m_liveMarkerY = 0.f;
