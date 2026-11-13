@@ -8,8 +8,11 @@
 #include "SkillSoundTable.h"
 #include "SpatialAudioEngine.h"
 #include "Animation/GWAnimationHashes.h"
+#include "AtexReader.h"
+#include "CompassMapData.h"
 
 #include <DirectXTex.h>
+#include <d3dcompiler.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -516,18 +519,194 @@ int ReplayWindow::LiveQueuedSlot()
 //             their quotient 11076.92 at 0xBA3960 is the inverse): 4500 units reach 0.40625 of the model's
 //             side, 104 of its 256 texels, which is the bezel's inner edge. The pale disc in 143016 is
 //             about 22.5 texels across the radius, ~970 units: the aggro (earshot) circle is part of the art.
-//   markers   CompassTarget (0x8C3020) loads 50465 (32 x 32: a dot, a triangle, two flags) and 50466 (the
-//             same shapes as outlines), sizes from the canvas extent x 6 / 256 (0x8C3265) and x 16 / 256
-//             for the quest arrow 111829 (0x8C34A0). Other art in the module: quest marker 111831, the
-//             hero / flag icons 158487 and 23867, the AI-control arcs 256680 (DDS), the rings 49225 and
-//             50468, the world minimap (CompassMap, DXT1 chunks; not drawn here: the arena has none).
+//   ground    CompassMap (0x8C0BB0..0x8C1A30) streams a 128 x 128 DXT1 texture round the player at 96 world
+//             units a texel (0x94CD28), local texel (x - minX, maxY - y) / 96 from the map's bounds (0x7087F0,
+//             the map file's own). Its source, in this order (0x8C13E0): the map's own image (area record
+//             +0x68, a DAT file, repeated across the map: texel modulo its size); else the map's rectangle on
+//             its continent's world map (area +0x48..+0x54, continent +0x04; tiles of 512 x 512 from the
+//             world's file list, 0x5A75D0); outside the map, a missing tile or neither, the tiled 64 x 64
+//             texture 9153 (0x8C0D90, "dirt"). The tables are CompassMapData.h. The area record always
+//             exists: 0x5A6770 indexes a static table of 0x382 records and asserts on a larger id, so "no
+//             record" never reaches the compass; a record without an image and with an empty rectangle
+//             (x0 == x1, 0x8C16E5; the rectangle is +0x48..+0x54, or +0x58..+0x64 when the context flag
+//             0x84C260 is set) is filled with 9153 (0x8C184D -> 0x8C0D90), as is an image that fails to load
+//             (0x8C14D6). The DEV Test Arena (map 2: continent 3, both rectangles 0, image 0) is such a map:
+//             the game shows 9153 there. It cannot be entered in the game, so this window shows the map
+//             itself instead: its top-down render (BakeLiveCompassGroundFromMap), at the same 96 units a
+//             texel, 9153 outside the map. Maps with compass art keep the game's method.
+//   markers   CompassTarget.cpp: one quad per agent from the atlas 50465 (cells of 16 x 15.5 texels: dot
+//             left, triangle right, 0x8C35A0), centred on the agent and reaching s = side x 6 / 256 EACH WAY
+//             (0x8C35D9: the quad is pos - s .. pos + s, so 12 / 256 of the side across). The colour is AvChar
+//             0x7F3F00 (0x7DD6E0), halved for the dimmed kinds. Seven passes, later on top (0x8C4530 with the
+//             agent masks of AvChar 0x7FA8F0): dead foes (dimmed dot), dead players, dead allies (dimmed dot),
+//             living spirits / minions / NPCs (triangle), living foes, living players not allied, living allies
+//             (dot); nothing beyond 4500 units (0x8C3936: 0.40625 squared). The player is a dot at the centre
+//             like any ally (the turned arrow 158487 / 23867 at 0x8C3E80 is only for the observer preference
+//             0x5C). The target gets the outline 50466 of its own shape, 3 s across (side x 18 / 256,
+//             0x8C37BC), tinted 0xFFFFFF00 (0x8C3291).
 //   rotation  the preference LockCompassRotation (off by default: the compass turns with the camera).
 //   clicks    a click on the compass is a ping / flag order in the game; not done here.
-// ASSUMED, not read: the marker colours (the overhead tint of AvChar 0x7F3F00, green everyone but foes,
-// red foes, grey the dead), the player as the triangle turned to its facing, the target as the outline
-// circle over its dot (10 / 256), the dark disc under the markers where the game draws the minimap, and
-// the glass drawn as a black / white overlay of its modulation.
+// ASSUMED: the glass drawn as a black / white overlay of its modulation; the ground's filtering (bilinear).
 // -------------------------------------------------------------------------------------------------
+struct LiveCompassGround
+{
+    bool tried = false;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    int w = 0, h = 0;          // the baked image, in compass texels
+    int pad = 0;               // texels of margin round the map (the image's (0, 0) is local texel (-pad, -pad))
+    float minX = 0.f, maxY = 0.f;
+    std::string source;        // what it was made of, for the report
+    // A map with no compass art of its own: the ground is rebaked from the map's top-down render once the
+    // map has been ready for a moment (BakeLiveCompassGroundFromMap); the 9153 image stands until then
+    // and stays outside the map.
+    bool fromMap = false;
+    bool mapTried = false;
+    int readyFrames = 0;
+    std::vector<uint32_t> base;
+};
+
+namespace
+{
+// A DAT texture by file id, decoded to B, G, R, A rows (the decoder's own order).
+bool LiveDatImage(DATManager* dat, const std::unordered_map<int, std::vector<int>>* index, uint32_t fileId, DatTexture& out)
+{
+    if (!dat || !index || !fileId) return false;
+    const auto it = index->find(static_cast<int>(fileId));
+    if (it == index->end()) return false;
+    for (const int mft : it->second)
+    {
+        const auto bytes = dat->read_file_cached(static_cast<uint32_t>(mft));
+        if (!bytes || bytes->size() < 16) continue;
+        std::vector<uint8_t> copy(*bytes);   // the decoder writes to what it is given; the bytes are the cache's
+        DatTexture t = ProcessImageFile(copy.data(), static_cast<int>(copy.size()));
+        if (t.width > 0 && t.height > 0 && t.rgba_data.size() >= size_t(t.width) * size_t(t.height))
+        {
+            out = std::move(t);
+            return true;
+        }
+    }
+    return false;
+}
+
+const CompassMapData::Map* LiveCompassMapRecord(int mapId)
+{
+    for (const auto& m : CompassMapData::kMaps)
+        if (m.mapId == mapId) return &m;
+    return nullptr;
+}
+
+// The compass's ground for the whole map plus a margin of 50 texels (4800 units), as CompassMap fills it:
+// texel (tx, ty) local to the map's top-left corner, 96 units each.
+bool BakeLiveCompassGround(DATManager* dat, const std::unordered_map<int, std::vector<int>>* index, int mapId, float minX,
+                           float minY, float maxX, float maxY, std::vector<uint32_t>& bgra, int& w, int& h, int& pad,
+                           std::string& source)
+{
+    DatTexture dirt;
+    if (!LiveDatImage(dat, index, 9153, dirt)) return false;
+    const int mapW = static_cast<int>(std::ceil((maxX - minX) / 96.f));
+    const int mapH = static_cast<int>(std::ceil((maxY - minY) / 96.f));
+    if (mapW <= 0 || mapH <= 0 || mapW > 4096 || mapH > 4096) return false;
+    pad = 50;
+    w = mapW + 2 * pad;
+    h = mapH + 2 * pad;
+    bgra.assign(size_t(w) * size_t(h), 0);
+
+    const CompassMapData::Map* rec = LiveCompassMapRecord(mapId);
+    DatTexture own;
+    const bool hasOwn = rec && rec->image && LiveDatImage(dat, index, rec->image, own);
+    const bool hasRect = !hasOwn && rec && rec->x1 > rec->x0 && rec->y1 > rec->y0;
+    const CompassMapData::World* world = nullptr;
+    if (hasRect)
+        for (const auto& wd : CompassMapData::kWorlds)
+            if (wd.id == rec->continent) world = &wd;
+    std::unordered_map<uint32_t, DatTexture> tiles;
+    int tilesUsed = 0, tilesMissing = 0;
+    auto tileTexel = [&](int wx, int wy, uint32_t& px) {
+        if (!world || wx < 0 || wy < 0) return false;
+        const int cx = wx >> 9, cy = wy >> 9;
+        if (cx >= world->chunksX || cy >= world->chunksY) return false;
+        const uint32_t id = CompassMapData::kTiles[world->first + cy * world->chunksX + cx];
+        if (!id) return false;
+        auto it = tiles.find(id);
+        if (it == tiles.end())
+        {
+            DatTexture t;
+            if (LiveDatImage(dat, index, id, t) && t.width == 512 && t.height == 512) ++tilesUsed;
+            else { t = DatTexture{}; ++tilesMissing; }
+            it = tiles.emplace(id, std::move(t)).first;
+        }
+        if (it->second.width != 512) return false;
+        std::memcpy(&px, &it->second.rgba_data[size_t(wy & 511) * 512 + size_t(wx & 511)], 4);
+        return true;
+    };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            const int tx = x - pad, ty = y - pad;
+            uint32_t px = 0;
+            bool done = false;
+            if (tx >= 0 && ty >= 0 && tx < mapW && ty < mapH)
+            {
+                if (hasOwn)
+                {
+                    std::memcpy(&px, &own.rgba_data[size_t(ty % own.height) * size_t(own.width) + size_t(tx % own.width)], 4);
+                    done = true;
+                }
+                else if (hasRect)
+                    done = tileTexel(rec->x0 + tx, rec->y0 + ty, px);
+            }
+            if (!done)
+                std::memcpy(&px, &dirt.rgba_data[size_t(((ty % dirt.height) + dirt.height) % dirt.height) * size_t(dirt.width) +
+                                                 size_t(((tx % dirt.width) + dirt.width) % dirt.width)], 4);
+            bgra[size_t(y) * size_t(w) + size_t(x)] = px | 0xFF000000u;   // DXT1: opaque
+        }
+    if (hasOwn)
+        source = std::format("own image {} ({}x{}, repeated), 9153 outside", rec->image, own.width, own.height);
+    else if (hasRect)
+        source = std::format("world map {} rect ({}, {})-({}, {}), {} tile(s) read, {} missing, 9153 outside", rec->continent, rec->x0,
+                             rec->y0, rec->x1, rec->y1, tilesUsed, tilesMissing);
+    else
+        source = "9153 tiled (the map has no compass image and no world-map rectangle)";
+    return true;
+}
+
+bool LiveSaveBgraPng(const std::vector<uint32_t>& bgra, int w, int h, const std::wstring& path)
+{
+    DirectX::Image img{};
+    img.width = static_cast<size_t>(w);
+    img.height = static_cast<size_t>(h);
+    img.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    img.rowPitch = img.width * 4;
+    img.slicePitch = img.rowPitch * img.height;
+    img.pixels = reinterpret_cast<uint8_t*>(const_cast<uint32_t*>(bgra.data()));
+    return SUCCEEDED(DirectX::SaveToWICFile(img, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), path.c_str()));
+}
+
+// The self-test's folder (GWO_TRIALS_SELFTEST), or empty.
+std::wstring LiveSelftestFolder()
+{
+    wchar_t buf[1024] = {};
+    const DWORD n = GetEnvironmentVariableW(L"GWO_TRIALS_SELFTEST", buf, 1024);
+    return n > 0 && n < 1024 ? std::wstring(buf) : std::wstring();
+}
+} // namespace
+
+ImU32 ReplayWindow::LiveGwAgentColour(const AgentReplayData& ard, bool dead) const
+{
+    // 0x7F3F00, an explorable instance (0x108B094 != 0), no team-colour map flag (0x40000): dead 0xFFA0A0A0,
+    // allegiance 3 (foe) 0xFFFF0000, allegiance 6 (NPC / minipet) 0xFFA0FF00, everyone else 0xFF00FF00.
+    // An outpost's blue players (0xFF6060FF in a party, 0xFF9BBEFF alone) and self (0xFF40FF40) do not apply.
+    if (dead) return IM_COL32(0xA0, 0xA0, 0xA0, 0xFF);
+    int playerTeam = 1;
+    if (m_live)
+        if (const auto it = m_replayCtx.agents.find(m_live->PlayerAgentId()); it != m_replayCtx.agents.end())
+            playerTeam = static_cast<int>(it->second.teamId);
+    const int team = static_cast<int>(ard.teamId);
+    if (team == 0 && ard.type == AgentType::NPC) return IM_COL32(0xA0, 0xFF, 0x00, 0xFF);
+    if (team != 0 && team != playerTeam) return IM_COL32(0xFF, 0x00, 0x00, 0xFF);
+    return IM_COL32(0x00, 0xFF, 0x00, 0xFF);
+}
+
 void ReplayWindow::DrawLiveCompass()
 {
     if (!m_live || !m_deviceResources) return;
@@ -543,6 +722,57 @@ void ReplayWindow::DrawLiveCompass()
     ImTextureID texGlass = LoadGameUITexture(dev, "Compass\\ui_compass_glass.png");
     ImTextureID texMarks = LoadGameUITexture(dev, "Compass\\ui_compass_markers.png");
     ImTextureID texOutline = LoadGameUITexture(dev, "Compass\\ui_compass_outlines.png");
+
+    // The ground, baked once for this map from the DAT.
+    if (!m_liveCompassGround) m_liveCompassGround = std::make_shared<LiveCompassGround>();
+    LiveCompassGround& ground = *m_liveCompassGround;
+    if (!ground.tried && m_mapRenderer && m_mapRenderer->GetTerrain())
+    {
+        ground.tried = true;
+        const auto& b = m_mapRenderer->GetTerrain()->m_bounds;
+        std::vector<uint32_t> bgra;
+        if (BakeLiveCompassGround(m_datManager, m_hashIndex, m_replayCtx.mapId, b.map_min_x, b.map_min_z, b.map_max_x, b.map_max_z, bgra,
+                                  ground.w, ground.h, ground.pad, ground.source))
+        {
+            ground.minX = b.map_min_x;
+            ground.maxY = b.map_max_z;
+            // No compass art (the table leaves such maps out): rebaked from the map's render later.
+            ground.fromMap = LiveCompassMapRecord(m_replayCtx.mapId) == nullptr;
+            if (ground.fromMap) ground.base = bgra;
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = static_cast<UINT>(ground.w);
+            td.Height = static_cast<UINT>(ground.h);
+            td.MipLevels = td.ArraySize = td.SampleDesc.Count = 1;
+            td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            td.Usage = D3D11_USAGE_IMMUTABLE;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            const D3D11_SUBRESOURCE_DATA init{bgra.data(), static_cast<UINT>(ground.w) * 4, 0};
+            ComPtr<ID3D11Texture2D> tex;
+            if (FAILED(dev->CreateTexture2D(&td, &init, &tex)) || FAILED(dev->CreateShaderResourceView(tex.Get(), nullptr, &ground.srv)))
+                ground.srv.Reset();
+            if (const std::wstring folder = LiveSelftestFolder(); !folder.empty())
+                LiveSaveBgraPng(bgra, ground.w, ground.h, folder + std::format(L"\\compass_ground_map{}.png", m_replayCtx.mapId));
+        }
+        RunLog::Line("live: compass ground for map %d: %s%s", m_replayCtx.mapId, ground.source.c_str(), ground.srv ? "" : " (NOT made)");
+        // The self-test also bakes two real maps, to check the other two sources against the game: the Great
+        // Temple of Balthazar (248, world map 3) and the Warrior's Isle guild hall (4, its own image), each
+        // over its rectangle / image size as bounds.
+        if (const std::wstring folder = LiveSelftestFolder(); !folder.empty())
+            for (const int other : {248, 4})
+                if (const CompassMapData::Map* rec = LiveCompassMapRecord(other))
+                {
+                    DatTexture img;
+                    const bool own = rec->image && LiveDatImage(m_datManager, m_hashIndex, rec->image, img);
+                    const float wUnits = own ? img.width * 96.f : (rec->x1 - rec->x0) * 96.f;
+                    const float hUnits = own ? img.height * 96.f : (rec->y1 - rec->y0) * 96.f;
+                    std::vector<uint32_t> bgra;
+                    int w = 0, h = 0, pad = 0;
+                    std::string src;
+                    if (BakeLiveCompassGround(m_datManager, m_hashIndex, other, 0.f, 0.f, wUnits, hUnits, bgra, w, h, pad, src))
+                        LiveSaveBgraPng(bgra, w, h, folder + std::format(L"\\compass_ground_map{}.png", other));
+                    m_live->Report(std::format("compass ground check: map {}: {} ({}x{} texels)", other, src, w, h));
+                }
+    }
 
     // The model's side on the screen: 256 at 1080 lines, top right under the menu bar.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -570,8 +800,37 @@ void ReplayWindow::DrawLiveCompass()
                          ImVec2(uv0.x, uv1.y), col);
     };
 
-    // Under the markers: a dark disc where the game shows the minimap, then the glass.
-    dl->AddCircleFilled(c, inner, IM_COL32(0, 0, 0, 140), 64);
+    // The ground under everything, clipped to the disc: a fan whose rim samples the baked image at the
+    // world point under it (the inverse of toScreen), so it turns and scales with the markers.
+    if (ground.srv)
+    {
+        constexpr int kRim = 96;
+        const float texelX = (me->x - ground.minX) / 96.f + ground.pad, texelY = (ground.maxY - me->y) / 96.f + ground.pad;
+        auto uvAt = [&](float rx, float ry) {   // a screen offset from the centre, in pixels
+            const float right = rx / pxPerUnit, along = -ry / pxPerUnit;
+            const float dx = along * cf + right * sf, dy = along * sf - right * cf;
+            return ImVec2((texelX + dx / 96.f) / ground.w, (texelY - dy / 96.f) / ground.h);
+        };
+        dl->PushTextureID(reinterpret_cast<ImTextureID>(ground.srv.Get()));
+        dl->PrimReserve(kRim * 3, kRim + 1);
+        const ImDrawIdx base = static_cast<ImDrawIdx>(dl->_VtxCurrentIdx);
+        dl->PrimWriteVtx(c, uvAt(0.f, 0.f), IM_COL32_WHITE);
+        for (int i = 0; i < kRim; ++i)
+        {
+            const float a = 6.2831853f * i / kRim;
+            const float rx = std::sin(a) * inner, ry = -std::cos(a) * inner;
+            dl->PrimWriteVtx(ImVec2(c.x + rx, c.y + ry), uvAt(rx, ry), IM_COL32_WHITE);
+        }
+        for (int i = 0; i < kRim; ++i)
+        {
+            dl->PrimWriteIdx(base);
+            dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 1 + i));
+            dl->PrimWriteIdx(static_cast<ImDrawIdx>(base + 1 + (i + 1) % kRim));
+        }
+        dl->PopTextureID();
+    }
+    else
+        dl->AddCircleFilled(c, inner, IM_COL32(0, 0, 0, 140), 64);
     if (texGlass) dl->AddImage(texGlass, tl, ImVec2(tl.x + S, tl.y + S));
     // The ring: its N toward the world's +y. Up the texture is (0, -1) on the screen; +y lands at
     // (-cos f, -sin f), so the ring turns by atan2(-cos f, sin f).
@@ -581,56 +840,583 @@ void ReplayWindow::DrawLiveCompass()
     if (texRing) turned(texRing, c, S * 0.5f, ringAngle, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
 
     std::string report;
+    const float s = S * 6.f / 256.f;     // the marker's half size (0x8C35D9)
     if (m_liveReportCompass)
         report = std::format("compass time {:.4f} player world ({:.2f}, {:.2f}) side {:.0f} at ({:.0f}, {:.0f}) centre ({:.0f}, {:.0f}) inner {:.2f} px = 4500 units, camera yaw {:.4f} "
-                             "facing {:.4f}, ring {:.2f} deg, textures {}{}{}{}{}; ",
+                             "facing {:.4f}, ring {:.2f} deg, textures {}{}{}{}{}; ground {} ({}x{} texels, {}); marker {:.2f} px across, target outline {:.2f} px; ",
                              m_debugTimeline, me->x, me->y, S, tl.x, tl.y, c.x, c.y, inner, m_followYaw, f, ringAngle * 57.29578f, texFrame ? "F" : "-",
-                             texRing ? "R" : "-", texGlass ? "G" : "-", texMarks ? "M" : "-", texOutline ? "O" : "-");
+                             texRing ? "R" : "-", texGlass ? "G" : "-", texMarks ? "M" : "-", texOutline ? "O" : "-", ground.srv ? "drawn" : "MISSING",
+                             ground.w, ground.h, ground.source, 2.f * s, 3.f * s);
 
-    const int playerTeam = static_cast<int>(pit->second.teamId);
-    const float dot = S * 6.f / 256.f;
+    // The seven passes of 0x8C4530, later on top: 0 dead foes, 1 dead players (none apart), 2 dead allies,
+    // 3 living spirits (triangles), 4 living foes, 5 living non-allied players (none apart), 6 living allies.
+    struct Mark { int id; ImVec2 p; ImU32 col; bool triangle; int pass; bool target; };
+    std::vector<Mark> marks;
     for (const auto& [id, ard] : m_replayCtx.agents)
     {
-        if (id == playerId || ard.snapshots.empty()) continue;
-        const AgentSnapshot* s = FindSnapshotAtTime(ard, m_debugTimeline);
-        if (!s) continue;
-        const float dx = s->x - me->x, dy = s->y - me->y;
-        const float d = std::sqrt(dx * dx + dy * dy);
-        if (d > 4500.f) continue;
-        const bool foe = static_cast<int>(ard.teamId) != playerTeam;
-        const ImU32 col = s->is_dead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : foe ? IM_COL32(0xFF, 0, 0, 0xFF) : IM_COL32(0, 0xFF, 0, 0xFF);
-        const ImVec2 p = toScreen(dx, dy);
-        if (texMarks)
-            dl->AddImage(texMarks, ImVec2(p.x - dot * 0.5f, p.y - dot * 0.5f), ImVec2(p.x + dot * 0.5f, p.y + dot * 0.5f), ImVec2(0, 0),
-                         ImVec2(0.5f, 0.5f), col);
-        else
-            dl->AddCircleFilled(p, dot * 0.5f, col);
-        const bool target = id == m_liveTargetId;
-        if (target)
-        {
-            const float o = S * 10.f / 256.f;
-            if (texOutline)
-                dl->AddImage(texOutline, ImVec2(p.x - o * 0.5f, p.y - o * 0.5f), ImVec2(p.x + o * 0.5f, p.y + o * 0.5f), ImVec2(0, 0),
-                             ImVec2(0.5f, 0.5f), col);
-        }
-        if (m_liveReportCompass)
-        {
-            const float ang = std::atan2(p.x - c.x, -(p.y - c.y)) * 57.29578f;
-            report += std::format("agent {} {}{}{} world ({:.2f}, {:.2f}) {:.1f} units -> ({:.2f}, {:.2f}) r {:.2f} px angle {:.3f} deg;", id,
-                                  foe ? "foe" : "ally", s->is_dead ? " dead" : "", target ? " target" : "", s->x, s->y, d, p.x, p.y,
-                                  std::hypot(p.x - c.x, p.y - c.y), ang);
-        }
+        if (ard.snapshots.empty()) continue;
+        if (ard.type != AgentType::Player && ard.type != AgentType::NPC && ard.type != AgentType::Spirit) continue;
+        const AgentSnapshot* sn = id == playerId ? me : FindSnapshotAtTime(ard, m_debugTimeline);
+        if (!sn) continue;
+        const float dx = sn->x - me->x, dy = sn->y - me->y;
+        if (dx * dx + dy * dy > 4500.f * 4500.f) continue;
+        const bool dead = sn->is_dead;
+        ImU32 col = LiveGwAgentColour(ard, dead);
+        const bool foe = col == IM_COL32(0xFF, 0x00, 0x00, 0xFF);
+        int pass = 6;
+        if (dead) pass = foe ? 0 : 2;
+        else if (ard.type == AgentType::Spirit || (ard.teamId == 0 && ard.type == AgentType::NPC)) pass = 3;
+        else if (foe) pass = 4;
+        if (pass == 0 || pass == 2)   // the dimmed kinds: each channel halved (0x8C35FD)
+            col = IM_COL32(((col >> IM_COL32_R_SHIFT) & 0xFF) >> 1, ((col >> IM_COL32_G_SHIFT) & 0xFF) >> 1,
+                           ((col >> IM_COL32_B_SHIFT) & 0xFF) >> 1, 0xFF);
+        marks.push_back({id, toScreen(dx, dy), col, pass == 3, pass, id == m_liveTargetId});
     }
-    // The player: the triangle at the centre, turned to its facing.
-    const float pa = std::atan2(std::cos(me->rotation) * sf - std::sin(me->rotation) * cf,
-                                std::cos(me->rotation) * cf + std::sin(me->rotation) * sf);
-    if (texMarks) turned(texMarks, c, S * 5.f / 256.f, pa, ImVec2(0.5f, 0.f), ImVec2(1.f, 0.5f), IM_COL32(0, 0xFF, 0, 0xFF));
+    std::stable_sort(marks.begin(), marks.end(), [](const Mark& a, const Mark& b) { return a.pass < b.pass; });
+    constexpr float kCellV = 0.484375f;   // 15.5 / 32 (0x9529D4)
+    for (const Mark& m : marks)
+    {
+        const float u0 = m.triangle ? 0.5f : 0.f;
+        if (texMarks)
+            dl->AddImage(texMarks, ImVec2(m.p.x - s, m.p.y - s), ImVec2(m.p.x + s, m.p.y + s), ImVec2(u0, 0.f), ImVec2(u0 + 0.5f, kCellV), m.col);
+        else
+            dl->AddCircleFilled(m.p, s * 0.55f, m.col);
+    }
+    // The target's outline, its own shape, over everything (the separate model 0x84 of CompassTarget).
+    for (const Mark& m : marks)
+        if (m.target && texOutline)
+        {
+            const float o = 1.5f * s;
+            const float u0 = m.triangle ? 0.5f : 0.f;
+            dl->AddImage(texOutline, ImVec2(m.p.x - o, m.p.y - o), ImVec2(m.p.x + o, m.p.y + o), ImVec2(u0, 0.f), ImVec2(u0 + 0.5f, 0.5f),
+                         IM_COL32(0xFF, 0xFF, 0x00, 0xFF));
+        }
     if (m_liveReportCompass)
     {
-        report += std::format("player facing {:.4f} -> triangle {:.2f} deg", me->rotation, pa * 57.29578f);
+        for (const Mark& m : marks)
+        {
+            const auto& ard = m_replayCtx.agents.at(m.id);
+            const AgentSnapshot* sn = m.id == playerId ? me : FindSnapshotAtTime(ard, m_debugTimeline);
+            const float dx = sn->x - me->x, dy = sn->y - me->y;
+            const float ang = std::atan2(m.p.x - c.x, -(m.p.y - c.y)) * 57.29578f;
+            const bool foe = m.pass == 0 || m.pass == 4;
+            report += std::format("agent {} {}{}{}{} world ({:.2f}, {:.2f}) {:.1f} units -> ({:.2f}, {:.2f}) r {:.2f} px angle {:.3f} deg colour {:08X} "
+                                  "pass {} {};",
+                                  m.id, m.id == playerId ? "player " : "", foe ? "foe" : "ally", sn->is_dead ? " dead" : "",
+                                  m.target ? " target" : "", sn->x, sn->y, std::hypot(dx, dy), m.p.x, m.p.y, std::hypot(m.p.x - c.x, m.p.y - c.y), ang,
+                                  ((m.col & 0xFF) << 16) | (m.col & 0xFF00) | ((m.col >> 16) & 0xFF) | 0xFF000000u, m.pass,
+                                  m.triangle ? "triangle" : "dot");
+        }
+        // The name colours the labels use (the same rule), and what the selection ring drew last frame.
+        report += " labels:";
+        for (const auto& [id, ard] : m_replayCtx.agents)
+            if (ard.type == AgentType::Player || ard.type == AgentType::NPC)
+            {
+                const ImU32 lc = LiveGwAgentColour(ard, ard.isDeadAtTime(m_debugTimeline));
+                report += std::format(" {}={:08X}", id, ((lc & 0xFF) << 16) | (lc & 0xFF00) | ((lc >> 16) & 0xFF) | 0xFF000000u);
+            }
+        report += std::format("; tags (font {}):", m_liveLabelFont ? std::format("Tahoma {:.0f} px ascent {:.1f}", m_liveLabelFont->FontSize,
+                                                                                m_liveLabelFont->Ascent)
+                                                                  : std::string("NONE"));
+        report += m_liveLabelReport.empty() ? std::string(" none") : m_liveLabelReport;
+        report += "; ring: " + (m_liveRingReport.empty() ? std::string("none") : m_liveRingReport);
         m_live->Report("compass: " + report);
         m_liveReportCompass = false;
     }
+}
+
+// The compass ground of a map without compass art: the map seen from above, as this window renders it
+// (the minimap's orthographic camera over the whole map, 1024 x 1024, no sky or fog), averaged into the
+// compass's texels of 96 x 96 units (8 x 8 samples each) at the same local texels CompassMap uses, so it
+// turns, scales and clips exactly as the game's own images do. Outside the map it keeps 9153.
+void ReplayWindow::BakeLiveCompassGroundFromMap()
+{
+    if (!m_liveMode || !m_liveCompassGround || !m_deviceResources) return;
+    LiveCompassGround& g = *m_liveCompassGround;
+    if (!g.fromMap || g.mapTried || g.base.empty() || m_loadingPhase != LoadingPhase::Ready) return;
+    if (++g.readyFrames < 90) return;   // the map's textures settle in the first frames after Ready
+    g.mapTried = true;
+    if (!m_mapRenderer || !m_mapRenderer->GetTerrain() || !m_mapRenderer->GetCamera()) return;
+
+    const int savedW = m_minimapWidth, savedH = m_minimapHeight;
+    const float savedZoom = m_minimapZoom, savedPanX = m_minimapPanX, savedPanZ = m_minimapPanZ;
+    const DirectX::XMFLOAT4X4 savedViewProj = m_minimapViewProj;
+    const bool wasReady = m_minimapResourcesReady;
+    constexpr int kSide = 1024;
+    m_minimapWidth = m_minimapHeight = kSide;
+    m_minimapZoom = 1.f;
+    m_minimapPanX = m_minimapPanZ = 0.f;
+
+    DirectX::ScratchImage shot, converted;
+    const DirectX::Image* img = nullptr;
+    DirectX::XMFLOAT4X4 viewProj{};
+    InitMinimapResources();
+    if (m_minimapResourcesReady)
+    {
+        RenderMinimap();
+        viewProj = m_minimapViewProj;
+        if (SUCCEEDED(DirectX::CaptureTexture(m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext(),
+                                              m_minimapTexture.Get(), shot)))
+        {
+            img = shot.GetImage(0, 0, 0);
+            if (img && img->format != DXGI_FORMAT_B8G8R8A8_UNORM)
+                img = SUCCEEDED(DirectX::Convert(*img, DXGI_FORMAT_B8G8R8A8_UNORM, DirectX::TEX_FILTER_DEFAULT, 0.5f, converted))
+                          ? converted.GetImage(0, 0, 0) : nullptr;
+        }
+    }
+    m_minimapWidth = savedW;
+    m_minimapHeight = savedH;
+    m_minimapZoom = savedZoom;
+    m_minimapPanX = savedPanX;
+    m_minimapPanZ = savedPanZ;
+    m_minimapViewProj = savedViewProj;
+    InitMinimapResources();
+    if (!wasReady)   // the live window never shows the minimap: keep its targets released
+    {
+        m_minimapTexture.Reset();
+        m_minimapRTV.Reset();
+        m_minimapDepthTexture.Reset();
+        m_minimapDSV.Reset();
+        m_minimapSRV.Reset();
+        m_minimapResourcesReady = false;
+    }
+    if (!img || img->width != size_t(kSide) || img->height != size_t(kSide))
+    {
+        RunLog::Line("live: compass ground from the map: the top-down render could not be read; 9153 stays");
+        return;
+    }
+
+    // Texel (tx, ty), local to the map's top-left corner, covers the recorded (x, y) from minX + 96 tx and
+    // maxY - 96 ty; its samples go through the map transform and the render's camera to the picture.
+    const DirectX::XMMATRIX vp = DirectX::XMLoadFloat4x4(&viewProj);
+    std::vector<uint32_t> bgra = g.base;
+    const int mapW = g.w - 2 * g.pad, mapH = g.h - 2 * g.pad;
+    int filled = 0;
+    constexpr int kSub = 8;
+    for (int ty = 0; ty < mapH; ++ty)
+        for (int tx = 0; tx < mapW; ++tx)
+        {
+            uint32_t sum[3] = {0, 0, 0};
+            int n = 0;
+            for (int sy = 0; sy < kSub; ++sy)
+                for (int sx = 0; sx < kSub; ++sx)
+                {
+                    const float x = g.minX + (tx + (sx + 0.5f) / kSub) * 96.f;
+                    const float y = g.maxY - (ty + (sy + 0.5f) / kSub) * 96.f;
+                    const DirectX::XMFLOAT3 w = ApplyMapTransformToPos(x, y, 0.f, m_replayCtx.mapTransform);
+                    const DirectX::XMVECTOR c = DirectX::XMVector4Transform(DirectX::XMVectorSet(w.x, w.y, w.z, 1.f), vp);
+                    const float cw = std::max(1e-4f, DirectX::XMVectorGetW(c));
+                    const float u = (DirectX::XMVectorGetX(c) / cw) * 0.5f + 0.5f, v = (1.f - DirectX::XMVectorGetY(c) / cw) * 0.5f;
+                    if (u < 0.f || v < 0.f || u >= 1.f || v >= 1.f) continue;
+                    const uint8_t* p = img->pixels + size_t(v * kSide) * img->rowPitch + size_t(u * kSide) * 4;
+                    sum[0] += p[0], sum[1] += p[1], sum[2] += p[2];
+                    ++n;
+                }
+            if (n < kSub * kSub / 2) continue;
+            bgra[size_t(ty + g.pad) * size_t(g.w) + size_t(tx + g.pad)] =
+                0xFF000000u | ((sum[2] / n) << 16) | ((sum[1] / n) << 8) | (sum[0] / n);
+            ++filled;
+        }
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(g.w);
+    td.Height = static_cast<UINT>(g.h);
+    td.MipLevels = td.ArraySize = td.SampleDesc.Count = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA init{bgra.data(), static_cast<UINT>(g.w) * 4, 0};
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    auto* dev = m_deviceResources->GetD3DDevice();
+    if (FAILED(dev->CreateTexture2D(&td, &init, &tex)) || FAILED(dev->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
+    {
+        RunLog::Line("live: compass ground from the map: texture not made; 9153 stays");
+        return;
+    }
+    g.srv = srv;
+    g.source = std::format("map render (no compass image, no world-map rectangle: the map from above, {} x {} px, {} of {} texels "
+                           "filled at 96 units), 9153 outside",
+                           kSide, kSide, filled, mapW * mapH);
+    g.base.clear();
+    g.base.shrink_to_fit();
+    if (const std::wstring folder = LiveSelftestFolder(); !folder.empty())
+    {
+        LiveSaveBgraPng(bgra, g.w, g.h, folder + std::format(L"\\compass_ground_map{}.png", m_replayCtx.mapId));
+        // The render itself, for the eye.
+        DirectX::SaveToWICFile(*img, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG),
+                               (folder + std::format(L"\\compass_map{}_render.png", m_replayCtx.mapId)).c_str());
+    }
+    RunLog::Line("live: compass ground for map %d: %s", m_replayCtx.mapId, g.source.c_str());
+}
+
+// -------------------------------------------------------------------------------------------------
+// GW'S SELECTION RING. Read statically from Gw.exe (2026-11-04 client, AgentView\AvSelect.cpp and AvAgent):
+//   when    AvAgent 0x7EAC60 (the target flag 0x80) and 0x7EA510 (the hover flag 0x10) make the ring through
+//           0x7EAD20: the agent's virtual 0 (AvChar 0x7F4240) gives the colour, 0x7F3F00 with alpha 0xC0 for the
+//           target and 0x60 for a hovered agent that is not the target, and the art: 1, or 0 for a foe on a
+//           team-colour map (area flag 0x40000). The ring is destroyed when the flag goes.
+//   art     0x7E4730 picks from the table 0xA95128 ("art < SELECT_ART"): 0 = 9091 once, turning at pi/4 rad/s
+//           (flags 0x12, 0x7E37C0); 1 = 9089 twice (flags 6 each, 0x7E3820), each layer's size breathing with
+//           MapOverlay param 3 = 0.25, param 5 = 1/3 Hz, the second layer's phase param 4 = 1.5 s (0xA95010);
+//           2 = 9089 once, still (0x7E3880). Textures loaded by 0x7E49A0 (9089 at 0xA95118, 9091 at 0xA95120).
+//   shape   a MapOverlay (Engine\Map\MapOverlay.cpp, "ovrl"): a square of half size r = the agent's +0x3C
+//           (0x7EAD3F; at least 1, 0x70F0EA), laid on the terrain (0x750440), texture across the square (UV
+//           0.5 / r, 0x70F183). Breathing (flag 4, 0x70FC31): UV scaled by k = 2 / (2 - (sin(2 pi p5 (t + p4)) + 1) p3),
+//           so the ring shrinks to 1 / k: 1 down to 0.75 and back every 3 s.
+// Here: art 1 under the live target (and a hovered agent at 0x60), a terrain-hugging grid in the depth
+// buffer's test, drawn before the characters (no depth write), so a body in front covers it.
+//   radius  the agent's +0x3C: AvAgent 0x7EADB0 asks 0x775CB0 (MdlApi) for the model's three bounding
+//           cylinders {radius, top, bottom} (anim data +0x48, 12 bytes each) and keeps slot i at +0x34 + 8 i,
+//           radius and height times the agent's scale (+0x94; 1.0, or a player's height scale, 0x7EB0F0), so
+//           +0x3C is slot 1's radius. MdlLoad 0x7944F0 fills the slots from the file's FA1 chunk (header 0x58,
+//           count at +0x14, records {slot, radius, top, bottom} of 16 bytes: each slot takes the next record
+//           of its index, else the first); no FA1 or no records leave MdlBuild's default {36, 72, 0}
+//           (0x779AE0). Players: every profession bank of a sex carries the same cylinder (male 14.4069,
+//           female 15.3506); the mannequin's bank 0x2963E and the henchmen's 0x1C601 have none (36).
+// ASSUMED: ordinary alpha blending for material 0x99A, the overlay's clock = the match clock; the live
+// player has no appearance record, so its height scale is 1.
+// -------------------------------------------------------------------------------------------------
+struct LiveSelectionRing
+{
+    bool tried = false;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11InputLayout> layout;
+    ComPtr<ID3D11Buffer> constants, vertices;
+    ComPtr<ID3D11ShaderResourceView> texture;
+    ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11BlendState> blend;
+    ComPtr<ID3D11DepthStencilState> depth;
+    ComPtr<ID3D11RasterizerState> raster;
+    UINT capacity = 0;
+};
+
+namespace
+{
+const char kLiveRingShader[] = R"(
+cbuffer Frame : register(b0) { float4x4 viewProj; };
+Texture2D ring : register(t0);
+SamplerState ringSampler : register(s0);
+struct V { float3 p : POSITION; float2 uv : TEXCOORD0; float4 c : COLOR0; };
+struct P { float4 p : SV_Position; float2 uv : TEXCOORD0; float4 c : COLOR0; };
+P VSMain(V i) { P o; o.p = mul(float4(i.p, 1), viewProj); o.uv = i.uv; o.c = i.c; return o; }
+float4 PSMain(P i) : SV_Target0 { return ring.Sample(ringSampler, i.uv) * i.c; }
+)";
+struct LiveRingVertex { float x, y, z, u, v; float r, g, b, a; };
+struct LiveRingFrame { DirectX::XMFLOAT4X4 viewProj; };
+
+// Everything the pass changes, put back afterwards.
+struct LiveRingSaved
+{
+    ID3D11DeviceContext* c;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11GeometryShader> gs;
+    ComPtr<ID3D11InputLayout> il;
+    ComPtr<ID3D11Buffer> vb, vsCb;
+    UINT stride = 0, offset = 0, stencil = 0, sampleMask = 0;
+    D3D11_PRIMITIVE_TOPOLOGY topology{};
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11RasterizerState> raster;
+    ComPtr<ID3D11BlendState> blend;
+    ComPtr<ID3D11DepthStencilState> depth;
+    float factor[4]{};
+    explicit LiveRingSaved(ID3D11DeviceContext* ctx) : c(ctx)
+    {
+        c->VSGetShader(&vs, nullptr, nullptr);
+        c->PSGetShader(&ps, nullptr, nullptr);
+        c->GSGetShader(&gs, nullptr, nullptr);
+        c->IAGetInputLayout(&il);
+        c->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
+        c->IAGetPrimitiveTopology(&topology);
+        c->VSGetConstantBuffers(0, 1, &vsCb);
+        c->PSGetShaderResources(0, 1, &srv);
+        c->PSGetSamplers(0, 1, &sampler);
+        c->RSGetState(&raster);
+        c->OMGetBlendState(&blend, factor, &sampleMask);
+        c->OMGetDepthStencilState(&depth, &stencil);
+    }
+    ~LiveRingSaved()
+    {
+        c->VSSetShader(vs.Get(), nullptr, 0);
+        c->PSSetShader(ps.Get(), nullptr, 0);
+        c->GSSetShader(gs.Get(), nullptr, 0);
+        c->IASetInputLayout(il.Get());
+        c->IASetVertexBuffers(0, 1, vb.GetAddressOf(), &stride, &offset);
+        c->IASetPrimitiveTopology(topology);
+        c->VSSetConstantBuffers(0, 1, vsCb.GetAddressOf());
+        c->PSSetShaderResources(0, 1, srv.GetAddressOf());
+        c->PSSetSamplers(0, 1, sampler.GetAddressOf());
+        c->RSSetState(raster.Get());
+        c->OMSetBlendState(blend.Get(), factor, sampleMask);
+        c->OMSetDepthStencilState(depth.Get(), stencil);
+    }
+};
+} // namespace
+
+void ReplayWindow::DrawLiveSelectionRing()
+{
+    if (!m_liveMode || !m_live || !m_mapRenderer || !m_deviceResources) return;
+    auto* device = m_deviceResources->GetD3DDevice();
+    auto* context = m_deviceResources->GetD3DDeviceContext();
+    Camera* camera = m_mapRenderer->GetCamera();
+    if (!device || !context || !camera) return;
+    if (!m_liveSelectionRing) m_liveSelectionRing = std::make_shared<LiveSelectionRing>();
+    LiveSelectionRing& st = *m_liveSelectionRing;
+    if (!st.tried)
+    {
+        st.tried = true;
+        DatTexture tex;
+        bool ok = LiveDatImage(m_datManager, m_hashIndex, 9089, tex);
+        if (ok)
+        {
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = static_cast<UINT>(tex.width);
+            td.Height = static_cast<UINT>(tex.height);
+            td.MipLevels = td.ArraySize = td.SampleDesc.Count = 1;
+            td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;   // the decoder's "RGBA" is B, G, R, A in memory
+            td.Usage = D3D11_USAGE_IMMUTABLE;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            const D3D11_SUBRESOURCE_DATA init{tex.rgba_data.data(), static_cast<UINT>(tex.width) * 4, 0};
+            ComPtr<ID3D11Texture2D> t2;
+            ok = SUCCEEDED(device->CreateTexture2D(&td, &init, &t2)) && SUCCEEDED(device->CreateShaderResourceView(t2.Get(), nullptr, &st.texture));
+        }
+        ComPtr<ID3DBlob> vsBlob, psBlob, errors;
+        ok = ok &&
+            SUCCEEDED(D3DCompile(kLiveRingShader, sizeof(kLiveRingShader), "LiveRing", nullptr, nullptr, "VSMain", "vs_5_0",
+                                 D3DCOMPILE_ENABLE_STRICTNESS, 0, &vsBlob, &errors)) &&
+            SUCCEEDED(D3DCompile(kLiveRingShader, sizeof(kLiveRingShader), "LiveRing", nullptr, nullptr, "PSMain", "ps_5_0",
+                                 D3DCOMPILE_ENABLE_STRICTNESS, 0, &psBlob, &errors)) &&
+            SUCCEEDED(device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &st.vs)) &&
+            SUCCEEDED(device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &st.ps));
+        if (ok)
+        {
+            const D3D11_INPUT_ELEMENT_DESC elements[] = {
+                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
+                {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+            D3D11_BUFFER_DESC cb{};
+            cb.ByteWidth = sizeof(LiveRingFrame);
+            cb.Usage = D3D11_USAGE_DYNAMIC;
+            cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            D3D11_SAMPLER_DESC sd{};
+            sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+            sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+            sd.MaxLOD = D3D11_FLOAT32_MAX;
+            D3D11_BLEND_DESC bd{};
+            auto& rt = bd.RenderTarget[0];
+            rt.BlendEnable = TRUE;
+            rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+            rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+            rt.BlendOp = D3D11_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D11_BLEND_ZERO;
+            rt.DestBlendAlpha = D3D11_BLEND_ONE;
+            rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+            rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+            D3D11_DEPTH_STENCIL_DESC dd{};
+            dd.DepthEnable = TRUE;
+            dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            dd.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;   // reversed Z
+            D3D11_RASTERIZER_DESC rd{};
+            rd.FillMode = D3D11_FILL_SOLID;
+            rd.CullMode = D3D11_CULL_NONE;
+            rd.DepthClipEnable = TRUE;
+            rd.MultisampleEnable = TRUE;
+            ok = SUCCEEDED(device->CreateInputLayout(elements, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &st.layout)) &&
+                SUCCEEDED(device->CreateBuffer(&cb, nullptr, &st.constants)) && SUCCEEDED(device->CreateSamplerState(&sd, &st.sampler)) &&
+                SUCCEEDED(device->CreateBlendState(&bd, &st.blend)) && SUCCEEDED(device->CreateDepthStencilState(&dd, &st.depth)) &&
+                SUCCEEDED(device->CreateRasterizerState(&rd, &st.raster));
+        }
+        if (!ok) st.ps.Reset();
+        RunLog::Line("live: selection ring %s", ok ? "pass ready (texture 9089)" : "pass NOT ready (texture, shader or states failed)");
+    }
+    m_liveRingReport.clear();
+    if (!st.ps) return;
+
+    // Who carries a ring: the target at 0xC0, a hovered agent that is not the target at 0x60.
+    struct Pick { int id; float alpha; };
+    Pick picks[2];
+    int n = 0;
+    if (m_liveTargetId >= 0) picks[n++] = {m_liveTargetId, 192.f / 255.f};
+    if (m_hoveredAgentId >= 0 && m_hoveredAgentId != m_liveTargetId) picks[n++] = {m_hoveredAgentId, 96.f / 255.f};
+    if (n == 0) return;
+
+    constexpr int kGrid = 12;
+    const float t = m_debugTimeline;
+    std::vector<LiveRingVertex> verts;
+    verts.reserve(size_t(n) * 2 * kGrid * kGrid * 6);
+    for (int k = 0; k < n; ++k)
+    {
+        const auto it = m_replayCtx.agents.find(picks[k].id);
+        if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) continue;
+        const AgentReplayData& ard = it->second;
+        const float kRadius = LiveSelectionRingRadius(ard);   // the agent's +0x3C
+        float sx, sy, sz;
+        InterpolateAgentPosition(ard, t, m_replayCtx.interpSettings, sx, sy, sz);
+        const DirectX::XMFLOAT3 at = ApplyMapTransformToPos(sx, sy, sz, m_replayCtx.mapTransform);
+        const ImU32 col = LiveGwAgentColour(ard, ard.isDeadAtTime(t));
+        const float cr = ((col >> IM_COL32_R_SHIFT) & 0xFF) / 255.f, cg = ((col >> IM_COL32_G_SHIFT) & 0xFF) / 255.f,
+                    cb = ((col >> IM_COL32_B_SHIFT) & 0xFF) / 255.f;
+        std::string layers;
+        for (int layer = 0; layer < 2; ++layer)
+        {
+            // MapOverlay 0x70FC35: k = 2 / (2 - (sin(2 pi p5 (t + p4)) + 1) p3), p3 0.25, p5 1/3, p4 0 / 1.5.
+            const float p4 = layer == 0 ? 0.f : 1.5f;
+            const float kScale = 2.f / (2.f - (std::sin(6.2831853f * (1.f / 3.f) * (t + p4)) + 1.f) * 0.25f);
+            layers += std::format("{}{:.3f}", layer ? "/" : "", 1.f / kScale);
+            auto vertexAt = [&](int gx, int gz) {
+                const float ox = (2.f * gx / kGrid - 1.f) * kRadius, oz = (2.f * gz / kGrid - 1.f) * kRadius;
+                float h = at.y;
+                m_mapRenderer->TryGetGroundHeight(at.x + ox, at.z + oz, h);
+                LiveRingVertex v{};
+                v.x = at.x + ox;
+                v.y = h + 1.5f;
+                v.z = at.z + oz;
+                v.u = ox / kRadius * 0.5f * kScale + 0.5f;
+                v.v = oz / kRadius * 0.5f * kScale + 0.5f;
+                v.r = cr, v.g = cg, v.b = cb, v.a = picks[k].alpha;
+                return v;
+            };
+            for (int gz = 0; gz < kGrid; ++gz)
+                for (int gx = 0; gx < kGrid; ++gx)
+                {
+                    const LiveRingVertex a = vertexAt(gx, gz), b = vertexAt(gx + 1, gz), c2 = vertexAt(gx + 1, gz + 1), d = vertexAt(gx, gz + 1);
+                    verts.insert(verts.end(), {a, b, c2, a, c2, d});
+                }
+        }
+        // The square's width on the screen (its two ends along the camera's right), for the report.
+        float screenW = 0.f;
+        {
+            const DirectX::XMMATRIX vpm = camera->GetView() * camera->GetProj();
+            const DirectX::XMFLOAT3 right = camera->GetRight3f();
+            auto px = [&](float s) {
+                const DirectX::XMVECTOR c = DirectX::XMVector3TransformCoord(
+                    DirectX::XMVectorSet(at.x + right.x * kRadius * s, at.y, at.z + right.z * kRadius * s, 1.f), vpm);
+                return ImVec2(DirectX::XMVectorGetX(c), DirectX::XMVectorGetY(c));
+            };
+            const ImVec2 a0 = px(-1.f), a1 = px(1.f);
+            const auto vpr = m_deviceResources->GetScreenViewport();
+            screenW = std::hypot((a1.x - a0.x) * 0.5f * vpr.Width, (a1.y - a0.y) * 0.5f * vpr.Height);
+        }
+        m_liveRingReport += std::format("{}agent {} art 1 (9089 x2) r {:.4f} square {:.1f} px at ({:.1f}, {:.1f}, {:.1f}) colour {:08X} alpha {:02X} scale {}",
+                                        m_liveRingReport.empty() ? "" : ", ", picks[k].id, kRadius, screenW, at.x, at.y, at.z,
+                                        ((col & 0xFF) << 16) | (col & 0xFF00) | ((col >> 16) & 0xFF) | 0xFF000000u, static_cast<int>(picks[k].alpha * 255.f + 0.5f),
+                                        layers);
+    }
+    if (verts.empty()) return;
+    if (!st.vertices || st.capacity < verts.size())
+    {
+        D3D11_BUFFER_DESC bd{};
+        st.capacity = static_cast<UINT>(verts.size());
+        bd.ByteWidth = st.capacity * sizeof(LiveRingVertex);
+        bd.Usage = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        st.vertices.Reset();
+        if (FAILED(device->CreateBuffer(&bd, nullptr, &st.vertices))) { st.capacity = 0; return; }
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context->Map(st.vertices.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    std::memcpy(mapped.pData, verts.data(), verts.size() * sizeof(LiveRingVertex));
+    context->Unmap(st.vertices.Get(), 0);
+    LiveRingFrame frame{};
+    DirectX::XMStoreFloat4x4(&frame.viewProj, DirectX::XMMatrixTranspose(camera->GetView() * camera->GetProj()));
+    if (FAILED(context->Map(st.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+    std::memcpy(mapped.pData, &frame, sizeof(frame));
+    context->Unmap(st.constants.Get(), 0);
+
+    LiveRingSaved saved(context);
+    context->IASetInputLayout(st.layout.Get());
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(st.vs.Get(), nullptr, 0);
+    context->PSSetShader(st.ps.Get(), nullptr, 0);
+    context->GSSetShader(nullptr, nullptr, 0);
+    context->VSSetConstantBuffers(0, 1, st.constants.GetAddressOf());
+    context->PSSetShaderResources(0, 1, st.texture.GetAddressOf());
+    context->PSSetSamplers(0, 1, st.sampler.GetAddressOf());
+    context->RSSetState(st.raster.Get());
+    context->OMSetBlendState(st.blend.Get(), nullptr, UINT_MAX);
+    context->OMSetDepthStencilState(st.depth.Get(), 0);
+    const UINT stride = sizeof(LiveRingVertex), offset = 0;
+    context->IASetVertexBuffers(0, 1, st.vertices.GetAddressOf(), &stride, &offset);
+    context->Draw(static_cast<UINT>(verts.size()), 0);
+}
+
+float ReplayWindow::LiveSelectionRingRadius(const AgentReplayData& ard)
+{
+    if (const auto it = m_liveRingRadius.find(ard.agent_id); it != m_liveRingRadius.end()) return it->second;
+    // The file the game builds the agent's model from: a player's profession bank (W, R, Mo, N, Me, E, A,
+    // Rt, P, D; the banks the renderer pins), the mannequin's bank, a henchman's NPC model file.
+    static constexpr uint32_t kMaleBank[10] = {379789, 379792, 379795, 379799, 379802, 379805, 379807, 379809, 379811, 379813};
+    static constexpr uint32_t kFemaleBank[10] = {379790, 379793, 379797, 379800, 379803, 379806, 379808, 379810, 379812, 379814};
+    uint32_t fileId = 0;
+    const char* kind = "other";
+    if (IsTrialsMannequinModelId(ard.modelId)) fileId = 0x2963E, kind = "mannequin bank";
+    else if (ard.type == AgentType::Player)
+    {
+        const int p = std::clamp(ard.primaryProf, 1, 10) - 1;
+        fileId = ard.isFemale ? kFemaleBank[p] : kMaleBank[p];
+        kind = ard.isFemale ? "female profession bank" : "male profession bank";
+    }
+    else if (const HenchmanInfo* h = LookupHenchman(ard.modelId)) fileId = h->npcModelFileId, kind = "henchman NPC model file";
+
+    // MdlLoad 0x7944F0: the FA1 chunk's cylinders; slot 1 is the next record of index 1 after slot 0's, else the first.
+    float radius = 36.f;
+    int records = -1;
+    if (fileId && m_datManager && m_hashIndex)
+        if (const auto it = m_hashIndex->find(static_cast<int>(fileId)); it != m_hashIndex->end())
+            for (const int mft : it->second)
+            {
+                const auto bytes = m_datManager->read_file_cached(static_cast<uint32_t>(mft));
+                if (!bytes || bytes->size() < 13 || std::memcmp(bytes->data(), "ffna", 4) != 0) continue;
+                const uint8_t* b = bytes->data();
+                const size_t n = bytes->size();
+                for (size_t o = 5; o + 8 <= n;)
+                {
+                    uint32_t id = 0, size = 0;
+                    std::memcpy(&id, b + o, 4);
+                    std::memcpy(&size, b + o + 4, 4);
+                    const size_t body = o + 8;
+                    if (size > n - body) break;
+                    if (id == 0xFA1 && size >= 0x58)
+                    {
+                        uint32_t count = 0;
+                        std::memcpy(&count, b + body + 0x14, 4);
+                        records = static_cast<int>(count);
+                        struct Cyl { uint32_t slot; float radius, top, bottom; };
+                        std::vector<Cyl> cyl;
+                        for (uint32_t k = 0; k < count && body + 0x58 + 16 * (k + 1) <= body + size; ++k)
+                        {
+                            Cyl c{};
+                            std::memcpy(&c, b + body + 0x58 + 16 * k, 16);
+                            cyl.push_back(c);
+                        }
+                        if (!cyl.empty())
+                        {
+                            size_t used = 0;
+                            Cyl slot1 = cyl[0];
+                            for (uint32_t s = 0; s < 2; ++s)
+                            {
+                                const Cyl c = used < cyl.size() && cyl[used].slot == s ? cyl[used++] : cyl[0];
+                                if (s == 1) slot1 = c;
+                            }
+                            radius = slot1.radius;
+                        }
+                        break;
+                    }
+                    o = body + size;
+                }
+                break;
+            }
+    radius = std::max(1.f, radius);   // MapOverlay 0x70F0EA
+    m_liveRingRadius[ard.agent_id] = radius;
+    RunLog::Line("live: selection ring radius for agent %d: %.4f (%s %u, %s)", ard.agent_id, radius, kind, fileId,
+                 records < 0 ? "no FA1: default 36" : records == 0 ? "FA1 without cylinders: default 36" : "FA1 slot 1");
+    return radius;
 }
 
 // The sound path's state, reported once and on every change (the self-test reads it: a live match

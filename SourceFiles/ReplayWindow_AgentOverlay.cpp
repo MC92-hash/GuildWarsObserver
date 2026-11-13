@@ -252,6 +252,7 @@ void ReplayWindow::DrawAgentOverlay()
     const ImVec2 mousePos = ImGui::GetIO().MousePos;
     const float clickRadius = 14.f;
     m_hoveredAgentId = -1;
+    if (m_liveMode) m_liveLabelReport.clear();
 
     struct TopViewTooltipCandidate { float rectMinX, rectMinY, rectMaxX, rectMaxY; std::string name; float dist; };
     std::vector<TopViewTooltipCandidate> topViewTooltipCandidates;
@@ -631,7 +632,8 @@ void ReplayWindow::DrawAgentOverlay()
         }
 
         // Neon-green dashed ring + glow at cylinder base for followed agent (counter-clockwise spin)
-        if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId)
+        // (Not in a live match: there GW's own selection ring is drawn under the target, DrawLiveSelectionRing.)
+        if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId && !m_liveMode)
         {
             constexpr int   NUM_DASHES = 16;
             constexpr float DASH_FRAC  = 0.70f;   // 70% visible, 30% gap
@@ -707,7 +709,8 @@ void ReplayWindow::DrawAgentOverlay()
                 if (m_show3DLabels && !m_hiddenNameAgents.count(agentId) && m_liveTargetId == agentId)
                 {
                     const std::string label = GetAgentLabel(ard);
-                    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
+                    ImFont* pf = m_liveLabelFont ? m_liveLabelFont : font;   // the live name tag's font
+                    const ImVec2 ts = pf->CalcTextSizeA(pf->FontSize, FLT_MAX, 0.f, label.c_str());
                     const float lx = scrX - ts.x * 0.5f, ly = scrY + dotRadius + labelOffY;
                     hit = mousePos.x >= lx - 2.f && mousePos.x <= lx + ts.x + 2.f && mousePos.y >= ly - 2.f &&
                           mousePos.y <= ly + ts.y + 2.f;
@@ -756,7 +759,37 @@ void ReplayWindow::DrawAgentOverlay()
             }
         }
 
-        if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
+        if (m_show3DLabels && !m_hiddenNameAgents.count(agentId) && m_liveMode && m_liveLabelFont)
+        {
+            // GW's name tag (Gw.exe AtName frame 0x8A3A40, posted by AvAgent 0x7EA7E0 through AvChar 0x7F4470):
+            // the text in the 0x7F3F00 colour at full alpha, a 1 px black shadow down-right, a square plate of
+            // black at 0x40 (0x80 under the mouse, frame flag 2; 0x89EFF0) round the text, and the whole tag's
+            // opacity from the camera's distance (0x8A45E0: 1 inside 1000 units, 0.55 from 3000, linear in the
+            // squared distance). Measured on the owner's 8.png / 10.png: plate 2 px left and right of the ink,
+            // 3 px above the capitals and below the baseline; shadow alpha about 0.7.
+            const std::string label = GetAgentLabel(ard);
+            ImFont* lf = m_liveLabelFont;
+            const ImVec2 ts = lf->CalcTextSizeA(lf->FontSize, FLT_MAX, 0.f, label.c_str());
+            const float lx = std::floor(scrX - ts.x * 0.5f), ly = std::floor(scrY + dotRadius + labelOffY);
+            const XMFLOAT3 eye = cam->GetPosition3f();
+            const float ex = pos.x - eye.x, ey = pos.y - eye.y, ez = pos.z - eye.z;
+            const float d2 = ex * ex + ey * ey + ez * ez;
+            const float far01 = std::clamp((d2 - 1.0e6f) / 8.0e6f, 0.f, 1.f);
+            const float fade = 0.55f + 0.45f * (1.f - far01);
+            const bool hovered = agentId == m_hoveredAgentId;
+            const int plateA = static_cast<int>((hovered ? 128.f : 64.f) * fade + 0.5f);
+            const float ascent = std::floor(lf->Ascent + 0.5f);
+            const ImVec2 p0(lx - 2.f, ly + ascent - 13.f), p1(lx + ts.x + 2.f, ly + ascent + 3.f);
+            dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, plateA));
+            const ImU32 gw = LiveGwAgentColour(ard, dead);
+            const ImU32 textCol = (gw & ~IM_COL32_A_MASK) | (static_cast<ImU32>(255.f * fade + 0.5f) << IM_COL32_A_SHIFT);
+            dl->AddText(lf, lf->FontSize, ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, static_cast<int>(180.f * fade + 0.5f)), label.c_str());
+            dl->AddText(lf, lf->FontSize, ImVec2(lx, ly), textCol, label.c_str());
+            m_liveLabelReport += std::format(" {}=({:.0f},{:.0f},{:.0f},{:.0f}) text {:06X} a {:.2f} plate {:02X} d {:.0f};", agentId, p0.x,
+                                             p0.y, p1.x, p1.y,
+                                             ((gw & 0xFF) << 16) | (gw & 0xFF00) | ((gw >> 16) & 0xFF), fade, plateA, std::sqrt(d2));
+        }
+        else if (m_show3DLabels && !m_hiddenNameAgents.count(agentId))
         {
             std::string label = GetAgentLabel(ard);
             ImVec2 textSize = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, label.c_str());
@@ -789,10 +822,11 @@ void ReplayWindow::DrawAgentOverlay()
                                                 ard.type == AgentType::Player);
 
                 ImU32 labelCol;
-                if (Team::IsRed(ard.teamId))       labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
+                if (m_liveMode)                    labelCol = LiveGwAgentColour(ard, dead);   // GW's name colour
+                else if (Team::IsRed(ard.teamId))  labelCol = IM_COL32(0xFF, 0x99, 0x9A, 0xE6);
                 else if (Team::IsBlue(ard.teamId)) labelCol = IM_COL32(0x99, 0xCB, 0xFD, 0xE6);
                 else                               labelCol = IM_COL32(255, 255, 255, 230);
-                if (deadLabel)
+                if (deadLabel && !m_liveMode)
                 {
                     const ImU32 r = (labelCol >> IM_COL32_R_SHIFT) & 0xFF;
                     const ImU32 g = (labelCol >> IM_COL32_G_SHIFT) & 0xFF;

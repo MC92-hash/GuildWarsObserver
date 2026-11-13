@@ -1282,6 +1282,17 @@ void ReplayWindow::InitImGui()
                 m_frizHud = io.Fonts->AddFontFromFileTTF(frizPath.c_str(), 32.f);
         }
     }
+    // A live match's name tags (ReplayWindow_AgentOverlay.cpp): GW draws them in its own DAT font at a
+    // fixed 12 / 14 px (font index 0); Tahoma with a 14 px em (ImGui sizes by ascent minus descent, 1.207 em)
+    // matches its 10 px capitals and its widths. Unfiltered and pixel-snapped, like the game's.
+    if (std::filesystem::exists("C:\\Windows\\Fonts\\tahoma.ttf"))
+    {
+        ImFontConfig labelConfig;
+        labelConfig.OversampleH = 1;
+        labelConfig.OversampleV = 1;
+        labelConfig.PixelSnapH = true;
+        m_liveLabelFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\tahoma.ttf", 17.f, &labelConfig);
+    }
 
     io.Fonts->Build();
 
@@ -7619,10 +7630,12 @@ void ReplayWindow::Render()
         && ++m_mapImageReadyFrames > 90
         && (m_replayCtx.datMapId != 0x2661F || m_weepingLeverResolved || m_mapImageReadyFrames > 600))
         CaptureTopDownMapImage();
+    // A live match on a map without compass art: the compass ground from the map itself, once.
+    if (m_liveMode) BakeLiveCompassGroundFromMap();
 
     // The minimap redraws the whole map from above; at the reduced rate it keeps its last picture
-    // between redraws (about 10 a second at 60 FPS).
-    if (m_minimapEnabled && m_minimapResourcesReady &&
+    // between redraws (about 10 a second at 60 FPS). A live match shows the compass instead.
+    if (m_minimapEnabled && m_minimapResourcesReady && !m_liveMode &&
         (!GuiGlobalConstants::minimap_reduced_rate || m_frameCount % 6 == 0))
         RenderMinimap();
 
@@ -7668,6 +7681,7 @@ void ReplayWindow::Render()
     }
 
     DrawFootprints();
+    DrawLiveSelectionRing();   // a live match only: GW's ring under the target, before the characters
     DrawAgentShadows();
     DrawHeatmapOverlay();
 

@@ -77,6 +77,8 @@ namespace ReplaySounds { class State; }
 // A match written while it is watched (LiveSource.h, ReplayWindow_Live.cpp).
 class ILiveSource;
 struct LiveAppended;
+struct LiveCompassGround;
+struct LiveSelectionRing;
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -1990,6 +1992,28 @@ private:
     // (frame 143016, cardinal ring 143015, glass 143017) and its markers (50465, 50466).
     void DrawLiveCompass();
     bool m_liveReportCompass = false;   // the source asked: report what the next frame's compass draws
+    // The compass's ground (CompassMap: the map's own image, else its part of the continent's world
+    // map, else the tiled 9153), baked once per map; and GW's selection ring under the target (AvSelect
+    // art 1: texture 9089 twice, breathing), a terrain decal drawn before the characters.
+    std::shared_ptr<LiveCompassGround> m_liveCompassGround;
+    std::shared_ptr<LiveSelectionRing> m_liveSelectionRing;
+    std::string m_liveRingReport;       // what the last frame's selection ring drew (the compass report adds it)
+    void DrawLiveSelectionRing();
+    // Gw.exe AvChar 0x7F3F00 in an explorable instance: the colour of an agent's name, compass marker
+    // and selection ring (green 0xFF00FF00, foes red 0xFFFF0000, the dead grey 0xFFA0A0A0).
+    ImU32 LiveGwAgentColour(const AgentReplayData& ard, bool dead) const;
+    // A map with no compass art of its own (no image, no world-map rectangle, e.g. the DEV Test Arena):
+    // its compass ground is the map itself, seen from above as the window renders it, resampled to the
+    // compass's 96 units a texel. Called from Render once the map has been ready for a moment.
+    void BakeLiveCompassGroundFromMap();
+    // The selection ring's half size: the agent's bounding cylinder from its model file (Gw.exe AvAgent
+    // 0x7EADB0 -> 0x775CB0, FA1 slot 1, default 36), cached per agent.
+    float LiveSelectionRingRadius(const AgentReplayData& ard);
+    std::unordered_map<int, float> m_liveRingRadius;
+    // GW's name tags in a live match (AtName frame, GW's font index 0 at 12 / 14 px): a stand-in for
+    // the DAT font (Tahoma, its em 14 px), and what the last frame drew (the compass report adds it).
+    ImFont* m_liveLabelFont = nullptr;
+    std::string m_liveLabelReport;
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,
