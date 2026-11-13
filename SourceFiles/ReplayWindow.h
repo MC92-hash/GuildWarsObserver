@@ -1976,6 +1976,13 @@ private:
     std::string LiveSoundState() const;
     void LiveReportAudio();                       // LiveUpdate: once, then on a change
     std::string m_liveAudioFlags;
+    // The energy bars in a live match: the source's own energy, one sample a tick, read by the same
+    // Track the replay's calculated energy fills (EnergyTrackFor hands these out in live mode).
+    const EnergyModel::Track* LiveEnergyTrackFor(int agentId) const;
+    mutable std::unordered_map<int, EnergyModel::Track> m_liveEnergyTracks;
+    // What the focus HUD's energy bar drew last for the player: the display time, the value, the fill.
+    double m_liveBarTime = -1.0;
+    float m_liveBarEnergy = 0.f, m_liveBarFill = 0.f;
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

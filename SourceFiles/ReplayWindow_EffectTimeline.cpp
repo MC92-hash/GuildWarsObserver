@@ -2,6 +2,7 @@
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "SkillDatabase.h"
+#include "LiveSource.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -15,6 +16,45 @@
 void ReplayWindow::BuildEffectTimeline() const
 {
     using namespace EffectTimeline;
+    // A live match: the source knows every effect, its caster and its duration, as a player's own
+    // client is told them; nothing is read back from the channels.
+    if (m_liveMode && m_live)
+    {
+        std::vector<LiveEffect> live;
+        if (m_live->EffectHistory(live))
+        {
+            m_effectTimeline = Table{};
+            for (const LiveEffect& le : live)
+            {
+                Effect e;
+                e.agent = le.agent;
+                e.skillId = le.skill;
+                e.causeSkill = le.causeSkill;
+                e.caster = le.caster;
+                e.kind = le.kind == LiveEffect::Kind::Hex         ? Kind::Hex
+                       : le.kind == LiveEffect::Kind::Condition   ? Kind::Condition
+                       : le.kind == LiveEffect::Kind::WeaponSpell ? Kind::WeaponSpell
+                                                                  : Kind::Enchantment;
+                e.start = le.start;
+                e.end = le.end;
+                e.endExact = true;
+                e.natural = le.how == LiveEffect::End::Natural || le.how == LiveEffect::End::Running;
+                e.expectedEnd = le.expectedEnd;
+                e.removedBy = le.removedBy;
+                e.removedByCaster = le.removedByCaster;
+                e.endSource = le.how == LiveEffect::End::Removed  ? EndSource::Removed
+                            : le.how == LiveEffect::End::Replaced ? EndSource::Replaced
+                            : le.how == LiveEffect::End::Death    ? EndSource::Death
+                                                                  : EndSource::Channel;
+                m_effectTimeline.byAgent[e.agent].push_back(e);
+            }
+            for (auto& [agent, list] : m_effectTimeline.byAgent)
+                std::stable_sort(list.begin(), list.end(), [](const Effect& x, const Effect& y) { return x.start < y.start; });
+            m_effectTimelineBuilt = true;
+            m_effectTimelineUsedAttributes = m_attributesDeduced;
+            return;
+        }
+    }
     const StoCData& stoc = m_replayCtx.stocData;
 
     Inputs in;

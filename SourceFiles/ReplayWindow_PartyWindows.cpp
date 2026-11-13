@@ -387,6 +387,23 @@ void ReplayWindow::DrawPartyWindows()
                                carriedFlagTex, absMaxHp, hpEstimated,
                                dev, m_debugTimeline);
 
+            // A live match's self-test asked what this frame draws: the row's indicators and fill.
+            if (m_liveMode && m_liveReportHud && snap)
+            {
+                std::string marks;
+                if (!isDead)
+                {
+                    if (snap->has_weapon_spell) marks += " weapon-spell";
+                    if (snap->has_enchantment) marks += " enchanted";
+                    if (snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) marks += " condition";
+                    if (snap->has_hex) marks += " hexed";
+                    if (snap->has_deep_wound) marks += " deep-wound";
+                }
+                const char* fill = isDead ? "dead" : snap->has_poison ? "poisoned" : snap->has_bleeding ? "bleeding"
+                                 : snap->has_degen_hex ? "hexed" : "team";
+                m_liveHudReport += std::format("party row {} fill {} icons [{} ]; ", agentId, fill, marks);
+            }
+
             if (withEnergy)
             {
                 const float ey = cursor.y + barH + kEnergyGap;

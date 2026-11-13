@@ -1573,6 +1573,17 @@ int ReplayWindow::DrawFocusHudEffectBar(int agentId, ImVec2 rowTopLeft, float si
 
         if (windowHovered && ImGui::IsMouseHoveringRect(tl, br))
             DrawEffectIconTooltip(e, agentId, icons[i].removed);
+
+        // A live match's self-test asked what this frame draws: each icon, its time left and given.
+        if (m_liveMode && m_liveReportHud)
+        {
+            static const char* const kKind[] = { "enchantment", "hex", "condition", "stance", "weapon-spell", "form",
+                                                 "ritual", "other", "terrain" };
+            m_liveHudReport += std::format("effect bar agent {} slot {} skill {} ({}) {} left {:.2f} of {:.2f}{}{}; ", agentId, slotIdx,
+                                           e.skillId, si ? si->name : std::string("?"), kKind[static_cast<int>(e.kind)],
+                                           std::max(0.f, given - t), given - e.start, icons[i].removed ? " removed by " : "",
+                                           icons[i].removed ? std::to_string(e.removedBy) : std::string());
+        }
     }
     return (fixedCount + static_cast<int>(icons.size()) + perRow - 1) / perRow;
 }
@@ -1854,6 +1865,13 @@ void ReplayWindow::DrawFocusHudEnergyBar(const AgentReplayData& ard, ImVec2 b0, 
     const EnergyModel::Track* track = EnergyTrackFor(ard.agent_id);
     if (!track) return;
     const EnergyModel::Sample s = track->At(m_debugTimeline);
+    // A live match: what this frame draws, for the source's self-test (DrawLiveHud hands it over).
+    if (m_liveMode)
+    {
+        m_liveBarTime = m_debugTimeline;
+        m_liveBarEnergy = s.energy;
+        m_liveBarFill = s.dead ? 0.f : EnergyBarFraction(s);
+    }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ID3D11Device* dev = m_deviceResources->GetD3DDevice();

@@ -268,6 +268,10 @@ void ReplayWindow::LiveInvalidate(const LiveAppended& a)
         m_effectTimelineBuilt = false;
         m_skillDisablesBuilt = false;
     }
+    // The effect bar, the party strips and every reader of the effect table: the source's own effects
+    // (EffectHistory), and the channels a recording would read them from.
+    if (a.effects || a.visuals)
+        m_effectTimelineBuilt = false;
     // The private schedules: what the effects and the sounds play, rebuilt without replaying what
     // is already past.
     if (a.skills || a.combat || a.visuals)
@@ -275,6 +279,38 @@ void ReplayWindow::LiveInvalidate(const LiveAppended& a)
         LiveRebuildEffectSchedules();
         LiveRebuildSoundPlan();
     }
+}
+
+// THE ENERGY BARS. A recording never states a player's energy, so the replay calculates it forward
+// (EnergyModel) into a Track of samples that Track::At reads: linear between two samples while the change
+// is a slope (regeneration, at most 10 pips over one step), a cut to the next sample when it is a jump
+// (a cost, a gain). A live match has the energy itself: the source's value at every tick, regeneration
+// accrued fractionally and costs paid whole. Those samples fill the same Track, one a tick, so every bar
+// that reads EnergyTrackFor (the focus HUD, the party strips, the skill tooltips) draws them with the
+// replay's rules; the display runs one tick behind the newest sample, so there is always one after it.
+const EnergyModel::Track* ReplayWindow::LiveEnergyTrackFor(int agentId) const
+{
+    if (!m_live) return nullptr;
+    EnergyModel::Track& track = m_liveEnergyTracks[agentId];
+    std::vector<LiveEnergySample> fresh;
+    double tick = 0.0;
+    if (!m_live->EnergySamples(agentId, track.samples.size(), fresh, tick) || tick <= 0.0)
+    {
+        if (track.samples.empty()) m_liveEnergyTracks.erase(agentId);
+        return nullptr;
+    }
+    track.dt = static_cast<float>(tick);
+    for (const LiveEnergySample& e : fresh)
+    {
+        EnergyModel::Sample s;
+        s.energy = e.energy;
+        s.maxEnergy = e.maxEnergy;
+        s.pips = e.pips;
+        s.dead = e.dead;
+        track.samples.push_back(s);
+        track.peakMax = std::max(track.peakMax, e.maxEnergy);
+    }
+    return track.samples.empty() ? nullptr : &track;
 }
 
 void ReplayWindow::DrawLiveHud()
@@ -320,6 +356,11 @@ void ReplayWindow::DrawLiveHud()
     ImGui::End();
 
     if (!m_live) return;
+    if (m_liveBarTime >= 0.0)
+    {
+        m_live->OnPlayerEnergyBar(m_liveBarTime, m_liveBarEnergy, m_liveBarFill);
+        m_liveBarTime = -1.0;
+    }
     m_live->DrawHud();
     DrawLiveSkillsWindow();
 
@@ -394,8 +435,17 @@ void ReplayWindow::DrawLiveTargetFrame()
         }();
         const char* who = m_live && m_liveTargetId == m_live->PlayerAgentId() ? "self"
                         : static_cast<int>(ard.teamId) == playerTeam ? "ally" : "foe";
-        m_liveHudReport += std::format("target frame {} '{}' {} hp {:.3f} fill {} at ({:.0f}, {:.0f}) {:.0f}x{:.0f}; ", m_liveTargetId,
-                                       name, who, dead ? 0.f : snap->health_pct, fill, tl.x, tl.y, kBarW, kBarH);
+        std::string marks;
+        if (!dead)
+        {
+            if (snap->has_weapon_spell) marks += " weapon-spell";
+            if (snap->has_enchantment) marks += " enchanted";
+            if (snap->has_condition || snap->has_deep_wound || snap->has_bleeding || snap->has_poison) marks += " condition";
+            if (snap->has_hex) marks += " hexed";
+            if (snap->has_deep_wound) marks += " deep-wound";
+        }
+        m_liveHudReport += std::format("target frame {} '{}' {} hp {:.3f} fill {} icons [{} ] at ({:.0f}, {:.0f}) {:.0f}x{:.0f}; ",
+                                       m_liveTargetId, name, who, dead ? 0.f : snap->health_pct, fill, marks, tl.x, tl.y, kBarW, kBarH);
     }
     DrawLiveCastRow(dl, ard, ImVec2(tl.x, tl.y + kBarH + kCastGap), kBarW, "target cast");
 }

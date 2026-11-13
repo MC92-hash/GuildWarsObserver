@@ -86,6 +86,8 @@ void ReplayWindow::BuildEnergyTracks() const
 const EnergyModel::Track* ReplayWindow::EnergyTrackFor(int agentId) const
 {
     if (!m_agentsClassified || !m_replayCtx.stocLoaded) return nullptr;
+    // A live match knows its energy: the source's, not a forward calculation (ReplayWindow_Live.cpp).
+    if (m_liveMode) return LiveEnergyTrackFor(agentId);
     if (!m_energyBuilt || (!m_energyUsedAttributes && m_attributesDeduced))
         BuildEnergyTracks();
     auto it = m_energyTracks.find(agentId);

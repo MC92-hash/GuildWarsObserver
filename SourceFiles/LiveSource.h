@@ -12,6 +12,7 @@
 // the simulation, its tick, its input and its rules; the public tree only knows this interface.
 // =================================================================================================
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -71,7 +72,37 @@ struct LiveAppended
     bool skills = false;      // skillUseHistory / castHistory / stocData.skill
     bool combat = false;      // stocData.combat (DAMAGE / HEAL)
     bool visuals = false;     // stocData.visualEffects
-    bool Any() const { return snapshots || skills || combat || visuals; }
+    bool effects = false;     // the source's effect history (EffectHistory)
+    bool Any() const { return snapshots || skills || combat || visuals || effects; }
+};
+
+// One effect on an agent as the source knows it: what a player's own client is told for itself and its
+// party (the effect, its caster and its duration), which a recording never carries. The window's effect
+// bar and party strips read these instead of reading the effects back from the visual stream.
+struct LiveEffect
+{
+    enum class Kind : uint8_t { Enchantment, Hex, Condition, WeaponSpell };
+    enum class End : uint8_t { Running, Natural, Removed, Replaced, Death };
+    int agent = 0;
+    int skill = 0;          // a condition's own skill id (2077 Cracked Armor...)
+    int causeSkill = 0;     // a condition: the skill that inflicted it
+    int caster = 0;
+    Kind kind = Kind::Enchantment;
+    float start = 0.f;
+    float end = 0.f;        // Running: when it will run out
+    float expectedEnd = 0.f;   // when it runs or would have run out
+    End how = End::Running;
+    int removedBy = 0, removedByCaster = 0;
+};
+
+// An agent's energy at one tick of the source, fractional: regeneration accrues every tick, a cost is
+// paid whole. The window's energy bars read these the way they read the replay's calculated energy.
+struct LiveEnergySample
+{
+    float energy = 0.f;
+    float maxEnergy = 0.f;
+    int8_t pips = 0;      // net regeneration, as the bar's arrows show it
+    bool dead = false;
 };
 
 // What the map offers the source when it places its agents.
@@ -131,6 +162,19 @@ public:
     virtual void SkillOptions(std::vector<LiveSkillOption>& out) const { out.clear(); }
     // The skills window key went down since the last call.
     virtual bool TakeSkillsWindowToggle() { return false; }
+
+    // Every effect put on an agent so far, in the order they were put on; false when the source keeps none.
+    virtual bool EffectHistory(std::vector<LiveEffect>& out) const { out.clear(); return false; }
+
+    // An agent's energy, one sample a tick from tick 0 (sample i is at i * tickSeconds): the samples from
+    // `from` on are appended to `out`. False for an agent whose energy the source does not show.
+    virtual bool EnergySamples(int agentId, size_t from, std::vector<LiveEnergySample>& out, double& tickSeconds) const
+    {
+        (void)agentId; (void)from; (void)out; (void)tickSeconds;
+        return false;
+    }
+    // What the player's energy bar drew this frame: the display time, the value and the bar's fill (0..1).
+    virtual void OnPlayerEnergyBar(double /*displayTime*/, float /*energy*/, float /*fill*/) {}
 
     // A line of the window's own report (the models it built, the animations they carry).
     virtual void Report(const std::string& /*line*/) {}

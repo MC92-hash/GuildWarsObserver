@@ -2085,6 +2085,132 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
     }
 }
 
+// ---- TRIALS GROUND --------------------------------------------------------------------------
+//
+// The DEV Test Arena (0x2FED) ships a terrain chunk whose tiles carry no real ground: by design of
+// the dat it reads as one flat colour. A live (Trials) window paints it instead with the ground of a
+// real guild hall, so practice looks like a match:
+//
+//   * the hall's own terrain chunk is parsed, and its tile indices counted. The three it uses most
+//     are its main materials (base ground first), and only those three slices are uploaded;
+//   * the arena's tile grid is rewritten with a seeded two-octave value noise: the base everywhere,
+//     broad patches of the second material, scattered spots of the third. Terrain.cpp blends mixed
+//     corners as it does for any map, so the edges come out soft;
+//   * heightmap, shadows, props, collision and pathing are untouched - only the albedo changes.
+//
+// Slice i of the uploaded array is index i of the rewritten grid, so the ground line in the log
+// keeps naming the right file.
+static constexpr uint32_t kTrialsGroundHallDat = 0x1F1FC;   // Warrior's Isle
+
+struct TrialsGround
+{
+    std::vector<DatTexture> textures;
+    std::vector<uint32_t> fileIds;
+    std::vector<uint32_t> hallIndices;   // which tile index of the hall each slice was
+};
+
+static float TrialsGroundNoise(int x, int z, int cell, uint32_t seed)
+{
+    auto hash = [seed](int ix, int iz) {
+        uint32_t h = static_cast<uint32_t>(ix) * 0x8DA6B343u ^ static_cast<uint32_t>(iz) * 0xD8163841u ^ seed;
+        h ^= h >> 13;
+        h *= 0x5BD1E995u;
+        h ^= h >> 15;
+        return static_cast<float>(h & 0xFFFF) / 65535.0f;
+    };
+    const float fx = static_cast<float>(x) / cell;
+    const float fz = static_cast<float>(z) / cell;
+    const int x0 = static_cast<int>(std::floor(fx));
+    const int z0 = static_cast<int>(std::floor(fz));
+    float tx = fx - x0, tz = fz - z0;
+    tx = tx * tx * (3.0f - 2.0f * tx);
+    tz = tz * tz * (3.0f - 2.0f * tz);
+    const float a = hash(x0, z0), b = hash(x0 + 1, z0), c = hash(x0, z0 + 1), d = hash(x0 + 1, z0 + 1);
+    return (a + (b - a) * tx) * (1.0f - tz) + (c + (d - c) * tx) * tz;
+}
+
+static bool BuildTrialsGround(DATManager* dat, const std::unordered_map<int, std::vector<int>>& hashIndex,
+                              uint32_t xDims, uint32_t zDims, std::vector<uint8_t>& tileIndices,
+                              TrialsGround& out)
+{
+    const auto hall = hashIndex.find(static_cast<int>(kTrialsGroundHallDat));
+    if (hall == hashIndex.end() || hall->second.empty())
+    {
+        RunLog::Line("trials ground: hall 0x%X is not in the dat - the arena keeps its own ground",
+                     kTrialsGroundHallDat);
+        return false;
+    }
+    const FFNA_MapFile hallMap = dat->parse_ffna_map_file(hall->second.at(0));
+    const auto& names = hallMap.terrain_texture_filenames.array;
+
+    // The hall's materials, most used first.
+    std::map<uint32_t, size_t> counts;
+    for (uint8_t t : hallMap.terrain_chunk.terrain_texture_indices_maybe)
+        counts[t]++;
+    std::vector<std::pair<size_t, uint32_t>> ranked;
+    for (const auto& [idx, n] : counts)
+        ranked.push_back({n, idx});
+    std::sort(ranked.rbegin(), ranked.rend());
+
+    for (const auto& [n, idx] : ranked)
+    {
+        if (out.textures.size() == 3)
+            break;
+        if (idx >= names.size())
+            continue;
+        const auto fileId = decode_filename(names[idx].filename.id0, names[idx].filename.id1);
+        const auto mit = hashIndex.find(fileId);
+        if (mit == hashIndex.end() || mit->second.empty())
+            continue;
+        DatTexture dt = dat->parse_ffna_texture_file(mit->second.at(0));
+        if (dt.width <= 0 || dt.height <= 0)
+            continue;
+        // One texture array, one size: a slice that differs from the base is skipped.
+        if (!out.textures.empty() &&
+            (dt.width != out.textures[0].width || dt.height != out.textures[0].height))
+            continue;
+        RunLog::Line("trials ground: slice %zu = hall index %u (file 0x%X, %dx%d), %zu of %zu hall tiles",
+                     out.textures.size(), idx, static_cast<uint32_t>(fileId), dt.width, dt.height, n,
+                     hallMap.terrain_chunk.terrain_texture_indices_maybe.size());
+        out.textures.push_back(std::move(dt));
+        out.fileIds.push_back(static_cast<uint32_t>(fileId));
+        out.hallIndices.push_back(idx);
+    }
+    if (out.textures.empty())
+    {
+        RunLog::Line("trials ground: no usable terrain texture in hall 0x%X - the arena keeps its own ground",
+                     kTrialsGroundHallDat);
+        return false;
+    }
+
+    // Rewrite the arena's tiles in file order, the same 32x32 block walk Terrain.cpp reads them in,
+    // so the noise is continuous across blocks.
+    const uint32_t seed = 0x7A15E11Eu;
+    const uint8_t layers = static_cast<uint8_t>(out.textures.size());
+    std::fill(tileIndices.begin(), tileIndices.end(), uint8_t{0});
+    constexpr uint32_t kBlock = 32;
+    size_t count = 0;
+    for (uint32_t j = 0; j < zDims / kBlock; j++)
+        for (uint32_t i = 0; i < xDims / kBlock; i++)
+            for (uint32_t k = j * kBlock; k < (j + 1) * kBlock; k++)
+                for (uint32_t l = i * kBlock; l < (i + 1) * kBlock; l++, count++)
+                {
+                    if (count >= tileIndices.size())
+                        continue;
+                    const int x = static_cast<int>(l), z = static_cast<int>(k);
+                    const float broad = 0.7f * TrialsGroundNoise(x, z, 24, seed) +
+                                        0.3f * TrialsGroundNoise(x, z, 7, seed ^ 0x9E3779B9u);
+                    const float spots = TrialsGroundNoise(x, z, 5, seed ^ 0x85EBCA6Bu);
+                    uint8_t t = 0;
+                    if (layers > 1 && broad > 0.60f)
+                        t = 1;
+                    if (layers > 2 && spots > 0.78f)
+                        t = 2;
+                    tileIndices[count] = t;
+                }
+    return true;
+}
+
 void ReplayWindow::StepLoadInit()
 {
     m_phaseStartTime = LoadClock::now();
@@ -2325,7 +2451,21 @@ void ReplayWindow::StepLoadInit()
     // that is skipped or fails to decode shifts every slice after it, which is invisible from the
     // shader side. Kept so the ground line in the log can name the file it is drawing.
     std::vector<uint32_t> terrainSliceFileIds;
-    for (size_t i = 0; i < terrainTexNames.size(); i++)
+    // A copy, so a live window can repaint it without touching the parsed map.
+    std::vector<uint8_t> terrainTileIndices = m_mapFile.terrain_chunk.terrain_texture_indices_maybe;
+    bool trialsGround = false;
+    if (m_liveMode)
+    {
+        TrialsGround tg;
+        trialsGround = BuildTrialsGround(m_datManager, *m_hashIndex, m_mapFile.terrain_chunk.terrain_x_dims,
+                                         m_mapFile.terrain_chunk.terrain_y_dims, terrainTileIndices, tg);
+        if (trialsGround)
+        {
+            terrainDatTextures = std::move(tg.textures);
+            terrainSliceFileIds = std::move(tg.fileIds);
+        }
+    }
+    for (size_t i = 0; !trialsGround && i < terrainTexNames.size(); i++)
     {
         auto decoded = decode_filename(terrainTexNames[i].filename.id0, terrainTexNames[i].filename.id1);
         if (decoded == 0x25e09 || decoded == 0x00028615 || decoded == 0x46db6)
@@ -2386,6 +2526,11 @@ void ReplayWindow::StepLoadInit()
         a.mean_alpha = static_cast<float>(ca / n / 255.0);
         m_terrainSliceAlbedo.push_back(a);
     }
+    if (trialsGround)
+        RunLog::Line("map: terrain texture array - Trials ground from hall 0x%X, %zu slices uploaded "
+                     "(the arena's %zu names are not used)",
+                     kTrialsGroundHallDat, m_terrainSliceAlbedo.size(), terrainTexNames.size());
+    else
     RunLog::Line("map: terrain texture array - %zu names in the map, %zu slices uploaded%s",
                  terrainTexNames.size(), m_terrainSliceAlbedo.size(),
                  terrainTexNames.size() == m_terrainSliceAlbedo.size()
@@ -2398,7 +2543,7 @@ void ReplayWindow::StepLoadInit()
         m_mapFile.terrain_chunk.terrain_x_dims,
         m_mapFile.terrain_chunk.terrain_y_dims,
         m_mapFile.terrain_chunk.terrain_heightmap,
-        m_mapFile.terrain_chunk.terrain_texture_indices_maybe,
+        terrainTileIndices,
         m_mapFile.terrain_chunk.terrain_shadow_map,
         m_mapFile.map_info_chunk.map_bounds);
     map_renderer->SetTerrain(terrain.get(), terrainTexId);
