@@ -770,7 +770,9 @@ void ReplayWindow::DrawAgentOverlay()
             const std::string label = GetAgentLabel(ard);
             ImFont* lf = m_liveLabelFont;
             const ImVec2 ts = lf->CalcTextSizeA(lf->FontSize, FLT_MAX, 0.f, label.c_str());
-            const float lx = std::floor(scrX - ts.x * 0.5f), ly = std::floor(scrY + dotRadius + labelOffY);
+            // The plate's top edge sits on the agent's ground point and the text hangs below it (measured on
+            // gw681.jpg 2026-11-13: selection ring centre y 891, plate 887-902), not under the dot like the replay.
+            const float lx = std::floor(scrX - ts.x * 0.5f), ly = std::floor(scrY + 13.f - std::floor(lf->Ascent + 0.5f));
             const XMFLOAT3 eye = cam->GetPosition3f();
             const float ex = pos.x - eye.x, ey = pos.y - eye.y, ez = pos.z - eye.z;
             const float d2 = ex * ex + ey * ey + ez * ez;
