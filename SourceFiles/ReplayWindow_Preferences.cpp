@@ -181,7 +181,7 @@ bool ReplayWindow::HotkeyPressed(int imguiKey)
     if (!vk) return false;
     int idx = imguiKey - ImGuiKey_NamedKey_BEGIN;
     if (idx < 0 || idx >= ImGuiKey_NamedKey_COUNT) return false;
-    bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    bool down = AsyncKeyDown(vk);   // the keyboard, or the self-test's seam (ReplayHotkeys.h)
     bool wasDown = m_prevKeyDown[idx];
     m_prevKeyDown[idx] = down;
     return down && !wasDown;

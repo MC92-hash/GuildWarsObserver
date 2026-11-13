@@ -717,59 +717,6 @@ static void draw_settings_window()
 		ImGui::TextColored(ImVec4(0.63f, 0.63f, 0.67f, 1.f), "%s", shortcutRow.what);
 	}
 
-#if GWO_DEVELOPER
-	// Trials: the player's own keys in a live arena. A group of its own, read only while the arena
-	// window has the keyboard, so it shares W / S / Q / D with the camera on purpose and stays out
-	// of the duplicate check below (it has its own).
-	ImGui::Spacing();
-	ImGui::TextColored(ImVec4(0.83f, 0.63f, 0.13f, 1.f), "Trials (developer)");
-	ImGui::Dummy(ImVec2(0, 2.f));
-	ImGui::PushID("trials");
-	HotkeyInput("Move Forward",  &editingKeys.trForward);
-	HotkeyInput("Move Backward", &editingKeys.trBackward);
-	HotkeyInput("Strafe Left",   &editingKeys.trStrafeLeft);
-	HotkeyInput("Strafe Right",  &editingKeys.trStrafeRight);
-	HotkeyInput("Turn Left",     &editingKeys.trTurnLeft);
-	HotkeyInput("Turn Right",    &editingKeys.trTurnRight);
-	HotkeyInput("Clear Target",  &editingKeys.trClearTarget);
-	HotkeyInput("Autorun",       &editingKeys.trAutorun);
-	HotkeyInput("Cancel Action", &editingKeys.trCancelAction);
-	HotkeyInput("Skills Window", &editingKeys.trSkillsWindow);
-	HotkeyInput("Target Yourself", &editingKeys.trTargetSelf);
-	HotkeyInput("Attack Target", &editingKeys.trAttack);
-	HotkeyInput("Nearest Foe",   &editingKeys.trNearestEnemy);
-	HotkeyInput("Nearest Ally",  &editingKeys.trNearestAlly);
-	// GW's CameraRotationSpeed (25..175 %): the live camera's right drag.
-	ImGui::SetNextItemWidth(160.f);
-	ImGui::SliderInt("Camera rotation speed", &editingKeys.trCameraRotation, 25, 175, "%d %%");
-	for (int i = 0; i < 8; ++i)
-	{
-		char label[32];
-		snprintf(label, sizeof(label), "Skill %d", i + 1);
-		HotkeyInput(label, &editingKeys.trSkill[i]);
-	}
-	for (int i = 0; i < 8; ++i)
-	{
-		char label[32];
-		snprintf(label, sizeof(label), "Party Member %d", i + 1);
-		HotkeyInput(label, &editingKeys.trParty[i]);
-	}
-	ImGui::PopID();
-	{
-		std::vector<int> trialsKeys = { editingKeys.trForward, editingKeys.trBackward, editingKeys.trStrafeLeft,
-			editingKeys.trStrafeRight, editingKeys.trTurnLeft, editingKeys.trTurnRight, editingKeys.trClearTarget,
-			editingKeys.trAutorun, editingKeys.trCancelAction, editingKeys.trSkillsWindow, editingKeys.trTargetSelf,
-			editingKeys.trAttack, editingKeys.trNearestEnemy, editingKeys.trNearestAlly };
-		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trSkill), std::end(editingKeys.trSkill));
-		trialsKeys.insert(trialsKeys.end(), std::begin(editingKeys.trParty), std::end(editingKeys.trParty));
-		bool trialsDupe = false;
-		for (size_t i = 0; i < trialsKeys.size() && !trialsDupe; i++)
-			for (size_t j = i + 1; j < trialsKeys.size() && !trialsDupe; j++)
-				if (trialsKeys[i] > 0 && trialsKeys[i] == trialsKeys[j]) trialsDupe = true;
-		if (trialsDupe)
-			ImGui::TextColored(ImVec4(0.88f, 0.47f, 0.19f, 1.f), "Warning: duplicate Trials key bindings.");
-	}
-#endif
 
 	ImGui::Spacing();
 	ImGui::Separator();

@@ -39,30 +39,9 @@ struct ReplayHotkeys
     bool invertMouseX = false;
     bool invertMouseY = false;
 
-    // Trials (developer builds): the player's own character in a live match. Its own group, read
-    // only while a live window has the keyboard, so Z / S / Q / D are shared with the camera keys
-    // on purpose. Saved under "trials".
-    int trForward    = ImGuiKey_Z;   // AZERTY: Z Q S D, as the camera keys
-    int trBackward   = ImGuiKey_S;
-    int trStrafeLeft = ImGuiKey_Q;
-    int trStrafeRight = ImGuiKey_D;
-    int trTurnLeft   = ImGuiKey_A;
-    int trTurnRight  = ImGuiKey_E;
-    int trClearTarget = ImGuiKey_Escape;
-    int trSkill[8] = { ImGuiKey_1, ImGuiKey_2, ImGuiKey_3, ImGuiKey_4,
-                       ImGuiKey_5, ImGuiKey_6, ImGuiKey_7, ImGuiKey_8 };
-    int trParty[8] = { ImGuiKey_F1, ImGuiKey_F2, ImGuiKey_F3, ImGuiKey_F4,
-                       ImGuiKey_F5, ImGuiKey_F6, ImGuiKey_F7, ImGuiKey_F8 };
-    int trAutorun      = ImGuiKey_R;           // run forward until pressed again (or forward / back)
-    int trCancelAction = ImGuiKey_LeftShift;   // stop the cast, else stop walking
-    int trSkillsWindow = ImGuiKey_K;           // the skills window: drag skills onto the bar
-    int trTargetSelf   = ImGuiKey_F;           // target yourself
-    int trAttack       = ImGuiKey_Space;       // attack the target (GW's Interact, control action 0x80)
-    int trNearestEnemy = ImGuiKey_C;           // target the nearest living foe
-    int trNearestAlly  = ImGuiKey_V;           // target the nearest living ally (never yourself)
-    // The live camera's right-drag speed, GW's CameraRotationSpeed in percent (preference 0x24, 25..175):
-    // 0.08 degree a mouse count at 100. The owner's default is a little faster than the game's.
-    int trCameraRotation = 125;
+    // The Trials module's keys and parameters are not here: they belong to that module alone and live in
+    // their own file (settings/trials_keys.json, private Trials/TrialsKeys.h). Save keeps every entry of
+    // hotkeys.json it does not write itself, so the old "trials" group stays until the module moves it.
 
     void ResetToDefaults() { *this = ReplayHotkeys{}; }
 
@@ -79,6 +58,24 @@ struct ReplayHotkeys
     static bool IsValidBindableKey(int k);
 };
 
+
+// THE KEYBOARD AS THE SHORTCUTS READ IT. Every window that reads keys with GetAsyncKeyState goes through
+// AsyncKeyDown, and decides whether it has the keyboard through KeyboardFront. A hidden self-test (Trials)
+// replaces both: which kind of window is in front, and which keys are down. Nothing is sent to the OS.
+struct KeyboardSeam
+{
+    enum class Front { None, Live, Recorded };   // what the test puts in front: a live window, a recorded replay
+    bool active = false;
+    Front front = Front::None;
+    bool down[256] = {};
+};
+inline KeyboardSeam g_keyboardSeam;
+
+inline bool AsyncKeyDown(UINT vk)
+{
+    if (g_keyboardSeam.active) return vk < 256 && g_keyboardSeam.down[vk];
+    return vk != 0 && (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000) != 0;
+}
 
 // THE WARDROBE'S OWN KEYS. Fixed and not rebindable - they are single letters and they act inside
 // one sub-application only, while nothing is being typed into - so both places that list the

@@ -81,10 +81,25 @@ UINT ReplayHotkeys::ImGuiKeyToVK(int imguiKey)
         return '0' + (imguiKey - ImGuiKey_0);
     if (imguiKey >= ImGuiKey_Keypad0 && imguiKey <= ImGuiKey_Keypad9)
         return VK_NUMPAD0 + (imguiKey - ImGuiKey_Keypad0);
-    if (imguiKey >= ImGuiKey_F1 && imguiKey <= ImGuiKey_F12)
+    if (imguiKey >= ImGuiKey_F1 && imguiKey <= ImGuiKey_F24)
         return VK_F1 + (imguiKey - ImGuiKey_F1);
     switch (imguiKey)
     {
+    // The punctuation keys, by their virtual key (the inverse of imgui_impl_win32's map). The printed
+    // character depends on the layout: on a Belgian or French AZERTY, VK_OEM_7 is the "²" key left of 1.
+    case ImGuiKey_Apostrophe:   return VK_OEM_7;
+    case ImGuiKey_Comma:        return VK_OEM_COMMA;
+    case ImGuiKey_Minus:        return VK_OEM_MINUS;
+    case ImGuiKey_Period:       return VK_OEM_PERIOD;
+    case ImGuiKey_Slash:        return VK_OEM_2;
+    case ImGuiKey_Semicolon:    return VK_OEM_1;
+    case ImGuiKey_Equal:        return VK_OEM_PLUS;
+    case ImGuiKey_LeftBracket:  return VK_OEM_4;
+    case ImGuiKey_Backslash:    return VK_OEM_5;
+    case ImGuiKey_RightBracket: return VK_OEM_6;
+    case ImGuiKey_GraveAccent:  return VK_OEM_3;
+    case ImGuiKey_CapsLock:     return VK_CAPITAL;
+    case ImGuiKey_KeypadEnter:  return VK_RETURN;
     case ImGuiKey_Space:       return VK_SPACE;
     case ImGuiKey_LeftArrow:   return VK_LEFT;
     case ImGuiKey_RightArrow:  return VK_RIGHT;
@@ -136,6 +151,31 @@ bool ReplayHotkeys::IsValidBindableKey(int k)
 void ReplayHotkeys::Save() const
 {
     auto path = GetHotkeysFilePath();
+    // Every entry of the file this does not write (an older or newer version's, the old "trials" group the
+    // Trials module moves to its own file) is kept as it is: read from the file as it is now, written after
+    // the replay's own keys.
+    std::string kept;
+    {
+        std::ifstream in(path);
+        if (in.is_open())
+        {
+            try
+            {
+                static const char* const kOwn[] = {
+                    "rewind5s", "forward5s", "playPause", "speedUp", "speedDown", "toggleRangeRings", "toggleSkillLasers",
+                    "toggleDrawingBar", "toggleMoralePanel", "toggleEventTimeline", "toggleLordDamage", "toggleAutoCamera",
+                    "toggleFogOfWar", "toggleTopView", "togglePianoRoll", "toggleHighlights", "nextHighlight", "prevHighlight",
+                    "toggleHeatmap", "toggleMinimap", "addBookmark", "exitFollowMode", "camForward", "camBackward",
+                    "camStrafeLeft", "camStrafeRight", "invertMouseX", "invertMouseY" };
+                const nlohmann::ordered_json old = nlohmann::ordered_json::parse(in);
+                if (old.is_object())
+                    for (const auto& [key, value] : old.items())
+                        if (std::none_of(std::begin(kOwn), std::end(kOwn), [&](const char* k) { return key == k; }))
+                            kept += ",\n  " + nlohmann::json(key).dump() + ": " + value.dump();
+            }
+            catch (...) {}
+        }
+    }
     std::ofstream f(path);
     if (!f.is_open()) return;
     f << "{\n"
@@ -166,29 +206,8 @@ void ReplayHotkeys::Save() const
       << "  \"camStrafeLeft\": "       << camStrafeLeft       << ",\n"
       << "  \"camStrafeRight\": "      << camStrafeRight      << ",\n"
       << "  \"invertMouseX\": "        << (invertMouseX ? 1 : 0) << ",\n"
-      << "  \"invertMouseY\": "        << (invertMouseY ? 1 : 0) << ",\n";
-    // The Trials group, as one object.
-    f << "  \"trials\": {\n"
-      << "    \"forward\": "     << trForward     << ",\n"
-      << "    \"backward\": "    << trBackward    << ",\n"
-      << "    \"strafeLeft\": "  << trStrafeLeft  << ",\n"
-      << "    \"strafeRight\": " << trStrafeRight << ",\n"
-      << "    \"turnLeft\": "    << trTurnLeft    << ",\n"
-      << "    \"turnRight\": "   << trTurnRight   << ",\n"
-      << "    \"clearTarget\": " << trClearTarget << ",\n"
-      << "    \"autorun\": "     << trAutorun     << ",\n"
-      << "    \"cancelAction\": " << trCancelAction << ",\n"
-      << "    \"skillsWindow\": " << trSkillsWindow << ",\n"
-      << "    \"targetSelf\": "   << trTargetSelf   << ",\n"
-      << "    \"attack\": "       << trAttack       << ",\n"
-      << "    \"nearestEnemy\": " << trNearestEnemy << ",\n"
-      << "    \"nearestAlly\": "  << trNearestAlly  << ",\n"
-      << "    \"cameraRotation\": " << trCameraRotation << ",\n";
-    f << "    \"skills\": [";
-    for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trSkill[i];
-    f << "],\n    \"party\": [";
-    for (int i = 0; i < 8; ++i) f << (i ? ", " : "") << trParty[i];
-    f << "]\n  }\n"
+      << "  \"invertMouseY\": "        << (invertMouseY ? 1 : 0)
+      << kept << "\n"
       << "}\n";
 }
 
@@ -237,40 +256,6 @@ void ReplayHotkeys::Load()
         readKey("camStrafeRight",      camStrafeRight);
         if (j.contains("invertMouseX")) invertMouseX = j["invertMouseX"].get<int>() != 0;
         if (j.contains("invertMouseY")) invertMouseY = j["invertMouseY"].get<int>() != 0;
-        if (j.contains("trials") && j["trials"].is_object())
-        {
-            const auto& t = j["trials"];
-            auto readTrialsKey = [&](const char* name, int& field) {
-                if (!t.contains(name) || !t[name].is_number_integer()) return;
-                const int v = t[name].get<int>();
-                if (IsValidBindableKey(v)) field = v;
-            };
-            readTrialsKey("forward",     trForward);
-            readTrialsKey("backward",    trBackward);
-            readTrialsKey("strafeLeft",  trStrafeLeft);
-            readTrialsKey("strafeRight", trStrafeRight);
-            readTrialsKey("turnLeft",    trTurnLeft);
-            readTrialsKey("turnRight",   trTurnRight);
-            readTrialsKey("clearTarget", trClearTarget);
-            readTrialsKey("autorun",      trAutorun);
-            readTrialsKey("cancelAction", trCancelAction);
-            readTrialsKey("skillsWindow", trSkillsWindow);
-            readTrialsKey("targetSelf",   trTargetSelf);
-            readTrialsKey("attack",       trAttack);
-            readTrialsKey("nearestEnemy", trNearestEnemy);
-            readTrialsKey("nearestAlly",  trNearestAlly);
-            if (t.contains("cameraRotation") && t["cameraRotation"].is_number_integer())
-                trCameraRotation = std::clamp(t["cameraRotation"].get<int>(), 25, 175);
-            auto readTrialsRow = [&](const char* name, int (&row)[8]) {
-                if (!t.contains(name) || !t[name].is_array()) return;
-                const auto& a = t[name];
-                for (size_t i = 0; i < 8 && i < a.size(); ++i)
-                    if (a[i].is_number_integer() && IsValidBindableKey(a[i].get<int>()))
-                        row[i] = a[i].get<int>();
-            };
-            readTrialsRow("skills", trSkill);
-            readTrialsRow("party",  trParty);
-        }
     } catch (...) {
         // File corrupted — reset everything to defaults
         *this = ReplayHotkeys{};
@@ -7698,6 +7683,7 @@ void ReplayWindow::Render()
     // own sub-pass order and its own program; the pass above skips exactly these.
     DrawPlayerVisuals();
     DrawWeaponModels();
+    if (m_liveMode) DrawLiveHeldWeapons();   // a live match: the player's hands come from the source
     // THE WATER, over the characters and their weapons as the client draws it: its alpha lets a
     // submerged body show through, tinted, under the reflection. Before it, the water's depth
     // cut every player off at the surface. The particles come after it, since they write no
@@ -8187,12 +8173,18 @@ void ReplayWindow::DrawImGuiOverlay()
         DWORD fgPid = 0;
         GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
         bool processActive = (fgPid == GetCurrentProcessId());
+        // A live window in front has the keyboard for the Trials module's keys alone: no replay
+        // shortcut acts then, in this window or another (the self-test's seam says what is in front).
+        if (g_keyboardSeam.active)
+            processActive = g_keyboardSeam.front == KeyboardSeam::Front::Recorded;
+        else if (LiveWindowInFront())
+            processActive = false;
 
         // Alt+X and the clip's Escape come first: an Escape that closed the clip editor or
         // cancelled its export must not also drop follow mode.
-        UpdateClipHotkeys(processActive);
+        UpdateClipHotkeys(processActive && !m_liveMode);
 
-        // A live window's keys are the Trials group's (the source reads them); none of these fire.
+        // A live window's keys are the Trials module's (the source reads them); none of these fire.
         if (processActive && !m_liveMode && !ImGui::GetIO().WantTextInput && !m_clSkillSearchFocused && !IsClipRendering() && !m_clip.dialogOpen)
         {
             const auto& hk = ReplayHotkeys::Get();

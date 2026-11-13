@@ -415,7 +415,8 @@ void ReplayWindow::DrawPartyWindows()
 
             // The "..." menu button over the bar's right end. Always submitted, so Tab reaches it;
             // painted only while the row, the button or the menu for this player has attention.
-            if (isPlayerRow)
+            // A live match has no player menu, so no button either.
+            if (isPlayerRow && !m_liveMode)
             {
                 constexpr float kDotsW = 18.f;
                 const ImVec2 b0(cursor.x + availW - kDotsW - 2.f, cursor.y + 2.f);

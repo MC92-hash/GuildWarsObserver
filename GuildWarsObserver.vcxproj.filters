@@ -372,6 +372,9 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.h">
       <Filter>GUI</Filter>
     </ClInclude>
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsKeys.h">
+      <Filter>GUI</Filter>
+    </ClInclude>
     <ClInclude Include="SourceFiles\LiveSource.h">
       <Filter>GUI</Filter>
     </ClInclude>
@@ -925,6 +928,12 @@
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsKeys.cpp">
+      <Filter>GUI</Filter>
+    </ClCompile>
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArenaKeysTest.cpp">
       <Filter>GUI</Filter>
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayWindow_Live.cpp">

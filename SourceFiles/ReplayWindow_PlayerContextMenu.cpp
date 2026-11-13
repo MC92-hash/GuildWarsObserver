@@ -83,6 +83,9 @@ namespace
 
 void ReplayWindow::RequestPlayerContextMenu(int agentId, bool byKeyboard)
 {
+    // A live match is the game, not an analysis: no player menu (rings, overlays, follow, links).
+    if (m_liveMode)
+        return;
     m_playerMenuRequestAgent = agentId;
     m_playerMenuRequestByKey = byKeyboard;
     // Called right after the row's item: a keyboard-opened menu drops down under it.

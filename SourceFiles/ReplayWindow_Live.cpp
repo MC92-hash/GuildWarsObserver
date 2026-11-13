@@ -2,6 +2,7 @@
 #include "ReplayWindow.h"
 #include "ReplayWindow_Internal.h"
 #include "LiveSource.h"
+#include "ReplayWindow_LiveWeaponSets.h"
 #include "GuiGlobalConstants.h"
 #include "RunLog.h"
 #include "SkillDatabase.h"
@@ -78,6 +79,21 @@ constexpr float kGwFollowAfterLook = 0.25f;           // s (0x94524C against con
 constexpr size_t kLiveFrameRing = 240;
 // The drag-and-drop payload of a skill: { skill id, bar slot it comes from or -1 from the list }.
 constexpr const char* kTrialsSkillPayload = "TRIALS_SKILL";
+// The one live window (at most one exists): its handle, so every window can tell when it is in front.
+HWND g_liveWindowHwnd = nullptr;
+}
+
+bool ReplayWindow::LiveWindowInFront()
+{
+    const HWND front = GetForegroundWindow();
+    // The destructor clears the window's user data before the handle goes.
+    return front && front == g_liveWindowHwnd && IsWindow(front) && GetWindowLongPtr(front, GWLP_USERDATA) != 0;
+}
+
+bool ReplayWindow::LiveHasKeyboard() const
+{
+    if (g_keyboardSeam.active) return g_keyboardSeam.front == KeyboardSeam::Front::Live;
+    return m_hwnd && GetForegroundWindow() == m_hwnd;
 }
 
 ReplayWindow* ReplayWindow::CreateLive(HINSTANCE hInstance, std::shared_ptr<ILiveSource> source, int mapId,
@@ -133,6 +149,7 @@ ReplayWindow* ReplayWindow::CreateLive(HINSTANCE hInstance, std::shared_ptr<ILiv
     rw->m_useAgentModels = true;
     rw->m_loadingPhase = LoadingPhase::Validate;
     rw->m_liveFrameMs.assign(kLiveFrameRing, 0.f);
+    g_liveWindowHwnd = rw->m_hwnd;
 
     if (offscreen)
     {
@@ -191,10 +208,9 @@ void ReplayWindow::LiveUpdate(float dt)
 {
     if (!m_live || !m_liveSeeded || !m_agentsClassified) return;
 
-    // The keyboard is the player's while our process is in front and nothing is being typed.
-    DWORD fgPid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &fgPid);
-    const bool processActive = fgPid == GetCurrentProcessId();
+    // The keyboard is the player's while this window is in front and nothing is being typed: a recorded
+    // replay or the main window in front keeps its keys to itself.
+    const bool hasKeyboard = LiveHasKeyboard();
 
     // The self-test clicks a party row the way the party window does: by its row, resolved here.
     const int row = m_live->TakeScriptedPartyRowClick();
@@ -219,7 +235,7 @@ void ReplayWindow::LiveUpdate(float dt)
 
     LiveFrameInput in;
     in.realDt = dt;
-    in.keyboardAllowed = processActive && !m_imguiWantTextInput && !m_clSkillSearchFocused;
+    in.keyboardAllowed = hasKeyboard && !m_imguiWantTextInput && !m_clSkillSearchFocused;
     in.clickedAgentId = m_liveClickedAgent;
     in.cameraOrbiting = m_rightMouseDown;
     in.bothButtons = m_rightMouseDown && m_liveLeftDown;
@@ -236,6 +252,7 @@ void ReplayWindow::LiveUpdate(float dt)
     in.heldX = m_liveHeldX;
     in.heldY = m_liveHeldY;
     in.clickedSkillSlot = m_liveClickedSlot;
+    in.clickedWeaponSet = TakeLiveWeaponSetClick();
     in.setBar = m_liveSetBar;
     for (int i = 0; i < 8; ++i) in.bar[i] = m_liveNewBar[i];
     m_liveClickedAgent = -1;
@@ -356,21 +373,23 @@ void ReplayWindow::LiveCursorLost(bool scripted)
 }
 
 // A right drag in live mode, in mouse counts: GW's mouse look (GmCam 0x4F6180): 0.08 degree a count times
-// CameraRotationSpeed (the Trials setting "Camera rotation speed", 25..175 %, preference 0x24 / 100 in the
-// game; not the replay's rotation multiplier), the pitch target kept within +-54 degrees. It
-// moves the targets; LiveUpdate brings the yaw and pitch after them (ASSUMED, see above). The raw mouse input
-// and the self-test's scripted drag both come here.
+// CameraRotationSpeed (the source's "Camera rotation speed", 25..175 %, preference 0x24 / 100 in the
+// game; not the replay's rotation multiplier), the pitch target kept within +-54 degrees. The inversion is
+// the source's too (the Trials module's own, not the replay's). It moves the targets; LiveUpdate brings the
+// yaw and pitch after them (ASSUMED, see above). The raw mouse input and the self-test's scripted drag both come here.
 void ReplayWindow::LiveMouseLook(float dx, float dy)
 {
-    const auto& hk = ReplayHotkeys::Get();
-    const float speed = static_cast<float>(std::clamp(hk.trCameraRotation, 25, 175)) / 100.f;
+    const int percent = m_live ? std::clamp(m_live->CameraRotationPercent(), 25, 175) : 100;
+    bool invertX = false, invertY = false;
+    if (m_live) m_live->CameraInvert(invertX, invertY);
+    const float speed = static_cast<float>(percent) / 100.f;
     if (!m_liveLookSpeedReported && m_live)
     {
         m_liveLookSpeedReported = true;
-        m_live->Report(std::format("camera: rotation speed {} %", std::clamp(hk.trCameraRotation, 25, 175)));
+        m_live->Report(std::format("camera: rotation speed {} %, invert x {} y {}", percent, invertX ? 1 : 0, invertY ? 1 : 0));
     }
-    const float radX = dx * kGwLookRadPerCount * speed * (hk.invertMouseX ? -1.f : 1.f);
-    const float radY = dy * kGwLookRadPerCount * speed * (hk.invertMouseY ? -1.f : 1.f);
+    const float radX = dx * kGwLookRadPerCount * speed * (invertX ? -1.f : 1.f);
+    const float radY = dy * kGwLookRadPerCount * speed * (invertY ? -1.f : 1.f);
     m_liveYawTarget = WrapAngle(m_liveYawTarget + radX);
     m_livePitchTarget = std::clamp(m_livePitchTarget + radY, std::max(kFollowMinPitch, -kGwPitchLimit), kGwPitchLimit);
     m_liveSinceLook = 0.f;
@@ -488,8 +507,22 @@ void ReplayWindow::DrawLiveHud()
         m_liveBarTime = -1.0;
     }
     DrawLiveCompass();
+    if (m_deviceResources) DrawLiveWeaponSetBar(*m_live, m_deviceResources->GetD3DDevice(), m_datManager);
     m_live->DrawHud();
     DrawLiveSkillsWindow();
+    // The self-test: the replay's own toggles, which no shortcut may change in a live window.
+    if (m_liveReportWindow)
+    {
+        m_liveReportWindow = false;
+        m_live->Report(std::format("window: timeline {} topview {} follow {} rings {} lasers {} drawbar {} morale {} pianoroll {} "
+                                   "heatmap {} minimap {} highlights {} fog {} autocam {} clip {}",
+                                   m_showEventTimeline ? 1 : 0, m_topViewActive ? 1 : 0,
+                                   m_cameraMode == CameraMode::FollowAgent ? 1 : 0, m_showRangeRings ? 1 : 0, m_showLaserPanel ? 1 : 0,
+                                   m_annotationMgr.toolbar_visible ? 1 : 0, m_showMoralePanel ? 1 : 0, m_showPianoRoll ? 1 : 0,
+                                   m_heatmapSettings.show ? 1 : 0, m_minimapEnabled ? 1 : 0, HighlightsActive() ? 1 : 0,
+                                   m_fogPerspective, m_autoCameraEnabled ? 1 : 0,
+                                   m_clip.phase != ClipExportState::Phase::Closed ? 1 : 0));
+    }
 
     // A slot dragged off the bar and let go anywhere but on a slot or the skills window: cleared.
     if (const ImGuiPayload* p = ImGui::GetDragDropPayload();
@@ -1970,6 +2003,21 @@ void ReplayWindow::LiveTakeScriptedUi()
         button(false);
         m_liveScriptNote = std::format("ui: skill bar click on slot {}", ui.slot + 1);
         break;
+    case LiveScriptedUi::Kind::ClickScreen:
+        at(0, 0, ui.x, ui.y, 1.f);
+        wait();
+        button(true);
+        button(false);
+        m_liveScriptNote = std::format("ui: click at ({:.0f}, {:.0f})", ui.x, ui.y);
+        break;
+    case LiveScriptedUi::Kind::KeyPress:
+        m_liveMouseSteps.push_back({ -1, 0, 0.f, 0.f, 1.f, -1, ui.key, 1 });
+        m_liveMouseSteps.push_back({ -1, 0, 0.f, 0.f, 1.f, -1, ui.key, 0 });
+        m_liveScriptNote = std::format("ui: key {} pressed in the window", ImGui::GetKeyName(static_cast<ImGuiKey>(ui.key)));
+        break;
+    case LiveScriptedUi::Kind::ReportWindow:
+        m_liveReportWindow = true;
+        return;
     case LiveScriptedUi::Kind::DragSkillToSlot:
     {
         m_liveSkillsOpen = true;
@@ -2025,6 +2073,7 @@ void ReplayWindow::LiveFeedScriptedMouse()
         io.AddMousePosEvent(m_liveMouseX, m_liveMouseY);
     }
     if (s.button >= 0) io.AddMouseButtonEvent(ImGuiMouseButton_Left, s.button == 1);
+    if (s.key > 0 && s.keyDown >= 0) io.AddKeyEvent(static_cast<ImGuiKey>(s.key), s.keyDown == 1);
     if (m_liveMouseNext >= m_liveMouseSteps.size())
     {
         if (m_live && !m_liveScriptNote.empty()) m_live->Report(m_liveScriptNote);

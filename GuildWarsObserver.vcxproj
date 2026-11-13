@@ -304,6 +304,7 @@
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimArena.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArena.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsKeys.h" />
     <ClInclude Include="SourceFiles\LiveSource.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeStore.h" />
@@ -609,6 +610,8 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArena.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\SimTest.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\TrialsInput.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\TrialsKeys.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\Sim\LiveArenaKeysTest.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Live.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeApp.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Character\Wardrobe\WardrobeLogic.cpp" />
@@ -746,6 +749,8 @@
     <ClCompile Include="SourceFiles\ReplayWindow_AgentModels.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Preferences.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_FocusedPlayerHud.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_LiveWeaponSets.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\Trials\ReplayWindow_LiveWeapons.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Weapons.cpp" />
     <ClCompile Include="SourceFiles\CatapultLeverState.cpp" />
     <ClCompile Include="SourceFiles\HeatmapData.cpp" />

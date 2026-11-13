@@ -1842,6 +1842,7 @@ private:
                                  const GW::Animation::AnimationController& pose,
                                  const PerObjectCB& agentCB, bool portrait);
     void EnsureWeaponLinks(AgentModelInstance& tmpl);
+    void DrawLiveHeldWeapons();   // [Trials] a live window: the player's set in hand, from the source (private)
 
     // The particles an Elementalist headpiece carries: one step per frame for every character, and
     // one draw per view. Defined in the private module; with no such piece in the match not one of
@@ -1955,6 +1956,11 @@ private:
     void LiveTakeScriptedUi();              // LiveUpdate: the source's next scripted click or drag
     void LiveFeedScriptedMouse();           // before NewFrame: its next step, into this window's ImGui
     int  m_liveClickedSlot = -1;            // a click on the player's skill bar this frame
+    // The live window has the keyboard (it is the foreground window, or the self-test's seam says so).
+    bool LiveHasKeyboard() const;
+    // A live window is the foreground window: no replay shortcut acts in any window (ReplayWindow.cpp).
+    static bool LiveWindowInFront();
+    bool m_liveReportWindow = false;        // the self-test: report the replay toggles next frame
     bool m_liveGroundClicked = false, m_liveGroundHeld = false, m_liveHeldValid = false;
     float m_liveGroundX = 0.f, m_liveGroundY = 0.f, m_liveHeldX = 0.f, m_liveHeldY = 0.f;
     bool m_liveSetBar = false;              // the skills window asks for a new bar
@@ -1967,7 +1973,8 @@ private:
     bool m_liveSlotDragged = false;         // the press on a slot became a drag (no use on release)
     // ref: 0 a point (x, y), 1 a row of the skills window (id = skill), 2 a bar slot (id = slot);
     // lerp: the share of the way from the previous position; button: -1 none, 0 up, 1 down.
-    struct LiveMouseStep { int ref = 0; int id = 0; float x = 0.f, y = 0.f; float lerp = 1.f; int button = -1; };
+    // key: an ImGuiKey fed to this window's ImGui (0 none), keyDown 1 down / 0 up.
+    struct LiveMouseStep { int ref = 0; int id = 0; float x = 0.f, y = 0.f; float lerp = 1.f; int button = -1; int key = 0; int keyDown = -1; };
     std::vector<LiveMouseStep> m_liveMouseSteps;
     size_t m_liveMouseNext = 0;
     float m_liveMouseX = 0.f, m_liveMouseY = 0.f;

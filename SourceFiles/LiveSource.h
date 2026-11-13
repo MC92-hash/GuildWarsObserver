@@ -43,8 +43,27 @@ struct LiveFrameInput
     bool groundHeld = false;
     float heldX = 0.f, heldY = 0.f;
     int clickedSkillSlot = -1;      // a click on a slot of the player's skill bar (0..7), else -1
+    int clickedWeaponSet = -1;      // a click on a slot of the weapon set bar (0..3), else -1
     bool setBar = false;            // the skills window rearranged the bar: the bar it asks for
     int bar[8] = {};
+};
+
+// One of the player's four weapon sets, for the weapon set bar and the equipment window: item types
+// (GW::Constants::ItemType) and skins (Gw.dat model file ids, the inventory icon), 0 = none; each hand's
+// requirement attribute (-1 none) and upgrades (EquipmentComponents.h ids, 0 none). Unused = nothing in
+// either hand. The stats are what the set adds as the source computes them (read only).
+struct LiveWeaponSet
+{
+    bool used = false;
+    int mainType = 0, offType = 0;
+    uint32_t mainModel = 0, offModel = 0;
+    std::string mainName, offName;
+    int mainAttribute = -1, offAttribute = -1;
+    int mainRequirement = 9, offRequirement = 9;   // the requirement rank (a shield's armour follows it)
+    int mainPrefix = 0, mainSuffix = 0, mainInscription = 0;
+    int offSuffix = 0, offInscription = 0;
+    int health = 0, healthWhenEnchanted = 0, healthWhenHexed = 0, healthWhenInStance = 0;
+    int energy = 0, energyRegen = 0, armour = 0;
 };
 
 // One skill the skills window lists, and whether the source can run it.
@@ -63,12 +82,16 @@ struct LiveScriptedUi
     // ReportHud: the target frame and the cast bars the next frame draws. ReportMarker: the click
     // marker's state every frame until it ends.
     // ReportCompass: what the next frame's compass draws (scale, rotation, every marker's place).
+    // ClickScreen: a left click at (x, y) in the window's pixels (a button the source drew). KeyPress: `key`
+    // (an ImGuiKey) goes down and up in the window's ImGui (a key-capture widget). ReportWindow: the replay's
+    // own toggles as the next frame finds them (none of its shortcuts may act in a live window).
     enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads, ReportHud, ReportMarker,
-                      ReportCompass };
+                      ReportCompass, ClickScreen, KeyPress, ReportWindow };
     Kind kind = Kind::None;
-    float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates
+    float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates; ClickScreen: window pixels
     int slot = -1;            // SkillSlotClick, DragSkillToSlot: the bar slot
     int skill = 0;            // DragSkillToSlot: the skill dragged from the skills window's list
+    int key = 0;              // KeyPress: the ImGuiKey
 };
 
 // A right drag the source asks the window to perform (the self-test): the buttons' state for the frame and
@@ -176,6 +199,10 @@ public:
 
     // The player's bar in slot order (0 = empty slot); false when the source has none.
     virtual bool PlayerBar(int (&bar)[8]) const { (void)bar; return false; }
+    // The player's four weapon sets; returns the one in hand (0..3), -1 when the player has none.
+    virtual int PlayerWeaponSets(LiveWeaponSet (&sets)[4]) const { (void)sets; return -1; }
+    // The equipment window: put these items and upgrades in the player's set `index` (0..3).
+    virtual void EditPlayerWeaponSet(int index, const LiveWeaponSet& set) { (void)index; (void)set; }
     virtual bool PlayerCasting() const { return false; }
     // The player's queued skill (pressed while casting or in aftercast): its bar slot and the time of the
     // press (seconds), or -1 when nothing is queued.
@@ -197,6 +224,11 @@ public:
     }
     // What the player's energy bar drew this frame: the display time, the value and the bar's fill (0..1).
     virtual void OnPlayerEnergyBar(double /*displayTime*/, float /*energy*/, float /*fill*/) {}
+
+    // The live camera's own parameters (the source's settings, not the replay's): GW's CameraRotationSpeed in
+    // percent (25..175) and the mouse look's inversion.
+    virtual int CameraRotationPercent() const { return 100; }
+    virtual void CameraInvert(bool& x, bool& y) const { x = y = false; }
 
     // A line of the window's own report (the models it built, the animations they carry).
     virtual void Report(const std::string& /*line*/) {}
