@@ -10627,7 +10627,7 @@ void DrawPartyHealthBar(
     const char* name, const PartyIcons& icons,
     int followedAgentId, int agentId, bool fogHidden,
     ImTextureID flagTex, uint32_t absMaxHp, bool hpEstimated,
-    ID3D11Device* dev, float now)
+    ID3D11Device* dev, float now, bool gameStyle)
 {
     ImVec2 barBR(barTL.x + barW, barTL.y + barH);
     const bool isHovered  = ImGui::IsMouseHoveringRect(barTL, barBR);
@@ -10671,7 +10671,9 @@ void DrawPartyHealthBar(
     else
         snprintf(teamFill, sizeof(teamFill), "ui_progress_health_team%d.png",
                  (teamId >= 1 && teamId <= 6) ? teamId : 7);
-    const char* fill = teamFill;
+    // A live match draws the game's own party window: a dead ally's row is the red health fill, empty
+    // (screenshots 2026-11-13), whatever the team.
+    const char* fill = (gameStyle && isDead) ? "ui_progress_health.png" : teamFill;
     if (!isDead)
     {
         if (snap->has_poison)          fill = "ui_progress_health_poisoned.png";
@@ -10714,12 +10716,13 @@ void DrawPartyHealthBar(
         float textOffsetX = 4.f;
         ImVec2 textPos(innerTL.x + textOffsetX, innerTL.y + (innerH - ImGui::GetFontSize()) * 0.5f);
         ImU32 textCol = isDead ? IM_COL32(0xA0, 0xA0, 0xA0, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-        if (isFollowed)
+        if (isFollowed && !(gameStyle && isDead))   // the game keeps a selected dead ally's name grey
             textCol = IM_COL32(0xFF, 0xEB, 0x46, 0xFF);
         dl->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 0xCC), name);
         dl->AddText(textPos, textCol, name);
 
-        if (isFollowed)
+        // The replay marks the followed agent; a live match (the game) has no such marker.
+        if (isFollowed && !gameStyle)
         {
             ImVec2 nameSize = ImGui::CalcTextSize(name);
             float eyeCx = textPos.x + nameSize.x + 10.f;

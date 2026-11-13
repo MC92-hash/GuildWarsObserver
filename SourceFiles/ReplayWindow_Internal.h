@@ -155,7 +155,8 @@ void DrawPartyHealthBar(ImDrawList* dl, ImVec2 barTL, float barW, float barH,
                         const char* name, const PartyIcons& icons,
                         int followedAgentId, int agentId, bool fogHidden = false,
                         ImTextureID flagTex = nullptr, uint32_t absMaxHp = 0, bool hpEstimated = false,
-                        ID3D11Device* dev = nullptr, float now = 0.f);
+                        ID3D11Device* dev = nullptr, float now = 0.f,
+                        bool gameStyle = false);
 void DrawMeterBar(ImDrawList* dl, ImVec2 healthTL, float healthW, float slotY,
                   float barH, int value, int maxValue, int totalValue,
                   bool leftSide, float maxBarW, ImU32 barColor);

@@ -781,7 +781,15 @@ void ReplayWindow::DrawAgentOverlay()
             const float ascent = std::floor(lf->Ascent + 0.5f);
             const ImVec2 p0(lx - 2.f, ly + ascent - 13.f), p1(lx + ts.x + 2.f, ly + ascent + 3.f);
             dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, plateA));
-            const ImU32 gw = LiveGwAgentColour(ard, dead);
+            // PvP names are team-coloured in the game (checked in game 2026-11-13): the replay's red / blue,
+            // a dead player or NPC dimmed to 60%, anyone without a team white. The compass and the ring keep
+            // GW's allegiance colours (LiveGwAgentColour).
+            ImU32 gw = Team::IsRed(ard.teamId)  ? IM_COL32(0xFF, 0x99, 0x9A, 0xFF)
+                     : Team::IsBlue(ard.teamId) ? IM_COL32(0x99, 0xCB, 0xFD, 0xFF)
+                                                : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+            if (dead && (ard.type == AgentType::NPC || ard.type == AgentType::Player))
+                gw = IM_COL32(((gw >> IM_COL32_R_SHIFT) & 0xFF) * 3 / 5, ((gw >> IM_COL32_G_SHIFT) & 0xFF) * 3 / 5,
+                              ((gw >> IM_COL32_B_SHIFT) & 0xFF) * 3 / 5, 0xFF);
             const ImU32 textCol = (gw & ~IM_COL32_A_MASK) | (static_cast<ImU32>(255.f * fade + 0.5f) << IM_COL32_A_SHIFT);
             dl->AddText(lf, lf->FontSize, ImVec2(lx + 1.f, ly + 1.f), IM_COL32(0, 0, 0, static_cast<int>(180.f * fade + 0.5f)), label.c_str());
             dl->AddText(lf, lf->FontSize, ImVec2(lx, ly), textCol, label.c_str());

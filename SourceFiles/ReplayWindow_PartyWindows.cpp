@@ -385,7 +385,7 @@ void ReplayWindow::DrawPartyWindows()
                                barLabel, icons,
                                m_liveMode ? m_liveTargetId : m_followedAgentId, agentId, isFogHidden,
                                carriedFlagTex, absMaxHp, hpEstimated,
-                               dev, m_debugTimeline);
+                               dev, m_debugTimeline, m_liveMode);
 
             // A live match's self-test asked what this frame draws: the row's indicators and fill.
             if (m_liveMode && m_liveReportHud && snap)
