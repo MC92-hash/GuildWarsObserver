@@ -1087,6 +1087,16 @@ void ReplayWindow::DrawFocusHudSkillSlots(ImDrawList* dl, int agentId, ImVec2 ro
             const float fx = static_cast<float>(frame % 4) * 0.25f, fy = static_cast<float>(frame / 4) * 0.25f;
             dl->AddImage(texSparkle, tl, br, ImVec2(fx, fy), ImVec2(fx + 0.25f, fy + 0.25f));
         }
+        // A live player's queued skill: the same sparkle from the press (Gw.exe lights a slot while its
+        // request is pending, GmSkSlot 0x540C8E -> GmCtlSkImage child 9; ReplayWindow_Live.cpp).
+        else if (texSparkle && live && i == LiveQueuedSlot()) {
+            const int frame = static_cast<int>((t - m_liveQueuedSince) * 16.f) & 15;
+            const float fx = static_cast<float>(frame % 4) * 0.25f, fy = static_cast<float>(frame / 4) * 0.25f;
+            dl->AddImage(texSparkle, tl, br, ImVec2(fx, fy), ImVec2(fx + 0.25f, fy + 0.25f));
+            if (m_liveReportHud)
+                m_liveHudReport += std::format("queued slot {} skill {} sparkle frame {} at ({:.0f}, {:.0f}) {:.0f} px; ", i, shown,
+                                               frame, tl.x, tl.y, slot);
+        }
 
         // Corner marker, from the skill's own data.
         if (texMarkers) {

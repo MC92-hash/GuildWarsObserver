@@ -361,6 +361,7 @@ void ReplayWindow::DrawLiveHud()
         m_live->OnPlayerEnergyBar(m_liveBarTime, m_liveBarEnergy, m_liveBarFill);
         m_liveBarTime = -1.0;
     }
+    DrawLiveCompass();
     m_live->DrawHud();
     DrawLiveSkillsWindow();
 
@@ -494,6 +495,142 @@ void ReplayWindow::DrawLiveCastRow(ImDrawList* dl, const AgentReplayData& ard, I
         m_liveHudReport += std::format("{} agent {} skill {} ({}) progress {:.2f} alpha {:.2f} {} at ({:.0f}, {:.0f}); ", who,
                                        ard.agent_id, sv.skillId, si ? si->name : std::string("?"), sv.progress, sv.alpha,
                                        sv.isCasting ? "casting" : "done", b0.x, b0.y);
+}
+
+int ReplayWindow::LiveQueuedSlot()
+{
+    if (!m_live) return -1;
+    double since = 0.0;
+    const int slot = m_live->PlayerQueuedSlot(since);
+    m_liveQueuedSince = static_cast<float>(since);
+    return slot;
+}
+
+// -------------------------------------------------------------------------------------------------
+// GW'S COMPASS. Read statically from Gw.exe (2026-11-04 client, Ui\Game\Compass\*.cpp, 0x8BA3F0..0x8C4900):
+//   model     CompassModel (0x8C0820) builds one material of three DAT textures: 143016 (the fixed frame:
+//             pewter bezel, the notch at the top, the pale disc in the middle), 143015 (the ring with N, E, S
+//             and W) and 143017 (the glass: mid grey, a modulating shade). All three are 256 x 256 uncompressed
+//             DDS (A4R4G4B4, A4R4G4B4, A8R8G8B8 for 143017 as an ATEX). The ring turns, the frame does not.
+//   scale     CompassCanvas maps a world offset with (d * 0.40625) / 4500 (doubles 0xBA3948 and 0xBA3958;
+//             their quotient 11076.92 at 0xBA3960 is the inverse): 4500 units reach 0.40625 of the model's
+//             side, 104 of its 256 texels, which is the bezel's inner edge. The pale disc in 143016 is
+//             about 22.5 texels across the radius, ~970 units: the aggro (earshot) circle is part of the art.
+//   markers   CompassTarget (0x8C3020) loads 50465 (32 x 32: a dot, a triangle, two flags) and 50466 (the
+//             same shapes as outlines), sizes from the canvas extent x 6 / 256 (0x8C3265) and x 16 / 256
+//             for the quest arrow 111829 (0x8C34A0). Other art in the module: quest marker 111831, the
+//             hero / flag icons 158487 and 23867, the AI-control arcs 256680 (DDS), the rings 49225 and
+//             50468, the world minimap (CompassMap, DXT1 chunks; not drawn here: the arena has none).
+//   rotation  the preference LockCompassRotation (off by default: the compass turns with the camera).
+//   clicks    a click on the compass is a ping / flag order in the game; not done here.
+// ASSUMED, not read: the marker colours (the overhead tint of AvChar 0x7F3F00, green everyone but foes,
+// red foes, grey the dead), the player as the triangle turned to its facing, the target as the outline
+// circle over its dot (10 / 256), the dark disc under the markers where the game draws the minimap, and
+// the glass drawn as a black / white overlay of its modulation.
+// -------------------------------------------------------------------------------------------------
+void ReplayWindow::DrawLiveCompass()
+{
+    if (!m_live || !m_deviceResources) return;
+    const int playerId = m_live->PlayerAgentId();
+    const auto pit = m_replayCtx.agents.find(playerId);
+    if (pit == m_replayCtx.agents.end() || pit->second.snapshots.empty()) return;
+    const AgentSnapshot* me = FindSnapshotAtTime(pit->second, m_debugTimeline);
+    if (!me) return;
+
+    ID3D11Device* dev = m_deviceResources->GetD3DDevice();
+    ImTextureID texFrame = LoadGameUITexture(dev, "Compass\\ui_compass_frame.png");
+    ImTextureID texRing = LoadGameUITexture(dev, "Compass\\ui_compass_ring.png");
+    ImTextureID texGlass = LoadGameUITexture(dev, "Compass\\ui_compass_glass.png");
+    ImTextureID texMarks = LoadGameUITexture(dev, "Compass\\ui_compass_markers.png");
+    ImTextureID texOutline = LoadGameUITexture(dev, "Compass\\ui_compass_outlines.png");
+
+    // The model's side on the screen: 256 at 1080 lines, top right under the menu bar.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float S = std::round(std::clamp(vp->Size.y * 256.f / 1080.f, 200.f, 340.f));
+    const ImVec2 tl(vp->Pos.x + vp->Size.x - S - 8.f, vp->Pos.y + ImGui::GetFrameHeight() + 8.f);
+    const ImVec2 c(tl.x + S * 0.5f, tl.y + S * 0.5f);
+    const float inner = S * 0.40625f;                 // 4500 units
+    const float pxPerUnit = inner / 4500.f;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+
+    // The camera's forward as a facing (the chase camera's rule), and the screen axes: a world offset
+    // goes up the screen along the forward, right along (sin f, -cos f) (the core's left is (-sin, cos)).
+    const float f = std::atan2(-std::cos(m_followYaw), -std::sin(m_followYaw));
+    const float cf = std::cos(f), sf = std::sin(f);
+    auto toScreen = [&](float dx, float dy) {
+        const float along = dx * cf + dy * sf;
+        const float right = dx * sf - dy * cf;
+        return ImVec2(c.x + right * pxPerUnit, c.y - along * pxPerUnit);
+    };
+    // A square image turned by `a` (radians, clockwise on the screen) about `at`.
+    auto turned = [&](ImTextureID tex, ImVec2 at, float half, float a, ImVec2 uv0, ImVec2 uv1, ImU32 col) {
+        const float ca = std::cos(a), sa = std::sin(a);
+        auto pt = [&](float x, float y) { return ImVec2(at.x + x * ca - y * sa, at.y + x * sa + y * ca); };
+        dl->AddImageQuad(tex, pt(-half, -half), pt(half, -half), pt(half, half), pt(-half, half), uv0, ImVec2(uv1.x, uv0.y), uv1,
+                         ImVec2(uv0.x, uv1.y), col);
+    };
+
+    // Under the markers: a dark disc where the game shows the minimap, then the glass.
+    dl->AddCircleFilled(c, inner, IM_COL32(0, 0, 0, 140), 64);
+    if (texGlass) dl->AddImage(texGlass, tl, ImVec2(tl.x + S, tl.y + S));
+    // The ring: its N toward the world's +y. Up the texture is (0, -1) on the screen; +y lands at
+    // (-cos f, -sin f), so the ring turns by atan2(-cos f, sin f).
+    const float ringAngle = std::atan2(-cf, sf);
+    // The frame first: the ring's letter tabs lie over the bezel (drawn under it they are hidden).
+    if (texFrame) dl->AddImage(texFrame, tl, ImVec2(tl.x + S, tl.y + S));
+    if (texRing) turned(texRing, c, S * 0.5f, ringAngle, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE);
+
+    std::string report;
+    if (m_liveReportCompass)
+        report = std::format("compass time {:.4f} player world ({:.2f}, {:.2f}) side {:.0f} at ({:.0f}, {:.0f}) centre ({:.0f}, {:.0f}) inner {:.2f} px = 4500 units, camera yaw {:.4f} "
+                             "facing {:.4f}, ring {:.2f} deg, textures {}{}{}{}{}; ",
+                             m_debugTimeline, me->x, me->y, S, tl.x, tl.y, c.x, c.y, inner, m_followYaw, f, ringAngle * 57.29578f, texFrame ? "F" : "-",
+                             texRing ? "R" : "-", texGlass ? "G" : "-", texMarks ? "M" : "-", texOutline ? "O" : "-");
+
+    const int playerTeam = static_cast<int>(pit->second.teamId);
+    const float dot = S * 6.f / 256.f;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (id == playerId || ard.snapshots.empty()) continue;
+        const AgentSnapshot* s = FindSnapshotAtTime(ard, m_debugTimeline);
+        if (!s) continue;
+        const float dx = s->x - me->x, dy = s->y - me->y;
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d > 4500.f) continue;
+        const bool foe = static_cast<int>(ard.teamId) != playerTeam;
+        const ImU32 col = s->is_dead ? IM_COL32(0x80, 0x80, 0x80, 0xFF) : foe ? IM_COL32(0xFF, 0, 0, 0xFF) : IM_COL32(0, 0xFF, 0, 0xFF);
+        const ImVec2 p = toScreen(dx, dy);
+        if (texMarks)
+            dl->AddImage(texMarks, ImVec2(p.x - dot * 0.5f, p.y - dot * 0.5f), ImVec2(p.x + dot * 0.5f, p.y + dot * 0.5f), ImVec2(0, 0),
+                         ImVec2(0.5f, 0.5f), col);
+        else
+            dl->AddCircleFilled(p, dot * 0.5f, col);
+        const bool target = id == m_liveTargetId;
+        if (target)
+        {
+            const float o = S * 10.f / 256.f;
+            if (texOutline)
+                dl->AddImage(texOutline, ImVec2(p.x - o * 0.5f, p.y - o * 0.5f), ImVec2(p.x + o * 0.5f, p.y + o * 0.5f), ImVec2(0, 0),
+                             ImVec2(0.5f, 0.5f), col);
+        }
+        if (m_liveReportCompass)
+        {
+            const float ang = std::atan2(p.x - c.x, -(p.y - c.y)) * 57.29578f;
+            report += std::format("agent {} {}{}{} world ({:.2f}, {:.2f}) {:.1f} units -> ({:.2f}, {:.2f}) r {:.2f} px angle {:.3f} deg;", id,
+                                  foe ? "foe" : "ally", s->is_dead ? " dead" : "", target ? " target" : "", s->x, s->y, d, p.x, p.y,
+                                  std::hypot(p.x - c.x, p.y - c.y), ang);
+        }
+    }
+    // The player: the triangle at the centre, turned to its facing.
+    const float pa = std::atan2(std::cos(me->rotation) * sf - std::sin(me->rotation) * cf,
+                                std::cos(me->rotation) * cf + std::sin(me->rotation) * sf);
+    if (texMarks) turned(texMarks, c, S * 5.f / 256.f, pa, ImVec2(0.5f, 0.f), ImVec2(1.f, 0.5f), IM_COL32(0, 0xFF, 0, 0xFF));
+    if (m_liveReportCompass)
+    {
+        report += std::format("player facing {:.4f} -> triangle {:.2f} deg", me->rotation, pa * 57.29578f);
+        m_live->Report("compass: " + report);
+        m_liveReportCompass = false;
+    }
 }
 
 // The sound path's state, reported once and on every change (the self-test reads it: a live match
@@ -914,6 +1051,9 @@ void ReplayWindow::LiveTakeScriptedUi()
         return;
     case LiveScriptedUi::Kind::ReportMarker:
         m_liveMarkerReport = true;
+        return;
+    case LiveScriptedUi::Kind::ReportCompass:
+        m_liveReportCompass = true;
         return;
     case LiveScriptedUi::Kind::SkillSlotClick:
         at(2, ui.slot, 0.f, 0.f, 1.f);

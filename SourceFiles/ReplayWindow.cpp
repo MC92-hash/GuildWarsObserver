@@ -2091,11 +2091,13 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
 // the dat it reads as one flat colour. A live (Trials) window paints it instead with the ground of a
 // real guild hall, so practice looks like a match:
 //
-//   * the hall's own terrain chunk is parsed, and its tile indices counted. The three it uses most
-//     are its main materials (base ground first), and only those three slices are uploaded;
-//   * the arena's tile grid is rewritten with a seeded two-octave value noise: the base everywhere,
-//     broad patches of the second material, scattered spots of the third. Terrain.cpp blends mixed
-//     corners as it does for any map, so the edges come out soft;
+//   * the hall's own terrain chunk is parsed; its ten most used materials are classified by mean
+//     colour into grass (greenest), rock (darkest) and sand (lightest warm), and only those three
+//     slices are uploaded;
+//   * the arena's tile grid is repainted from its own shape: rock on slopes steeper than about 37
+//     degrees, sand along the low shore, grass elsewhere with worn earth patches from a seeded value
+//     noise. A per-tile jitter on every threshold breaks the stair steps, and Terrain.cpp blends
+//     mixed corners as it does for any map;
 //   * heightmap, shadows, props, collision and pathing are untouched - only the albedo changes.
 //
 // Slice i of the uploaded array is index i of the rewritten grid, so the ground line in the log
@@ -2130,8 +2132,8 @@ static float TrialsGroundNoise(int x, int z, int cell, uint32_t seed)
 }
 
 static bool BuildTrialsGround(DATManager* dat, const std::unordered_map<int, std::vector<int>>& hashIndex,
-                              uint32_t xDims, uint32_t zDims, std::vector<uint8_t>& tileIndices,
-                              TrialsGround& out)
+                              uint32_t xDims, uint32_t zDims, const std::vector<float>& heightMap,
+                              const MapBounds& bounds, std::vector<uint8_t>& tileIndices, TrialsGround& out)
 {
     const auto hall = hashIndex.find(static_cast<int>(kTrialsGroundHallDat));
     if (hall == hashIndex.end() || hall->second.empty())
@@ -2143,7 +2145,9 @@ static bool BuildTrialsGround(DATManager* dat, const std::unordered_map<int, std
     const FFNA_MapFile hallMap = dat->parse_ffna_map_file(hall->second.at(0));
     const auto& names = hallMap.terrain_texture_filenames.array;
 
-    // The hall's materials, most used first.
+    // The hall's materials, most used first. The ten most used are decoded and classified by their
+    // mean colour, because the usage order says nothing about WHAT a material is (Warrior's Isle's
+    // most used is its beach sand).
     std::map<uint32_t, size_t> counts;
     for (uint8_t t : hallMap.terrain_chunk.terrain_texture_indices_maybe)
         counts[t]++;
@@ -2152,9 +2156,21 @@ static bool BuildTrialsGround(DATManager* dat, const std::unordered_map<int, std
         ranked.push_back({n, idx});
     std::sort(ranked.rbegin(), ranked.rend());
 
+    struct Material
+    {
+        uint32_t hallIndex = 0;
+        uint32_t fileId = 0;
+        size_t tiles = 0;
+        float r = 0, g = 0, b = 0;
+        DatTexture tex;
+        float Green() const { return g - 0.5f * (r + b); }
+        float Light() const { return (r + g + b) / 3.0f; }
+        float Warm() const { return r - b; }
+    };
+    std::vector<Material> mats;
     for (const auto& [n, idx] : ranked)
     {
-        if (out.textures.size() == 3)
+        if (mats.size() == 10)
             break;
         if (idx >= names.size())
             continue;
@@ -2162,52 +2178,139 @@ static bool BuildTrialsGround(DATManager* dat, const std::unordered_map<int, std
         const auto mit = hashIndex.find(fileId);
         if (mit == hashIndex.end() || mit->second.empty())
             continue;
-        DatTexture dt = dat->parse_ffna_texture_file(mit->second.at(0));
-        if (dt.width <= 0 || dt.height <= 0)
+        Material m;
+        m.tex = dat->parse_ffna_texture_file(mit->second.at(0));
+        if (m.tex.width <= 0 || m.tex.height <= 0)
             continue;
-        // One texture array, one size: a slice that differs from the base is skipped.
-        if (!out.textures.empty() &&
-            (dt.width != out.textures[0].width || dt.height != out.textures[0].height))
+        // One texture array, one size: a material that differs from the first is skipped.
+        if (!mats.empty() && (m.tex.width != mats[0].tex.width || m.tex.height != mats[0].tex.height))
             continue;
-        RunLog::Line("trials ground: slice %zu = hall index %u (file 0x%X, %dx%d), %zu of %zu hall tiles",
-                     out.textures.size(), idx, static_cast<uint32_t>(fileId), dt.width, dt.height, n,
-                     hallMap.terrain_chunk.terrain_texture_indices_maybe.size());
-        out.textures.push_back(std::move(dt));
-        out.fileIds.push_back(static_cast<uint32_t>(fileId));
-        out.hallIndices.push_back(idx);
+        double c0 = 0, c1 = 0, c2 = 0;
+        for (const RGBA& px : m.tex.rgba_data)
+        {
+            c0 += px.c[0];
+            c1 += px.c[1];
+            c2 += px.c[2];
+        }
+        const double np = m.tex.rgba_data.empty() ? 1.0 : static_cast<double>(m.tex.rgba_data.size()) * 255.0;
+        m.r = static_cast<float>(c2 / np);   // byte 2 is RED (B8G8R8A8)
+        m.g = static_cast<float>(c1 / np);
+        m.b = static_cast<float>(c0 / np);   // byte 0 is BLUE
+        m.hallIndex = idx;
+        m.fileId = static_cast<uint32_t>(fileId);
+        m.tiles = n;
+        mats.push_back(std::move(m));
     }
-    if (out.textures.empty())
+    if (mats.empty())
     {
         RunLog::Line("trials ground: no usable terrain texture in hall 0x%X - the arena keeps its own ground",
                      kTrialsGroundHallDat);
         return false;
     }
 
-    // Rewrite the arena's tiles in file order, the same 32x32 block walk Terrain.cpp reads them in,
-    // so the noise is continuous across blocks.
-    const uint32_t seed = 0x7A15E11Eu;
-    const uint8_t layers = static_cast<uint8_t>(out.textures.size());
-    std::fill(tileIndices.begin(), tileIndices.end(), uint8_t{0});
+    // Grass = the greenest. Rock = the darkest of the rest. Sand = the lightest warm one left.
+    enum Role { kGrass, kRock, kSand };
+    int pick[3] = {-1, -1, -1};
+    auto best = [&](auto score) {
+        int at = -1;
+        float top = -1e9f;
+        for (int i = 0; i < static_cast<int>(mats.size()); i++)
+        {
+            if (i == pick[0] || i == pick[1] || i == pick[2])
+                continue;
+            const float s = score(mats[i]);
+            if (s > top)
+                top = s, at = i;
+        }
+        return at;
+    };
+    pick[kGrass] = best([](const Material& m) { return m.Green(); });
+    pick[kRock] = best([](const Material& m) { return -m.Light() - 2.0f * std::max(0.0f, m.Green()); });
+    pick[kSand] = best([](const Material& m) { return m.Light() + m.Warm(); });
+
+    static const char* kRoleName[3] = {"grass", "rock", "sand"};
+    uint8_t slice[3] = {0, 0, 0};
+    for (int role = 0; role < 3; role++)
+    {
+        if (pick[role] < 0)
+        {
+            slice[role] = 0;   // fewer than three materials: fall back on the base
+            continue;
+        }
+        Material& m = mats[pick[role]];
+        slice[role] = static_cast<uint8_t>(out.textures.size());
+        RunLog::Line("trials ground: slice %u = %s, hall index %u (file 0x%X, %dx%d), mean rgb (%.2f,%.2f,%.2f), "
+                     "%zu of %zu hall tiles",
+                     slice[role], kRoleName[role], m.hallIndex, m.fileId, m.tex.width, m.tex.height, m.r, m.g, m.b,
+                     m.tiles, hallMap.terrain_chunk.terrain_texture_indices_maybe.size());
+        out.textures.push_back(std::move(m.tex));
+        out.fileIds.push_back(m.fileId);
+        out.hallIndices.push_back(m.hallIndex);
+    }
+
+    // The arena's height, as a 2D grid, read in file order: the same 32x32 block walk Terrain.cpp
+    // reads tiles in. The file stores the height negated.
     constexpr uint32_t kBlock = 32;
-    size_t count = 0;
-    for (uint32_t j = 0; j < zDims / kBlock; j++)
-        for (uint32_t i = 0; i < xDims / kBlock; i++)
-            for (uint32_t k = j * kBlock; k < (j + 1) * kBlock; k++)
-                for (uint32_t l = i * kBlock; l < (i + 1) * kBlock; l++, count++)
-                {
-                    if (count >= tileIndices.size())
-                        continue;
-                    const int x = static_cast<int>(l), z = static_cast<int>(k);
-                    const float broad = 0.7f * TrialsGroundNoise(x, z, 24, seed) +
-                                        0.3f * TrialsGroundNoise(x, z, 7, seed ^ 0x9E3779B9u);
-                    const float spots = TrialsGroundNoise(x, z, 5, seed ^ 0x85EBCA6Bu);
-                    uint8_t t = 0;
-                    if (layers > 1 && broad > 0.60f)
-                        t = 1;
-                    if (layers > 2 && spots > 0.78f)
-                        t = 2;
-                    tileIndices[count] = t;
-                }
+    std::vector<float> h(static_cast<size_t>(xDims) * zDims, 0.0f);
+    std::vector<size_t> fileAt(static_cast<size_t>(xDims) * zDims, SIZE_MAX);
+    {
+        size_t count = 0;
+        for (uint32_t j = 0; j < zDims / kBlock; j++)
+            for (uint32_t i = 0; i < xDims / kBlock; i++)
+                for (uint32_t k = j * kBlock; k < (j + 1) * kBlock; k++)
+                    for (uint32_t l = i * kBlock; l < (i + 1) * kBlock; l++, count++)
+                    {
+                        if (count >= heightMap.size())
+                            continue;
+                        h[static_cast<size_t>(k) * xDims + l] = -heightMap[count];
+                        fileAt[static_cast<size_t>(k) * xDims + l] = count;
+                    }
+    }
+    float hMin = FLT_MAX, hMax = -FLT_MAX;
+    for (float v : h)
+        hMin = std::min(hMin, v), hMax = std::max(hMax, v);
+    const float spanX = (bounds.map_max_x - bounds.map_min_x) / std::max(1u, xDims);
+    const float spanZ = (bounds.map_max_z - bounds.map_min_z) / std::max(1u, zDims);
+    // Sand where the ground runs into the water: the lowest part of the playable height range.
+    const float sandLine = hMin + 0.10f * (hMax - hMin);
+
+    const uint32_t seed = 0x7A15E11Eu;
+    size_t used[3] = {0, 0, 0};
+    std::fill(tileIndices.begin(), tileIndices.end(), slice[kGrass]);
+    for (uint32_t z = 0; z < zDims; z++)
+        for (uint32_t x = 0; x < xDims; x++)
+        {
+            const size_t at = static_cast<size_t>(z) * xDims + x;
+            const size_t f = fileAt[at];
+            if (f == SIZE_MAX || f >= tileIndices.size())
+                continue;
+            const uint32_t x0 = x ? x - 1 : x, x1 = x + 1 < xDims ? x + 1 : x;
+            const uint32_t z0 = z ? z - 1 : z, z1 = z + 1 < zDims ? z + 1 : z;
+            const float dx = (h[static_cast<size_t>(z) * xDims + x1] - h[static_cast<size_t>(z) * xDims + x0]) /
+                             (spanX * std::max(1u, x1 - x0));
+            const float dz = (h[static_cast<size_t>(z1) * xDims + x] - h[static_cast<size_t>(z0) * xDims + x]) /
+                             (spanZ * std::max(1u, z1 - z0));
+            const float slope = std::sqrt(dx * dx + dz * dz);   // rise over run
+
+            const int ix = static_cast<int>(x), iz = static_cast<int>(z);
+            // Per-tile jitter breaks the stair steps a threshold leaves on a tile grid.
+            const float jitter = TrialsGroundNoise(ix, iz, 2, seed ^ 0x27D4EB2Fu) - 0.5f;
+            const float wear = 0.65f * TrialsGroundNoise(ix, iz, 18, seed) +
+                               0.35f * TrialsGroundNoise(ix, iz, 6, seed ^ 0x9E3779B9u);
+
+            Role role = kGrass;
+            if (slope > 0.75f + 0.35f * jitter)   // about 37 degrees, give or take
+                role = kRock;
+            else if (h[at] < sandLine + 0.04f * (hMax - hMin) * jitter)
+                role = kSand;
+            else if (wear + 0.12f * jitter > 0.70f)   // worn earth patches in the grass
+                role = kSand;
+            tileIndices[f] = slice[role];
+            used[role]++;
+        }
+    RunLog::Line("trials ground: painted %zu grass, %zu rock (slope), %zu sand (shore + wear) tiles; "
+                 "height %.0f to %.0f, shore line %.0f",
+                 used[kGrass], used[kRock], used[kSand], hMin, hMax, sandLine);
     return true;
 }
 
@@ -2458,7 +2561,9 @@ void ReplayWindow::StepLoadInit()
     {
         TrialsGround tg;
         trialsGround = BuildTrialsGround(m_datManager, *m_hashIndex, m_mapFile.terrain_chunk.terrain_x_dims,
-                                         m_mapFile.terrain_chunk.terrain_y_dims, terrainTileIndices, tg);
+                                         m_mapFile.terrain_chunk.terrain_y_dims,
+                                         m_mapFile.terrain_chunk.terrain_heightmap,
+                                         m_mapFile.map_info_chunk.map_bounds, terrainTileIndices, tg);
         if (trialsGround)
         {
             terrainDatTextures = std::move(tg.textures);

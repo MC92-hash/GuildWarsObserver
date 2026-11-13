@@ -58,7 +58,9 @@ struct LiveScriptedUi
     // coordinates. ReportOverheads: the window reports the overhead bars it draws next frame.
     // ReportHud: the target frame and the cast bars the next frame draws. ReportMarker: the click
     // marker's state every frame until it ends.
-    enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads, ReportHud, ReportMarker };
+    // ReportCompass: what the next frame's compass draws (scale, rotation, every marker's place).
+    enum class Kind { None, GroundClick, SkillSlotClick, DragSkillToSlot, ClickBody, ReportOverheads, ReportHud, ReportMarker,
+                      ReportCompass };
     Kind kind = Kind::None;
     float x = 0.f, y = 0.f;   // GroundClick: the point, game coordinates
     int slot = -1;            // SkillSlotClick, DragSkillToSlot: the bar slot
@@ -158,6 +160,9 @@ public:
     // The player's bar in slot order (0 = empty slot); false when the source has none.
     virtual bool PlayerBar(int (&bar)[8]) const { (void)bar; return false; }
     virtual bool PlayerCasting() const { return false; }
+    // The player's queued skill (pressed while casting or in aftercast): its bar slot and the time of the
+    // press (seconds), or -1 when nothing is queued.
+    virtual int PlayerQueuedSlot(double& pressTime) const { pressTime = 0.0; return -1; }
     // The skills the skills window offers.
     virtual void SkillOptions(std::vector<LiveSkillOption>& out) const { out.clear(); }
     // The skills window key went down since the last call.

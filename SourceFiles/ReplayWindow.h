@@ -1983,6 +1983,13 @@ private:
     // What the focus HUD's energy bar drew last for the player: the display time, the value, the fill.
     double m_liveBarTime = -1.0;
     float m_liveBarEnergy = 0.f, m_liveBarFill = 0.f;
+    // The skill queue: the player's queued slot (-1 none) and its press time, the sparkle's phase.
+    int LiveQueuedSlot();
+    float m_liveQueuedSince = 0.f;
+    // GW's compass, top right in a live match (ReplayWindow_Live.cpp): the game's three-layer model
+    // (frame 143016, cardinal ring 143015, glass 143017) and its markers (50465, 50466).
+    void DrawLiveCompass();
+    bool m_liveReportCompass = false;   // the source asked: report what the next frame's compass draws
 
     // Projectiles in flight, one per PROJECTILE line of the recording. Defined in the private
     // module, which runs them alongside the agent effects above; the frame calls only the draw,

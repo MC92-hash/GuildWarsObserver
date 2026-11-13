@@ -179,6 +179,8 @@ void ReplayWindow::DrawMinimapPanel()
 {
     m_minimapCursorActive = false;
     if (!m_minimapEnabled) return;
+    // A live match shows GW's compass in its place (DrawLiveCompass); recordings keep the minimap.
+    if (m_liveMode) return;
 
     if (!m_minimapResourcesReady)
         InitMinimapResources();
