@@ -169,6 +169,18 @@ private:
     std::vector<std::unique_ptr<ReplayWindow>> m_replay_windows;
     void ProcessPendingReplayRequest();
 
+    // Share links (UrlProtocol.h, SHARE_LINKS_PLAN.md section 4): the link waits in its slot
+    // until gw.dat and the match index allow, then goes down the replay path above.
+    void ProcessPendingLink();
+    void FailPendingLink(const char* logReason, const char* toast);
+    std::string m_linkAwaitingFolder;          // handed to the replay path, its window not up yet
+    std::string m_linkAwaitingTitle;
+    int         m_linkAwaitingMapId = 0;
+    std::chrono::steady_clock::time_point m_linkAwaitingSince{};
+    std::chrono::steady_clock::time_point m_linkWaitSince{};
+    bool        m_linkWaiting = false;          // a link sits in the slot, waiting for gw.dat/index
+    bool        m_linkReplaySeen = false;       // link-only start: its replay window has existed
+
     // DEV TOOL - attribute-solver batch. GWO_ATTR_BATCH names a text file of match folders;
     // each is opened in turn, closed once its attribute solve has run, then the app exits.
     struct AttrBatch

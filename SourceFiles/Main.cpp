@@ -13,6 +13,9 @@
 #include "imgui.h"
 #include "CursorSystem.h"
 #include "RunLog.h"
+#include "UrlProtocol.h"
+#include "CapeBannerExport.h"
+#include "MatchLink.h"
 #include <filesystem>
 #include <DbgHelp.h>
 #include <shellapi.h>
@@ -488,6 +491,14 @@ static bool TryHeadlessCommandLine(LPWSTR lpCmdLine, int& exitCode)
     HeadlessExport kind = HeadlessExport::Attributes;
     for (int i = 0; i < argc; i++)
     {
+        // --export-cape-banners <in.json> <outdir>: cape banner PNGs for the website (CapeBannerExport.h).
+        if (wcscmp(argv[i], L"--export-cape-banners") == 0 && i + 2 < argc)
+        {
+            const std::wstring in = argv[i + 1], outDir = argv[i + 2];
+            LocalFree(argv);
+            exitCode = RunCapeBannerExport(in, outDir);
+            return true;
+        }
         if (wcscmp(argv[i], L"--export-attributes") == 0 && i + 1 < argc) folder = argv[++i];
         else if (wcscmp(argv[i], L"--export-iris-pack") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::IrisPack; }
         else if (wcscmp(argv[i], L"--export-match-analysis") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::MatchAnalysis; }
@@ -524,7 +535,19 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         // DEV TOOL: the Trials sim core's headless self-test (GWO_TRIALS_SIMTEST, private Trials/Sim).
         if (GuiGlobalConstants::IsDeveloperMode() && trials_module_simtest(exitCode))
             return exitCode;
+        // GWO_LINK_SELFTEST: the share-link format's round trips (MatchLink.cpp), no window.
+        char linkTest[8] = {};
+        if (GetEnvironmentVariableA("GWO_LINK_SELFTEST", linkTest, (DWORD)sizeof(linkTest)) != 0)
+            return MatchLinks::RunSelfTest();
     }
+
+    // A share link on the command line (--open-link <url>, which is what the registered
+    // gwobserver:// link type runs, or a bare link). Checked after the headless exports, which
+    // never look at it, so parallel export runs stay untouched. When GW Observer is already
+    // running the link goes to it and this process ends here, before COM, a window or a device.
+    const std::wstring linkArg = UrlProtocol::FindLinkArgument(lpCmdLine);
+    if (!linkArg.empty() && UrlProtocol::ForwardToRunningInstance(linkArg))
+        return 0;
 
     if (! XMVerifyCPUSupport())
         return 1;
@@ -553,13 +576,25 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         wcex.hIcon = LoadIconW(hInstance, L"IDI_ICON");
         wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wcex.hbrBackground = CreateSolidBrush(RGB(20, 24, 30));
-        wcex.lpszClassName = L"GuildWarsObserverWindowClass";
+        wcex.lpszClassName = UrlProtocol::MainWindowClass();   // share links find the running app by it
         wcex.hIconSm = LoadIconW(wcex.hInstance, L"IDI_ICON");
         if (! RegisterClassExW(&wcex))
             return 1;
 
         // Load settings
         GuiGlobalConstants::LoadSettings();
+
+        // Started BY a link: only the match shows, the Library stays hidden (SHARE_LINKS_PLAN.md 4b).
+        // A link that cannot be read shows the Library with the reason instead.
+        bool linkOnlyStart = false;
+        if (!linkArg.empty())
+        {
+            RunLog::Line("link: on the command line");
+            linkOnlyStart = UrlProtocol::SubmitLinkText(UrlProtocol::ToUtf8(linkArg), "command line");
+        }
+        // DEV TOOL (GWO_INSTANCE_TAG): a test instance's replays open minimised, without focus.
+        if (UrlProtocol::QuietTestInstance())
+            ReplayWindow::s_openWithoutFocus = true;
 
         int x = CW_USEDEFAULT;
         int y = CW_USEDEFAULT;
@@ -579,7 +614,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
 
         // Create window
-        HWND hwnd = CreateWindowExW(0, L"GuildWarsObserverWindowClass", g_szAppName, WS_OVERLAPPEDWINDOW,
+        HWND hwnd = CreateWindowExW(0, UrlProtocol::MainWindowClass(), g_szAppName, WS_OVERLAPPEDWINDOW,
             x, y, w, h,
             nullptr, nullptr, hInstance, nullptr);
         // TODO: Change to CreateWindowExW(WS_EX_TOPMOST, L"GuildWarsObserverWindowClass", g_szAppName, WS_POPUP,
@@ -599,6 +634,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         if (GuiGlobalConstants::IsDeveloperMode() &&
             (meta_module_selftest_requested() || trials_module_selftest_requested()))
             showCmd = SW_HIDE;
+        UrlProtocol::SetMainWindow(hwnd, showCmd);
+        if (linkOnlyStart && showCmd != SW_HIDE)
+        {
+            UrlProtocol::SetLibraryHidden(true);
+            showCmd = SW_HIDE;
+        }
         ShowWindow(hwnd, showCmd);
         // TODO: Change nCmdShow to SW_SHOWMAXIMIZED to default to fullscreen.
 
@@ -666,6 +707,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         }
 
         g_map_browser->Initialize(hwnd, rc.right - rc.left, rc.bottom - rc.top);
+
+        // The gwobserver:// link type points at this exe (release builds; rewritten when the
+        // folder moved).
+        UrlProtocol::RegisterIfNeeded();
     }
 
     // THE FRAME LIMIT. Nothing else paces this loop: the replay windows present without vsync and
@@ -754,6 +799,11 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 static void UpdateWindowSettings(HWND hWnd)
 {
+    // A hidden Library (a link-only start, a self-test) has no placement worth keeping: it would
+    // overwrite the saved size and maximised state with the hidden window's.
+    if (!IsWindowVisible(hWnd))
+        return;
+
     WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
     if (GetWindowPlacement(hWnd, &wp)) {
         // Only update if we have valid data (not completely zero)
@@ -1106,6 +1156,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             s_fullscreen = ! s_fullscreen;
         }
+        break;
+
+    case WM_COPYDATA:
+        // A share link forwarded by a second process (UrlProtocol::ForwardToRunningInstance).
+        if (UrlProtocol::HandleCopyData(reinterpret_cast<const COPYDATASTRUCT*>(lParam)))
+            return TRUE;
         break;
 
     case WM_MENUCHAR:

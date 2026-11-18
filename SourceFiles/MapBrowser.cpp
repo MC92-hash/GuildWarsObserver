@@ -26,6 +26,9 @@
 #include "Meta/MetaModule.h"
 #include "Trials/TrialsModule.h"
 #include "LiveSource.h"
+#include "UrlProtocol.h"
+#include "MatchLink.h"
+#include "ReplaySync.h"
 
 extern void ExitMapBrowser() noexcept;
 
@@ -629,6 +632,27 @@ void MapBrowser::Initialize(HWND window, int width, int height)
 
     StartAttrBatchFromEnv();
 
+    // Share links: only a match in the cloud index can be opened by somebody else. Read only
+    // while the sync is not writing the index (it writes it in FetchingIndex alone).
+    UrlProtocol::SetPublishedLookup([this](const std::string& folder) -> bool
+    {
+        if (!m_matchIndex || !m_syncEngine ||
+            m_syncEngine->GetState() == SyncEngine::State::FetchingIndex)
+            return false;
+        // The ribbon and the Library ask every frame: remember the last answer per index size.
+        static std::string s_folder;
+        static int s_count = -1;
+        static bool s_answer = false;
+        const int count = m_matchIndex->GetEntryCount();
+        if (folder != s_folder || count != s_count)
+        {
+            s_folder = folder;
+            s_count = count;
+            s_answer = m_matchIndex->FindEntry(folder) != nullptr;
+        }
+        return s_answer;
+    });
+
     RunLog::Line("Initialize: done");
 }
 
@@ -645,6 +669,7 @@ void MapBrowser::Tick()
         g_AppBusy = true;
 
     // Always tick replay windows regardless of main window focus
+    ProcessPendingLink();   // a share link waiting to open (before the request it may make)
     ProcessPendingReplayRequest();
     ProcessCloudDownloadResult();
     ProcessAttrBatch();
@@ -689,7 +714,8 @@ void MapBrowser::Tick()
     // still holds when this window's frame is skipped (a focused replay window
     // makes Tick() return before Render()).
     {
-        bool busy = !g_loadingScreenDone || g_pendingReplay.requested ||
+        // A hidden Library (link-only start) never draws its loading screen: not busy for that.
+        bool busy = (!g_loadingScreenDone && !UrlProtocol::LibraryHidden()) || g_pendingReplay.requested ||
                     (GuiGlobalConstants::app_screen == AppScreen::Wardrobe && wardrobe_app_busy());
         if (!busy)
         {
@@ -768,7 +794,9 @@ void MapBrowser::Tick()
     // DEV TOOL (attribute batch): the user may be playing in another window, so this one is
     // rarely in front. Update() is what opens gw.dat and builds the hash index the batch's
     // replay windows need, so keep it running without drawing.
-    if (m_attrBatch.active && !is_extracting &&
+    // The same while a link-only start keeps the Library hidden: it still opens gw.dat for the
+    // shared replay, and never draws.
+    if ((m_attrBatch.active || UrlProtocol::LibraryHidden()) && !is_extracting &&
         (IsIconic(m_deviceResources->GetWindow()) ||
          GetForegroundWindow() != m_deviceResources->GetWindow()))
     {
@@ -1338,6 +1366,7 @@ void MapBrowser::Render()
 
     // --- Render ImGui ---
     m_deviceResources->PIXBeginEvent(L"Render ImGui");
+    UrlProtocol::DrawLibraryToast();   // share-link messages
     UpdateCursorMode();
     // A replay was just asked for in the UI pass above. Raise the latch now so
     // the hourglass appears on this frame rather than after the next tick has
@@ -2451,6 +2480,13 @@ void MapBrowser::ProcessCloudDownloadResult()
     if (state == PlayDownloadState::Error)
     {
         m_playDl.state.store(PlayDownloadState::Idle);
+        // A shared match: the download's overlay is in the Library, which may be hidden.
+        if (!m_linkAwaitingFolder.empty() && m_playDl.originalMatch.folder_name == m_linkAwaitingFolder)
+        {
+            RunLog::Line("link: the download of '%s' failed - %s", m_linkAwaitingFolder.c_str(),
+                         m_playDl.errorMsg.c_str());
+            FailPendingLink("the download failed", "Could not download the shared match");
+        }
         // Error toast will show via the overlay; no blocking messagebox
         return;
     }
@@ -2675,4 +2711,226 @@ void MapBrowser::NotifyReplayWindowsReplayCameraFovChanged()
         if (rw)
             rw->ApplyReplayCameraFovFromSettings();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Share links (SHARE_LINKS_PLAN.md section 4). The link stays in its slot until it can act: gw.dat
+// indexed, the match index fetched, no other download running. Waits silently (a toast, or the
+// splash of a link-only start) - never the MessageBoxes of ProcessPendingReplayRequest, which a
+// link arriving on a cold start would hit.
+// ---------------------------------------------------------------------------
+
+void MapBrowser::FailPendingLink(const char* logReason, const char* toast)
+{
+    RunLog::Line("link: FAILED - %s", logReason);
+    UrlProtocol::ClearPendingLink();
+    m_linkAwaitingFolder.clear();
+    m_linkWaiting = false;
+    UrlProtocol::HideSplash();
+    if (UrlProtocol::LibraryHidden())
+        UrlProtocol::ShowLibrary("the link failed");
+    else if (HWND main = m_deviceResources->GetWindow(); main && !UrlProtocol::QuietTestInstance())
+    {
+        if (IsIconic(main)) ShowWindow(main, SW_RESTORE);
+        SetForegroundWindow(main);
+    }
+    UrlProtocol::Toast(toast, true, 8.0);
+}
+
+void MapBrowser::ProcessPendingLink()
+{
+    using clock = std::chrono::steady_clock;
+    const auto now = clock::now();
+
+    // A quiet test instance (GWO_INSTANCE_TAG) never takes the foreground from whoever uses the PC.
+    auto bringUp = [](HWND h)
+    {
+        if (!UrlProtocol::QuietTestInstance()) SetForegroundWindow(h);
+    };
+    auto openReplay = [&](const std::string* folder) -> ReplayWindow*
+    {
+        for (auto& rw : m_replay_windows)
+            if (rw && rw->IsAlive() && !rw->IsLive() && (!folder || rw->MatchFolder() == *folder))
+                return rw.get();
+        return nullptr;
+    };
+
+    // A link-only start shows the Library where only the Library can help.
+    if (UrlProtocol::LibraryHidden())
+    {
+        if (SetupConfig::IsFirstLaunch())
+            UrlProtocol::ShowLibrary("first launch - the setup wizard is in the Library");
+        else if (!gw_dat_path_set)
+        {
+            UrlProtocol::ShowLibrary("gw.dat is not set or failed to load");
+            UrlProtocol::Toast("Set the path to gw.dat - the shared match opens once it has loaded", true, 10.0);
+        }
+    }
+
+    // 1. A link handed to the replay path: its window, or the download before it.
+    if (!m_linkAwaitingFolder.empty())
+    {
+        if (ReplayWindow* rw = openReplay(&m_linkAwaitingFolder))
+        {
+            RunLog::Line("link: opened - the replay window of '%s' is up", m_linkAwaitingFolder.c_str());
+            m_linkAwaitingFolder.clear();
+            UrlProtocol::HideSplash();
+            if (UrlProtocol::LibraryHidden())
+                m_linkReplaySeen = true;
+            bringUp(rw->GetHWND());
+        }
+        else if (m_playDl.state.load() == PlayDownloadState::Downloading)
+        {
+            if (UrlProtocol::LibraryHidden())
+            {
+                const uint64_t total = m_playDl.bytesTotal.load();
+                const float f = total > 0 ? static_cast<float>(m_playDl.bytesReceived.load()) / total : -1.f;
+                UrlProtocol::ShowSplash(m_linkAwaitingTitle, "Downloading the match...", f, m_linkAwaitingMapId);
+            }
+            m_linkAwaitingSince = now;
+        }
+        else if (!g_pendingReplay.requested && now - m_linkAwaitingSince > std::chrono::seconds(20))
+            FailPendingLink("its replay window never opened", "The shared match could not be opened");
+        else if (UrlProtocol::LibraryHidden())
+            UrlProtocol::ShowSplash(m_linkAwaitingTitle, "Opening the replay...", -1.f, m_linkAwaitingMapId);
+        return;
+    }
+
+    const MatchLink* link = UrlProtocol::PeekPendingLink();
+
+    // 2. A link-only start: the shared replay WAS the app, so closing it closes the app.
+    if (UrlProtocol::LibraryHidden() && m_linkReplaySeen && !link && !openReplay(nullptr) && !g_liveReplayOpen)
+    {
+        RunLog::Line("link: the shared replay was closed and the Library was never shown - exiting");
+        m_linkReplaySeen = false;
+        GuiGlobalConstants::SaveSettings();
+        PostQuitMessage(0);
+        return;
+    }
+
+    if (!link)
+    {
+        m_linkWaiting = false;
+        return;
+    }
+
+    const std::string title = MatchLinks::DescribeFolder(link->folder) + " at " + MatchLinks::FormatClock(link->t);
+    if (UrlProtocol::LibraryHidden())
+        UrlProtocol::SetSplashLink(*link);
+    if (!m_linkWaiting)
+    {
+        m_linkWaiting = true;
+        m_linkWaitSince = now;
+        RunLog::Line("link: waiting to open '%s'%s", link->folder.c_str(),
+                     UrlProtocol::LibraryHidden() ? " (link-only start, the Library stays hidden)" : "");
+    }
+    auto waiting = [&](const char* status)
+    {
+        if (UrlProtocol::LibraryHidden())
+            UrlProtocol::ShowSplash(title, status, -1.f, 0);
+        else
+            UrlProtocol::Toast("Opening shared match...", false, 0.5);
+    };
+
+    // gw.dat (the Library is showing when it has no path; the link waits for one).
+    if (!gw_dat_path_set) return;
+    if (m_dat_managers.count(0) == 0 || !m_dat_managers[0] ||
+        m_dat_managers[0]->m_initialization_state < InitializationState::IndexReady || !m_hash_index_initialized)
+    {
+        waiting("Loading gw.dat...");
+        return;
+    }
+
+    // The match index: a fresh one may know a match published minutes ago.
+    const bool indexBusy = m_syncEngine && m_syncEngine->GetState() == SyncEngine::State::FetchingIndex;
+    if (indexBusy && now - m_linkWaitSince < std::chrono::seconds(45))
+    {
+        waiting("Fetching the match list...");
+        return;
+    }
+
+    // The replay path downloads one match at a time.
+    if (m_playDl.state.load() == PlayDownloadState::Downloading || g_pendingReplay.requested)
+    {
+        waiting("Waiting for another download...");
+        return;
+    }
+
+    // The library first (local, or cached from the cloud), then the cloud index.
+    MatchMeta match;
+    bool found = false;
+    for (const auto& m : m_replay_library.GetMatches())
+        if (m.folder_name == link->folder) { match = m; found = true; break; }
+    if (!found && m_matchIndex && !indexBusy && m_cloudProvider)
+    {
+        if (const RemoteMatchEntry* e = m_matchIndex->FindEntry(link->folder))
+        {
+            // Enough for the download path, whose rescan replaces it with the full metadata.
+            match = MatchMeta{};
+            match.folder_name = e->folder;
+            match.folder_path = (std::filesystem::path(GuiGlobalConstants::GetMatchCacheDir()) / e->folder).string();
+            match.map_id = e->map_id;
+            match.year = e->year;
+            match.month = e->month;
+            match.day = e->day;
+            match.is_cloud_only = true;
+            found = true;
+        }
+    }
+    if (!found)
+    {
+        FailPendingLink("the match is neither in the library nor in the cloud index",
+                        "This match isn't available yet");
+        return;
+    }
+
+    // One replay window (owner's rule): the same match takes the view, another match asks first.
+    if (ReplayWindow* cur = openReplay(nullptr))
+    {
+        if (cur->MatchFolder() == link->folder)
+        {
+            ReplaySync::RequestView(link->folder, *link);
+            RunLog::Line("link: opened - the replay of '%s' is already open, the view is handed to it",
+                         link->folder.c_str());
+            UrlProtocol::ClearPendingLink();
+            m_linkWaiting = false;
+            UrlProtocol::HideSplash();
+            if (IsIconic(cur->GetHWND()) && !UrlProtocol::QuietTestInstance()) ShowWindow(cur->GetHWND(), SW_RESTORE);
+            bringUp(cur->GetHWND());
+            return;
+        }
+        bringUp(cur->GetHWND());
+        const int answer = UrlProtocol::QuietTestInstance()
+            ? IDYES
+            : MessageBoxW(cur->GetHWND(), L"Close the current replay and open the shared match?", L"GW Observer",
+                          MB_YESNO | MB_ICONQUESTION);
+        if (answer != IDYES)
+        {
+            RunLog::Line("link: dropped - the current replay was kept");
+            UrlProtocol::ClearPendingLink();
+            m_linkWaiting = false;
+            return;
+        }
+        RunLog::Line("link: closing the current replay for the shared match");
+        DestroyWindow(cur->GetHWND());   // gone by the next tick; the link waits in its slot
+        return;
+    }
+
+    // Down the ordinary replay path: the cloud download with its progress, then the window. The
+    // replay takes the view once it is loaded (ReplaySync::TakeView).
+    ReplaySync::RequestView(link->folder, *link);
+    g_pendingReplay.requested = true;
+    g_pendingReplay.match = match;
+    g_pendingReplay.openReplay = true;
+    m_linkAwaitingFolder = link->folder;
+    m_linkAwaitingTitle = title;
+    m_linkAwaitingMapId = match.map_id;
+    m_linkAwaitingSince = now;
+    RunLog::Line("link: opening '%s' - %s", link->folder.c_str(),
+                 match.is_cloud_only ? "from the cloud (downloaded unless cached)" : "local copy");
+    UrlProtocol::ClearPendingLink();
+    m_linkWaiting = false;
+    if (UrlProtocol::LibraryHidden())
+        UrlProtocol::ShowSplash(title, match.is_cloud_only ? "Downloading the match..." : "Opening the replay...",
+                                -1.f, match.map_id);
 }

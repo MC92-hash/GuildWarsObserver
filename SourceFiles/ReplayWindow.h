@@ -31,6 +31,7 @@
 #include "Cache/AnimationDiscoveryCache.h"
 #include "Cache/AnimationClipCache.h"
 #include "ReplayPanelLayout.h"
+#include "MatchLink.h"
 #include <chrono>
 #include "BitmapFont.h"
 #include "BattleLedger.h"
@@ -200,6 +201,8 @@ public:
     // A clip export rendering its frames: the app's frame limit lets it run at full speed.
     bool IsExportingClip() const { return IsClipRendering(); }
     HWND GetHWND() const { return m_hwnd; }
+    // MatchMeta::folder_name of the match it plays (share links find the open replay by it).
+    const std::string& MatchFolder() const { return m_matchMeta.folder_name; }
 
     // Still building the map: the window is not interactive yet.
     bool IsLoading() const
@@ -535,6 +538,18 @@ private:
     int  m_selectedAgentId = -1;
     float m_debugTimeline = 0.f;
     float m_scrubRightClickTime = 0.f;
+
+    // --- Share links (ReplayWindow_ShareLink.cpp) ---
+    // A view from a share link (ReplaySync::TakeView): applied once loaded; the follow camera
+    // retries for a while when its agent has no position yet.
+    MatchLink m_linkView;
+    bool   m_linkViewPending = false;
+    double m_linkViewSince = 0.0;       // ReplaySync::Now() when taken
+    int    m_linkViewLogFrames = -1;    // frames left before the applied view is logged
+    void   ApplyLinkView();
+    MatchLink CurrentShareLink(float timelineT) const;
+    void   CopyShareLink(float timelineT);
+    void   DrawShareLinkMenuItems();
     bool m_showParsedView = true;
     float m_agentListWidth = 220.f;
     std::vector<int> m_sortedAgentIds;
@@ -1897,6 +1912,7 @@ private:
     void DrawFootprints();
     void ReleaseFootprints();     // match teardown
     std::shared_ptr<Footprints::State> m_footprints;
+
 
     // ---- Live mode (ReplayWindow_Live.cpp): a match a source writes while it is watched ----
     std::shared_ptr<ILiveSource> m_live;

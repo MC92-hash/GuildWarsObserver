@@ -10,6 +10,7 @@
 #include "DXMathHelpers.h"
 #include "FontConfig.h"
 #include "GuiGlobalConstants.h"
+#include "UrlProtocol.h"
 #include "MapBrowser.h"
 #include "TextureCache.h"
 #include "CursorSystem.h"
@@ -219,6 +220,12 @@ void ReplayWindow::DrawTimelineController()
         {
             m_annotationMgr.AddBookmarkDirect((uint32_t)(m_scrubRightClickTime * 1000.f));
         }
+        if (ImGui::MenuItem("Copy link at this moment", nullptr, false,
+                            UrlProtocol::IsPublished(m_matchMeta.folder_name)))
+            CopyShareLink(m_scrubRightClickTime);
+        if (!UrlProtocol::IsPublished(m_matchMeta.folder_name) &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", UrlProtocol::kNotPublishedTip);
         ImGui::EndPopup();
     }
 
@@ -543,7 +550,37 @@ void ReplayWindow::DrawTimelineController()
         const float speedLabelW = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x;
         const float speedLabelX = px + pw - PAD - 54.f * sf - 8.f * sf - speedLabelW;
         const float clipW = 66.f * sf;
-        const float clipX = speedLabelX - 14.f * sf - clipW;
+        const float shareW = 74.f * sf;
+        const float shareX = speedLabelX - 14.f * sf - shareW;
+        const float clipX = shareX - 10.f * sf - clipW;
+
+        // Share, between Clip and the speed: copies a link to this moment, with this camera
+        // (ReplayWindow_ShareLink.cpp). Dimmed for a match that is not published.
+        if (!m_liveMode)
+        {
+            const bool published = UrlProtocol::IsPublished(m_matchMeta.folder_name);
+            ImGui::SetCursorScreenPos(ImVec2(shareX, cy));
+            ImGui::InvisibleButton("##Share", ImVec2(shareW, BTN_H));
+            const bool hovS = ImGui::IsItemHovered();
+            if (ImGui::IsItemClicked() && published)
+                CopyShareLink(m_debugTimeline);
+
+            const ImU32 bgS  = (hovS && published) ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
+            const ImU32 bdrS = (hovS && published) ? cBorderGlow : cBorderHi;
+            dl->AddRectFilled(ImVec2(shareX, cy), ImVec2(shareX + shareW, cy + BTN_H), bgS, BTN_H * 0.5f);
+            dl->AddRect(ImVec2(shareX, cy), ImVec2(shareX + shareW, cy + BTN_H), bdrS, BTN_H * 0.5f);
+
+            const ImU32 fgS = !published ? cTextDim : hovS ? cGoldBright : cTextMid;
+            // Chain link: two rounded links, overlapping on the diagonal.
+            const float lx = shareX + 12.f * sf, ly = cy + BTN_H * 0.5f;
+            const float lw = 8.f * sf, lh = 5.f * sf, r = 2.5f * sf, th = 1.4f * sf;
+            dl->AddRect(ImVec2(lx, ly - lh * 0.5f - 1.5f * sf), ImVec2(lx + lw, ly + lh * 0.5f - 1.5f * sf), fgS, r, 0, th);
+            dl->AddRect(ImVec2(lx + lw * 0.55f, ly - lh * 0.5f + 1.5f * sf), ImVec2(lx + lw * 1.55f, ly + lh * 0.5f + 1.5f * sf), fgS, r, 0, th);
+            dl->AddText(font, fs, ImVec2(lx + 19.f * sf, cy + (BTN_H - fs) * 0.5f), fgS, "Share");
+
+            if (hovS)
+                ImGui::SetTooltip("%s", published ? "Copy a link to this moment, with this camera" : UrlProtocol::kNotPublishedTip);
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(clipX, cy));
         ImGui::InvisibleButton("##Clip", ImVec2(clipW, BTN_H));

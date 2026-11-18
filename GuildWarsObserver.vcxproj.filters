@@ -485,6 +485,9 @@
     </ClInclude>
     <ClInclude Include="SourceFiles\ReplayLibrary.h" />
     <ClInclude Include="SourceFiles\RunLog.h" />
+    <ClInclude Include="SourceFiles\MatchLink.h" />
+    <ClInclude Include="SourceFiles\UrlProtocol.h" />
+    <ClInclude Include="SourceFiles\CapeBannerExport.h" />
     <ClInclude Include="SourceFiles\DXMathHelpers.h">
       <Filter>Render\Math helpers</Filter>
     </ClInclude>
@@ -1049,6 +1052,10 @@
     </ClCompile>
     <ClCompile Include="SourceFiles\ReplayLibrary.cpp" />
     <ClCompile Include="SourceFiles\RunLog.cpp" />
+    <ClCompile Include="SourceFiles\MatchLink.cpp" />
+    <ClCompile Include="SourceFiles\UrlProtocol.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_ShareLink.cpp" />
+    <ClCompile Include="SourceFiles\CapeBannerExport.cpp" />
     <ClCompile Include="SourceFiles\DXMathHelpers.cpp">
       <Filter>Render\Math helpers</Filter>
     </ClCompile>
