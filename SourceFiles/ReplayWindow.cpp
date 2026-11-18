@@ -932,6 +932,8 @@ bool ReplayWindow::InitWindow(HINSTANCE hInstance, const std::wstring& title)
     if (!m_hwnd) return false;
 
     SetWindowLongPtr(m_hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    // A comms recording dropped onto the replay (ReplayWindow_Comms.cpp).
+    SetWindowLongPtr(m_hwnd, GWL_EXSTYLE, GetWindowLongPtr(m_hwnd, GWL_EXSTYLE) | WS_EX_ACCEPTFILES);
     return true;
 }
 
@@ -7271,6 +7273,7 @@ void ReplayWindow::Update(double elapsedMs)
         UpdatePiPTarget();
 
     UpdateAudioPlayback(m_debugTimeline, dt);
+    UpdateComms();   // the comms recording beside the match (ReplayWindow_Comms.cpp)
 }
 
 void ReplayWindow::Render()
@@ -7877,9 +7880,11 @@ void ReplayWindow::DrawImGuiOverlay()
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 5.f);
 
             // Arrow keys: tap = ±1s, hold = continuous ±1s at repeat rate
-            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
+            // (the comms Sync editor, hovered or focused, takes Left/Right to nudge its clip)
+            const bool commsOwnsArrows = CommsEditorOwnsKeys();
+            if (!menuOwnsKeys && !commsOwnsArrows && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
                 m_debugTimeline = std::max(0.f, m_debugTimeline - 1.f);
-            if (!menuOwnsKeys && ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
+            if (!menuOwnsKeys && !commsOwnsArrows && ImGui::IsKeyPressed(ImGuiKey_RightArrow, true))
                 m_debugTimeline = std::min(maxT, m_debugTimeline + 1.f);
 
             // Up/Down arrows: tap = ±30s, hold = continuous ±30s at repeat rate
@@ -11074,6 +11079,10 @@ LRESULT CALLBACK ReplayWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
 
     case WM_DESTROY:
         if (rw) rw->OnDestroy();
+        break;
+
+    case WM_DROPFILES:
+        if (rw) { rw->OnCommsDrop(reinterpret_cast<void*>(wParam)); return 0; }
         break;
 
     case WM_GETMINMAXINFO:

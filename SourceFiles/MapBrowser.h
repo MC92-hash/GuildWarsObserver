@@ -194,6 +194,7 @@ private:
     };
     AttrBatch m_attrBatch;
     void StartAttrBatchFromEnv();
+    void LibraryShotSelfTest();   // DEV TOOL: GWO_LIBRARY_SHOT (MapBrowser.cpp)
     void ProcessAttrBatch();
     void TickReplayWindows();
 

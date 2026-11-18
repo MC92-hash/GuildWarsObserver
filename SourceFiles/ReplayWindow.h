@@ -75,6 +75,8 @@ namespace ReplayProjectiles { class State; }
 namespace Footprints { struct State; }
 // The match's sounds - the recording's own and the scheduled ones: opaque too (private).
 namespace ReplaySounds { class State; }
+// A team's voice recording played beside the replay (ReplayWindow_Comms.cpp): opaque too.
+namespace Comms { struct GameModel; struct LaneState; }
 // Opaque declaration: gives a complete type for storage without dragging xaudio2.h in here.
 // The enumerators themselves are only named in the .cpp files that include SpatialAudioEngine.h.
 enum class SoundLogCategory : uint8_t;
@@ -216,6 +218,9 @@ public:
     bool ClipSelfTestDone() const { return s_clipSelfTestPath.empty() || m_clipSelfTestStage >= 4; }
     // GWO_SOUND_SELFTEST set: true once the match's sound schedule is built and counted (private).
     bool SoundSelfTestDone() const;
+    // DEV TOOL (GWO_COMMS_SELFTEST, ReplayWindow_Comms.cpp): true once the comms self-test of this
+    // window has reported (or when it is not running).
+    bool CommsSelfTestDone() const;
 
     // IDeviceNotify
     void OnDeviceLost() override;
@@ -534,7 +539,10 @@ private:
     int    m_linkViewLogFrames = -1;    // frames left before the applied view is logged
     void   ApplyLinkView();
     MatchLink CurrentShareLink(float timelineT) const;
-    void   CopyShareLink(float timelineT);
+    void   CopyShareLink(float timelineT, bool fromStart = false);
+    bool   m_shareMenuForced = false;   // DEV TOOL: the comms self-test holds the Share menu open for its picture
+    // DEV TOOL: the play bar's buttons this frame (id, x0 y0 x1 y1), for the self-test to hover them.
+    std::vector<std::pair<std::string, ImVec4>> m_playBarHot;
     void   DrawShareLinkMenuItems();
     bool m_showParsedView = true;
     float m_agentListWidth = 220.f;
@@ -2292,6 +2300,8 @@ private:
     bool  HighlightsHidesAgent(int agentId) const;
     void  DrawHighlightsFilter();
     void  BuildHighlightsMask(std::vector<DirectX::XMFLOAT4>& out) const;
+    // The play bar's Highlights toggle (Loop's style): its width, then the button at (x, y).
+    float HighlightsButtonWidth() const;
     void  DrawHighlightsButton(float x, float y, float h);
     void  DrawHighlightsTimelineMarkers(float trackX, float trackW, float trackY, float trackH, float maxT);
     std::string HighlightsSpeedLabel() const;
@@ -2818,6 +2828,33 @@ private:
     // seek (or the first frame) it only moves its cursors, as the timeline above does.
     void StepReplaySounds(float prevTime, float currentTime, bool seeked);
     std::shared_ptr<ReplaySounds::State> m_replaySounds;
+
+    // --- Comms audio (ReplayWindow_Comms.cpp) ---
+    // A voice recording dropped onto the replay: decoded and synced in the background, played at
+    // match time + offset, drawn as a lane under the play bar, remembered per match on this PC.
+    std::shared_ptr<Comms::LaneState> m_comms;
+    void OnCommsDrop(void* hdrop);
+    void CommsAttachFile(const std::wstring& path, bool restored, double offset);
+    void UpdateComms();
+    void StartCommsSync();
+    void BuildCommsGameModel(Comms::GameModel& out) const;
+    void DrawCommsLane(float laneX, float laneW, float trackX, float trackW, float laneY, float laneH, float maxT);
+    // The Sync editor (a two-track timeline over the play bar) and taking the recording off.
+    void DrawCommsEditor(float maxT);
+    void ForgetComms(const char* why);
+    // The Sync editor is hovered or focused: the arrow keys nudge its clip, not the replay.
+    bool CommsEditorOwnsKeys() const;
+    // A voice comms file is attached (loading, ready, or remembered but missing): the play bar's
+    // speaker then opens the mixer (DrawVolumeMixer, inside the play bar's window).
+    bool CommsAttached() const;
+    void DrawVolumeMixer(const char* popupId, float anchorX, float anchorY);
+    void SaveCommsEntry();
+    void ProcessCommsSelfTest();
+    void SaveCommsShot();
+    bool CommsShotPending() const;
+    bool CommsLaneVisible() const;
+    // The play bar's height: taller while the comms lane shows. Panels that sit on the bar use it.
+    float PlayBarHeight() const;
 
     void InitAudioEngine();
     void UpdateAudioPlayback(float currentTime, float dt);

@@ -623,7 +623,7 @@ void ReplayWindow::DrawEventTimeline()
 
     if (!m_showEventTimeline || !m_timeline.computed) return;
 
-    const float playbarH = 76.f;
+    const float playbarH = PlayBarHeight();
     const float panelH   = 160.f;
     const float topPad   = 6.f;
     const float scrubH   = 16.f;

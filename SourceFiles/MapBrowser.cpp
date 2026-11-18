@@ -29,6 +29,65 @@
 #include "ReplaySync.h"
 
 extern void ExitMapBrowser() noexcept;
+extern std::string g_commsBadgeHoverTest;   // draw_replay_browser.cpp
+extern ImVec2 g_commsBadgeHoverPos;
+extern bool g_commsSortTest;
+
+// ---------------------------------------------------------------------------
+// DEV TOOL: GWO_LIBRARY_SHOT=<folder for the pictures>|<match folder>. The Library window, off
+// every monitor and never activated, saves library.png after 12 s, then puts ImGui's pointer (not
+// the real cursor) on that match's voice comms badge and saves library_tooltip.png, then closes.
+// ---------------------------------------------------------------------------
+void MapBrowser::LibraryShotSelfTest()
+{
+    static bool init = false, on = false;
+    static std::filesystem::path dir;
+    static std::string folder;
+    static double t0 = 0.0;
+    static int stage = 0;
+    const double now = GetTickCount64() / 1000.0;
+    if (!init)
+    {
+        init = true;
+        char buf[2048] = {};
+        if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT", buf, sizeof(buf)) == 0) return;
+        std::string v = buf;
+        const size_t bar = v.find('|');
+        dir = std::filesystem::path(v.substr(0, bar));
+        if (bar != std::string::npos) folder = v.substr(bar + 1);
+        on = true;
+        t0 = now;
+        if (HWND h = m_deviceResources->GetWindow())
+        {
+            RECT r = {0, 0, 1600, 900};
+            AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+            SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+            ShowWindow(h, SW_SHOWNOACTIVATE);
+        }
+        RunLog::Line("library-shot: pictures to '%s', badge of '%s'", dir.string().c_str(), folder.c_str());
+    }
+    if (!on) return;
+    auto shot = [&](const char* name) {
+        DirectX::ScratchImage img;
+        if (SUCCEEDED(DirectX::CaptureTexture(m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext(),
+                                              m_deviceResources->GetRenderTarget(), img)))
+            DirectX::SaveToWICFile(*img.GetImage(0, 0, 0), DirectX::WIC_FLAGS_NONE,
+                                   DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG), (dir / name).c_str());
+        RunLog::Line("library-shot: picture '%s'", (dir / name).string().c_str());
+    };
+    const double t = now - t0;
+    // The list sorted on the voice comms column (as one click on its header), then the badge's
+    // tooltip, then the header's.
+    if (stage == 0 && t > 9.0) { g_commsSortTest = true; stage = 1; }
+    else if (stage == 1 && t > 12.0) { shot("library.png"); g_commsBadgeHoverTest = folder; stage = 2; }
+    else if (stage == 2 && t > 16.0) { shot("library_tooltip.png"); g_commsBadgeHoverTest = "##header"; stage = 3; }
+    else if (stage == 3 && t > 20.0) { shot("library_header_tooltip.png"); g_commsBadgeHoverTest.clear(); stage = 4; }
+    else if (stage == 4 && t > 20.5)
+    {
+        stage = 5;
+        if (HWND h = m_deviceResources->GetWindow()) PostMessage(h, WM_CLOSE, 0, 0);
+    }
+}
 
 static std::string GetFontBasePath()
 {
@@ -399,6 +458,12 @@ void MapBrowser::Initialize(HWND window, int width, int height)
         iniFilePath = (exeDir / "imgui_layout.ini").string();
     }
     io.IniFilename = iniFilePath.c_str();
+    // DEV TOOL: a test run (a quiet test instance, a self-test, a picture hook) resizes and moves
+    // the Library for its pictures: it neither reads nor writes the owner's imgui_layout.ini.
+    if (UrlProtocol::QuietTestInstance() || GetEnvironmentVariableA("GWO_INSTANCE_TAG", nullptr, 0) > 0 ||
+        GetEnvironmentVariableA("GWO_LIBRARY_SHOT", nullptr, 0) > 0 ||
+        GetEnvironmentVariableA("GWO_COMMS_SELFTEST", nullptr, 0) > 0)
+        io.IniFilename = nullptr;
 
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1221,6 +1286,9 @@ void MapBrowser::Render()
     // --- Start ImGui Frame ---
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    // DEV TOOL (GWO_LIBRARY_SHOT): ImGui's pointer on the comms badge, after the backend so it wins.
+    if (!g_commsBadgeHoverTest.empty() && g_commsBadgeHoverPos.x > -1e8f)
+        ImGui::GetIO().AddMousePosEvent(g_commsBadgeHoverPos.x, g_commsBadgeHoverPos.y);
     if (GuiGlobalConstants::IsDeveloperMode())
         meta_module_selftest_input();   // after the backend, so its mouse wins over the real one
     ImGui::NewFrame();
@@ -1330,6 +1398,8 @@ void MapBrowser::Render()
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     m_deviceResources->PIXEndEvent();
+
+    LibraryShotSelfTest();   // DEV TOOL (GWO_LIBRARY_SHOT), before Present: a real frame to take
 
     // --- Present Frame ---
     m_deviceResources->Present();
@@ -2511,7 +2581,27 @@ void MapBrowser::ProcessCloudDownloadResult()
 void MapBrowser::StartAttrBatchFromEnv()
 {
     char listPath[MAX_PATH] = {};
-    if (GetEnvironmentVariableA("GWO_ATTR_BATCH", listPath, (DWORD)sizeof(listPath)) == 0)
+    // GWO_COMMS_SELFTEST=<match folder>[;<match folder>...] with no batch list: those folders are
+    // the batch (ReplayWindow_Comms.cpp runs the comms self-test in each).
+    char commsTest[4096] = {};
+    if (GetEnvironmentVariableA("GWO_ATTR_BATCH", listPath, (DWORD)sizeof(listPath)) == 0 &&
+        GetEnvironmentVariableA("GWO_COMMS_SELFTEST", commsTest, (DWORD)sizeof(commsTest)) > 0)
+    {
+        const std::string spec = commsTest;
+        for (size_t a = 0; a <= spec.size();)
+        {
+            size_t e = spec.find(';', a);
+            if (e == std::string::npos) e = spec.size();
+            const std::string item = spec.substr(a, e - a);
+            if (!item.empty() && item != "1") m_attrBatch.folders.push_back(item);
+            a = e + 1;
+        }
+        m_attrBatch.active = !m_attrBatch.folders.empty();
+        ReplayWindow::s_openWithoutFocus = m_attrBatch.active;
+        RunLog::Line("comms-selftest: %zu match folder(s) from GWO_COMMS_SELFTEST", m_attrBatch.folders.size());
+        return;
+    }
+    if (listPath[0] == 0)
         return;
 
     std::ifstream in(listPath);
@@ -2578,7 +2668,8 @@ void MapBrowser::ProcessAttrBatch()
                 std::chrono::steady_clock::now() - m_attrBatch.openedAt).count();
             const bool done = m_attrBatch.mapPictures
                 ? rw->MapImageCaptureTried()
-                : rw->AttributesDeduced() && rw->ClipSelfTestDone() && rw->SoundSelfTestDone();
+                : rw->AttributesDeduced() && rw->ClipSelfTestDone() && rw->SoundSelfTestDone() &&
+                  rw->CommsSelfTestDone();
             if (!done && !rw->LoadFailed() && secs < 600.0)
                 return;
             RunLog::Line("attr-batch: closing '%s' - %s after %.0f s",

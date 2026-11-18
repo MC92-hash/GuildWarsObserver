@@ -29,6 +29,8 @@
 #include "MatchLink.h"
 #include "UrlProtocol.h"
 #include "StatsTableView.h"
+#include "CommsAudio.h"
+#include <imgui_internal.h>
 
 #include "ui/ui_kit.h"
 
@@ -1134,6 +1136,51 @@ static void DrawShareMatchButton(const MatchMeta& m, float width)
     dl->AddRect(ImVec2(x0, cy - 4.0f), ImVec2(x0 + 9.0f, cy + 1.0f), fg, 2.5f, 0, 1.4f);
     dl->AddRect(ImVec2(x0 + 5.0f, cy - 1.0f), ImVec2(x0 + 14.0f, cy + 4.0f), fg, 2.5f, 0, 1.4f);
     dl->AddText(ImVec2(x0 + iconW + gap, cy - ts.y * 0.5f), fg, label);
+}
+
+// DEV TOOL (GWO_LIBRARY_SHOT, MapBrowser.cpp): the match whose comms badge the pointer is put on,
+// through ImGui's own input queue (the real cursor never moves), for the tooltip's picture.
+std::string g_commsBadgeHoverTest;
+ImVec2 g_commsBadgeHoverPos(-FLT_MAX, -FLT_MAX);   // where that badge was drawn (MapBrowser injects it)
+bool g_commsSortTest = false;                      // ...and the list sorted on the comms column once
+
+// A headset glyph in an `h` square at `p`.
+static void DrawHeadsetGlyph(ImDrawList* dl, ImVec2 p, float h, ImU32 col)
+{
+    const ImVec2 c(p.x + h * 0.5f, p.y + h * 0.52f);
+    const float r = h * 0.36f, th = std::max(1.3f, h * 0.09f);
+    dl->PathArcTo(c, r, IM_PI, 2.f * IM_PI, 16);
+    dl->PathStroke(col, false, th);
+    // The ear cups, and the microphone's boom from the right one.
+    dl->AddRectFilled(ImVec2(c.x - r - th * 0.9f, c.y - h * 0.02f), ImVec2(c.x - r + th * 1.6f, c.y + h * 0.34f), col, th);
+    dl->AddRectFilled(ImVec2(c.x + r - th * 1.6f, c.y - h * 0.02f), ImVec2(c.x + r + th * 0.9f, c.y + h * 0.34f), col, th);
+    dl->AddBezierQuadratic(ImVec2(c.x + r, c.y + h * 0.30f), ImVec2(c.x + r * 0.6f, c.y + h * 0.45f),
+                           ImVec2(c.x + h * 0.02f, c.y + h * 0.42f), col, th * 0.8f);
+    dl->AddCircleFilled(ImVec2(c.x, c.y + h * 0.42f), th * 0.9f, col);
+}
+
+// A headset: the match has voice comms attached on this PC (CommsAudio.h, Comms::BadgeFor, cached).
+// Dim gold, about the text's height; grey when the file is no longer on disk. Takes an `h` square
+// in the layout, so nothing beside it moves whether it is drawn or not.
+static void DrawCommsBadge(const std::string& folder, float h)
+{
+    const Comms::Badge b = Comms::BadgeFor(folder);
+    if (!b.present) return;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(h, h));
+    const bool hov = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = !b.exists ? IM_COL32(130, 130, 136, hov ? 200 : 140)
+                                : IM_COL32(200, 168, 75, hov ? 255 : 200);
+    DrawHeadsetGlyph(dl, p, h, col);
+    if (hov)
+        ImGui::SetTooltip(b.exists ? "Voice comms attached: %s" : "Voice comms file missing: %s", b.name.c_str());
+    static int s_hoverFrame = -1;   // once a frame: the list's badge, not the sidebar's
+    if (!g_commsBadgeHoverTest.empty() && g_commsBadgeHoverTest == folder && s_hoverFrame != ImGui::GetFrameCount())
+    {
+        s_hoverFrame = ImGui::GetFrameCount();
+        g_commsBadgeHoverPos = ImVec2(p.x + h * 0.5f, p.y + h * 0.5f);
+    }
 }
 
 static void DrawFluxWithTooltip(const std::string& flux, float infoIconH)
@@ -3427,6 +3474,23 @@ static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMe
             case 8: r = a.build2.compare(b.build2); break;
             case 9: r = MatchRatings::Get().GetRating(a.meta->folder_name)
                       - MatchRatings::Get().GetRating(b.meta->folder_name); break;
+            case 11:   // Voice comms (its table column carries this id): attached, file missing, none
+            {
+                auto rank = [](const FilteredMatch& m) {
+                    const Comms::Badge cb = Comms::BadgeFor(m.meta->folder_name);
+                    return !cb.present ? 0 : cb.exists ? 2 : 1;
+                };
+                r = rank(a) - rank(b);
+                if (r == 0)
+                {
+                    // Equal groups keep the date order, newest first, whichever way this sorts.
+                    const int da = a.meta->year * 10000 + a.meta->month * 100 + a.meta->day;
+                    const int db = b.meta->year * 10000 + b.meta->month * 100 + b.meta->day;
+                    return da > db;
+                }
+                // Descending (the first click) puts the matches with comms first.
+                break;
+            }
             default: break;
             }
             return asc ? (r < 0) : (r > 0);
@@ -3492,6 +3556,7 @@ static uint64_t FilterSignature(const std::vector<MatchMeta>& matches)
 
     mix((uint64_t)s_state.sortColumn);
     mix(s_state.sortAscending ? 1u : 0u);
+    if (s_state.sortColumn == 11) mix(Comms::BadgeVersion());   // re-sort when comms come or go
     return h;
 }
 
@@ -4763,6 +4828,14 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
             ImGui::TextColored(ImVec4(0.831f, 0.831f, 0.847f, 1.f), "\xe2\x97\xb7 %s", m.match_duration.c_str());
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, 16.f);
+        // Voice comms attached on this PC.
+        if (const Comms::Badge cb = Comms::BadgeFor(m.folder_name); cb.present)
+        {
+            DrawCommsBadge(m.folder_name, ImGui::GetTextLineHeight());
+            ImGui::SameLine(0.f, 4.f);
+            ImGui::TextColored(cb.exists ? ImVec4(0.831f, 0.831f, 0.847f, 1.f) : ImVec4(0.55f, 0.55f, 0.58f, 1.f),
+                               "%s", cb.exists ? "Voice comms attached" : "Voice comms file missing");
+        }
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -5906,7 +5979,9 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float compIconW = 8 * (kCompIconSz + kCompIconGap) + 4.0f;   // a full team of eight
     float mapW = std::max(90.0f, tableW * 0.13f);
     float notesColW = 20.0f;
-    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW
+    // Voice comms: the headset alone. Always shown, so the layout never jumps when comms come.
+    float commsColW = std::ceil(ImGui::GetTextLineHeight()) + 2.0f;
+    float teamW = std::clamp((tableW - dateW - commsColW - mapW - occasionW - ratingW
                               - compW * 2 - compIconW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
@@ -5919,39 +5994,66 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
     // Column order is the logical order the cells below address by index, so the cells can
     // stay in the order that reads best in code while the table shows them in this one.
-    // The sort comparator switches on the same indices - keep the two in step.
+    // Each column also carries a sort id (TableSetupColumn's user id), which is what the sort
+    // comparator switches on - keep those in step. The comms column came last (id 11), so the
+    // ids of the others did not change when it was put second.
     enum MatchCol {
-        Col_Date = 0, Col_Occasion, Col_Map,
+        Col_Date = 0, Col_Comms, Col_Occasion, Col_Map,
         Col_Team1, Col_Comp1, Col_Team2, Col_Comp2,
         Col_Build1, Col_Build2, Col_Rating, Col_Notes, Col_Count
     };
 
-    if (ImGui::BeginTable("##match_table", Col_Count, tableFlags))
+    if (ImGui::BeginTable("##match_table_v2", Col_Count, tableFlags))   // v2: the comms column (new saved widths)
     {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("DATE",          ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW);
-        ImGui::TableSetupColumn("OCCASION",      ImGuiTableColumnFlags_WidthFixed, occasionW);
-        ImGui::TableSetupColumn("MAP",           ImGuiTableColumnFlags_WidthFixed, mapW);
-        ImGui::TableSetupColumn("TEAM 1",        ImGuiTableColumnFlags_WidthFixed, teamW);
+        ImGui::TableSetupColumn("DATE",          ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW, 0);
+        // Its first click puts the matches with comms first.
+        ImGui::TableSetupColumn("##comms",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize | ImGuiTableColumnFlags_PreferSortDescending, commsColW, 11);
+        ImGui::TableSetupColumn("OCCASION",      ImGuiTableColumnFlags_WidthFixed, occasionW, 1);
+        ImGui::TableSetupColumn("MAP",           ImGuiTableColumnFlags_WidthFixed, mapW, 2);
+        ImGui::TableSetupColumn("TEAM 1",        ImGuiTableColumnFlags_WidthFixed, teamW, 3);
         // Icons carry no ordering a click on the header could express, so they do not sort.
-        ImGui::TableSetupColumn("COMPOSITION 1", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW);
-        ImGui::TableSetupColumn("TEAM 2",        ImGuiTableColumnFlags_WidthFixed, teamW);
-        ImGui::TableSetupColumn("COMPOSITION 2", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW);
-        ImGui::TableSetupColumn("TEAM BUILD 1",  ImGuiTableColumnFlags_WidthFixed, compW);
-        ImGui::TableSetupColumn("TEAM BUILD 2",  ImGuiTableColumnFlags_WidthFixed, compW);
-        ImGui::TableSetupColumn("RATING",        ImGuiTableColumnFlags_WidthFixed, ratingW);
-        ImGui::TableSetupColumn("##notes",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW);
+        ImGui::TableSetupColumn("COMPOSITION 1", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW, 4);
+        ImGui::TableSetupColumn("TEAM 2",        ImGuiTableColumnFlags_WidthFixed, teamW, 5);
+        ImGui::TableSetupColumn("COMPOSITION 2", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW, 6);
+        ImGui::TableSetupColumn("TEAM BUILD 1",  ImGuiTableColumnFlags_WidthFixed, compW, 7);
+        ImGui::TableSetupColumn("TEAM BUILD 2",  ImGuiTableColumnFlags_WidthFixed, compW, 8);
+        ImGui::TableSetupColumn("RATING",        ImGuiTableColumnFlags_WidthFixed, ratingW, 9);
+        ImGui::TableSetupColumn("##notes",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW, 10);
 
-        // Headers sit back as labels over the list rather than announcing a grid.
+        // DEV TOOL (GWO_LIBRARY_SHOT): the comms column sorted, as one click on its header does.
+        if (g_commsSortTest)
+        {
+            g_commsSortTest = false;
+            ImGui::TableSetColumnSortDirection(Col_Comms, ImGuiSortDirection_Descending, false);
+        }
+
+        // Headers sit back as labels over the list rather than announcing a grid. The comms
+        // column's header is a dim headset, "Voice comms" on hover.
         ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
-        ImGui::TableHeadersRow();
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int col = 0; col < Col_Count; ++col)
+        {
+            if (!ImGui::TableSetColumnIndex(col)) continue;
+            ImGui::TableHeader(ImGui::TableGetColumnName(col));
+            if (col == Col_Comms)
+            {
+                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                const float h = ImGui::GetTextLineHeight();
+                const ImVec2 p(a.x, a.y + ((b.y - a.y) - h) * 0.5f);
+                const bool hov = ImGui::IsItemHovered();
+                DrawHeadsetGlyph(ImGui::GetWindowDrawList(), p, h, hov ? IM_COL32(200, 168, 75, 230) : IM_COL32(150, 130, 80, 160));
+                if (hov) ImGui::SetTooltip("Voice comms");
+                if (g_commsBadgeHoverTest == "##header") g_commsBadgeHoverPos = ImVec2(p.x + h * 0.5f, p.y + h * 0.5f);
+            }
+        }
         ImGui::PopStyleColor();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
         {
             if (sortSpecs->SpecsDirty && sortSpecs->SpecsCount > 0)
             {
-                s_state.sortColumn = sortSpecs->Specs[0].ColumnIndex;
+                s_state.sortColumn = static_cast<int>(sortSpecs->Specs[0].ColumnUserID);
                 s_state.sortAscending = (sortSpecs->Specs[0].SortDirection == ImGuiSortDirection_Ascending);
                 sortSpecs->SpecsDirty = false;
             }
@@ -6074,6 +6176,11 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     dl->AddText(ImVec2(cellStart.x + iconW, cy),
                                 ImGui::GetColorU32(kColorTextMuted), dateBuf);
                 }
+
+                // Voice comms attached on this PC: the headset (grey when the file is gone).
+                ImGui::TableSetColumnIndex(Col_Comms);
+                CenterCell(textH);
+                DrawCommsBadge(m.folder_name, textH);
 
                 ImGui::TableSetColumnIndex(Col_Occasion);
                 CenterCell(textH);

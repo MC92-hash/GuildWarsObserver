@@ -224,7 +224,7 @@ void ReplayWindow::DrawAgentModelLoadingBanner()
     const float bannerW = std::min(340.f, vpW * 0.35f);
     const float bannerH = 32.f;
     const float bannerX = (vpW - bannerW) * 0.5f + vp->Pos.x;
-    const float playbarH = 76.f;
+    const float playbarH = PlayBarHeight();
     const float bannerY = vp->Pos.y + vp->Size.y - playbarH - bannerH - 6.f;
 
     const ImU32 cBg      = IM_COL32(  8,   9,  12, static_cast<int>(180 * alpha));
