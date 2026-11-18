@@ -1656,30 +1656,39 @@ void ReplayWindow::DrawHighlightsFilter()
 // Play bar: the Highlights button, and the moments as marks under the track
 // ---------------------------------------------------------------------------
 
-// Draws the pill at (x, y) and returns its width. On the play bar, left of the Clip button.
+// The play bar's toggle, in the transport group right of Loop and drawn the way Loop is: a glyph
+// and a small label, lit while on.
+float ReplayWindow::HighlightsButtonWidth() const
+{
+    ImFont* font = ImGui::GetFont();
+    return 19.f + font->CalcTextSizeA(font->FontSize * 0.82f, FLT_MAX, 0.f, "Highlights").x + 6.f;
+}
+
 void ReplayWindow::DrawHighlightsButton(float x, float y, float h)
 {
-    const float w = 104.f;
+    const float w = HighlightsButtonWidth();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImFont* font = ImGui::GetFont();
-    const float fs = font->FontSize;
+    const float fsSm = font->FontSize * 0.82f;
     ImGui::SetCursorScreenPos(ImVec2(x, y));
     ImGui::InvisibleButton("##Highlights", ImVec2(w, h));
     const bool hov = ImGui::IsItemHovered();
     const bool on = HighlightsActive();
     if (ImGui::IsItemClicked() && !IsClipRendering()) ToggleHighlights();
 
-    const ImU32 bg  = on ? IM_COL32(200, 168, 75, 70) : hov ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
-    const ImU32 bdr = (on || hov) ? cBorderGlow : cBorderHi;
-    dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), bg, h * 0.5f);
-    dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), bdr, h * 0.5f);
-    const ImU32 fg = (on || hov) ? cGoldBright : cTextMid;
+    // The play bar's one hover: a soft rounded highlight, no border, the glyph near-white. On: a
+    // faint gold fill and a gold glyph.
+    if (on)
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(200, 168, 75, 26), 6.f);
+    if (hov)
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(255, 244, 222, 24), 6.f);
+    const ImU32 fg = hov ? IM_COL32(248, 242, 230, 255) : on ? cGoldBright : cTextMid;
     // A star: the moments worth watching. Its inner pentagon and the five points, each convex.
-    const ImVec2 sc(x + 17.f, y + h * 0.5f);
+    const ImVec2 sc(x + 9.f, y + h * 0.5f);
     ImVec2 pts[10];
     for (int k = 0; k < 10; ++k)
     {
-        const float r = (k % 2 == 0) ? 7.f : 3.f;
+        const float r = (k % 2 == 0) ? 5.5f : 2.3f;
         const float a = -XM_PIDIV2 + k * XM_PI / 5.f;
         pts[k] = ImVec2(sc.x + r * std::cos(a), sc.y + r * std::sin(a));
     }
@@ -1687,7 +1696,7 @@ void ReplayWindow::DrawHighlightsButton(float x, float y, float h)
     dl->AddConvexPolyFilled(inner, 5, fg);
     for (int k = 0; k < 10; k += 2)
         dl->AddTriangleFilled(pts[(k + 9) % 10], pts[k], pts[k + 1], fg);
-    dl->AddText(font, fs, ImVec2(x + 30.f, y + (h - fs) * 0.5f), fg, "Highlights");
+    dl->AddText(font, fsSm, ImVec2(x + 19.f, y + (h - fsSm) * 0.5f), fg, "Highlights");
     if (hov)
     {
         std::string tip = on ? "Leave Highlights: play the whole match" : "Play only the key moments of the match";

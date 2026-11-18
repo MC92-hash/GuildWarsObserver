@@ -44,7 +44,8 @@ void ReplayWindow::DrawTimelineController()
 
     const float sf = 1.f;
 
-    const float barH     = 76.f;
+    // Taller while a comms recording is attached: its lane runs under the controls.
+    const float barH     = PlayBarHeight();
     const float PAD      = 12.f;
     const float PADY     = 6.f;
     const float TRKH     = 4.f;
@@ -249,14 +250,25 @@ void ReplayWindow::DrawTimelineController()
     // ══════════════════════════════════════════════════════════════════════
     const float cy = y0 + ROW2_OFS;
 
+    // One hover for every button in the bar: a soft rounded highlight, the same radius
+    // everywhere, no border; the glyph brightens to near-white (cHoverFg).
+    const float kBtnRound = 6.f * sf;
+    const ImU32 cHoverFill = IM_COL32(255, 244, 222, 24);
+    const ImU32 cHoverFg   = IM_COL32(248, 242, 230, 255);
     auto FillBtn = [&](float bx, float by, float bw, float bh, bool hov,
                        ImU32 bg0, ImU32 bdr0) {
-        ImU32 bg  = hov ? cGoldFill : bg0;
-        ImU32 bdr = hov ? cBorderHi : bdr0;
-        if ((bg >> 24) > 0)
-            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bg, 5.f);
-        if ((bdr >> 24) > 0)
-            dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bdr, 5.f);
+        if ((bg0 >> 24) > 0)
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bg0, kBtnRound);
+        if (hov)
+            dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + bw, by + bh), cHoverFill, kBtnRound);
+        if ((bdr0 >> 24) > 0)
+            dl->AddRect(ImVec2(bx, by), ImVec2(bx + bw, by + bh), bdr0, kBtnRound);
+    };
+    // DEV TOOL (the comms self-test): where each button is, to hover it by code.
+    m_playBarHot.clear();
+    auto Hot = [&](const char* name) {
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        m_playBarHot.push_back({name, ImVec4(a.x, a.y, b.x, b.y)});
     };
 
     auto Divider = [&](float dx) {
@@ -269,7 +281,26 @@ void ReplayWindow::DrawTimelineController()
     const float stopW = 24.f * sf;
     const float transportW = bk30W + BGAP + bk5W + BGAP + bk1W + GDIV + PLAY_SZ + BGAP + stopW
                            + GDIV + fw1W + BGAP + fw5W + BGAP + fw30W;
-    const float transportX = O.x + (vpW - transportW) * 0.5f;
+    // The centre group: the transport, the game volume (with voice comms attached its speaker
+    // opens the mixer), Highlights. The right group: the speed, then the Share split button.
+    const float hlW     = HighlightsButtonWidth();
+    const float speedW  = 46.f * sf;
+    const float volIconW = 24.f * sf;
+    const float shareMainW = 74.f * sf, shareArrowW = 22.f * sf;
+    const float shareW  = m_liveMode ? 0.f : shareMainW + shareArrowW;
+    const float leftEnd = x0 + 66.f + 10.f * sf + 100.f * sf;   // the status chip and the stars
+    const float rightStart = px + pw - PAD - shareW - (shareW > 0.f ? 10.f * sf : 0.f) - speedW;
+    // Narrow windows: the volume track gives up width before anything overlaps.
+    float volTrkW = 96.f * sf;
+    auto GroupW = [&] { return transportW + GDIV + volIconW + 4.f * sf + volTrkW + GDIV + hlW; };
+    {
+        const float room = rightStart - 14.f * sf - (leftEnd + 12.f * sf);
+        if (GroupW() > room) volTrkW = std::max(48.f * sf, volTrkW - (GroupW() - room));
+    }
+    const float groupW = GroupW();
+    float transportX = O.x + (vpW - groupW) * 0.5f;
+    transportX = std::min(transportX, rightStart - 14.f * sf - groupW);
+    transportX = std::max(transportX, leftEnd + 12.f * sf);
 
     // ── Status chip (left-aligned) ───────────────────────────────────────
     {
@@ -313,9 +344,10 @@ void ReplayWindow::DrawTimelineController()
         ImGui::InvisibleButton(id, ImVec2(bw, BTN_H));
         bool hov = ImGui::IsItemHovered();
         bool clk = ImGui::IsItemClicked();
+        Hot(id);
         FillBtn(cx, cy, bw, BTN_H, hov, 0, 0);
 
-        ImU32 fg    = hov ? cGoldBright : cTextMid;
+        ImU32 fg    = hov ? cHoverFg : cTextMid;
         float thick = 1.3f * sf;
         float rad   = 4.f * sf;
 
@@ -363,13 +395,14 @@ void ReplayWindow::DrawTimelineController()
         ImGui::InvisibleButton("##PlayPause", ImVec2(PLAY_SZ, PLAY_SZ));
         bool hov = ImGui::IsItemHovered();
         bool clk = ImGui::IsItemClicked();
+        Hot("##PlayPause");
 
-        ImU32 bg  = hov ? IM_COL32(200,168,75, 33) : IM_COL32(200,168,75, 18);
-        ImU32 bdr = hov ? cBorderGlow : cBorderHi;
-        ImU32 fg  = hov ? cGoldBright : cGold;
-
-        dl->AddRectFilled(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), bg, 6.f);
-        dl->AddRect(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), bdr, 6.f);
+        // The main button keeps its soft frame; the hover is the bar's one highlight on top.
+        ImU32 fg  = hov ? cHoverFg : cGold;
+        dl->AddRectFilled(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), IM_COL32(200,168,75, 18), kBtnRound);
+        if (hov)
+            dl->AddRectFilled(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), cHoverFill, kBtnRound);
+        dl->AddRect(ImVec2(cx, plaY), ImVec2(cx+PLAY_SZ, plaY+PLAY_SZ), cBorderHi, kBtnRound);
 
         float pcx = cx + PLAY_SZ * 0.5f;
         float pcy = plaY + PLAY_SZ * 0.5f;
@@ -403,9 +436,9 @@ void ReplayWindow::DrawTimelineController()
         bool hov = ImGui::IsItemHovered();
         bool clk = ImGui::IsItemClicked();
 
-        ImU32 fg  = hov ? cDanger : cTextMid;
-        ImU32 bdr = hov ? IM_COL32(192,80,74,100) : IM_COL32(0,0,0,0);
-        FillBtn(cx, cy, stopW, BTN_H, hov, 0, bdr);
+        Hot("##Stop");
+        ImU32 fg  = hov ? cHoverFg : cTextMid;
+        FillBtn(cx, cy, stopW, BTN_H, hov, 0, 0);
 
         float sq  = 8.f * sf;
         float scx = cx + (stopW - sq) * 0.5f;
@@ -424,62 +457,35 @@ void ReplayWindow::DrawTimelineController()
     DrawStepBtn("##Fw5",  fw5W,  "5s",  +5.f,  true);
     DrawStepBtn("##Fw30", fw30W, "30s", +30.f, true);
 
-    // ── Loop (right of transport) ────────────────────────────────────────
+    // ── The game volume, right of the transport ──────────────────────────
+    // The speaker mutes the game's sound and the track sets the master volume, always shown (the
+    // track doubles as the mute indicator). With voice comms attached the speaker opens a small
+    // mixer instead: the game and the comms, each with its mute and its volume. The speaker is
+    // flat vector art in the transport glyphs' weight and colours.
     cx += GDIV;
     Divider(cx - GDIV * 0.5f);
     {
-        float loopW = 46.f * sf;
-        ImGui::SetCursorScreenPos(ImVec2(cx, cy));
-        ImGui::InvisibleButton("##Loop", ImVec2(loopW, BTN_H));
-        bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
-
-        bool on   = ctx.loopPlayback;
-        ImU32 fg  = (hov || on) ? cGoldBright : cTextMid;
-        ImU32 bg  = on ? cGoldFill  : IM_COL32(0,0,0,0);
-        ImU32 bdr = on ? cBorderHi  : IM_COL32(0,0,0,0);
-        FillBtn(cx, cy, loopW, BTN_H, hov, bg, bdr);
-
-        float thick = 1.3f * sf;
-        float ox = cx + 4.f*sf, oy = cy + BTN_H * 0.5f;
-        dl->AddLine(ImVec2(ox,          oy-3.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
-        dl->AddLine(ImVec2(ox+6.f*sf,   oy-6.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
-        dl->AddLine(ImVec2(ox+6.f*sf,   oy-0.f*sf), ImVec2(ox+8.f*sf, oy-3.f*sf), fg, thick);
-        dl->AddLine(ImVec2(ox+8.f*sf,   oy+3.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
-        dl->AddLine(ImVec2(ox+2.f*sf,   oy+0.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
-        dl->AddLine(ImVec2(ox+2.f*sf,   oy+6.f*sf), ImVec2(ox,        oy+3.f*sf), fg, thick);
-
-        dl->AddText(font, fsSm,
-            ImVec2(cx + 17.f*sf, cy + (BTN_H - fsSm)*0.5f), fg, "Loop");
-
-        if (clk) ctx.loopPlayback = !ctx.loopPlayback;
-        if (hov) ImGui::SetTooltip(ctx.loopPlayback ? "Loop: ON" : "Loop: OFF");
-        cx += loopW;
-    }
-
-    // ── Volume (right of Loop) ───────────────────────────────────────────
-    // Click the speaker to mute, drag the track for master volume. The slider is always shown
-    // rather than revealed on hover: it has to reserve its width in the row anyway, and a
-    // visible track doubles as the mute indicator. The speaker is drawn as flat vector art in
-    // the same weight and colours as the transport glyphs rather than blitted from the ribbon
-    // sheet, so it sits in the row instead of on top of it.
-    cx += GDIV;
-    Divider(cx - GDIV * 0.5f);
-    {
-        const float volW = 20.f * sf;
-        const float trkW = 96.f * sf;
+        const float volW = volIconW;
+        const float trkW = volTrkW;
         AudioConfig* acfg = m_audioEngine ? &m_audioEngine->GetConfig() : nullptr;
+        const bool mixer = CommsAttached();
 
         ImGui::SetCursorScreenPos(ImVec2(cx, cy));
         ImGui::InvisibleButton("##Mute", ImVec2(volW, BTN_H));
         const bool hovIcon = ImGui::IsItemHovered();
+        Hot("##Mute");
         if (ImGui::IsItemClicked())
-            m_audioEnabled = !m_audioEnabled;
-        FillBtn(cx, cy, volW, BTN_H, hovIcon, 0, 0);
+        {
+            if (mixer) ImGui::OpenPopup("##VolumeMixer");
+            else m_audioEnabled = !m_audioEnabled;
+        }
+        const bool mixerOpen = mixer && ImGui::IsPopupOpen("##VolumeMixer");
+        FillBtn(cx, cy, volW, BTN_H, hovIcon || mixerOpen, 0, 0);
+        if (mixer) DrawVolumeMixer("##VolumeMixer", cx, cy - 6.f * sf);
 
-        const ImU32 vfg   = (hovIcon || m_audioEnabled) ? cGoldBright : cTextMid;
+        const ImU32 vfg   = (hovIcon || mixerOpen) ? cHoverFg : m_audioEnabled ? cGoldBright : cTextMid;
         const float thick = 1.3f * sf;
-        const float ox    = cx + 4.f * sf, oy = cy + BTN_H * 0.5f;
+        const float ox    = cx + 5.f * sf, oy = cy + BTN_H * 0.5f;
 
         dl->AddRectFilled(ImVec2(ox, oy - 2.f * sf), ImVec2(ox + 3.2f * sf, oy + 2.f * sf), vfg);
         dl->AddTriangleFilled(ImVec2(ox + 7.2f * sf, oy - 4.6f * sf),
@@ -499,7 +505,11 @@ void ReplayWindow::DrawTimelineController()
             dl->AddLine(ImVec2(ox, oy - 5.5f * sf), ImVec2(ox + 11.f * sf, oy + 5.5f * sf),
                         vfg, thick);
         }
-        cx += volW + 6.f * sf;
+        // With the mixer: a small caret beside the speaker says it opens something.
+        if (mixer)
+            dl->AddTriangleFilled(ImVec2(ox + 13.f * sf, oy + 3.f * sf), ImVec2(ox + 17.f * sf, oy + 3.f * sf),
+                                  ImVec2(ox + 15.f * sf, oy + 5.5f * sf), vfg);
+        cx += volW + 4.f * sf;
 
         // Track, to the right of the icon.
         {
@@ -521,128 +531,55 @@ void ReplayWindow::DrawTimelineController()
             const float vol   = acfg ? std::clamp(acfg->master_volume, 0.f, 1.f) : 0.f;
             const float frac  = m_audioEnabled ? vol : 0.f;
             const float tthick = 3.f * sf;
-            dl->AddLine(ImVec2(trkX, ty), ImVec2(trkX + trkW, ty), cTextDim, tthick);
+            const float kr = 6.f * sf;   // the knob stays inside the track's ends
+            const float k0 = trkX + kr, k1 = trkX + trkW - kr;
+            dl->AddLine(ImVec2(k0, ty), ImVec2(k1, ty), cTextDim, tthick);
             if (frac > 0.f)
-                dl->AddLine(ImVec2(trkX, ty), ImVec2(trkX + trkW * frac, ty), cGoldBright, tthick);
-            dl->AddCircleFilled(ImVec2(trkX + trkW * frac, ty),
-                                (hovTrk || held) ? 6.f * sf : 5.f * sf, cGoldBright);
+                dl->AddLine(ImVec2(k0, ty), ImVec2(k0 + (k1 - k0) * frac, ty), cGoldBright, tthick);
+            dl->AddCircleFilled(ImVec2(k0 + (k1 - k0) * frac, ty),
+                                (hovTrk || held) ? 6.f * sf : 5.f * sf, (hovTrk || held) ? cHoverFg : cGoldBright);
 
             if (hovTrk || held)
-                ImGui::SetTooltip("Master volume  %.0f%%", vol * 100.f);
+                ImGui::SetTooltip("Game volume  %.0f%%", vol * 100.f);
             cx += trkW;
         }
 
         if (hovIcon)
-            ImGui::SetTooltip(m_audioEnabled ? "Mute" : "Unmute");
+            ImGui::SetTooltip("%s", mixer ? "Volume: the game and the voice comms" : m_audioEnabled ? "Mute" : "Unmute");
     }
 
-    // Bookmarks are driven entirely from the ribbon toolbar (Add Bookmark /
-    // Bookmarks) and the scrub track's right-click menu, so the play bar
-    // carries no bookmark buttons of its own.
+    // Highlights: play only the key moments (ReplayWindow_Highlights.cpp), the bar's hover style.
+    cx += GDIV;
+    Divider(cx - GDIV * 0.5f);
+    DrawHighlightsButton(cx, cy, BTN_H);
+    Hot("##Highlights");
+    cx += hlW;
 
-    // Auto Camera and Top View live in the ribbon toolbar; the play bar
-    // keeps only transport and speed.
-
-    // ── Clip (left of the speed control) ─────────────────────────────────
-    // Twitch's Clip button: a clapperboard and the word, on a pill. Opens the GIF clip editor.
+    // ══════════════════════════════════════════════════════════════════════
+    // RIGHT: the speed, then Share
+    // ══════════════════════════════════════════════════════════════════════
     {
-        // Left of the SPEED label, measured: a wider font must not run it into the speed box.
-        const float speedLabelW = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x;
-        const float speedLabelX = px + pw - PAD - 54.f * sf - 8.f * sf - speedLabelW;
-        const float clipW = 66.f * sf;
-        const float shareW = 74.f * sf;
-        const float shareX = speedLabelX - 14.f * sf - shareW;
-        const float clipX = shareX - 10.f * sf - clipW;
-
-        // Share, between Clip and the speed: copies a link to this moment, with this camera
-        // (ReplayWindow_ShareLink.cpp). Dimmed for a match that is not published.
-        if (!m_liveMode)
-        {
-            const bool published = UrlProtocol::IsPublished(m_matchMeta.folder_name);
-            ImGui::SetCursorScreenPos(ImVec2(shareX, cy));
-            ImGui::InvisibleButton("##Share", ImVec2(shareW, BTN_H));
-            const bool hovS = ImGui::IsItemHovered();
-            if (ImGui::IsItemClicked() && published)
-                CopyShareLink(m_debugTimeline);
-
-            const ImU32 bgS  = (hovS && published) ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
-            const ImU32 bdrS = (hovS && published) ? cBorderGlow : cBorderHi;
-            dl->AddRectFilled(ImVec2(shareX, cy), ImVec2(shareX + shareW, cy + BTN_H), bgS, BTN_H * 0.5f);
-            dl->AddRect(ImVec2(shareX, cy), ImVec2(shareX + shareW, cy + BTN_H), bdrS, BTN_H * 0.5f);
-
-            const ImU32 fgS = !published ? cTextDim : hovS ? cGoldBright : cTextMid;
-            // Chain link: two rounded links, overlapping on the diagonal.
-            const float lx = shareX + 12.f * sf, ly = cy + BTN_H * 0.5f;
-            const float lw = 8.f * sf, lh = 5.f * sf, r = 2.5f * sf, th = 1.4f * sf;
-            dl->AddRect(ImVec2(lx, ly - lh * 0.5f - 1.5f * sf), ImVec2(lx + lw, ly + lh * 0.5f - 1.5f * sf), fgS, r, 0, th);
-            dl->AddRect(ImVec2(lx + lw * 0.55f, ly - lh * 0.5f + 1.5f * sf), ImVec2(lx + lw * 1.55f, ly + lh * 0.5f + 1.5f * sf), fgS, r, 0, th);
-            dl->AddText(font, fs, ImVec2(lx + 19.f * sf, cy + (BTN_H - fs) * 0.5f), fgS, "Share");
-
-            if (hovS)
-                ImGui::SetTooltip("%s", published ? "Copy a link to this moment, with this camera" : UrlProtocol::kNotPublishedTip);
-        }
-
-        ImGui::SetCursorScreenPos(ImVec2(clipX, cy));
-        ImGui::InvisibleButton("##Clip", ImVec2(clipW, BTN_H));
-        const bool hov = ImGui::IsItemHovered();
-        const bool active = IsClipEditorOpen();
-        if (ImGui::IsItemClicked() && !IsClipRendering())
-            ToggleClipEditor();
-
-        const ImU32 bg  = active ? IM_COL32(200, 168, 75, 70) : hov ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
-        const ImU32 bdr = (active || hov) ? cBorderGlow : cBorderHi;
-        dl->AddRectFilled(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + BTN_H), bg, BTN_H * 0.5f);
-        dl->AddRect(ImVec2(clipX, cy), ImVec2(clipX + clipW, cy + BTN_H), bdr, BTN_H * 0.5f);
-
-        const ImU32 fg = (active || hov) ? cGoldBright : cTextMid;
-        // Clapperboard: the board, and the striped clapper tilted open above it.
-        const float ix = clipX + 11.f * sf, iy = cy + BTN_H * 0.5f - 6.f * sf;
-        dl->AddRect(ImVec2(ix, iy + 4.f * sf), ImVec2(ix + 14.f * sf, iy + 13.f * sf), fg, 1.5f * sf, 0, 1.4f * sf);
-        const ImVec2 c0(ix, iy + 3.f * sf), c1(ix + 13.5f * sf, iy - 0.5f * sf);
-        const ImVec2 c2(ix + 14.3f * sf, iy + 2.1f * sf), c3(ix + 0.8f * sf, iy + 5.6f * sf);
-        dl->AddQuadFilled(c0, c1, c2, c3, fg);
-        for (int k = 1; k <= 3; k++)
-        {
-            const float t = k / 4.f;
-            const ImVec2 a(c0.x + (c1.x - c0.x) * t, c0.y + (c1.y - c0.y) * t);
-            const ImVec2 b(c3.x + (c2.x - c3.x) * (t - 0.08f), c3.y + (c2.y - c3.y) * (t - 0.08f));
-            dl->AddLine(a, b, IM_COL32(18, 16, 10, 255), 1.2f * sf);
-        }
-        dl->AddText(font, fs, ImVec2(ix + 20.f * sf, cy + (BTN_H - fs) * 0.5f), fg, "Clip");
-
-        if (hov) ImGui::SetTooltip("Create a GIF clip (Alt+X)");
-
-        // Highlights, left of Clip: play only the key moments.
-        DrawHighlightsButton(clipX - 10.f * sf - 104.f, cy, BTN_H);
-    }
-
-    // ── Speed (right-aligned) ────────────────────────────────────────────
-    {
-        float speedW = 54.f * sf;
-        float speedX = px + pw - PAD - speedW;
-
-        dl->AddText(font, fsSm,
-            ImVec2(speedX - 8.f*sf - font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, "SPEED").x,
-                   cy + (BTN_H - fsSm)*0.5f + 1.f), cTextDim, "SPEED");
-
+        const float speedX = rightStart;
         ImGui::SetCursorScreenPos(ImVec2(speedX, cy));
         ImGui::InvisibleButton("##Speed", ImVec2(speedW, BTN_H));
         bool hov = ImGui::IsItemHovered();
         bool clk = ImGui::IsItemClicked();
+        Hot("##Speed");
+        const bool open = ImGui::IsPopupOpen("SpeedMenu");
 
-        FillBtn(speedX, cy, speedW, BTN_H, hov, 0, cBorderHi);
+        FillBtn(speedX, cy, speedW, BTN_H, hov || open, 0, cBorder);
 
-        ImU32 sfg = hov ? cGoldBright : cTextMid;
+        ImU32 sfg = (hov || open) ? cHoverFg : cTextMid;
         // While Highlights drives the clock, the speed it is playing at.
         const std::string hlLbl = HighlightsSpeedLabel();
         const char* sLbl = hlLbl.empty() ? speedLabels[ctx.speedIndex] : hlLbl.c_str();
-        ImVec2 tsz = font->CalcTextSizeA(fs, FLT_MAX, 0.f, sLbl);
+        ImVec2 tsz = font->CalcTextSizeA(fsSm, FLT_MAX, 0.f, sLbl);
         float tx = speedX + (speedW - tsz.x - 8.f*sf) * 0.5f;
-        float ty = cy + (BTN_H - fs) * 0.5f;
-        dl->AddText(font, fs, ImVec2(tx, ty), sfg, sLbl);
+        float ty = cy + (BTN_H - fsSm) * 0.5f;
+        dl->AddText(font, fsSm, ImVec2(tx, ty), sfg, sLbl);
 
         float arX = tx + tsz.x + 3.f*sf;
-        float arY = ty + fs * 0.35f;
+        float arY = ty + fsSm * 0.4f;
         dl->AddTriangleFilled(
             ImVec2(arX, arY), ImVec2(arX + 4.f*sf, arY),
             ImVec2(arX + 2.f*sf, arY + 3.f*sf), sfg);
@@ -668,6 +605,88 @@ void ReplayWindow::DrawTimelineController()
         }
         if (hov) ImGui::SetTooltip("Playback speed");
     }
+
+    // Share: one split button, an outlined pill. The main part copies a link to this moment with
+    // this camera (ReplayWindow_ShareLink.cpp), dimmed for a match that is not published; the
+    // arrow opens the other ways to share, the GIF clip among them. Each half lights on its own.
+    if (!m_liveMode)
+    {
+        const float shareX = px + pw - PAD - shareW;
+        const float arrowX = shareX + shareMainW;
+        const bool published = UrlProtocol::IsPublished(m_matchMeta.folder_name);
+        const float rr = BTN_H * 0.5f;
+
+        ImGui::SetCursorScreenPos(ImVec2(shareX, cy));
+        ImGui::InvisibleButton("##Share", ImVec2(shareMainW, BTN_H));
+        const bool hovS = ImGui::IsItemHovered();
+        Hot("##Share");
+        if (ImGui::IsItemClicked() && published)
+            CopyShareLink(m_debugTimeline);
+        ImGui::SetCursorScreenPos(ImVec2(arrowX, cy));
+        ImGui::InvisibleButton("##ShareMore", ImVec2(shareArrowW, BTN_H));
+        const bool hovA = ImGui::IsItemHovered();
+        Hot("##ShareMore");
+        if (ImGui::IsItemClicked()) ImGui::OpenPopup("##ShareMenu");
+        const bool menuOpen = ImGui::IsPopupOpen("##ShareMenu") || m_shareMenuForced;
+
+        dl->AddRectFilled(ImVec2(shareX, cy), ImVec2(arrowX + shareArrowW, cy + BTN_H), IM_COL32(0, 0, 0, 60), rr);
+        if (hovS && published)
+            dl->AddRectFilled(ImVec2(shareX, cy), ImVec2(arrowX, cy + BTN_H), cHoverFill, rr, ImDrawFlags_RoundCornersLeft);
+        if (hovA || menuOpen)
+            dl->AddRectFilled(ImVec2(arrowX, cy), ImVec2(arrowX + shareArrowW, cy + BTN_H), cHoverFill, rr, ImDrawFlags_RoundCornersRight);
+        dl->AddRect(ImVec2(shareX, cy), ImVec2(arrowX + shareArrowW, cy + BTN_H), cBorderHi, rr);
+        dl->AddLine(ImVec2(arrowX, cy + 6.f * sf), ImVec2(arrowX, cy + BTN_H - 6.f * sf), cBorder, 1.f);
+
+        const ImU32 fgS = !published ? cTextDim : hovS ? cHoverFg : cTextMid;
+        // Chain link: two rounded links, overlapping on the diagonal.
+        const float lx = shareX + 12.f * sf, ly = cy + BTN_H * 0.5f;
+        const float lw = 8.f * sf, lh = 5.f * sf, r = 2.5f * sf, th = 1.4f * sf;
+        dl->AddRect(ImVec2(lx, ly - lh * 0.5f - 1.5f * sf), ImVec2(lx + lw, ly + lh * 0.5f - 1.5f * sf), fgS, r, 0, th);
+        dl->AddRect(ImVec2(lx + lw * 0.55f, ly - lh * 0.5f + 1.5f * sf), ImVec2(lx + lw * 1.55f, ly + lh * 0.5f + 1.5f * sf), fgS, r, 0, th);
+        dl->AddText(font, fs, ImVec2(lx + 19.f * sf, cy + (BTN_H - fs) * 0.5f), fgS, "Share");
+        const ImU32 fgA = (hovA || menuOpen) ? cHoverFg : cTextMid;
+        const float ax = arrowX + shareArrowW * 0.5f - 1.f * sf, ay = cy + BTN_H * 0.5f - 1.5f * sf;
+        dl->AddTriangleFilled(ImVec2(ax - 3.5f * sf, ay), ImVec2(ax + 3.5f * sf, ay), ImVec2(ax, ay + 4.f * sf), fgA);
+
+        if (hovS)
+            ImGui::SetTooltip("%s", published ? "Copy a link to this moment, with this camera" : UrlProtocol::kNotPublishedTip);
+        else if (hovA && !menuOpen)
+            ImGui::SetTooltip("More ways to share");
+
+        // The menu opens upwards, its right edge on the button's.
+        if (m_shareMenuForced && !ImGui::IsPopupOpen("##ShareMenu")) ImGui::OpenPopup("##ShareMenu");
+        ImGui::SetNextWindowPos(ImVec2(arrowX + shareArrowW, cy - 6.f * sf), ImGuiCond_Always, ImVec2(1.f, 1.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 8.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.f, 6.f));
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 1.f);
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 6.f);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.07f, 0.06f, 0.04f, 0.98f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.78f, 0.66f, 0.29f, 0.40f));
+        const bool shareMenu = ImGui::BeginPopup("##ShareMenu");
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(4);
+        if (shareMenu)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.91f, 0.87f, 0.78f, 1.f));
+            if (ImGui::MenuItem("Copy link to this moment", nullptr, false, published))
+                CopyShareLink(m_debugTimeline);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", published ? "With this camera and the selected player" : UrlProtocol::kNotPublishedTip);
+            if (ImGui::MenuItem("Copy link from match start", nullptr, false, published))
+                CopyShareLink(0.f, true);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", published ? "The match from 0:00, with the default camera" : UrlProtocol::kNotPublishedTip);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Make a clip (GIF)...", "Alt+X", false, !IsClipRendering()) && !IsClipEditorOpen())
+                ToggleClipEditor();
+            ImGui::PopStyleColor();
+            ImGui::EndPopup();
+        }
+    }
+
+    // ── Comms lane (under the controls, while a recording is attached) ───
+    if (CommsLaneVisible())
+        DrawCommsLane(x0, pw - PAD * 2.f, trackX, trackW, O.y + 72.f * sf, barH - 72.f * sf - 8.f * sf, maxT);
 
     m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
 

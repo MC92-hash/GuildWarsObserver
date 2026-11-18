@@ -941,7 +941,7 @@ void ReplayWindow::DrawClipPanel()
 {
     auto& c = m_clip;
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
-    constexpr float kPlayBarH = 76.f;
+    const float kPlayBarH = PlayBarHeight();
 
     ImGui::SetNextWindowPos(ImVec2(disp.x - 12.f, disp.y - kPlayBarH - 8.f), ImGuiCond_Appearing, ImVec2(1.f, 1.f));
     PushClipPanelStyle();
@@ -1247,7 +1247,7 @@ void ReplayWindow::DrawClipToast()
     if (ImGui::GetTime() > c.toastUntil) { c.toast.clear(); return; }
 
     const ImVec2 disp = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(disp.x - 12.f, disp.y - 76.f - 8.f), ImGuiCond_Always, ImVec2(1.f, 1.f));
+    ImGui::SetNextWindowPos(ImVec2(disp.x - 12.f, disp.y - PlayBarHeight() - 8.f), ImGuiCond_Always, ImVec2(1.f, 1.f));
     PushClipPanelStyle();
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
@@ -1450,6 +1450,7 @@ void ReplayWindow::RenderImGuiWithClipCapture(ImDrawData* drawData)
     {
         ImGui_ImplDX11_RenderDrawData(drawData);
         if (m_clipSelfTestShotPending) SaveClipSelfTestShot();
+        if (CommsShotPending()) SaveCommsShot();
         return;
     }
 

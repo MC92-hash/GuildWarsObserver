@@ -146,7 +146,9 @@ MatchLink ReplayWindow::CurrentShareLink(float timelineT) const
     return l;
 }
 
-void ReplayWindow::CopyShareLink(float timelineT)
+// `fromStart`: the match from 0:00 with the default camera and nobody selected (the play bar's
+// Share menu, "Copy link from match start").
+void ReplayWindow::CopyShareLink(float timelineT, bool fromStart)
 {
     auto toast = [this](const char* text, bool error)
     {
@@ -161,7 +163,17 @@ void ReplayWindow::CopyShareLink(float timelineT)
         toast(UrlProtocol::kNotPublishedTip, true);
         return;
     }
-    const std::string url = MatchLinks::FormatHttps(CurrentShareLink(timelineT));
+    MatchLink link;
+    if (fromStart)
+    {
+        link.folder = m_matchMeta.folder_name;
+        link.t = 0.f;
+        link.paused = !m_replayCtx.isPlaying;
+        MatchLinks::FillDisplay(link, m_matchMeta);
+    }
+    else
+        link = CurrentShareLink(timelineT);
+    const std::string url = MatchLinks::FormatHttps(link);
     if (UrlProtocol::CopyToClipboard(url, m_hwnd))
     {
         RunLog::Line("link: copied %s", url.c_str());

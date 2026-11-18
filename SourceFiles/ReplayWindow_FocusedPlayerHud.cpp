@@ -185,7 +185,7 @@ void ReplayWindow::DrawFocusHudWeaponSets(int agentId)
     // keeps it bottom-right and on screen. It clears the play bar, and defers to the event
     // timeline strip when that is up, the way the followed agent's health bar defers to the
     // ribbon at the top of the screen.
-    const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
+    const float floorY = std::min(vp->Pos.y + vp->Size.y - PlayBarHeight(), m_eventTimelineTopY);
     const float posX = std::max(vp->Pos.x, vp->Pos.x + vp->Size.x - winW - kMargin);
     const float posY = std::max(vp->Pos.y, floorY - kMargin - winH);
     m_focusHudRightLimitX = posX;
@@ -463,7 +463,7 @@ void ReplayWindow::DrawFocusHudSkillBar(int agentId)
     const float frameY = std::round(effRowH + hpArtT + hpH + enGap + hpH);
     const float winH   = frameY + artT + slot + artB;
 
-    const float floorY = std::min(vp->Pos.y + vp->Size.y - kPlayBarH, m_eventTimelineTopY);
+    const float floorY = std::min(vp->Pos.y + vp->Size.y - PlayBarHeight(), m_eventTimelineTopY);
     const float posX = std::round(vp->Pos.x + (vp->Size.x - winW) * 0.5f);
     const float posY = std::round(std::max(vp->Pos.y, floorY - kBarAboveHud - winH));
 

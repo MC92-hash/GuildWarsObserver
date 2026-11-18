@@ -600,11 +600,38 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         int y = CW_USEDEFAULT;
         int w, h;
 
-        if (GuiGlobalConstants::window_width != -1) {
+        // A saved placement on no monitor at all (a monitor since unplugged, a test run's
+        // off-screen window) would open the Library invisibly: then the default size, centred.
+        bool savedOnScreen = false;
+        if (GuiGlobalConstants::window_width > 0 && GuiGlobalConstants::window_height > 0) {
+            const RECT saved = { GuiGlobalConstants::window_pos_x, GuiGlobalConstants::window_pos_y,
+                                 GuiGlobalConstants::window_pos_x + GuiGlobalConstants::window_width,
+                                 GuiGlobalConstants::window_pos_y + GuiGlobalConstants::window_height };
+            savedOnScreen = MonitorFromRect(&saved, MONITOR_DEFAULTTONULL) != nullptr;
+            if (!savedOnScreen)
+                RunLog::Line("window: saved placement %d,%d %dx%d is on no monitor - centred default instead",
+                             GuiGlobalConstants::window_pos_x, GuiGlobalConstants::window_pos_y,
+                             GuiGlobalConstants::window_width, GuiGlobalConstants::window_height);
+        }
+        if (savedOnScreen) {
             w = GuiGlobalConstants::window_width;
             h = GuiGlobalConstants::window_height;
             x = GuiGlobalConstants::window_pos_x;
             y = GuiGlobalConstants::window_pos_y;
+        } else if (GuiGlobalConstants::window_width != -1) {
+            g_map_browser->GetDefaultSize(w, h);
+            RECT rc = { 0, 0, static_cast<LONG>(w), static_cast<LONG>(h) };
+            AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+            w = rc.right - rc.left;
+            h = rc.bottom - rc.top;
+            RECT work = {};
+            if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+                w = std::min<int>(w, work.right - work.left);
+                h = std::min<int>(h, work.bottom - work.top);
+                x = work.left + ((work.right - work.left) - w) / 2;
+                y = work.top + ((work.bottom - work.top) - h) / 2;
+            }
+            GuiGlobalConstants::window_maximized = false;
         } else {
             g_map_browser->GetDefaultSize(w, h);
             RECT rc = { 0, 0, static_cast<LONG>(w), static_cast<LONG>(h) };
@@ -797,11 +824,25 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam,
     LPARAM lParam);
 
+// DEV TOOL: a test run (a quiet test instance, a self-test, a batch, a picture hook) may move the
+// Library off every monitor to take its pictures: its placement is never the owner's to keep.
+static bool TestRunOwnsWindow()
+{
+    static const bool test = [] {
+        if (UrlProtocol::QuietTestInstance()) return true;
+        for (const char* v : {"GWO_LIBRARY_SHOT", "GWO_COMMS_SELFTEST", "GWO_ATTR_BATCH", "GWO_CLIP_SELFTEST",
+                              "GWO_MAP_PICTURES", "GWO_INSTANCE_TAG"})
+            if (GetEnvironmentVariableA(v, nullptr, 0) > 0) return true;
+        return false;
+    }();
+    return test;
+}
+
 static void UpdateWindowSettings(HWND hWnd)
 {
     // A hidden Library (a link-only start, a self-test) has no placement worth keeping: it would
-    // overwrite the saved size and maximised state with the hidden window's.
-    if (!IsWindowVisible(hWnd))
+    // overwrite the saved size and maximised state with the hidden window's. Nor has a test run's.
+    if (!IsWindowVisible(hWnd) || TestRunOwnsWindow())
         return;
 
     WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
