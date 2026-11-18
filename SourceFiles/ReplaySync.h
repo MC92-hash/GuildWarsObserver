@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 #include <chrono>
 #include <string>
+#include "MatchLink.h"
 
 namespace ReplaySync
 {
@@ -64,6 +65,26 @@ namespace ReplaySync
         if (!s.pending || s.folder != folder) return false;
         s.pending = false;
         displayT = s.t;
+        return true;
+    }
+
+    // A share link (MatchLink.h) for the replay of `folder`: time, pause, selection and camera.
+    // Set by MapBrowser::ProcessPendingLink before the window exists or while it is open; the
+    // replay takes it once it is loaded. A newer request replaces an untaken one.
+    struct ViewRequest { std::string folder; MatchLink link; bool pending = false; };
+    inline ViewRequest& ViewSlot() { static ViewRequest v; return v; }
+
+    inline void RequestView(const std::string& folder, const MatchLink& link)
+    {
+        ViewSlot() = { folder, link, true };
+    }
+
+    inline bool TakeView(const std::string& folder, MatchLink& link)
+    {
+        ViewRequest& v = ViewSlot();
+        if (!v.pending || v.folder != folder) return false;
+        v.pending = false;
+        link = v.link;
         return true;
     }
 }

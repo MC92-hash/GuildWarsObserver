@@ -26,6 +26,8 @@
 #include <json.hpp>
 #include "MatchStats.h"
 #include "ReplaySync.h"
+#include "MatchLink.h"
+#include "UrlProtocol.h"
 #include "StatsTableView.h"
 
 #include "ui/ui_kit.h"
@@ -1083,6 +1085,57 @@ static std::vector<std::string> GetAllKnownFluxNames()
     return names;
 }
 
+// "Share match" under the match facts in the details sidebar: copies a share link to this match
+// (from 0:00, default camera) with the website card's fields. Same pill and chain icon as the
+// replay bar's Share; dimmed for a match that is not published.
+static void DrawShareMatchButton(const MatchMeta& m, float width)
+{
+    static double s_copiedAt = -10.0;
+    static std::string s_copiedFor;
+    const bool canShare = UrlProtocol::IsPublished(m.folder_name);
+    const bool recent = s_copiedFor == m.folder_name && ImGui::GetTime() - s_copiedAt < 1.5;
+
+    const float h = ImGui::GetFrameHeight() + 2.0f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##share_match", ImVec2(width, h));
+    const bool hov = ImGui::IsItemHovered() && canShare;
+    if (ImGui::IsItemClicked() && canShare)
+    {
+        MatchLink link;
+        link.folder = m.folder_name;
+        MatchLinks::FillDisplay(link, m);   // the website's card: guilds, capes, professions
+        const std::string url = MatchLinks::FormatHttps(link);
+        if (UrlProtocol::CopyToClipboard(url, nullptr))
+        {
+            RunLog::Line("link: copied %s", url.c_str());
+            s_copiedAt = ImGui::GetTime();
+            s_copiedFor = m.folder_name;
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", canShare ? "Copy a link to this match. Paste it in Discord: a click opens it in GW Observer."
+                                         : UrlProtocol::kNotPublishedTip);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 q(p.x + width, p.y + h);
+    const ImU32 bg  = recent ? IM_COL32(64, 192, 96, 40) : hov ? IM_COL32(200, 168, 75, 34) : IM_COL32(0, 0, 0, 76);
+    const ImU32 bdr = recent ? IM_COL32(64, 192, 96, 200) : hov ? IM_COL32(232, 200, 96, 220) : IM_COL32(106, 88, 48, 255);
+    dl->AddRectFilled(p, q, bg, h * 0.5f);
+    dl->AddRect(p, q, bdr, h * 0.5f);
+
+    const char* label = recent ? "Link copied" : "Share match";
+    const ImU32 fg = !canShare ? IM_COL32(125, 125, 126, 255)
+                   : recent    ? IM_COL32(120, 220, 140, 255)
+                   : hov       ? IM_COL32(232, 200, 96, 255) : IM_COL32(200, 184, 140, 255);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float iconW = 15.0f, gap = 7.0f;
+    const float x0 = p.x + (width - (iconW + gap + ts.x)) * 0.5f, cy = p.y + h * 0.5f;
+    // Chain link: two rounded links, overlapping on the diagonal.
+    dl->AddRect(ImVec2(x0, cy - 4.0f), ImVec2(x0 + 9.0f, cy + 1.0f), fg, 2.5f, 0, 1.4f);
+    dl->AddRect(ImVec2(x0 + 5.0f, cy - 1.0f), ImVec2(x0 + 14.0f, cy + 4.0f), fg, 2.5f, 0, 1.4f);
+    dl->AddText(ImVec2(x0 + iconW + gap, cy - ts.y * 0.5f), fg, label);
+}
+
 static void DrawFluxWithTooltip(const std::string& flux, float infoIconH)
 {
     ImTextureID fluxIco = GetFluxIcon();
@@ -1159,7 +1212,7 @@ struct DateVal { int day = 0, month = 0, year = 0; };
 struct BrowserState
 {
     // Global search with debounce
-    char  searchBuf[256] = "";
+    char  searchBuf[2048] = "";   // long enough for a pasted share link (they carry the card fields)
     float lastSearchEditTime = -1.0f;
     char  searchDebounced[256] = "";
 
@@ -3799,7 +3852,37 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
     if (searchEdited)
         s_state.lastSearchEditTime = (float)ImGui::GetTime();
 
-    if (s_state.searchBuf[0] != '\0' &&
+    // A share link pasted here is not a search: one row that opens it (SHARE_LINKS_PLAN.md 7),
+    // for browsers that block app links and for people who copy the link instead of clicking it.
+    const bool linkInSearch = MatchLinks::LooksLikeLink(s_state.searchBuf);
+    if (linkInSearch)
+    {
+        s_state.lastSearchEditTime = -1.0f;
+        s_state.searchDebounced[0] = '\0';
+        MatchLinks::ParseError err = MatchLinks::ParseError::None;
+        const auto link = MatchLinks::Parse(s_state.searchBuf, &err);
+        std::string label;
+        if (link)
+            label = "Open shared match: " + MatchLinks::DescribeFolder(link->folder) + " at " +
+                    MatchLinks::FormatClock(link->t);
+        else
+            label = err == MatchLinks::ParseError::NewerVersion ? "Update GW Observer to open this link"
+                                                                : "This link names no match";
+        ImGui::BeginDisabled(!link);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+        const bool open = ImGui::Selectable(label.c_str()) ||
+                          (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter));
+        ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        if (open && link)
+        {
+            RunLog::Line("link: received (Library search box) - match '%s' at %.1f s", link->folder.c_str(), link->t);
+            UrlProtocol::SetPendingLink(*link);
+            s_state.searchBuf[0] = '\0';
+        }
+    }
+
+    if (s_state.searchBuf[0] != '\0' && !linkInSearch &&
         (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))
     {
         s_state.selectedSearchTerms.insert(std::string(s_state.searchBuf));
@@ -3808,7 +3891,7 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.lastSearchEditTime = -1.0f;
     }
 
-    if (s_state.searchBuf[0] != '\0')
+    if (s_state.searchBuf[0] != '\0' && !linkInSearch)
         DrawGlobalSearchAutoComplete(searchMin, searchMax);
 
     ImGui::Spacing();
@@ -7040,6 +7123,10 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
             DrawFluxWithTooltip(m.flux, icoH);
         ImGui::PopTextWrapPos();
 
+        // ── Share: a link to this match (from 0:00), under its facts ──
+        ImGui::Spacing();
+        DrawShareMatchButton(m, mapImgSize);
+
         // ── Rating ──
         ImGui::Spacing();
         ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
@@ -9718,6 +9805,25 @@ void replay_browser_set_scout_mode(bool on)
 
 void draw_replay_browser(ReplayLibrary& library)
 {
+    // Ctrl+V anywhere in the Library (outside a text field) with a share link on the clipboard
+    // opens it: for browsers that block app links and for links copied instead of clicked.
+    if (!ImGui::GetIO().WantTextInput && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false))
+    {
+        const char* clip = ImGui::GetClipboardText();
+        if (clip && MatchLinks::LooksLikeLink(clip))
+        {
+            MatchLinks::ParseError err = MatchLinks::ParseError::None;
+            if (const auto link = MatchLinks::Parse(clip, &err))
+            {
+                RunLog::Line("link: received (Ctrl+V in the Library) - match '%s' at %.1f s", link->folder.c_str(), link->t);
+                UrlProtocol::SetPendingLink(*link);
+            }
+            else
+                UrlProtocol::Toast(err == MatchLinks::ParseError::NewerVersion ? "Update GW Observer to open this link"
+                                                                               : "This link names no match", true);
+        }
+    }
+
     // Process new matches from RescanDiff — populate highlights and notification
     if (!library.GetNewMatchFolders().empty())
     {

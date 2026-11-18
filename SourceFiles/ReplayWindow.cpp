@@ -6960,6 +6960,7 @@ void ReplayWindow::Tick()
         float seekT = 0.f;
         if (ReplaySync::TakeSeek(m_matchMeta.folder_name, seekT))
             m_debugTimeline = std::clamp(seekT + m_displayTimeOffset, 0.f, std::max(1.f, m_replayCtx.maxReplayTime));
+        ApplyLinkView();   // a share link's time, pause and camera (ReplayWindow_ShareLink.cpp)
         ReplaySync::Publish(m_matchMeta.folder_name, m_debugTimeline - m_displayTimeOffset, m_replayCtx.isPlaying);
     }
 
@@ -7459,6 +7460,7 @@ void ReplayWindow::DrawImGuiOverlay()
                     MatchRatings::Get().SetRating(m_matchMeta.folder_name, 0);
                 ImGui::EndMenu();
             }
+            DrawShareLinkMenuItems();
             ImGui::Separator();
             if (ImGui::MenuItem("Close Replay"))
             {
