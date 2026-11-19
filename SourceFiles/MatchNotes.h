@@ -38,8 +38,12 @@ public:
             m_notes.erase(folderName);
         else
             m_notes[folderName] = text;
+        ++m_version;
         Save();
     }
+
+    // Changes with every edit: the Library's caches (its "With notes" filter) key on it.
+    unsigned Version() const { return m_version; }
 
     void Load()
     {
@@ -71,6 +75,7 @@ public:
 
 private:
     std::unordered_map<std::string, std::string> m_notes;
+    unsigned m_version = 0;
     inline static const std::string s_empty;
 
     static bool IsBlank(const std::string& s)
