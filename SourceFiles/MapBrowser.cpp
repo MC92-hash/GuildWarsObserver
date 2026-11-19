@@ -105,7 +105,7 @@ void MapBrowser::LibraryShotSelfTest()
             SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
         }
     }
-    else if (stage == 1 && t > 12.0) { shot("library.png"); g_commsBadgeHoverTest = folder; stage = 2; }
+    else if (stage == 1 && t > 12.0) { shot("library.png"); g_commsBadgeHoverTest = "##header"; stage = 2; }   // the NOTES header's tooltip
     else if (stage == 2 && t > 16.0) { shot("library_tooltip.png"); g_commsBadgeHoverTest.clear(); g_myMatchesTest = true; stage = 3; }
     else if (stage == 3 && t > 19.0) { shot("library_mine.png"); stage = 4; }
     else if (stage == 4 && t > 19.5)

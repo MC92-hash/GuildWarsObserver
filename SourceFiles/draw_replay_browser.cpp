@@ -784,6 +784,9 @@ static ImTextureID GetFluxIcon()
 // with a mip chain, as the ribbon loads its art, so it stays clean at text height; the shared
 // cache uploads the top level only. Its own cache, per device: the ribbon's loader clears its
 // cache whenever another window's device asks. `uv0` / `uv1` receive the crop.
+// A slight warm/gold tint on the scroll, so it sits with the yellow stars and the gold headset.
+static const ImVec4 kNotesScrollTint(1.0f, 0.88f, 0.62f, 1.0f);
+
 static ImTextureID GetNotesScrollIcon(ImVec2* uv0 = nullptr, ImVec2* uv1 = nullptr)
 {
     static ID3D11Device* s_dev = nullptr;
@@ -1367,6 +1370,7 @@ struct BrowserState
     bool myRated = false;      // a rating > 0 (MatchRatings)
     bool myNotes = false;      // non-empty notes (MatchNotes)
     bool myComms = false;      // voice comms attached on this PC, the file found or not (Comms::BadgeFor)
+    bool focusNotes = false;   // a list row's notes scroll was clicked: focus the details' notes field
 
     // Build composition filter
     std::set<std::string> selectedBuilds;
@@ -3537,10 +3541,14 @@ static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMe
                   - MatchRatings::Get().GetRating(b.meta->folder_name);
                 if (r == 0)
                 {
-                    // Within a rating, the matches with voice comms come first, either way.
+                    // Within a rating, the matches with voice comms come first, then those with
+                    // notes, either way the column sorts.
                     const bool ca = Comms::BadgeFor(a.meta->folder_name).present;
                     const bool cb = Comms::BadgeFor(b.meta->folder_name).present;
-                    return ca && !cb;
+                    if (ca != cb) return ca;
+                    const bool na = MatchNotes::Get().HasNote(a.meta->folder_name);
+                    const bool nb = MatchNotes::Get().HasNote(b.meta->folder_name);
+                    return na && !nb;
                 }
                 break;
             default: break;
@@ -3609,7 +3617,7 @@ static uint64_t FilterSignature(const std::vector<MatchMeta>& matches)
     mix((uint64_t)s_state.sortColumn);
     mix(s_state.sortAscending ? 1u : 0u);
     mix((s_state.myRated ? 1u : 0u) | (s_state.myNotes ? 2u : 0u) | (s_state.myComms ? 4u : 0u));
-    if (s_state.myNotes) mix(MatchNotes::Get().Version());
+    if (s_state.myNotes || s_state.sortColumn == 9) mix(MatchNotes::Get().Version());
     // Rating's sort puts the matches with comms first within a rating: it and the comms filter
     // follow the comms store.
     if (s_state.myComms || s_state.sortColumn == 9) mix(Comms::BadgeVersion());
@@ -3846,7 +3854,8 @@ static void DrawMyMatchesFilter(const std::vector<MatchMeta>& matches)
             if (ImTextureID scroll = GetNotesScrollIcon(&uv0, &uv1))
             {
                 const float iw = h * 22.f / 23.f;
-                dl->AddImage(scroll, ImVec2(p.x + (h - iw) * 0.5f, p.y), ImVec2(p.x + (h + iw) * 0.5f, p.y + h), uv0, uv1);
+                dl->AddImage(scroll, ImVec2(p.x + (h - iw) * 0.5f, p.y), ImVec2(p.x + (h + iw) * 0.5f, p.y + h), uv0, uv1,
+                             ImGui::ColorConvertFloat4ToU32(kNotesScrollTint));
             }
         }
         else
@@ -5041,6 +5050,12 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
                 s_state.browserNoteMatchId = m.folder_name;
             }
             float editH = ImGui::GetTextLineHeight() * 3 + ImGui::GetStyle().FramePadding.y * 2;
+            if (s_state.focusNotes)   // the list's notes scroll was clicked
+            {
+                s_state.focusNotes = false;
+                ImGui::SetScrollHereY(0.5f);
+                ImGui::SetKeyboardFocusHere();
+            }
             if (ImGui::InputTextMultiline("##detailNotes", &s_state.browserNoteBuffer,
                                           ImVec2(sidebarW - 8, editH)))
                 MatchNotes::Get().SetNote(m.folder_name, s_state.browserNoteBuffer);
@@ -5182,11 +5197,13 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
     {
         ImGui::SameLine(0, 16);
         ImGui::SetNextItemWidth(160.f);
-        const char* sortLabels[] = { "Newest First", "Oldest First", "Highest Rating", "Map Name" };
+        // "Notes" sorts as the table's NOTES column does (sort id 9: the rating, then comms,
+        // then notes). It used id 7, TEAM BUILD 1's, since the columns were renumbered.
+        const char* sortLabels[] = { "Newest First", "Oldest First", "Notes", "Map Name" };
         int sortIdx = 0;
         if (s_state.sortColumn == 0 && !s_state.sortAscending) sortIdx = 0;
         else if (s_state.sortColumn == 0 && s_state.sortAscending) sortIdx = 1;
-        else if (s_state.sortColumn == 7) sortIdx = 2;
+        else if (s_state.sortColumn == 9) sortIdx = 2;
         else if (s_state.sortColumn == 2) sortIdx = 3;
 
         if (ImGui::Combo("##gallery_sort", &sortIdx, sortLabels, 4))
@@ -5194,7 +5211,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
             switch (sortIdx) {
                 case 0: s_state.sortColumn = 0; s_state.sortAscending = false; break;
                 case 1: s_state.sortColumn = 0; s_state.sortAscending = true;  break;
-                case 2: s_state.sortColumn = 7; s_state.sortAscending = false; break;
+                case 2: s_state.sortColumn = 9; s_state.sortAscending = false; break;
                 case 3: s_state.sortColumn = 2; s_state.sortAscending = true;  break;
             }
         }
@@ -6154,13 +6171,16 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float compW = 80.0f;          // team build name
     float compIconW = 8 * (kCompIconSz + kCompIconGap) + 4.0f;   // a full team of eight
     float mapW = std::max(90.0f, tableW * 0.13f);
-    float notesColW = 20.0f;
-    // The rating cell starts with a fixed slot for the voice comms headset, so the stars stay
-    // aligned whether a row has comms or not; the column grows by that slot.
-    const float commsSlotW = std::ceil(ImGui::GetTextLineHeight()) + 4.0f;
-    ratingW += commsSlotW;
+    // The rating cell holds all three personal marks, in the filter panel's order: the stars (as
+    // wide as five, so they align), then a fixed slot for the notes scroll and one for the comms
+    // headset. An empty slot stays blank, so every mark sits in the same place on every row.
+    const float kStarsW = 5 * 12.0f + 4 * 2.0f;   // DrawStarRating's width
+    const float markSlotW = std::ceil(ImGui::GetTextLineHeight()) + 6.0f;
+    ratingW = kStarsW + 6.0f + markSlotW * 2.0f;
+    // ...and never narrower than its header and the sort arrow.
+    ratingW = std::max(ratingW, ImGui::CalcTextSize("NOTES").x + ImGui::GetFontSize() + 8.0f);
     float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW
-                              - compW * 2 - compIconW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
+                              - compW * 2 - compIconW * 2) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
@@ -6172,17 +6192,18 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
     // Column order is the logical order the cells below address by index, so the cells can
     // stay in the order that reads best in code while the table shows them in this one.
-    // Each column also carries its index as a sort id (TableSetupColumn's user id), which is what
-    // the sort comparator switches on - keep those in step.
+    // Each column also carries a sort id (TableSetupColumn's user id), which is what the sort
+    // comparator and the gallery's sort menu switch on: those stay as they were when NOTES (the
+    // rating column, id 9) moved before the team builds (ids 7 and 8).
     enum MatchCol {
         Col_Date = 0, Col_Occasion, Col_Map,
         Col_Team1, Col_Comp1, Col_Team2, Col_Comp2,
-        Col_Build1, Col_Build2, Col_Rating, Col_Notes, Col_Count
+        Col_Rating, Col_Build1, Col_Build2, Col_Count
     };
 
-    // v3: the saved widths under the first id were shifted by a twelve-column layout (a short-
-    // lived comms column), and v2 holds that layout's; a fresh id starts from these defaults.
-    if (ImGui::BeginTable("##match_table_v3", Col_Count, tableFlags))
+    // v5: NOTES moved before the team builds. ImGui loads saved widths by position, so each layout
+    // change takes a fresh id: v4 held the old order, v3 eleven columns, v2 and the first id twelve.
+    if (ImGui::BeginTable("##match_table_v5", Col_Count, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("DATE",          ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW, 0);
@@ -6193,10 +6214,10 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::TableSetupColumn("COMPOSITION 1", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW, 4);
         ImGui::TableSetupColumn("TEAM 2",        ImGuiTableColumnFlags_WidthFixed, teamW, 5);
         ImGui::TableSetupColumn("COMPOSITION 2", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort, compIconW, 6);
+        // This PC's own marks on the match: the rating's stars, the notes scroll, the comms headset.
+        ImGui::TableSetupColumn("NOTES",         ImGuiTableColumnFlags_WidthFixed, ratingW, 9);
         ImGui::TableSetupColumn("TEAM BUILD 1",  ImGuiTableColumnFlags_WidthFixed, compW, 7);
         ImGui::TableSetupColumn("TEAM BUILD 2",  ImGuiTableColumnFlags_WidthFixed, compW, 8);
-        ImGui::TableSetupColumn("RATING",        ImGuiTableColumnFlags_WidthFixed, ratingW, 9);
-        ImGui::TableSetupColumn("##notes",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW, 10);
 
         // DEV TOOL (GWO_LIBRARY_SHOT): the list sorted on Rating, as one click on its header does.
         if (g_ratingSortTest)
@@ -6205,9 +6226,25 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
             ImGui::TableSetColumnSortDirection(Col_Rating, ImGuiSortDirection_Descending, false);
         }
 
-        // Headers sit back as labels over the list rather than announcing a grid.
+        // Headers sit back as labels over the list rather than announcing a grid. NOTES says what
+        // it holds on hover.
         ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
-        ImGui::TableHeadersRow();
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int col = 0; col < Col_Count; ++col)
+        {
+            if (!ImGui::TableSetColumnIndex(col)) continue;
+            ImGui::TableHeader(ImGui::TableGetColumnName(col));
+            if (col == Col_Rating)
+            {
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Your rating, notes and voice comms for this match (kept on this PC)");
+                if (g_commsBadgeHoverTest == "##header")   // DEV TOOL (GWO_LIBRARY_SHOT): hover it by code
+                {
+                    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                    g_commsBadgeHoverPos = ImVec2(a.x + 12.0f, (a.y + b.y) * 0.5f);
+                }
+            }
+        }
         ImGui::PopStyleColor();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
@@ -6534,33 +6571,42 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::TableSetColumnIndex(Col_Rating);
                 CenterCell(textH);
                 {
-                    // Voice comms attached on this PC: the headset in a fixed slot before the
-                    // stars (grey when the file is gone); the stars start after it on every row.
-                    const ImVec2 slot = ImGui::GetCursorScreenPos();
-                    DrawCommsBadge(m.folder_name, textH);
-                    ImGui::SetCursorScreenPos(ImVec2(slot.x + commsSlotW, slot.y));
-
+                    // The personal marks, in the filter panel's order: stars, notes, comms.
+                    const ImVec2 cell = ImGui::GetCursorScreenPos();
                     int cur = MatchRatings::Get().GetRating(m.folder_name);
                     int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(),
                                              cur, false, /*hideWhenEmpty=*/true);
                     if (res > 0) MatchRatings::Get().SetRating(m.folder_name, res);
                     else if (res == -1) MatchRatings::Get().SetRating(m.folder_name, 0);
-                }
 
-                // Notes indicator
-                ImGui::TableSetColumnIndex(Col_Notes);
-                CenterCell(textH);
-                if (MatchNotes::Get().HasNote(m.folder_name))
-                {
-                    // The rolled scroll (the "My matches" filter and the ribbon's Bookmarks show
-                    // the same); the old pencil glyph if the art is missing.
-                    ImVec2 uv0, uv1;
-                    if (ImTextureID scroll = GetNotesScrollIcon(&uv0, &uv1))
-                        ImGui::Image(scroll, ImVec2(textH * 22.f / 23.f, textH), uv0, uv1);
-                    else
-                        ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Has notes");
+                    // Notes: the rolled scroll (as in the filter panel and the ribbon's
+                    // Bookmarks), warm-tinted to sit with the stars and the headset; a click opens
+                    // the match's details with the notes field focused. The old pencil glyph if
+                    // the art is missing.
+                    const float notesX = cell.x + kStarsW + 6.0f;
+                    if (MatchNotes::Get().HasNote(m.folder_name))
+                    {
+                        ImGui::SetCursorScreenPos(ImVec2(notesX, cell.y));
+                        ImVec2 uv0, uv1;
+                        if (ImTextureID scroll = GetNotesScrollIcon(&uv0, &uv1))
+                            ImGui::Image(scroll, ImVec2(textH * 22.f / 23.f, textH), uv0, uv1, kNotesScrollTint);
+                        else
+                            ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
+                        if (ImGui::IsItemHovered())
+                        {
+                            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                            ImGui::SetTooltip("Has notes");
+                        }
+                        if (ImGui::IsItemClicked())
+                        {
+                            s_state.selectedMatchIndex = fm.originalIndex;
+                            s_state.focusNotes = true;
+                        }
+                    }
+
+                    // Voice comms attached on this PC: the headset (grey when the file is gone).
+                    ImGui::SetCursorScreenPos(ImVec2(notesX + markSlotW, cell.y));
+                    DrawCommsBadge(m.folder_name, textH);
                 }
 
                 ImGui::PopID();
