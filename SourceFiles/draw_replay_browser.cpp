@@ -779,6 +779,46 @@ static ImTextureID GetFluxIcon()
     return GetTextureCache().GetTexture(path);
 }
 
+// The small rolled scroll the ribbon's Bookmarks button shows (Toolbar/terrain_tex_indices_
+// 0x49EBD.png, cropped to the same ImVec4(6, 5, 28, 28)): the mark for a match's notes. Loaded
+// with a mip chain, as the ribbon loads its art, so it stays clean at text height; the shared
+// cache uploads the top level only. Its own cache, per device: the ribbon's loader clears its
+// cache whenever another window's device asks. `uv0` / `uv1` receive the crop.
+static ImTextureID GetNotesScrollIcon(ImVec2* uv0 = nullptr, ImVec2* uv1 = nullptr)
+{
+    static ID3D11Device* s_dev = nullptr;
+    static Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> s_srv;
+    static bool s_tried = false;
+    static float s_w = 32.f, s_h = 32.f;
+    ID3D11Device* dev = GetTextureCache().Device();
+    if (dev != s_dev) { s_dev = dev; s_srv.Reset(); s_tried = false; }
+    if (!s_tried && dev)
+    {
+        s_tried = true;
+        EnsureTextureBasePath();
+        const std::filesystem::path path = std::filesystem::path(ui::TextureBasePath()) / "Textures" / "Toolbar" /
+                                           "terrain_tex_indices_0x49EBD.png";
+        DirectX::ScratchImage img, rgba, mips;
+        if (SUCCEEDED(DirectX::LoadFromWICFile(path.c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, img)))
+        {
+            const DirectX::ScratchImage* use = &img;
+            if (img.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+                SUCCEEDED(DirectX::Convert(*img.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT,
+                                           DirectX::TEX_THRESHOLD_DEFAULT, rgba)))
+                use = &rgba;
+            if (SUCCEEDED(DirectX::GenerateMipMaps(*use->GetImage(0, 0, 0), DirectX::TEX_FILTER_DEFAULT, 0, mips)))
+                use = &mips;
+            s_w = static_cast<float>(use->GetMetadata().width);
+            s_h = static_cast<float>(use->GetMetadata().height);
+            DirectX::CreateShaderResourceView(dev, use->GetImages(), use->GetImageCount(), use->GetMetadata(),
+                                              s_srv.GetAddressOf());
+        }
+    }
+    if (uv0) *uv0 = ImVec2(6.f / s_w, 5.f / s_h);
+    if (uv1) *uv1 = ImVec2(28.f / s_w, 28.f / s_h);
+    return reinterpret_cast<ImTextureID>(s_srv.Get());
+}
+
 static ImTextureID GetGuildHallIcon()
 {
     EnsureTextureBasePath();
@@ -1142,7 +1182,7 @@ static void DrawShareMatchButton(const MatchMeta& m, float width)
 // through ImGui's own input queue (the real cursor never moves), for the tooltip's picture.
 std::string g_commsBadgeHoverTest;
 ImVec2 g_commsBadgeHoverPos(-FLT_MAX, -FLT_MAX);   // where that badge was drawn (MapBrowser injects it)
-bool g_commsSortTest = false;                      // ...and the list sorted on the comms column once
+bool g_ratingSortTest = false;                     // ...and the list sorted on Rating once
 
 // A headset glyph in an `h` square at `p`.
 static void DrawHeadsetGlyph(ImDrawList* dl, ImVec2 p, float h, ImU32 col)
@@ -1322,6 +1362,12 @@ struct BrowserState
 
     int  minRatingFilter = 0;
 
+    // "My matches": this PC's own marks on a match, each ticked box narrowing the list (AND).
+    // Not persisted, as the other filters are not.
+    bool myRated = false;      // a rating > 0 (MatchRatings)
+    bool myNotes = false;      // non-empty notes (MatchNotes)
+    bool myComms = false;      // voice comms attached on this PC, the file found or not (Comms::BadgeFor)
+
     // Build composition filter
     std::set<std::string> selectedBuilds;
     char buildSearchBuf[128] = {};
@@ -1398,6 +1444,16 @@ struct BrowserState
 };
 
 static BrowserState s_state;
+
+// The "My matches" filter: every ticked box must hold (AND). Ratings, notes and comms all come
+// from in-memory stores (the comms one cached, Comms::BadgeFor), never the disk.
+static bool PassesMyMatchesFilter(const std::string& folder)
+{
+    if (s_state.myRated && MatchRatings::Get().GetRating(folder) <= 0) return false;
+    if (s_state.myNotes && !MatchNotes::Get().HasNote(folder)) return false;
+    if (s_state.myComms && !Comms::BadgeFor(folder).present) return false;
+    return true;
+}
 
 // Tournament Prep cache (forward-declared, populated in AggregateTournamentBuilds)
 static std::vector<struct TournamentBuildStats> s_tournamentCache;
@@ -3339,6 +3395,10 @@ static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMe
                 continue;
         }
 
+        // My matches (rated / with notes / with voice comms)
+        if (!PassesMyMatchesFilter(m.folder_name))
+            continue;
+
         const GuildLabel& g1 = d.guild1;
         const GuildLabel& g2 = d.guild2;
 
@@ -3472,25 +3532,17 @@ static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMe
             case 5: r = a.guild2.display.compare(b.guild2.display); break;
             case 7: r = a.build1.compare(b.build1); break;
             case 8: r = a.build2.compare(b.build2); break;
-            case 9: r = MatchRatings::Get().GetRating(a.meta->folder_name)
-                      - MatchRatings::Get().GetRating(b.meta->folder_name); break;
-            case 11:   // Voice comms (its table column carries this id): attached, file missing, none
-            {
-                auto rank = [](const FilteredMatch& m) {
-                    const Comms::Badge cb = Comms::BadgeFor(m.meta->folder_name);
-                    return !cb.present ? 0 : cb.exists ? 2 : 1;
-                };
-                r = rank(a) - rank(b);
+            case 9:
+                r = MatchRatings::Get().GetRating(a.meta->folder_name)
+                  - MatchRatings::Get().GetRating(b.meta->folder_name);
                 if (r == 0)
                 {
-                    // Equal groups keep the date order, newest first, whichever way this sorts.
-                    const int da = a.meta->year * 10000 + a.meta->month * 100 + a.meta->day;
-                    const int db = b.meta->year * 10000 + b.meta->month * 100 + b.meta->day;
-                    return da > db;
+                    // Within a rating, the matches with voice comms come first, either way.
+                    const bool ca = Comms::BadgeFor(a.meta->folder_name).present;
+                    const bool cb = Comms::BadgeFor(b.meta->folder_name).present;
+                    return ca && !cb;
                 }
-                // Descending (the first click) puts the matches with comms first.
                 break;
-            }
             default: break;
             }
             return asc ? (r < 0) : (r > 0);
@@ -3556,7 +3608,11 @@ static uint64_t FilterSignature(const std::vector<MatchMeta>& matches)
 
     mix((uint64_t)s_state.sortColumn);
     mix(s_state.sortAscending ? 1u : 0u);
-    if (s_state.sortColumn == 11) mix(Comms::BadgeVersion());   // re-sort when comms come or go
+    mix((s_state.myRated ? 1u : 0u) | (s_state.myNotes ? 2u : 0u) | (s_state.myComms ? 4u : 0u));
+    if (s_state.myNotes) mix(MatchNotes::Get().Version());
+    // Rating's sort puts the matches with comms first within a rating: it and the comms filter
+    // follow the comms store.
+    if (s_state.myComms || s_state.sortColumn == 9) mix(Comms::BadgeVersion());
     return h;
 }
 
@@ -3620,6 +3676,9 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
 
         if (s_state.minRatingFilter > 0 &&
             MatchRatings::Get().GetRating(m.folder_name) < s_state.minRatingFilter)
+            continue;
+
+        if (!PassesMyMatchesFilter(m.folder_name))
             continue;
 
         const GuildLabel& g1 = d.guild1;
@@ -3701,6 +3760,114 @@ static std::unordered_map<std::string, int> ComputeOccasionMatchCounts(
     return counts;
 }
 
+// ─── My matches filter ───────────────────────────────────────────────────────
+
+// DEV TOOL (GWO_LIBRARY_SHOT, MapBrowser.cpp): tick "With voice comms" once and scroll to the group.
+bool g_myMatchesTest = false;
+
+// Three boxes for this PC's own marks on a match, combined with AND. Each count is how many of
+// the matches listed right now carry that mark: a ticked box shows its whole list, an unticked
+// one how many it would leave. Recounted only when the list or a store changes.
+static void DrawMyMatchesFilter(const std::vector<MatchMeta>& matches)
+{
+    if (g_myMatchesTest)
+    {
+        g_myMatchesTest = false;
+        s_state.myComms = true;
+        ImGui::SetScrollHereY(0.2f);
+    }
+
+    static uint64_t s_sig = 0;
+    static bool s_valid = false;
+    static int s_rated = 0, s_notes = 0, s_comms = 0;
+    const uint64_t sig = FilterSignature(matches)
+        ^ (static_cast<uint64_t>(MatchNotes::Get().Version()) << 40)
+        ^ (static_cast<uint64_t>(MatchRatings::Get().Version()) << 20)
+        ^ (Comms::BadgeVersion() * 0x9E3779B97F4A7C15ull);
+    if (!s_valid || sig != s_sig)
+    {
+        s_rated = s_notes = s_comms = 0;
+        for (const FilteredMatch& fm : FilterMatches(matches))
+        {
+            const std::string& f = fm.meta->folder_name;
+            if (MatchRatings::Get().GetRating(f) > 0) ++s_rated;
+            if (MatchNotes::Get().HasNote(f)) ++s_notes;
+            if (Comms::BadgeFor(f).present) ++s_comms;
+        }
+        s_sig = sig;
+        s_valid = true;
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
+    ImGui::TextUnformatted("My matches");
+    ImGui::PopStyleColor();
+    if (s_state.myRated || s_state.myNotes || s_state.myComms)
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kColorHover);
+        ImGui::PushStyleColor(ImGuiCol_Text, kColorAccentDim);
+        if (ImGui::SmallButton("Clear##clr_mine"))
+            s_state.myRated = s_state.myNotes = s_state.myComms = false;
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar();
+    }
+
+    PushTreeCheckboxStyle();
+    // Checkbox, icon, label: the icon is the mark the list itself shows (the rating star, the
+    // notes pencil, the comms headset), in a slot of the text's height so the labels line up.
+    enum class MineIcon { Star, Note, Headset };
+    auto Box = [](const char* label, const char* id, bool& on, int count, const char* tip, MineIcon icon) {
+        const bool dim = count == 0 && !on;
+        const float h = ImGui::GetTextLineHeight();
+        PushCheckboxState(on ? CheckboxVisual::On : CheckboxVisual::Off);
+        ImGui::Checkbox(id, &on);
+        PopCheckboxState();
+        bool hov = ImGui::IsItemHovered();
+
+        ImGui::SameLine(0.f, 6.f);
+        const ImVec2 cell = ImGui::GetCursorScreenPos();
+        const float frameH = ImGui::GetFrameHeight();
+        const ImVec2 p(cell.x, cell.y + (frameH - h) * 0.5f);
+        ImGui::Dummy(ImVec2(h, frameH));
+        bool clicked = ImGui::IsItemClicked();
+        hov |= ImGui::IsItemHovered();
+        // The icons stay at full colour (only the label dims at 0): one set, drawn at one weight.
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (icon == MineIcon::Star)
+            // Exactly the filled rating stars' yellow (MatchRatings.h, DrawStarRating).
+            DrawStarFilled(dl, p.x + h * 0.5f, p.y + h * 0.5f, h * 0.47f, IM_COL32(230, 180, 30, 255));
+        else if (icon == MineIcon::Note)
+        {
+            // The rolled scroll, as the list's notes column and the ribbon's Bookmarks show it.
+            // The crop is 22 x 23: kept in proportion, centred in the slot.
+            ImVec2 uv0, uv1;
+            if (ImTextureID scroll = GetNotesScrollIcon(&uv0, &uv1))
+            {
+                const float iw = h * 22.f / 23.f;
+                dl->AddImage(scroll, ImVec2(p.x + (h - iw) * 0.5f, p.y), ImVec2(p.x + (h + iw) * 0.5f, p.y + h), uv0, uv1);
+            }
+        }
+        else
+            DrawHeadsetGlyph(dl, p, h, IM_COL32(200, 168, 75, 255));
+
+        ImGui::SameLine(0.f, 6.f);
+        const std::string text = std::string(label) + "  (" + std::to_string(count) + ")";
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (frameH - h) * 0.5f);
+        ImGui::TextColored(dim ? kColorTextDim : kColorText, "%s", text.c_str());
+        clicked |= ImGui::IsItemClicked();
+        hov |= ImGui::IsItemHovered();
+        if (clicked) on = !on;   // the icon and the label toggle too, as a checkbox's label does
+        if (hov) ImGui::SetTooltip("%s", tip);
+    };
+    Box("Rated", "##mine_rated", s_state.myRated, s_rated, "Matches you gave a rating", MineIcon::Star);
+    Box("With notes", "##mine_notes", s_state.myNotes, s_notes, "Matches with notes", MineIcon::Note);
+    Box("With voice comms", "##mine_comms", s_state.myComms, s_comms,
+        "Matches with voice comms attached on this PC (a missing file counts too)", MineIcon::Headset);
+    PopTreeCheckboxStyle();
+}
+
 // ─── Left filter panel ──────────────────────────────────────────────────────
 
 static int CountActiveFilters()
@@ -3716,6 +3883,7 @@ static int CountActiveFilters()
         MatchupSlotSet(s_state.matchupNameB, s_state.matchupTagB)) n++;
     if (DateValValid(s_state.dateFrom) || DateValValid(s_state.dateTo)) n++;
     if (s_state.minRatingFilter > 0) n++;
+    if (s_state.myRated || s_state.myNotes || s_state.myComms) n++;
     if (s_state.tournamentMode) n++;
     return n;
 }
@@ -3821,6 +3989,7 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
         s_state.calBrowseFromMonth = 0; s_state.calBrowseFromYear = 0;
         s_state.calBrowseToMonth = 0; s_state.calBrowseToYear = 0;
         s_state.minRatingFilter = 0;
+        s_state.myRated = s_state.myNotes = s_state.myComms = false;
         s_state.tournamentMode = false;
         s_state.tournamentGuildBuf[0] = '\0';
         s_state.tournamentGuildDisplay.clear();
@@ -3998,6 +4167,13 @@ static void DrawFilterPanelExpanded(const std::vector<MatchMeta>& matches, float
 
     // ── Occasion filter (two-level tree: group + individual stages) ──
     DrawOccasionTreeFilter(ComputeOccasionMatchCounts(matches));
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ── My matches (rated / with notes / with voice comms) ──
+    DrawMyMatchesFilter(matches);
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -5979,9 +6155,11 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     float compIconW = 8 * (kCompIconSz + kCompIconGap) + 4.0f;   // a full team of eight
     float mapW = std::max(90.0f, tableW * 0.13f);
     float notesColW = 20.0f;
-    // Voice comms: the headset alone. Always shown, so the layout never jumps when comms come.
-    float commsColW = std::ceil(ImGui::GetTextLineHeight()) + 2.0f;
-    float teamW = std::clamp((tableW - dateW - commsColW - mapW - occasionW - ratingW
+    // The rating cell starts with a fixed slot for the voice comms headset, so the stars stay
+    // aligned whether a row has comms or not; the column grows by that slot.
+    const float commsSlotW = std::ceil(ImGui::GetTextLineHeight()) + 4.0f;
+    ratingW += commsSlotW;
+    float teamW = std::clamp((tableW - dateW - mapW - occasionW - ratingW
                               - compW * 2 - compIconW * 2 - notesColW) * 0.5f, 100.0f, 250.0f);
 
     ImGuiTableFlags tableFlags =
@@ -5994,21 +6172,20 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
 
     // Column order is the logical order the cells below address by index, so the cells can
     // stay in the order that reads best in code while the table shows them in this one.
-    // Each column also carries a sort id (TableSetupColumn's user id), which is what the sort
-    // comparator switches on - keep those in step. The comms column came last (id 11), so the
-    // ids of the others did not change when it was put second.
+    // Each column also carries its index as a sort id (TableSetupColumn's user id), which is what
+    // the sort comparator switches on - keep those in step.
     enum MatchCol {
-        Col_Date = 0, Col_Comms, Col_Occasion, Col_Map,
+        Col_Date = 0, Col_Occasion, Col_Map,
         Col_Team1, Col_Comp1, Col_Team2, Col_Comp2,
         Col_Build1, Col_Build2, Col_Rating, Col_Notes, Col_Count
     };
 
-    if (ImGui::BeginTable("##match_table_v2", Col_Count, tableFlags))   // v2: the comms column (new saved widths)
+    // v3: the saved widths under the first id were shifted by a twelve-column layout (a short-
+    // lived comms column), and v2 holds that layout's; a fresh id starts from these defaults.
+    if (ImGui::BeginTable("##match_table_v3", Col_Count, tableFlags))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("DATE",          ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, dateW, 0);
-        // Its first click puts the matches with comms first.
-        ImGui::TableSetupColumn("##comms",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize | ImGuiTableColumnFlags_PreferSortDescending, commsColW, 11);
         ImGui::TableSetupColumn("OCCASION",      ImGuiTableColumnFlags_WidthFixed, occasionW, 1);
         ImGui::TableSetupColumn("MAP",           ImGuiTableColumnFlags_WidthFixed, mapW, 2);
         ImGui::TableSetupColumn("TEAM 1",        ImGuiTableColumnFlags_WidthFixed, teamW, 3);
@@ -6021,32 +6198,16 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::TableSetupColumn("RATING",        ImGuiTableColumnFlags_WidthFixed, ratingW, 9);
         ImGui::TableSetupColumn("##notes",       ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoSort | ImGuiTableColumnFlags_NoReorder, notesColW, 10);
 
-        // DEV TOOL (GWO_LIBRARY_SHOT): the comms column sorted, as one click on its header does.
-        if (g_commsSortTest)
+        // DEV TOOL (GWO_LIBRARY_SHOT): the list sorted on Rating, as one click on its header does.
+        if (g_ratingSortTest)
         {
-            g_commsSortTest = false;
-            ImGui::TableSetColumnSortDirection(Col_Comms, ImGuiSortDirection_Descending, false);
+            g_ratingSortTest = false;
+            ImGui::TableSetColumnSortDirection(Col_Rating, ImGuiSortDirection_Descending, false);
         }
 
-        // Headers sit back as labels over the list rather than announcing a grid. The comms
-        // column's header is a dim headset, "Voice comms" on hover.
+        // Headers sit back as labels over the list rather than announcing a grid.
         ImGui::PushStyleColor(ImGuiCol_Text, kColorTextDim);
-        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-        for (int col = 0; col < Col_Count; ++col)
-        {
-            if (!ImGui::TableSetColumnIndex(col)) continue;
-            ImGui::TableHeader(ImGui::TableGetColumnName(col));
-            if (col == Col_Comms)
-            {
-                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-                const float h = ImGui::GetTextLineHeight();
-                const ImVec2 p(a.x, a.y + ((b.y - a.y) - h) * 0.5f);
-                const bool hov = ImGui::IsItemHovered();
-                DrawHeadsetGlyph(ImGui::GetWindowDrawList(), p, h, hov ? IM_COL32(200, 168, 75, 230) : IM_COL32(150, 130, 80, 160));
-                if (hov) ImGui::SetTooltip("Voice comms");
-                if (g_commsBadgeHoverTest == "##header") g_commsBadgeHoverPos = ImVec2(p.x + h * 0.5f, p.y + h * 0.5f);
-            }
-        }
+        ImGui::TableHeadersRow();
         ImGui::PopStyleColor();
 
         if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
@@ -6176,11 +6337,6 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                     dl->AddText(ImVec2(cellStart.x + iconW, cy),
                                 ImGui::GetColorU32(kColorTextMuted), dateBuf);
                 }
-
-                // Voice comms attached on this PC: the headset (grey when the file is gone).
-                ImGui::TableSetColumnIndex(Col_Comms);
-                CenterCell(textH);
-                DrawCommsBadge(m.folder_name, textH);
 
                 ImGui::TableSetColumnIndex(Col_Occasion);
                 CenterCell(textH);
@@ -6378,6 +6534,12 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::TableSetColumnIndex(Col_Rating);
                 CenterCell(textH);
                 {
+                    // Voice comms attached on this PC: the headset in a fixed slot before the
+                    // stars (grey when the file is gone); the stars start after it on every row.
+                    const ImVec2 slot = ImGui::GetCursorScreenPos();
+                    DrawCommsBadge(m.folder_name, textH);
+                    ImGui::SetCursorScreenPos(ImVec2(slot.x + commsSlotW, slot.y));
+
                     int cur = MatchRatings::Get().GetRating(m.folder_name);
                     int res = DrawStarRating(("##rate" + std::to_string(fm.originalIndex)).c_str(),
                                              cur, false, /*hideWhenEmpty=*/true);
@@ -6390,7 +6552,13 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 CenterCell(textH);
                 if (MatchNotes::Get().HasNote(m.folder_name))
                 {
-                    ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
+                    // The rolled scroll (the "My matches" filter and the ribbon's Bookmarks show
+                    // the same); the old pencil glyph if the art is missing.
+                    ImVec2 uv0, uv1;
+                    if (ImTextureID scroll = GetNotesScrollIcon(&uv0, &uv1))
+                        ImGui::Image(scroll, ImVec2(textH * 22.f / 23.f, textH), uv0, uv1);
+                    else
+                        ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 0.85f), "\xe2\x9c\x8e");
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Has notes");
                 }

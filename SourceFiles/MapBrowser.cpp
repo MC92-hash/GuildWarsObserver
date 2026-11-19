@@ -27,16 +27,20 @@
 #include "UrlProtocol.h"
 #include "MatchLink.h"
 #include "ReplaySync.h"
+#include "MatchRatings.h"
+#include "MatchNotes.h"
 
 extern void ExitMapBrowser() noexcept;
 extern std::string g_commsBadgeHoverTest;   // draw_replay_browser.cpp
 extern ImVec2 g_commsBadgeHoverPos;
-extern bool g_commsSortTest;
+extern bool g_ratingSortTest;
+extern bool g_myMatchesTest;
 
 // ---------------------------------------------------------------------------
 // DEV TOOL: GWO_LIBRARY_SHOT=<folder for the pictures>|<match folder>. The Library window, off
-// every monitor and never activated, saves library.png after 12 s, then puts ImGui's pointer (not
-// the real cursor) on that match's voice comms badge and saves library_tooltip.png, then closes.
+// every monitor and never activated: library.png (sorted on Rating), library_tooltip.png (ImGui's
+// pointer, not the real cursor, on that match's voice comms badge), library_mine.png (My matches
+// > With voice comms ticked), then it closes.
 // ---------------------------------------------------------------------------
 void MapBrowser::LibraryShotSelfTest()
 {
@@ -57,9 +61,18 @@ void MapBrowser::LibraryShotSelfTest()
         if (bar != std::string::npos) folder = v.substr(bar + 1);
         on = true;
         t0 = now;
+        // Two matches rated 4, the one with comms and one without, to show the stars aligned and
+        // the comms one first among equals (the test script restores ratings.json afterwards).
+        char rate[512] = {};
+        if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT_RATE", rate, sizeof(rate)) > 0 && rate[0])
+        {
+            MatchRatings::Get().SetRating(folder, 4);
+            MatchRatings::Get().SetRating(rate, 4);
+            MatchNotes::Get().SetNote(folder, "Self-test note");   // the notes column and filter (notes.json restored too)
+        }
         if (HWND h = m_deviceResources->GetWindow())
         {
-            RECT r = {0, 0, 1600, 900};
+            RECT r = {0, 0, 2400, 1000};
             AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
             SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
             ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -76,13 +89,24 @@ void MapBrowser::LibraryShotSelfTest()
         RunLog::Line("library-shot: picture '%s'", (dir / name).string().c_str());
     };
     const double t = now - t0;
-    // The list sorted on the voice comms column (as one click on its header), then the badge's
-    // tooltip, then the header's.
-    if (stage == 0 && t > 9.0) { g_commsSortTest = true; stage = 1; }
+    // The list sorted on Rating (as one click on its header), the badge's tooltip, then the
+    // Filters panel with "My matches" > "With voice comms" ticked.
+    if (stage == 0 && t > 9.0)
+    {
+        g_ratingSortTest = true;
+        stage = 1;
+        // Again: the size given while the window opens does not hold.
+        if (HWND h = m_deviceResources->GetWindow())
+        {
+            RECT r = {0, 0, 2400, 1000};
+            AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+            SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+        }
+    }
     else if (stage == 1 && t > 12.0) { shot("library.png"); g_commsBadgeHoverTest = folder; stage = 2; }
-    else if (stage == 2 && t > 16.0) { shot("library_tooltip.png"); g_commsBadgeHoverTest = "##header"; stage = 3; }
-    else if (stage == 3 && t > 20.0) { shot("library_header_tooltip.png"); g_commsBadgeHoverTest.clear(); stage = 4; }
-    else if (stage == 4 && t > 20.5)
+    else if (stage == 2 && t > 16.0) { shot("library_tooltip.png"); g_commsBadgeHoverTest.clear(); g_myMatchesTest = true; stage = 3; }
+    else if (stage == 3 && t > 19.0) { shot("library_mine.png"); stage = 4; }
+    else if (stage == 4 && t > 19.5)
     {
         stage = 5;
         if (HWND h = m_deviceResources->GetWindow()) PostMessage(h, WM_CLOSE, 0, 0);
@@ -837,7 +861,10 @@ void MapBrowser::Tick()
     // DEV TOOL (GWO_META_SELFTEST): it draws in a hidden window, so never takes the foreground.
     const bool meta_selftest = GuiGlobalConstants::IsDeveloperMode() && meta_module_selftest_requested();
 
-    if (!is_extracting && !meta_selftest) {
+    // DEV TOOL (GWO_LIBRARY_SHOT): the pictures' window is never in front (it must not take the
+    // foreground from whoever uses the PC), so it draws regardless.
+    static const bool libraryShot = GetEnvironmentVariableA("GWO_LIBRARY_SHOT", nullptr, 0) > 0;
+    if (!is_extracting && !meta_selftest && !libraryShot) {
         if (IsIconic(m_deviceResources->GetWindow())) {
             return;
         }
