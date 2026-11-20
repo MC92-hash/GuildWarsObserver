@@ -326,6 +326,7 @@ private:
     void ClipBoxRect(ImVec2& mn, ImVec2& mx) const;
     void ClipOutputSize(int& boxW, int& boxH, int& outW, int& outH) const;
     double EstimateClipBytes(int fps, int scalePct, float seconds) const;
+    float  ClipSpeed() const;   // match seconds per GIF second: the replay's speed, fixed while rendering
     std::pair<std::string, std::string> ClipGuildNameAndTag(int side) const;
     void DrawClipMatchTag(ImDrawList* dl, ImVec2 mn, ImVec2 mx) const;
     std::string ClipSuggestedFileName() const;

@@ -373,7 +373,7 @@ void ReplayWindow::UpdateClipPlayback()
     auto& c = m_clip;
     if (c.phase == Phase::Rendering)
     {
-        m_debugTimeline = std::max(0.f, c.startTime + static_cast<float>(c.frameIndex) / c.fps);
+        m_debugTimeline = std::max(0.f, c.startTime + static_cast<float>(c.frameIndex) * c.speed / c.fps);
         c.captureThisFrame = c.frameIndex >= 0;
         return;
     }
@@ -470,13 +470,19 @@ void ReplayWindow::ClipOutputSize(int& boxW, int& boxH, int& outW, int& outH) co
     outH = std::max(16, static_cast<int>(std::lround(boxH * m_clip.outputScalePct / 100.0)));
 }
 
+float ReplayWindow::ClipSpeed() const
+{
+    if (m_clip.phase == ClipExportState::Phase::Rendering) return m_clip.speed;
+    return std::max(0.01f, m_replayCtx.playbackSpeed);
+}
+
 double ReplayWindow::EstimateClipBytes(int fps, int scalePct, float seconds) const
 {
     int bw, bh, ow, oh;
     ClipOutputSize(bw, bh, ow, oh);
     ow = std::max(16, static_cast<int>(std::lround(bw * scalePct / 100.0)));
     oh = std::max(16, static_cast<int>(std::lround(bh * scalePct / 100.0)));
-    const double frames = std::max(1.0, std::round(static_cast<double>(seconds) * fps));
+    const double frames = std::max(1.0, std::round(static_cast<double>(seconds) * fps / ClipSpeed()));
     return static_cast<double>(ow) * oh * frames * m_clip.bytesPerPixelFrame + frames * kPerFrameBytes + 2048.0;
 }
 
@@ -964,7 +970,8 @@ void ReplayWindow::DrawClipPanel()
         int bw, bh, ow, oh;
         ClipOutputSize(bw, bh, ow, oh);
         const float seconds = c.endTime - c.startTime;
-        const int frames = std::max(1, static_cast<int>(std::lround(seconds * c.fps)));
+        const float speed = ClipSpeed();
+        const int frames = std::max(1, static_cast<int>(std::lround(seconds * c.fps / speed)));
         const float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
 
         // Hierarchy: gold section titles, dim labels in a left column, bright values, one gold
@@ -1036,6 +1043,11 @@ void ReplayWindow::DrawClipPanel()
                            FormatTenths(c.endTime - m_displayTimeOffset).c_str());
         ImGui::SameLine();
         ImGui::TextColored(kAccent, "%.1f s", seconds);
+        if (speed != 1.f)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(kLabel, "at x%g = %.1f s GIF", speed, seconds / speed);
+        }
         DrawClipMiniTimeline();
         if (ImGui::SmallButton("Start here"))
         {
@@ -1138,7 +1150,7 @@ void ReplayWindow::DrawClipPanel()
             {
                 const double perFrame = static_cast<double>(ow) * oh * c.bytesPerPixelFrame + kPerFrameBytes;
                 const double maxFrames = std::max(1.0, (limit * kHeadroom - 2048.0) / perFrame);
-                const float secs = std::max(1.f, static_cast<float>(std::floor(maxFrames) / c.fps));
+                const float secs = std::max(1.f, static_cast<float>(std::floor(maxFrames) * speed / c.fps));
                 c.endTime = std::min(c.endTime, std::round((c.startTime + secs) * 10.f) / 10.f);
             }
         }
@@ -1178,9 +1190,7 @@ void ReplayWindow::DrawClipPanel()
             {
                 c.previewing = true;
                 m_debugTimeline = c.startTime;
-                m_replayCtx.isPlaying = true;
-                m_replayCtx.playbackSpeed = 1.f;
-                m_replayCtx.speedIndex = 3;
+                m_replayCtx.isPlaying = true;   // at the replay's speed, like the export
             }
         }
         ImGui::SameLine();
@@ -1390,8 +1400,11 @@ void ReplayWindow::StartClipExport(const std::wstring& path)
     c.previewing = false;
 
     ClipOutputSize(c.boxW, c.boxH, c.outW, c.outH);
-    c.frameCount = std::max(1, static_cast<int>(std::lround((c.endTime - c.startTime) * c.fps)));
-    c.prerollFrames = static_cast<int>(std::min(kPrerollSeconds * c.fps, std::floor(c.startTime * c.fps)));
+    // The GIF plays at the replay's current speed: each frame steps speed / fps of match time.
+    c.speed = ClipSpeed();
+    const float matchFps = c.fps / c.speed;
+    c.frameCount = std::max(1, static_cast<int>(std::lround((c.endTime - c.startTime) * matchFps)));
+    c.prerollFrames = static_cast<int>(std::min(kPrerollSeconds * matchFps, std::floor(c.startTime * matchFps)));
     c.frameIndex = -c.prerollFrames;
     c.frames.clear();
     c.frames.reserve(c.frameCount);
@@ -1404,8 +1417,7 @@ void ReplayWindow::StartClipExport(const std::wstring& path)
 
     m_replayCtx.isPlaying = true;
     m_replayCtx.loopPlayback = false;
-    m_replayCtx.playbackSpeed = 1.f;
-    m_replayCtx.speedIndex = 3;
+    m_replayCtx.playbackSpeed = c.speed;   // animations and effects advance frameDt * speed
     m_timer.SetManualStepSeconds(1.0 / c.fps);
     c.phase = Phase::Rendering;
 }

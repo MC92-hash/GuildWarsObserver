@@ -63,6 +63,7 @@ struct ClipExportState
     int   frameIndex = 0;                    // negative during the pre-roll
     int   prerollFrames = 0;
     int   frameCount = 0;
+    float speed = 1.f;                       // replay speed the export renders at (match s per GIF s)
     bool  captureThisFrame = false;
     std::vector<std::vector<uint8_t>> frames;
     float savedTimeline = 0.f;
