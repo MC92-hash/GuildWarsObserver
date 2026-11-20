@@ -7092,6 +7092,26 @@ void ReplayWindow::Tick()
         attrInputs.skillHealth = &m_skillHealthSpans;
 
         m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
+        // The energy fit (owner, 2026-11-20): an attribute only a regeneration skill uses (Lyssa's
+        // Aura's Inspiration) is measured by the casts its energy has to pay for. Read on this first
+        // solve, it goes back in as evidence and the players are solved again. The effect timeline
+        // built for it is the pre-solve one, rebuilt once the attributes are in.
+        {
+            const auto fits = EnergyModel::FitRegenRanks(m_replayCtx.agents, MakeEnergyInputs());
+            if (!fits.empty())
+            {
+                std::unordered_map<int, std::vector<AttributeModel::Evidence>> extra;
+                for (const auto& [agentId, list] : fits)
+                    for (const EnergyModel::RankFit& f : list)
+                        extra[agentId].push_back(AttributeModel::EnergyFitEvidence(
+                            f.attribute, f.atLeast, f.skillId,
+                            "the energy his casts needed asks for at least +" + std::to_string(f.pips) +
+                            " regeneration (contradictions by payout " + f.curve + ")"));
+                attrInputs.extraEvidence = &extra;
+                m_attrProfiles = AttributeModel::SolveAll(m_replayCtx.agents, attrInputs);
+                attrInputs.extraEvidence = nullptr;
+            }
+        }
         // The attribute boosts again, for the rank a skill on the bar reads (SkillRankBandAt).
         m_attrBoosts = AttributeModel::BuildAttributeBoosts(m_replayCtx.agents, attrInputs);
         m_attributesDeduced = true;

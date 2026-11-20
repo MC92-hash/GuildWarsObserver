@@ -12,7 +12,7 @@
 // into the model and draws the result.
 // ---------------------------------------------------------------------------
 
-void ReplayWindow::BuildEnergyTracks() const
+EnergyModel::Inputs ReplayWindow::MakeEnergyInputs() const
 {
     if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
 
@@ -61,7 +61,12 @@ void ReplayWindow::BuildEnergyTracks() const
     in.allIn = m_allInBuilt ? &m_allIn : nullptr;
 
     in.mapId = m_replayCtx.mapId;
+    return in;
+}
 
+void ReplayWindow::BuildEnergyTracks() const
+{
+    const EnergyModel::Inputs in = MakeEnergyInputs();
     m_energyTracks = EnergyModel::Build(m_replayCtx.agents, in);
     m_energyTracks.merge(EnergyModel::BuildHenchmen(m_replayCtx.agents, in));
     m_energyBuilt = true;
