@@ -583,6 +583,7 @@ private:
     // Each player's energy, calculated forward from the match start (EnergyModel, private). Built
     // lazily on first use and rebuilt once the attribute solve lands, the way the skill disables
     // are, because Expertise, Energy Storage and the skill ranks all feed it.
+    EnergyModel::Inputs MakeEnergyInputs() const;   // what BuildEnergyTracks hands the model
     void BuildEnergyTracks() const;
     const EnergyModel::Track* EnergyTrackFor(int agentId) const;
     mutable std::unordered_map<int, EnergyModel::Track> m_energyTracks;
