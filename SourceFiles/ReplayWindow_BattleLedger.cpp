@@ -35,7 +35,8 @@ namespace
     // A skill that interrupts: its text says so ("Interrupts a spell", "interrupts an action").
     // A skill that interrupts its target when it lands, whatever else happens: a sentence of its
     // concise text that STARTS with "Interrupts an action / a spell / a skill / a spell or chant /
-    // an attack / target foe / actions", with no condition in it ("if you land a critical hit",
+    // an attack / target foe / actions" (or "If target foe is casting / using a skill, ... interrupted"),
+    // with no condition in it ("if you land a critical hit",
     // "if target foe has a Deep Wound", "next attack") and none after it ("No effect unless").
     // A hex or enchantment that interrupts later ("(4 seconds.) ... Interrupts next attack",
     // Spinal Shivers, Web of Disruption), an incidental one (Rust's under Overcast, Maelstrom,
@@ -49,7 +50,8 @@ namespace
         if (c.empty() || c[0] == '(') return false;                 // an effect with a duration: later, not on use
         if (c.find("No effect unless") != std::string::npos) return false;   // Disrupting Throw
         static const char* kOpen[] = { "Interrupts an action", "Interrupts actions", "Interrupts a spell",
-                                       "Interrupts a skill", "Interrupts an attack", "Interrupts target foe" };
+                                       "Interrupts a skill", "Interrupts an attack", "Interrupts target foe",
+                                       "Interrupt a spell" };   // Power Leech's text says "Interrupt"
         size_t from = 0;
         while (from < c.size())
         {
@@ -59,6 +61,13 @@ namespace
             for (const char* o : kOpen)
                 if (sentence.rfind(o, 0) == 0)
                     return sentence.find(" if ") == std::string::npos && sentence.find(" next ") == std::string::npos;
+            // The other way to say it: the condition is the foe's cast itself ("If target foe is
+            // casting a spell or chant, ... that skill is interrupted": Power Block; "If target foe
+            // is using a skill, that foe ... are interrupted": Cry of Frustration). A miss there is
+            // a miss, like Power Spike on a foe who is not casting.
+            if ((sentence.rfind("If target foe is casting", 0) == 0 || sentence.rfind("If target foe is using a skill", 0) == 0)
+                && sentence.find("interrupted") != std::string::npos)
+                return true;
             from = end + 2;
         }
         return false;
@@ -411,6 +420,8 @@ void ReplayWindow::BuildBattleLedger() const
     }
     std::sort(attempts.begin(), attempts.end(), [](const Attempt& a, const Attempt& b) { return a.use->endTime < b.use->endTime; });
     std::unordered_map<int, size_t> nextStop;                 // victim -> first INTERRUPTED not yet claimed
+    std::unordered_map<int, std::vector<char>> claimed;       // victim -> which INTERRUPTED an attempt took
+    for (const auto& [v, times] : stopped) claimed[v].assign(times.size(), 0);
     for (const Attempt& at : attempts)
     {
         const SkillUseEvent& su = *at.use;
@@ -429,6 +440,7 @@ void ReplayWindow::BuildBattleLedger() const
             while (k < sit->second.size() && sit->second[k] < su.endTime - 0.05f) ++k;
             if (k < sit->second.size() && sit->second[k] <= su.endTime + 1.0f)
             {
+                claimed[su.targetId][k] = 1;
                 const float hit = sit->second[k++];
                 li.outcome = LedgerInterrupt::Landed;
                 li.t = hit;
@@ -461,6 +473,111 @@ void ReplayWindow::BuildBattleLedger() const
         }
         m_ledgerInts.push_back(li);
     }
+
+    // --- Area interrupts: skills that interrupt the foes around a point, not one target ---
+    // Teinai's Wind interrupts its target and the foes adjacent to him that are Burning when it
+    // lands; Lyssa's Haste interrupts the foes adjacent to its Dervish when it is cast and again
+    // when the enchantment ends. Each foe it could stop that was using a skill at that moment is one
+    // attempt; it landed when an INTERRUPTED on that foe, not taken by a targeted attempt, arrives
+    // inside 0.3 s. A foe doing nothing is no attempt (nothing to interrupt, not a miss).
+    constexpr int kTeinaisWind = 1081, kLyssasHaste = 1512, kLyssasHastePvp = 3348;
+    constexpr float kAdjacent = 166.f + 35.f;                  // adjacent + the snapshots' blur
+    auto PosAt = [&](const auto& agent, float t, float& x, float& y) {
+        const auto& sn = agent.snapshots;
+        if (sn.empty()) return false;
+        auto it = std::lower_bound(sn.begin(), sn.end(), t, [](const AgentSnapshot& s, float v) { return s.time < v; });
+        if (it == sn.end()) --it;
+        else if (it != sn.begin() && t - std::prev(it)->time < it->time - t) --it;
+        if (std::fabs(it->time - t) > 1.0f || !it->is_alive || it->is_dead) return false;
+        x = it->x; y = it->y;
+        return true;
+    };
+    auto UsingSkillAt = [](const auto& agent, float t) -> const SkillUseEvent* {
+        for (const SkillUseEvent& v : agent.skillUseHistory)
+        {
+            if (v.startTime > t + 0.05f) break;
+            if (v.endTime >= t - 0.05f && !v.wasCancelled) return &v;
+        }
+        return nullptr;
+    };
+    const EffectTimeline::Table* fxTable = EffectTimelineTable();
+    auto BurningAt = [&](int agent, float t) {
+        if (!fxTable) return false;
+        for (const EffectTimeline::Effect* e : fxTable->ActiveAt(agent, t))
+            if (e->kind == EffectTimeline::Kind::Condition && e->skillId == EffectTimeline::kBurning) return true;
+        return false;
+    };
+    // One attempt per foe of `src`'s team within reach of (cx, cy) at time t that passes `can`.
+    auto AreaAttempt = [&](int src, int skillId, float startT, float t, float cx, float cy, int mustInclude, auto&& can) {
+        const int team = m_replayCtx.agents.at(src).teamId;
+        for (const auto& [id, foe] : m_replayCtx.agents)
+        {
+            if (id == src || foe.teamId == 0 || foe.teamId == team) continue;
+            float fx = 0.f, fy = 0.f;
+            if (id != mustInclude && (!PosAt(foe, t, fx, fy) || std::hypot(fx - cx, fy - cy) > kAdjacent)) continue;
+            if (!can(id, t)) continue;
+            const SkillUseEvent* cast = UsingSkillAt(foe, t);
+            if (!cast) continue;
+            LedgerInterrupt li;
+            li.t = t; li.src = src; li.dst = id; li.skillId = skillId;
+            li.outcome = LedgerInterrupt::Missed;
+            auto sit = stopped.find(id);
+            if (sit != stopped.end())
+                for (size_t k = 0; k < sit->second.size(); ++k)
+                {
+                    const float hit = sit->second[k];
+                    if (claimed[id][k] || hit < t - 0.05f) continue;
+                    if (hit > t + 0.3f) break;
+                    claimed[id][k] = 1;
+                    li.outcome   = LedgerInterrupt::Landed;
+                    li.t         = hit;
+                    li.lostSkill = m_skillView.ResolvePvpSkillId(cast->skillId);
+                    li.afterMs   = (int)std::lround((hit - cast->startTime) * 1000.f);
+                    const float rx = startT - cast->startTime;
+                    if (rx >= 0.f) li.reflexMs = (int)std::lround(rx * 1000.f);
+                    break;
+                }
+            m_ledgerInts.push_back(li);
+        }
+    };
+    auto Anyone = [](int, float) { return true; };
+    for (int pid : m_playerIds)
+    {
+        auto ait = m_replayCtx.agents.find(pid);
+        if (ait == m_replayCtx.agents.end()) continue;
+        const auto& me = ait->second;
+        for (const SkillUseEvent& su : me.skillUseHistory)
+        {
+            if (su.wasCancelled || su.wasInterrupted) continue;
+            const int resolved = m_skillView.ResolvePvpSkillId(su.skillId);
+            if (su.skillId == kTeinaisWind)
+            {
+                auto tit = m_replayCtx.agents.find(su.targetId);
+                if (tit == m_replayCtx.agents.end() || tit->second.teamId == me.teamId) continue;
+                float cx = 0.f, cy = 0.f;
+                if (!PosAt(tit->second, su.endTime, cx, cy)) continue;
+                AreaAttempt(pid, resolved, su.startTime, su.endTime, cx, cy, su.targetId, BurningAt);
+            }
+            else if (su.skillId == kLyssasHaste || su.skillId == kLyssasHastePvp)
+            {
+                float cx = 0.f, cy = 0.f;
+                if (PosAt(me, su.endTime, cx, cy))
+                    AreaAttempt(pid, resolved, su.startTime, su.endTime, cx, cy, 0, Anyone);
+            }
+        }
+        // Lyssa's Haste's end effect: when the enchantment leaves him alive, before the match ends.
+        if (fxTable)
+            if (auto fit = fxTable->byAgent.find(pid); fit != fxTable->byAgent.end())
+                for (const EffectTimeline::Effect& e : fit->second)
+                {
+                    if (e.kind != EffectTimeline::Kind::Enchantment || (e.skillId != kLyssasHaste && e.skillId != kLyssasHastePvp)) continue;
+                    if (e.endSource == EffectTimeline::EndSource::Death || e.endSource == EffectTimeline::EndSource::MatchEnd) continue;
+                    float cx = 0.f, cy = 0.f;
+                    if (PosAt(me, e.end, cx, cy))
+                        AreaAttempt(pid, m_skillView.ResolvePvpSkillId(e.skillId), e.end, e.end, cx, cy, 0, Anyone);
+                }
+    }
+    std::stable_sort(m_ledgerInts.begin(), m_ledgerInts.end(), [](const LedgerInterrupt& a, const LedgerInterrupt& b) { return a.t < b.t; });
 
     FillLedgerData();
 
