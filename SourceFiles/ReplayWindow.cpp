@@ -7377,6 +7377,7 @@ void ReplayWindow::Render()
     // own sub-pass order and its own program; the pass above skips exactly these.
     DrawPlayerVisuals();
     DrawWeaponModels();
+    DrawGroundItemModels(/*secondaryView=*/false);   // [FLAG-2] the carryables lying in the world, as their own models
     // THE WATER, over the characters and their weapons as the client draws it: its alpha lets a
     // submerged body show through, tinted, under the reflection. Before it, the water's depth
     // cut every player off at the surface. The particles come after it, since they write no

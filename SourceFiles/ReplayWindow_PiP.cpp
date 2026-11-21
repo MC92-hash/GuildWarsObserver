@@ -383,6 +383,7 @@ void ReplayWindow::RenderSecondaryView(const XMFLOAT3& camPos, float yaw, float 
     // touches off the context - which is why the weapon and cylinder passes below still work.
     DrawPlayerVisuals(/*secondaryView=*/true);
     DrawWeaponModels();
+    DrawGroundItemModels(/*secondaryView=*/true);   // [FLAG-2]
     // The water over the characters, as in the main view.
     m_mapRenderer->RenderWater(rtv, dsv);
     DrawHeadpieceParticles(cam->GetView());
@@ -1045,25 +1046,29 @@ void ReplayWindow::DrawSecondaryViewOverlay(ImDrawList* dl, const XMFLOAT4X4& vi
         const float flagIconSz = std::clamp(imgH * 0.035f, 14.f, 24.f);
 
         auto DrawPipFlag = [&](float worldX, float worldY, float worldZ,
-                               ImTextureID tex, int teamIdx, const char* label)
+                               ImTextureID tex, int teamIdx, const char* label, bool marker)
         {
             XMFLOAT3 fpos = ApplyMapTransformToPos(worldX, worldY, worldZ, mt);
             float fScrX, fScrY;
             if (!ProjectToImage(fpos, fScrX, fScrY)) return;
             if (!InBounds(fScrX, fScrY)) return;
 
+            // The dot and icon stand in for a flag drawn as nothing else (`marker`).
             constexpr float kDotR = 4.f;
-            ImU32 dotCol = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
-                                                     : IM_COL32(100, 160, 255, 200);
-            dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
-            dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
-
-            if (tex)
+            if (marker)
             {
-                float oY = flagIconSz * 0.8f;
-                ImVec2 iTL(fScrX - flagIconSz * 0.5f, fScrY - oY - flagIconSz);
-                ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
-                dl->AddImage(tex, iTL, iBR);
+                ImU32 dotCol = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
+                                                         : IM_COL32(100, 160, 255, 200);
+                dl->AddCircleFilled(ImVec2(fScrX, fScrY), kDotR, dotCol);
+                dl->AddCircle(ImVec2(fScrX, fScrY), kDotR, IM_COL32(0, 0, 0, 180), 0, 1.5f);
+
+                if (tex)
+                {
+                    float oY = flagIconSz * 0.8f;
+                    ImVec2 iTL(fScrX - flagIconSz * 0.5f, fScrY - oY - flagIconSz);
+                    ImVec2 iBR(iTL.x + flagIconSz, iTL.y + flagIconSz);
+                    dl->AddImage(tex, iTL, iBR);
+                }
             }
 
             if (label)
@@ -1141,7 +1146,9 @@ void ReplayWindow::DrawSecondaryViewOverlay(ImDrawList* dl, const XMFLOAT4X4& vi
                     flabel = "Flag (Dropped)";
             }
 
-            DrawPipFlag(fwx, fwy, fwz, tex, ti, flabel);
+            // [FLAG-2] A lying flag the split view drew as its own model keeps only its label.
+            const bool asModel = loc != FlagLocation::Carried && m_groundItemModelDrawnPip[ti];
+            DrawPipFlag(fwx, fwy, fwz, tex, ti, flabel, !asModel);
         }
     }
 
