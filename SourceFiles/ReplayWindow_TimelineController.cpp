@@ -287,7 +287,7 @@ void ReplayWindow::DrawTimelineController()
     const float speedW  = 46.f * sf;
     const float volIconW = 24.f * sf;
     const float shareMainW = 74.f * sf, shareArrowW = 22.f * sf;
-    const float shareW  = m_liveMode ? 0.f : shareMainW + shareArrowW;
+    const float shareW  = shareMainW + shareArrowW;
     const float leftEnd = x0 + 66.f + 10.f * sf + 100.f * sf;   // the status chip and the stars
     const float rightStart = px + pw - PAD - shareW - (shareW > 0.f ? 10.f * sf : 0.f) - speedW;
     // Narrow windows: the volume track gives up width before anything overlaps.
@@ -609,7 +609,6 @@ void ReplayWindow::DrawTimelineController()
     // Share: one split button, an outlined pill. The main part copies a link to this moment with
     // this camera (ReplayWindow_ShareLink.cpp), dimmed for a match that is not published; the
     // arrow opens the other ways to share, the GIF clip among them. Each half lights on its own.
-    if (!m_liveMode)
     {
         const float shareX = px + pw - PAD - shareW;
         const float arrowX = shareX + shareMainW;

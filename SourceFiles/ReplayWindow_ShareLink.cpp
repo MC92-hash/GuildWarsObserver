@@ -186,7 +186,6 @@ void ReplayWindow::CopyShareLink(float timelineT, bool fromStart)
 // File menu entries: the link for now, and the way back to the Library after a link-only start.
 void ReplayWindow::DrawShareLinkMenuItems()
 {
-    if (m_liveMode) return;
     const bool published = UrlProtocol::IsPublished(m_matchMeta.folder_name);
     if (ImGui::MenuItem("Copy Share Link", nullptr, false, published))
         CopyShareLink(m_debugTimeline);

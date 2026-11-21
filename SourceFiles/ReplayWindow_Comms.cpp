@@ -421,12 +421,12 @@ constexpr float kCommsLaneH = 32.f;
 // Always shown in a replay, empty or not: with nothing attached it invites a drop.
 bool ReplayWindow::CommsLaneVisible() const
 {
-    return !m_liveMode;
+    return true;
 }
 
 bool ReplayWindow::CommsAttached() const
 {
-    return !m_liveMode && m_comms && m_comms->phase != Phase::None;
+    return m_comms && m_comms->phase != Phase::None;
 }
 
 float ReplayWindow::PlayBarHeight() const
@@ -460,7 +460,7 @@ void ReplayWindow::OnCommsDrop(void* hdrop)
         path.resize(n);
     }
     DragFinish(drop);
-    if (path.empty() || m_liveMode) return;
+    if (path.empty()) return;
     if (!m_comms) m_comms = std::make_shared<LaneState>();
     if (m_loadingPhase != LoadingPhase::Ready)
     {
@@ -631,7 +631,7 @@ void ReplayWindow::StartCommsSync()
 
 void ReplayWindow::UpdateComms()
 {
-    if (m_liveMode || m_loadingPhase != LoadingPhase::Ready) return;
+    if (m_loadingPhase != LoadingPhase::Ready) return;
     if (!m_comms) m_comms = std::make_shared<LaneState>();
     auto& c = *m_comms;
     const double now = Comms::NowSeconds();

@@ -2818,7 +2818,7 @@ void MapBrowser::ProcessPendingLink()
     auto openReplay = [&](const std::string* folder) -> ReplayWindow*
     {
         for (auto& rw : m_replay_windows)
-            if (rw && rw->IsAlive() && !rw->IsLive() && (!folder || rw->MatchFolder() == *folder))
+            if (rw && rw->IsAlive() && (!folder || rw->MatchFolder() == *folder))
                 return rw.get();
         return nullptr;
     };
@@ -2867,7 +2867,7 @@ void MapBrowser::ProcessPendingLink()
     const MatchLink* link = UrlProtocol::PeekPendingLink();
 
     // 2. A link-only start: the shared replay WAS the app, so closing it closes the app.
-    if (UrlProtocol::LibraryHidden() && m_linkReplaySeen && !link && !openReplay(nullptr) && !g_liveReplayOpen)
+    if (UrlProtocol::LibraryHidden() && m_linkReplaySeen && !link && !openReplay(nullptr))
     {
         RunLog::Line("link: the shared replay was closed and the Library was never shown - exiting");
         m_linkReplaySeen = false;

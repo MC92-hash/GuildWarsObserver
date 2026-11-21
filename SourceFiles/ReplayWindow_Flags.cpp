@@ -758,7 +758,7 @@ void ReplayWindow::DrawFlags()
     // Hovered over its model (its standing height, as a 3D agent) or its icon; a click follows its agent.
     // Only when nothing else is under the cursor, so a player standing on it keeps the click.
     // The followed one gets the selection ring under it, as a followed player does.
-    if (m_cameraMode == CameraMode::FollowAgent && m_followedAgentId >= 0 && !m_liveMode)
+    if (m_cameraMode == CameraMode::FollowAgent && m_followedAgentId >= 0)
     {
         for (int owner = 0; owner < kGroundItemOwners; owner++)
         {
@@ -800,7 +800,7 @@ void ReplayWindow::DrawFlags()
             const int agent = GroundItemAgent(*span, m_debugTimeline);
             if (agent < 0) break;
             m_hoveredAgentId = agent;
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !m_liveMode)
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 EnterFollowMode(agent);
             break;
         }

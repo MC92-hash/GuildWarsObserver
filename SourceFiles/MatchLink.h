@@ -68,7 +68,7 @@ namespace MatchLinks
     constexpr int kVersion = 1;
 
     // The page the copied links point at. One constant, so it can become /watch.html? if the
-    // site's /watch route does not resolve (owner trials, SHARE_LINKS_PLAN.md section 8).
+    // site's /watch route does not resolve (owner tests, SHARE_LINKS_PLAN.md section 8).
     inline constexpr const char* kWebBase = "https://gwobserver.com/watch?";
     inline constexpr const char* kAppBase = "gwobserver://watch?";
 
