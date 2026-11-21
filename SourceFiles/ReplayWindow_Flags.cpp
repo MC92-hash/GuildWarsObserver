@@ -18,6 +18,7 @@
 #include "SpatialAudioEngine.h"
 #include "SoundCache.h"
 #include "Parsers/BB9AnimationParser.h"
+#include "RunLog.h"
 #include "Parsers/FileReferenceParser.h"
 #include "ReplayWindow_Internal.h"
 #include "../ThirdParty/nanosvg/nanosvg.h"
@@ -105,6 +106,301 @@ void ReplayWindow::BuildFlagTimeline()
     }
 
     BuildFlagMessages();
+    BuildGroundItemSpans();
+}
+
+
+// ---------------------------------------------------------------------------
+// [FLAG-2] The carryables lying in the world: one span per Base / Ground state of
+// each team's flag and of each vine seed / repair kit, to its next event or the
+// match end.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+// The models a lying carryable is drawn as (the same files the carrier holds).
+constexpr uint32_t kGroundFlagModel      = 94192;
+constexpr uint32_t kGroundRepairKitModel = 31976;
+constexpr uint32_t kGroundVineSeedModel  = 94207;
+// The item view's ground segment: Gw.exe 0x7FE1B0 plays it on every item it puts on the ground
+// (PlaySequence(model, 0x303E5306, 3) at 0x7FE2A3).
+constexpr uint32_t kGroundItemSegment    = 0x303E5306u;
+}
+
+void ReplayWindow::BuildGroundItemSpans()
+{
+    m_groundItemSpans.clear();
+    if (!m_flagTimeline.valid) return;
+
+    // The flag's team colour as the client's old packed word: red 0xE038 (the identity), blue 0xE9A0.
+    // The FLAG_ITEM word of the lying item wins (ids are recycled between the teams); the team's own
+    // colour stands in when the item is not known.
+    constexpr uint16_t kRedWord  = 0xE038;
+    constexpr uint16_t kBlueWord = 0xE9A0;
+
+    for (int ti = 0; ti < 2; ti++)
+    {
+        const auto& ft = m_flagTimeline.teams[ti];
+        const uint16_t teamWord = Team::IndexIsRed(ti) ? kRedWord : kBlueWord;
+
+        // Before its first event the flag is at its base (locationAtTime's default), with no Base event
+        // of its own when the first thing that happens to it is a pickup.
+        if (!ft.events.empty() && ft.events.front().time > 0.f &&
+            ft.events.front().newLocation != FlagLocation::Base)
+        {
+            GroundItemSpan span;
+            span.owner = ti;
+            span.modelFileId = kGroundFlagModel;
+            span.start = 0.f;
+            span.end = ft.events.front().time;
+            span.x = ft.spawnX; span.y = ft.spawnY; span.z = ft.spawnZ;
+            span.colourWord = teamWord;
+            m_groundItemSpans.push_back(span);
+        }
+
+        for (size_t i = 0; i < ft.events.size(); i++)
+        {
+            const FlagTimelineEvent& ev = ft.events[i];
+            if (ev.newLocation != FlagLocation::Base && ev.newLocation != FlagLocation::Ground)
+                continue;
+
+            GroundItemSpan span;
+            span.owner = ti;
+            span.modelFileId = kGroundFlagModel;
+            span.start = ev.time;
+            span.end   = (i + 1 < ft.events.size()) ? ft.events[i + 1].time
+                                                    : std::max(m_replayCtx.maxReplayTime, ev.time);
+            if (span.end <= span.start) continue;
+            ft.positionAtTime(ev.time, span.x, span.y, span.z);
+            span.worldAgentId = ev.flagWorldAgentId;
+
+            if (ev.flagWorldAgentId >= 0)
+            {
+                auto it = m_replayCtx.agents.find(ev.flagWorldAgentId);
+                if (it != m_replayCtx.agents.end() && !it->second.snapshots.empty())
+                    span.colourWord = m_flagItems.ColourWordAt(it->second.snapshots.front().item_id, ev.time);
+            }
+            if (span.colourWord == 0)
+                span.colourWord = teamWord;
+
+            m_groundItemSpans.push_back(span);
+        }
+    }
+
+    // Vine seeds and repair kits: at their spawn (when a world agent revealed it) and dropped.
+    for (size_t b = 0; b < m_flagTimeline.bundles.size() && 2 + b < kGroundItemOwners; b++)
+    {
+        const BundleTimeline& bundle = m_flagTimeline.bundles[b];
+        const uint32_t model = bundle.type == BundleType::VineSeed  ? kGroundVineSeedModel
+                             : bundle.type == BundleType::RepairKit ? kGroundRepairKitModel : 0u;
+        if (model == 0) continue;
+
+        auto addSpan = [&](float start, float end, float x, float y, float z, int worldAgent) {
+            if (end <= start) return;
+            GroundItemSpan span;
+            span.owner = 2 + static_cast<int>(b);
+            span.modelFileId = model;
+            span.start = start; span.end = end;
+            span.x = x; span.y = y; span.z = z;
+            span.worldAgentId = worldAgent;
+            m_groundItemSpans.push_back(span);
+        };
+
+        // Untouched at its spawn until its first event (locationAtTime's default).
+        if (bundle.spawnResolved && !bundle.events.empty() && bundle.events.front().time > 0.f &&
+            bundle.events.front().newLocation != BundleLocation::Base)
+            addSpan(0.f, bundle.events.front().time, bundle.spawnX, bundle.spawnY, bundle.spawnZ, -1);
+
+        for (size_t i = 0; i < bundle.events.size(); i++)
+        {
+            const BundleTimelineEvent& ev = bundle.events[i];
+            if (ev.newLocation != BundleLocation::Ground &&
+                !(ev.newLocation == BundleLocation::Base && bundle.spawnResolved))
+                continue;
+            const float end = (i + 1 < bundle.events.size()) ? bundle.events[i + 1].time
+                                                             : std::max(m_replayCtx.maxReplayTime, ev.time);
+            float x = 0.f, y = 0.f, z = 0.f;
+            bundle.positionAtTime(ev.time, x, y, z);
+            // The recording first sees a starting item some seconds in (13-25 s), but it lies at its spawn
+            // from the start, as the icon already says: its first Base span opens at 0.
+            const float start = (i == 0 && ev.newLocation == BundleLocation::Base) ? 0.f : ev.time;
+            addSpan(start, end, x, y, z, ev.worldAgentId);
+        }
+    }
+
+    std::ofstream dbg("door_debug.log", std::ios::app);
+    dbg << "[GroundItem] " << m_groundItemSpans.size() << " span(s)\n";
+    for (const auto& s : m_groundItemSpans)
+        dbg << "  owner=" << s.owner << " model=" << s.modelFileId << " " << s.start << ".." << s.end
+            << " pos=(" << s.x << "," << s.y << "," << s.z << ")"
+            << " word=0x" << std::hex << s.colourWord << std::dec << " agent=" << s.worldAgentId << "\n";
+}
+
+const ReplayWindow::GroundItemSpan* ReplayWindow::GroundItemSpanAt(int owner, float t) const
+{
+    for (const auto& s : m_groundItemSpans)
+        if (s.owner == owner && t >= s.start && t < s.end)
+            return &s;
+    return nullptr;
+}
+
+XMFLOAT3 ReplayWindow::GroundItemRenderPos(const GroundItemSpan& span) const
+{
+    XMFLOAT3 at = ApplyMapTransformToPos(span.x, span.y, span.z, m_replayCtx.mapTransform);
+    // An item's AGENT_ADD records no height (0.0): the terrain under it, then.
+    float ground = 0.f;
+    if (span.z == 0.f && m_mapRenderer && m_mapRenderer->TryGetGroundHeight(at.x, at.z, ground))
+        at.y = ground;
+    return at;
+}
+
+bool ReplayWindow::GroundItemVisible(const GroundItemSpan& span, float& alpha) const
+{
+    alpha = 1.f;
+    // An enemy flag you have no vision on would not be on your compass; your own is never hidden.
+    // A bundle belongs to no team: it is down to whether the perspective sees the spot.
+    const bool ownFlag = span.owner < 2 && Team::FromIndex01(span.owner) == m_fogPerspective;
+    if (m_fogPerspective > 0 && !ownFlag && IsPositionInFog(span.x, span.y))
+    {
+        if (!m_fogGhostMode) return false;
+        alpha = 0.3f;
+    }
+    return true;
+}
+
+bool ReplayWindow::GroundItemClose(const XMFLOAT3& at) const
+{
+    if (!m_uiLayout.lodEnabled || !m_mapRenderer) return true;
+    Camera* cam = m_mapRenderer->GetCamera();
+    if (!cam) return true;
+    const XMFLOAT3 c = cam->GetPosition3f();
+    const float dx = at.x - c.x, dy = at.y - c.y, dz = at.z - c.z;
+    return dx * dx + dy * dy + dz * dz <= m_uiLayout.lodDotDist * m_uiLayout.lodDotDist;
+}
+
+const XMFLOAT4X4& ReplayWindow::GroundItemPose(uint32_t modelFileId)
+{
+    auto found = m_groundItemPoses.find(modelFileId);
+    if (found != m_groundItemPoses.end()) return found->second;
+
+    XMFLOAT4X4& pose = m_groundItemPoses[modelFileId];
+    XMStoreFloat4x4(&pose, XMMatrixIdentity());
+    if (!m_datManager || !m_hashIndex) return pose;
+    auto it = m_hashIndex->find(static_cast<int>(modelFileId));
+    if (it == m_hashIndex->end() || it->second.empty()) return pose;
+    const auto bytes = m_datManager->read_file_cached(static_cast<uint32_t>(it->second.at(0)));
+    if (!bytes || bytes->empty()) return pose;
+    auto parsed = GW::Parsers::ParseAnimationFromFile(bytes->data(), bytes->size());
+    if (!parsed || !parsed->IsValid())
+    {
+        RunLog::Line("ground items: model %u has no readable clip - it lies as authored", modelFileId);
+        return pose;
+    }
+    auto clip = std::make_shared<GW::Animation::AnimationClip>(std::move(*parsed));
+    clip->BuildAnimationGroups();
+    size_t segment = SIZE_MAX;
+    for (size_t i = 0; i < clip->animationSegments.size(); i++)
+        if (clip->animationSegments[i].hash == kGroundItemSegment)
+            segment = i;
+    if (segment == SIZE_MAX)
+    {
+        RunLog::Line("ground items: model %u has no segment 0x%08X - it lies as authored", modelFileId,
+                     kGroundItemSegment);
+        return pose;
+    }
+    GW::Animation::AnimationController controller;
+    controller.Initialize(clip);
+    controller.SetSegment(segment);
+    const auto& bones = controller.GetBoneMatrices();
+    if (!bones.empty()) pose = bones[0];
+    RunLog::Line("ground items: model %u stands on segment 0x%08X (%zu bone(s))", modelFileId,
+                 kGroundItemSegment, bones.size());
+    return pose;
+}
+
+int ReplayWindow::GroundItemAgent(const GroundItemSpan& span, float t) const
+{
+    auto alive = [&](int id) {
+        auto it = m_replayCtx.agents.find(id);
+        return it != m_replayCtx.agents.end() && !it->second.snapshots.empty();
+    };
+    if (span.worldAgentId >= 0 && alive(span.worldAgentId)) return span.worldAgentId;
+
+    // Otherwise the flag or bundle agent standing nearest the spot at that moment.
+    int best = -1;
+    float bestD = 300.f * 300.f;
+    for (const auto& [id, ard] : m_replayCtx.agents)
+    {
+        if (ard.snapshots.empty() || (ard.type != AgentType::Flag && ard.type != AgentType::Item)) continue;
+        if (t < ard.snapshots.front().time - 1.f || t > ard.snapshots.back().time + 1.f) continue;
+        const auto& s = ard.snapshots.front();
+        const float d = (s.x - span.x) * (s.x - span.x) + (s.y - span.y) * (s.y - span.y);
+        if (d < bestD) { bestD = d; best = id; }
+    }
+    return best;
+}
+
+bool ReplayWindow::GroundItemAgentLying(int agent, float t) const
+{
+    if (agent < 0 || !m_flagTimelineBuilt) return false;
+    for (int owner = 0; owner < kGroundItemOwners; owner++)
+        if (const GroundItemSpan* span = GroundItemSpanAt(owner, t))
+            if (GroundItemAgent(*span, t) == agent) return true;
+    return false;
+}
+
+// The vine seeds and repair kits lying in the world, as their own models on the ground pose: the stand-in
+// templates the carriers' hands use (no dye to compose). The flags are drawn by DrawGroundFlagModels.
+void ReplayWindow::DrawGroundItemModels(bool secondaryView)
+{
+    bool* drawn = secondaryView ? m_groundItemModelDrawnPip : m_groundItemModelDrawn;
+    std::fill(drawn, drawn + kGroundItemOwners, false);
+    DrawGroundFlagModels(secondaryView);
+    if (!m_flagTimelineBuilt || m_groundItemSpans.empty() || !m_weaponModelsLoaded) return;
+
+    auto* context = m_deviceResources->GetD3DDeviceContext();
+    auto* meshManager = m_mapRenderer->GetMeshManager();
+    if (!context || !meshManager) return;
+
+    bool shadersBound = false;
+    int boundPixelShader = -1;
+    for (int owner = 2; owner < kGroundItemOwners; owner++)
+    {
+        const GroundItemSpan* span = GroundItemSpanAt(owner, m_debugTimeline);
+        if (!span) continue;
+        float alpha = 1.f;
+        if (!GroundItemVisible(*span, alpha)) continue;
+        const XMFLOAT3 at = GroundItemRenderPos(*span);
+        if (!GroundItemClose(at)) continue;
+        auto tmplIt = m_weaponModelTemplates.find(span->modelFileId);
+        if (tmplIt == m_weaponModelTemplates.end() || !tmplIt->second.gpuReady) continue;
+        WeaponModelTemplate& tmpl = tmplIt->second;
+
+        const XMMATRIX world = XMLoadFloat4x4(&GroundItemPose(span->modelFileId)) *
+                               XMMatrixTranslation(at.x, at.y, at.z);
+        if (!shadersBound)
+        {
+            m_mapRenderer->BindRegularVertexShader();
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            shadersBound = true;
+        }
+        const int wantPixelShader = (tmpl.pixelShaderType == PixelShaderType::NewModel) ? 1 : 0;
+        if (wantPixelShader != boundPixelShader)
+        {
+            m_mapRenderer->BindModelPixelShader(wantPixelShader == 1);
+            boundPixelShader = wantPixelShader;
+        }
+        for (size_t k = 0; k < tmpl.gpuMeshes.size(); k++)
+        {
+            if (!tmpl.gpuMeshes[k]) continue;
+            PerObjectCB cb = tmpl.templateCBs[k];
+            XMStoreFloat4x4(&cb.world, XMMatrixTranspose(world));
+            cb.mesh_alpha = alpha;
+            meshManager->SetPerObjectCB(cb);
+            tmpl.gpuMeshes[k]->Draw(context, m_mapRenderer->GetLODQuality());
+        }
+        drawn[owner] = true;
+    }
 }
 
 
@@ -223,27 +519,31 @@ void ReplayWindow::DrawFlags()
 
     auto DrawFlagAt = [&](float worldX, float worldY, float worldZ,
                           ImTextureID tex, int teamIdx, const char* label,
-                          float alphaMul)
+                          float alphaMul, bool marker)
     {
         XMFLOAT3 pos = ApplyMapTransformToPos(worldX, worldY, worldZ, t);
         float scrX, scrY;
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) return;
 
+        // The dot and icon stand in for a flag drawn as nothing else (`marker`).
         constexpr float kFlagDotRadius = 5.f;
-        ImU32 dotColor = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
-                                                   : IM_COL32(100, 160, 255, 200);
-        dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius,
-                            ScaleColorAlpha(dotColor, alphaMul));
-        dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius,
-                      ScaleColorAlpha(IM_COL32(0, 0, 0, 180), alphaMul), 0, 1.5f);
-
-        if (tex)
+        if (marker)
         {
-            float offsetY = iconSz * 0.8f;
-            ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
-            ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-            dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
-                         ScaleColorAlpha(IM_COL32_WHITE, alphaMul));
+            ImU32 dotColor = Team::IndexIsRed(teamIdx) ? IM_COL32(255, 100, 90, 200)
+                                                       : IM_COL32(100, 160, 255, 200);
+            dl->AddCircleFilled(ImVec2(scrX, scrY), kFlagDotRadius,
+                                ScaleColorAlpha(dotColor, alphaMul));
+            dl->AddCircle(ImVec2(scrX, scrY), kFlagDotRadius,
+                          ScaleColorAlpha(IM_COL32(0, 0, 0, 180), alphaMul), 0, 1.5f);
+
+            if (tex)
+            {
+                float offsetY = iconSz * 0.8f;
+                ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
+                ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+                dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                             ScaleColorAlpha(IM_COL32_WHITE, alphaMul));
+            }
         }
 
         if (label)
@@ -377,14 +677,22 @@ void ReplayWindow::DrawFlags()
             flagAlpha = kFogGhostAlpha;
         }
 
-        DrawFlagAt(worldX, worldY, worldZ, tex, ti, label, flagAlpha);
+        // [FLAG-2] Close up a carried flag is the one in the runner's hand: no icon and no label. Only
+        // past the 3D-agent distance (lodDotDist), where the runner is a profession icon, does it show.
+        if (loc == FlagLocation::Carried && GroundItemClose(ApplyMapTransformToPos(worldX, worldY, worldZ, t)))
+            continue;
+
+        // [FLAG-2] A lying flag the 3D pass drew as its own model keeps only its label.
+        const bool asModel = loc != FlagLocation::Carried && m_groundItemModelDrawn[ti];
+        DrawFlagAt(worldX, worldY, worldZ, tex, ti, label, flagAlpha, !asModel);
     }
 
     // --- Vine seeds and repair kits ---
     // A carried bundle is already drawn above its carrier by DrawBundleItems, so
     // only the ones lying in the world need a marker here.
-    for (auto& bundle : m_flagTimeline.bundles)
+    for (size_t bi = 0; bi < m_flagTimeline.bundles.size(); bi++)
     {
+        const auto& bundle = m_flagTimeline.bundles[bi];
         if (bundle.events.empty()) continue;
 
         BundleLocation bloc = bundle.locationAtTime(m_debugTimeline);
@@ -392,6 +700,8 @@ void ReplayWindow::DrawFlags()
         if (bloc == BundleLocation::Base && !bundle.spawnResolved) continue;
 
         bool isSeed = (bundle.type == BundleType::VineSeed);
+        // [FLAG-2] A lying bundle the 3D pass drew as its own model keeps only its label.
+        const bool asModel = 2 + bi < static_cast<size_t>(kGroundItemOwners) && m_groundItemModelDrawn[2 + bi];
 
         float worldX = 0, worldY = 0, worldZ = 0;
         bundle.positionAtTime(m_debugTimeline, worldX, worldY, worldZ);
@@ -411,19 +721,22 @@ void ReplayWindow::DrawFlags()
         if (!ProjectToScreen(viewProj, vpW, vpH, pos, scrX, scrY)) continue;
 
         constexpr float kBundleDotRadius = 5.f;
-        ImU32 dotCol = isSeed ? IM_COL32(120, 220, 120, 200) : IM_COL32(210, 180, 120, 200);
-        dl->AddCircleFilled(ImVec2(scrX, scrY), kBundleDotRadius,
-                            ScaleColorAlpha(dotCol, bundleAlpha));
-        dl->AddCircle(ImVec2(scrX, scrY), kBundleDotRadius,
-                      ScaleColorAlpha(IM_COL32(0, 0, 0, 180), bundleAlpha), 0, 1.5f);
-
         float offsetY = iconSz * 0.8f;
-        if (ImTextureID tex = LoadNPCIcon(dev, isSeed ? "Vine Seed.png" : "RepairKit.png"))
+        if (!asModel)
         {
-            ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
-            ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
-            dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
-                         ScaleColorAlpha(IM_COL32_WHITE, bundleAlpha));
+            ImU32 dotCol = isSeed ? IM_COL32(120, 220, 120, 200) : IM_COL32(210, 180, 120, 200);
+            dl->AddCircleFilled(ImVec2(scrX, scrY), kBundleDotRadius,
+                                ScaleColorAlpha(dotCol, bundleAlpha));
+            dl->AddCircle(ImVec2(scrX, scrY), kBundleDotRadius,
+                          ScaleColorAlpha(IM_COL32(0, 0, 0, 180), bundleAlpha), 0, 1.5f);
+
+            if (ImTextureID tex = LoadNPCIcon(dev, isSeed ? "Vine Seed.png" : "RepairKit.png"))
+            {
+                ImVec2 iconTL(scrX - iconSz * 0.5f, scrY - offsetY - iconSz);
+                ImVec2 iconBR(iconTL.x + iconSz, iconTL.y + iconSz);
+                dl->AddImage(tex, iconTL, iconBR, ImVec2(0, 0), ImVec2(1, 1),
+                             ScaleColorAlpha(IM_COL32_WHITE, bundleAlpha));
+            }
         }
 
         const char* label;
@@ -439,6 +752,58 @@ void ReplayWindow::DrawFlags()
                     ScaleColorAlpha(IM_COL32(0, 0, 0, 200), bundleAlpha), label);
         dl->AddText(ImVec2(tx, ty),
                     ScaleColorAlpha(IM_COL32(255, 255, 255, 230), bundleAlpha), label);
+    }
+
+    // --- [FLAG-2] A lying flag, seed or repair kit is selectable, like a gadget ---
+    // Hovered over its model (its standing height, as a 3D agent) or its icon; a click follows its agent.
+    // Only when nothing else is under the cursor, so a player standing on it keeps the click.
+    // The followed one gets the selection ring under it, as a followed player does.
+    if (m_cameraMode == CameraMode::FollowAgent && m_followedAgentId >= 0 && !m_liveMode)
+    {
+        for (int owner = 0; owner < kGroundItemOwners; owner++)
+        {
+            const GroundItemSpan* span = GroundItemSpanAt(owner, m_debugTimeline);
+            if (!span || GroundItemAgent(*span, m_debugTimeline) != m_followedAgentId) continue;
+            float alpha = 1.f;
+            if (GroundItemVisible(*span, alpha)) DrawFollowRing(dl, viewProj, vpW, vpH, GroundItemRenderPos(*span));
+            break;
+        }
+    }
+    if (!ImGui::GetIO().WantCaptureMouse && !m_rightMouseDown && !m_annotationMgr.IsDrawModeActive() &&
+        m_hoveredAgentId < 0)
+    {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        for (int owner = 0; owner < kGroundItemOwners; owner++)
+        {
+            const GroundItemSpan* span = GroundItemSpanAt(owner, m_debugTimeline);
+            if (!span) continue;
+            float alpha = 1.f;
+            if (!GroundItemVisible(*span, alpha)) continue;
+            const XMFLOAT3 at = GroundItemRenderPos(*span);
+            float bx, by, topX, topY;
+            if (!ProjectToScreen(viewProj, vpW, vpH, at, bx, by)) continue;
+            bool hit;
+            if (m_groundItemModelDrawn[owner] &&
+                ProjectToScreen(viewProj, vpW, vpH, XMFLOAT3(at.x, at.y + 120.f, at.z), topX, topY))
+            {
+                const float minY = std::min(topY, by), maxY = std::max(topY, by);
+                const float halfW = std::max((maxY - minY) * 0.35f, 14.f);
+                hit = mouse.x >= bx - halfW && mouse.x <= bx + halfW && mouse.y >= minY - 4.f && mouse.y <= maxY + 4.f;
+            }
+            else
+            {
+                // the dot and the icon above it
+                const float top = by - iconSz * 1.8f;
+                hit = std::abs(mouse.x - bx) <= iconSz * 0.6f && mouse.y >= top && mouse.y <= by + 6.f;
+            }
+            if (!hit) continue;
+            const int agent = GroundItemAgent(*span, m_debugTimeline);
+            if (agent < 0) break;
+            m_hoveredAgentId = agent;
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !m_liveMode)
+                EnterFollowMode(agent);
+            break;
+        }
     }
 
     // --- Ritualist urns ---

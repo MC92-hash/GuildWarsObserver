@@ -230,6 +230,68 @@ bool ReplayWindow::AgentOnStageAt(int agentId, const AgentReplayData& ard, float
     return true;
 }
 
+// The followed agent's neon-green dashed ring + glow on the ground at pos (counter-clockwise spin).
+void ReplayWindow::DrawFollowRing(ImDrawList* dl, XMMATRIX viewProj, float vpW, float vpH, const XMFLOAT3& pos)
+{
+    constexpr int   NUM_DASHES = 16;
+    constexpr float DASH_FRAC  = 0.70f;   // 70% visible, 30% gap
+    constexpr float CYL_R      = 30.f;
+    constexpr float RING_R     = CYL_R + 4.f;
+    constexpr float PI2        = 6.2831853f;
+    constexpr int   PTS_PER_DASH = 8;      // smooth arc per dash
+
+    float baseY = pos.y + 0.05f;
+    float spinOffset = -fmodf((float)ImGui::GetTime() / 15.f, 1.f) * PI2;
+    float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.5f);
+    float pulseR = RING_R + pulse * 3.f;
+    ImU8  pulseA = (ImU8)(200 + (int)(55.f * pulse));
+
+    auto projectRingPt = [&](float angle, float r, float& ox, float& oy) -> bool {
+        XMFLOAT3 wp = { pos.x + r * cosf(angle), baseY, pos.z + r * sinf(angle) };
+        return ProjectToScreen(viewProj, vpW, vpH, wp, ox, oy);
+    };
+
+    // Glow layers (pulsating)
+    for (int g = 1; g <= 3; ++g)
+    {
+        float gr = pulseR + g * 3.f;
+        ImU32 gc = IM_COL32(0, 255, 120, (ImU8)((int)(80 * (0.5f + 0.5f * pulse)) / g));
+        float prevX = 0.f, prevY = 0.f;
+        bool first = true;
+        for (int i = 0; i <= 64; ++i)
+        {
+            float a = (float(i) / 64) * PI2;
+            float rx, ry;
+            if (!projectRingPt(a, gr, rx, ry)) { first = true; continue; }
+            if (!first)
+                dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), gc, 2.f);
+            prevX = rx; prevY = ry;
+            first = false;
+        }
+    }
+
+    // Dashed ring with counter-clockwise rotation (pulsating)
+    ImU32 pulseRingCol = IM_COL32(0, 255, 120, pulseA);
+    float dashArc = (PI2 / NUM_DASHES) * DASH_FRAC;
+    float segStep = PI2 / NUM_DASHES;
+    for (int d = 0; d < NUM_DASHES; ++d)
+    {
+        float dashStart = spinOffset + d * segStep;
+        float prevX = 0.f, prevY = 0.f;
+        bool first = true;
+        for (int p = 0; p <= PTS_PER_DASH; ++p)
+        {
+            float a = dashStart + (float(p) / PTS_PER_DASH) * dashArc;
+            float rx, ry;
+            if (!projectRingPt(a, pulseR, rx, ry)) { first = true; continue; }
+            if (!first)
+                dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), pulseRingCol, 2.5f);
+            prevX = rx; prevY = ry;
+            first = false;
+        }
+        }
+}
+
 void ReplayWindow::DrawAgentOverlay()
 {
     if (!m_showAgentOverlay) return;
@@ -633,68 +695,10 @@ void ReplayWindow::DrawAgentOverlay()
 
         // Neon-green dashed ring + glow at cylinder base for followed agent (counter-clockwise spin)
         // (Not in a live match: there GW's own selection ring is drawn under the target, DrawLiveSelectionRing.)
-        if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId && !m_liveMode)
-        {
-            constexpr int   NUM_DASHES = 16;
-            constexpr float DASH_FRAC  = 0.70f;   // 70% visible, 30% gap
-            constexpr float CYL_R      = 30.f;
-            constexpr float RING_R     = CYL_R + 4.f;
-            constexpr float PI2        = 6.2831853f;
-            constexpr int   PTS_PER_DASH = 8;      // smooth arc per dash
-            const ImU32 ringCol = IM_COL32(0, 255, 120, 255);
-            const ImU32 glowCol = IM_COL32(0, 255, 120, 80);
-
-            float baseY = pos.y + 0.05f;
-            float spinOffset = -fmodf((float)ImGui::GetTime() / 15.f, 1.f) * PI2;
-            float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.5f);
-            float pulseR = RING_R + pulse * 3.f;
-            ImU8  pulseA = (ImU8)(200 + (int)(55.f * pulse));
-
-            auto projectRingPt = [&](float angle, float r, float& ox, float& oy) -> bool {
-                XMFLOAT3 wp = { pos.x + r * cosf(angle), baseY, pos.z + r * sinf(angle) };
-                return ProjectToScreen(viewProj, vpW, vpH, wp, ox, oy);
-            };
-
-            // Glow layers (pulsating)
-            for (int g = 1; g <= 3; ++g)
-            {
-                float gr = pulseR + g * 3.f;
-                ImU32 gc = IM_COL32(0, 255, 120, (ImU8)((int)(80 * (0.5f + 0.5f * pulse)) / g));
-                float prevX, prevY;
-                bool first = true;
-                for (int i = 0; i <= 64; ++i)
-                {
-                    float a = (float(i) / 64) * PI2;
-                    float rx, ry;
-                    if (!projectRingPt(a, gr, rx, ry)) { first = true; continue; }
-                    if (!first)
-                        dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), gc, 2.f);
-                    prevX = rx; prevY = ry;
-                    first = false;
-                }
-            }
-
-            // Dashed ring with counter-clockwise rotation (pulsating)
-            ImU32 pulseRingCol = IM_COL32(0, 255, 120, pulseA);
-            float dashArc = (PI2 / NUM_DASHES) * DASH_FRAC;
-            float segStep = PI2 / NUM_DASHES;
-            for (int d = 0; d < NUM_DASHES; ++d)
-            {
-                float dashStart = spinOffset + d * segStep;
-                float prevX, prevY;
-                bool first = true;
-                for (int p = 0; p <= PTS_PER_DASH; ++p)
-                {
-                    float a = dashStart + (float(p) / PTS_PER_DASH) * dashArc;
-                    float rx, ry;
-                    if (!projectRingPt(a, pulseR, rx, ry)) { first = true; continue; }
-                    if (!first)
-                        dl->AddLine(ImVec2(prevX, prevY), ImVec2(rx, ry), pulseRingCol, 2.5f);
-                    prevX = rx; prevY = ry;
-                    first = false;
-                }
-            }
-        }
+        // A lying flag, seed or kit gets its ring from DrawFlags, at the item's own spot.
+        if (m_cameraMode == CameraMode::FollowAgent && agentId == m_followedAgentId && !m_liveMode &&
+            !GroundItemAgentLying(agentId, m_debugTimeline))
+            DrawFollowRing(dl, viewProj, vpW, vpH, pos);
 
         // Hover detection + click-to-follow
         if (canClickAgents)

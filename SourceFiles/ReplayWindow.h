@@ -854,6 +854,45 @@ private:
 
     void BuildFlagTimeline();
     void DrawFlags();
+    // The followed agent's green ground ring at pos (the overlay's agents and DrawFlags' lying items).
+    void DrawFollowRing(ImDrawList* dl, DirectX::XMMATRIX viewProj, float vpW, float vpH, const DirectX::XMFLOAT3& pos);
+
+    // [FLAG-2] A CARRYABLE LYING IN THE WORLD - a team's flag at its base or where a carrier dropped it, a vine
+    // seed or a repair kit at its spawn or dropped - as one span of the flag timeline. Close up it is drawn as its
+    // own model, still, standing on the item view's ground pose, with the client's ground-item sparkle on it
+    // (StepAgentEffects, file 23098 - Gw.exe item view 0x7FE130); past the agents' LOD distance it is the icon
+    // again, without the sparkle. Clicking it follows it, as a click on a gadget does.
+    struct GroundItemSpan
+    {
+        int      owner = 0;                  // 0/1 the m_flagTimeline.teams flag, 2 + i m_flagTimeline.bundles[i]
+        uint32_t modelFileId = 0;            // the item's model
+        float    start = 0.f, end = 0.f;     // timeline seconds, [start, end)
+        float    x = 0.f, y = 0.f, z = 0.f;  // recorded game position
+        uint16_t colourWord = 0;             // a flag's old packed colour word (0 for a bundle)
+        int      worldAgentId = -1;          // the lying item's agent, when the timeline knows it
+    };
+    static constexpr int kGroundItemOwners = 2 + 8;   // two flags and room for the map's bundles
+    std::vector<GroundItemSpan> m_groundItemSpans;
+    void BuildGroundItemSpans();
+    // The span of `owner`'s item lying in the world at `t`, or null when it is carried, spent or on a stand.
+    const GroundItemSpan* GroundItemSpanAt(int owner, float t) const;
+    // Fog of war on a lying item, as DrawFlags rules it: false when it is hidden outright, else its alpha.
+    bool GroundItemVisible(const GroundItemSpan& span, float& alpha) const;
+    // Where the lying item stands in render space: the model, its sparkle and the click share it.
+    DirectX::XMFLOAT3 GroundItemRenderPos(const GroundItemSpan& span) const;
+    // Within the distance the agents keep their 3D models at (m_uiLayout.lodDotDist) of the current camera.
+    bool GroundItemClose(const DirectX::XMFLOAT3& at) const;
+    // The item view's ground pose of a model (segment 0x303E5306 of its own clip), read once per model.
+    const DirectX::XMFLOAT4X4& GroundItemPose(uint32_t modelFileId);
+    std::unordered_map<uint32_t, DirectX::XMFLOAT4X4> m_groundItemPoses;
+    // The agent a click on the lying item follows.
+    int GroundItemAgent(const GroundItemSpan& span, float t) const;
+    bool GroundItemAgentLying(int agent, float t) const;   // agent is a flag, seed or kit lying at t
+    // Which owners' lying items the main view drew as a model this frame; DrawFlags keeps the icon otherwise.
+    bool m_groundItemModelDrawn[kGroundItemOwners] = {};
+    bool m_groundItemModelDrawnPip[kGroundItemOwners] = {};   // ...and the split view, for its own overlay
+    void DrawGroundItemModels(bool secondaryView);   // the bundles here; the flags by the private module below
+    void DrawGroundFlagModels(bool secondaryView);   // private module: the flags, composed for their dye
 
     // --- Flag event messages (displayed below timer) ---
     struct FlagEventMessage {
