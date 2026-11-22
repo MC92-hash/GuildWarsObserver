@@ -1857,8 +1857,10 @@ private:
     // texture indices, the slices the three layers resolve to, their weights, the blended albedo
     // and the pixel that albedo and `light` produce. Called from ApplyMapEnvironment, under the
     // same rate limit as the rest of the environment block.
+    // `natural_light`: the Natural mode's light, given only in that mode.
     void LogTerrainAlbedoAt(float world_x, float world_z, const float ambient[3],
-                            const float sun[3]) const;
+                            const float sun[3],
+                            const DirectionalLight* natural_light = nullptr) const;
 
     // `onlyAgentId` >= 0 draws that one character and nothing else, skipping the replay's
     // visibility gate, with `worldOverride` (untransposed, like AgentAnimState::perMeshCBs) in

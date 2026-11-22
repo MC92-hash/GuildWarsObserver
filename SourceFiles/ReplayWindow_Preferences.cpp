@@ -737,38 +737,8 @@ void ReplayWindow::DrawInterfacePreferences()
 
         PushPrefsFrameStyle();
         {
-            // ---- THE LIGHT MODE, and it is the first thing in this panel --------------------
-            //
-            // A two-way choice rather than a checkbox, because neither option is "the other one
-            // turned off": they are two complete looks, each with its own light law and its own
-            // terrain formula. Classic is the default and it is the picture the owner approved.
-            // Switching modes never touches either gain value below - each mode keeps its own,
-            // persisted under its own key - so a user who has tuned one mode finds it exactly as
-            // they left it, at whatever brightness they left it.
-            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "Map light");
-            if (ImGui::RadioButton("Classic##mapLightClassic",
-                                   GuiGlobalConstants::IsClassicMapLight()))
-            {
-                GuiGlobalConstants::map_light_mode = GuiGlobalConstants::kMapLightModeClassic;
-                GuiGlobalConstants::SaveSettings();
-                changed = true;
-            }
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
-                               "- the previous look, with region-correct tint and fog");
-            if (ImGui::RadioButton("Client (experimental)##mapLightClient",
-                                   !GuiGlobalConstants::IsClassicMapLight()))
-            {
-                GuiGlobalConstants::map_light_mode = GuiGlobalConstants::kMapLightModeClientExp;
-                GuiGlobalConstants::SaveSettings();
-                changed = true;
-            }
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
-                               "- the client's light law; terrain level still open");
-
-            ImGui::Dummy(ImVec2(0, 6.f));
-
+            // The light MODE itself is chosen in the Graphics panel (GraphicsSettingsUI.h);
+            // its per-mode gain stays below.
             bool bloom = GuiGlobalConstants::map_bloom_enabled;
             if (ImGui::Checkbox("Scene bloom", &bloom))
             {
@@ -813,10 +783,11 @@ void ReplayWindow::DrawInterfacePreferences()
             float gain = GuiGlobalConstants::MapLightGain();
             const float gain_default = GuiGlobalConstants::DefaultMapLightGain();
             const bool classic_light = GuiGlobalConstants::IsClassicMapLight();
+            const bool natural_light = GuiGlobalConstants::IsNaturalMapLight();
             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.85f), "Environment light gain");
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f), "- %s mode's own value",
-                               classic_light ? "Classic" : "Client");
+                               natural_light ? "Natural" : (classic_light ? "Classic" : "Client"));
             float availGain = ImGui::GetContentRegionAvail().x;
             ImGui::SetNextItemWidth(std::max(120.f, availGain - 64.f));
             if (ImGui::SliderFloat("##mapLightGain", &gain,
@@ -832,7 +803,10 @@ void ReplayWindow::DrawInterfacePreferences()
             // is where the reference and the previous build's brightness are.
             if (ImGui::IsItemHovered())
             {
-                if (classic_light)
+                if (natural_light)
+                    ImGui::SetTooltip("1.00x is the Natural light's own level. Terrain and the map's "
+                                      "own models only - never the players.");
+                else if (classic_light)
                     ImGui::SetTooltip("%.2fx matches the reference capture's brightness at the "
                                       "flag stand; 1.00x is the previous build's brightness",
                                       GuiGlobalConstants::kDefaultMapLightGainClassic);
@@ -853,7 +827,11 @@ void ReplayWindow::DrawInterfacePreferences()
             ImGui::SameLine(0.f, 10.f);
             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.75f), "%.2fx",
                                GuiGlobalConstants::MapLightGain());
-            if (classic_light)
+            if (natural_light)
+                ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
+                                   "1.00x is the Natural light's own level. Terrain and the map's "
+                                   "own models only - never the players.");
+            else if (classic_light)
                 ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 0.45f),
                                    "%.2fx matches the reference capture's brightness at the flag "
                                    "stand; 1.00x is the previous build's brightness. Terrain and "
@@ -878,7 +856,7 @@ void ReplayWindow::DrawInterfacePreferences()
             // Only in Client mode: there 1.00x is the GAME's own level, a landmark worth a
             // button of its own. In Classic it is just the previous build's brightness - named
             // on the line above and one drag away - not a level the game ever drew.
-            if (!classic_light)
+            if (GuiGlobalConstants::IsClientMapLight())
             {
                 ImGui::SameLine(0.f, 8.f);
                 if (ImGui::SmallButton("Client level (1.00x)##mapLightGainClient"))

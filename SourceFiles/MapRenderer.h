@@ -101,6 +101,12 @@ using namespace DirectX;
 class MapRenderer
 {
 public:
+    // The fixed sun every map is drawn with outside the Natural light mode (about 44 deg above the
+    // horizon, toward -x), and its specular. Named so a host that moves them can put them back
+    // exactly.
+    static constexpr XMFLOAT3 kDefaultLightDirection{1.0f, -0.98f, 0.0f};
+    static constexpr XMFLOAT4 kDefaultLightSpecular{0.1f, 0.1f, 0.1f, 1.0f};
+
     bool m_disableMovementInput = false;
     float m_replayPlaybackSpeed = 1.0f;
     // THE GROUND FLOOR OF THE USER CAMERA: when >= 0, the camera is held at least this far above the
@@ -148,8 +154,8 @@ public:
         // Setup lighting
         m_directionalLight.ambient = XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f);
         m_directionalLight.diffuse = XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f);
-        m_directionalLight.specular = XMFLOAT4(0.1f, 0.1f, 0.1f, 1.0f);
-        m_directionalLight.direction = XMFLOAT3(1.0f, -0.98f, 0.0f);
+        m_directionalLight.specular = kDefaultLightSpecular;
+        m_directionalLight.direction = kDefaultLightDirection;
         m_directionalLight.pad = 0.0f;
 
         // Create and initialize the VertexShader
@@ -917,6 +923,14 @@ public:
     // note on FFNA_MapFile::modulate_2x. Only the PUBLIC model pixel shaders read it; the composed
     // character pass binds its own program and is deliberately not affected.
     void SetPropModulate2x(bool on) { m_prop_modulate_2x = on; m_per_frame_cb_changed = true; }
+    // Flag bit 6: the host has put the Natural light into the DirectionalLight, so the terrain may
+    // draw it (see PerFrameCB.h).
+    void SetNaturalMapLight(bool on)
+    {
+        if (m_natural_map_light == on) return;
+        m_natural_map_light = on;
+        m_per_frame_cb_changed = true;
+    }
     bool GetPropModulate2x() const { return m_prop_modulate_2x; }
 
     void SetShouldRenderFog(bool should_render_fog) { m_should_render_fog = should_render_fog; }
@@ -1177,6 +1191,7 @@ public:
         // held here, so it can never go stale against the panel. Set = Classic.
         frameCB.should_render_flags = frameCB.should_render_flags |
             (static_cast<uint32_t>(GuiGlobalConstants::IsClassicMapLight() ? 1u : 0u) << 5);
+        frameCB.should_render_flags |= (static_cast<uint32_t>(m_natural_map_light) << 6);
         frameCB.map_light_gain = m_map_light_gain_in_use;
         m_last_time_elapsed = time_elapsed;
 
@@ -1717,6 +1732,7 @@ public:
         // Bit 5: the map light mode. Set = Classic. See PerFrameCB.h for the whole word.
         frameCB.should_render_flags |=
             (static_cast<uint32_t>(GuiGlobalConstants::IsClassicMapLight() ? 1u : 0u) << 5);
+        frameCB.should_render_flags |= (static_cast<uint32_t>(m_natural_map_light) << 6);
         frameCB.map_light_gain = m_map_light_gain_in_use;
 
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -2187,6 +2203,7 @@ private:
     // only for the duration of the world pass.
     float m_map_light_gain = 1.0f;
     float m_map_light_gain_in_use = 1.0f;
+    bool m_natural_map_light = false;   // flag bit 6, see PerFrameCB.h
     float m_last_time_elapsed = 0.0f;
     bool m_should_render_shadows_for_models = true;
 

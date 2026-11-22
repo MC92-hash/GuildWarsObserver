@@ -386,6 +386,8 @@
     <ClInclude Include="SourceFiles\ArmourNames.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\HealthModel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MapLightModel.h" />
+    <ClInclude Include="$(GwoPrivateDir)\SourceFiles\MapLightShaderText.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AdrenalineModel.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\AdrenalineCosts.h" />
     <ClInclude Include="$(GwoPrivateDir)\SourceFiles\FluxAllIn.h" />
@@ -774,6 +776,7 @@
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MaxHpSolver.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\HealthModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\EnergyModel.cpp" />
+    <ClCompile Include="$(GwoPrivateDir)\SourceFiles\MapLightModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\AdrenalineModel.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\FluxAllIn.cpp" />
     <ClCompile Include="$(GwoPrivateDir)\SourceFiles\IrisPack.cpp" />

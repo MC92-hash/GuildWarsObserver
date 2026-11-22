@@ -3,6 +3,7 @@
 #include "ReplayWindow.h"
 #include "AssetBlacklist.h"
 #include "RunLog.h"
+#include "MapLightModel.h"
 #include <chrono>
 #include "MatchRatings.h"
 #include "MatchNotes.h"
@@ -1445,6 +1446,13 @@ static float ReplayEnvRegionWeight(const EnvRegion& r, float x, float z)
     return (out2 - d2) / (out2 - in2);
 }
 
+// The map's sun elevation for the Natural light (private MapLightModel).
+static float ReplayMapSunElevation(const FFNA_MapFile& map)
+{
+    return MapLightSunElevation(map.terrain_chunk.some_small_float,
+                                map.environment_info_chunk.env_sun_angle_byte);
+}
+
 // ---- THE CLASSIC LIGHT, RECOVERED FROM THE LAST COMMIT ----------------------------------------
 //
 // This is `git show HEAD:SourceFiles/ReplayWindow.cpp`'s light block, arithmetic for arithmetic,
@@ -1530,7 +1538,8 @@ void ReplayWindow::EnvIndicesAt(float world_x, float world_z, uint16_t out_indic
 // The quadrant the tile picks is not reproduced: all four quadrants of a terrain texture are the
 // same material, so the mean is the mean.
 void ReplayWindow::LogTerrainAlbedoAt(float world_x, float world_z, const float ambient[3],
-                                      const float sun[3]) const
+                                      const float sun[3],
+                                      const DirectionalLight* natural_light) const
 {
     if (!m_terrain || m_terrainSliceAlbedo.empty())
         return;
@@ -1648,6 +1657,34 @@ void ReplayWindow::LogTerrainAlbedoAt(float world_x, float world_z, const float 
     const bool classic = GuiGlobalConstants::IsClassicMapLight();
     const float gain = GuiGlobalConstants::EffectiveMapLightGain();
     float px[3];
+    if (natural_light)
+    {
+        // NATURAL: the map's own shade byte at this vertex, and the light the private law gives
+        // there on open ground (no runtime shadow).
+        const auto& sg = m_terrain->get_terrain_shadow_map_grid();
+        const int sx = std::clamp(static_cast<int>((world_x - b.map_min_x) /
+                                                   (b.map_max_x - b.map_min_x) * gx + 0.5f),
+                                  0, gx);
+        const int sz = std::clamp(static_cast<int>((world_z - b.map_min_z) /
+                                                   (b.map_max_z - b.map_min_z) * gz + 0.5f),
+                                  1, gz);
+        const float shade = (sz < static_cast<int>(sg.size()) &&
+                             sx < static_cast<int>(sg[sz].size()))
+                                ? static_cast<float>(sg[sz][sx]) / 255.0f
+                                : 1.0f;
+        float light[3];
+        MapLightNaturalGroundLight(*natural_light, shade, gain, light);
+        for (int c = 0; c < 3; c++)
+            px[c] = albedo[c] * light[c];
+        RunLog::Line("map:     blended albedo (%.3f, %.3f, %.3f) red/blue %.2f; Natural light, shade "
+                     "byte %.0f here, gain %.2fx -> light (%.3f, %.3f, %.3f), pixel (%.1f, %.1f, "
+                     "%.1f) of 255 before the screen clamp",
+                     albedo[0], albedo[1], albedo[2],
+                     albedo[2] > 0.0f ? albedo[0] / albedo[2] : 0.0f, shade * 255.0f, gain,
+                     light[0], light[1], light[2], px[0] * 255.0f, px[1] * 255.0f,
+                     px[2] * 255.0f);
+        return;
+    }
     for (int c = 0; c < 3; c++)
     {
         if (classic)
@@ -1896,7 +1933,31 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
             // WHICH LIGHT LAW IS IN FORCE, named on its own line. The two modes differ by a
             // factor of ten on a dark hall, so a log that does not say which one drew the frame
             // cannot be read at all.
-            if (GuiGlobalConstants::IsClassicMapLight())
+            // The Natural light for these lines, built here: the renderer's own is set further
+            // down this function, so on a map's first call it would still be the previous one.
+            DirectionalLight natural_light;
+            if (GuiGlobalConstants::IsNaturalMapLight())
+            {
+                const float amb_bytes[3] = {amb_r * inv, amb_g * inv, amb_b * inv};
+                const float sun_bytes[3] = {sun_r * inv, sun_g * inv, sun_b * inv};
+                MapLightNaturalApply(amb_bytes, sun_bytes, ReplayMapSunElevation(m_mapFile),
+                                     natural_light);
+            }
+            if (GuiGlobalConstants::IsNaturalMapLight())
+            {
+                const DirectionalLight& nl = natural_light;
+                RunLog::Line("map:   light mode NATURAL - sun at %.2f deg (terrain float %.4f, angle "
+                             "byte %u), light direction (%.3f, %.3f, %.3f), terrain sun factor "
+                             "%.3f. Environment light gain %.2fx (Natural's own value, default "
+                             "%.2fx)",
+                             ReplayMapSunElevation(m_mapFile) * 57.2957795f,
+                             m_mapFile.terrain_chunk.some_small_float,
+                             m_mapFile.environment_info_chunk.env_sun_angle_byte, nl.direction.x,
+                             nl.direction.y, nl.direction.z, nl.pad,
+                             GuiGlobalConstants::EffectiveMapLightGain(),
+                             GuiGlobalConstants::kDefaultMapLightGainNatural);
+            }
+            else if (GuiGlobalConstants::IsClassicMapLight())
                 RunLog::Line("map:   light mode CLASSIC - the last commit's light and terrain law "
                              "(ambient lightness floored at 0.70, sun at 0.50; terrain pixel is "
                              "texture * 1.4 * lightingColor), fed the region-blended colours. "
@@ -1967,7 +2028,9 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
                     amb3[0] = cls_amb.x; amb3[1] = cls_amb.y; amb3[2] = cls_amb.z;
                     sun3[0] = cls_dif.x; sun3[1] = cls_dif.y; sun3[2] = cls_dif.z;
                 }
-                LogTerrainAlbedoAt(world_x, world_z, amb3, sun3);
+                LogTerrainAlbedoAt(world_x, world_z, amb3, sun3,
+                                   GuiGlobalConstants::IsNaturalMapLight() ? &natural_light
+                                                                           : nullptr);
             }
         }
     }
@@ -2031,7 +2094,20 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
         const float ai = (amb_i * inv) / 256.0f;
         const float si = (sun_i * inv) / 256.0f;
         DirectionalLight dl = m_mapRenderer->GetDirectionalLight();
-        if (GuiGlobalConstants::IsClassicMapLight())
+        // The fixed sun and its specular, put back every frame, because only the Natural mode
+        // below moves them and a switch back to another mode must find them as they were.
+        dl.direction = MapRenderer::kDefaultLightDirection;
+        dl.specular = MapRenderer::kDefaultLightSpecular;
+        const bool natural = GuiGlobalConstants::IsNaturalMapLight();
+        if (natural)
+        {
+            // NATURAL: the private law (MapLightModel) fills the whole light, direction and the
+            // terrain's sun factor in `pad` included.
+            const float amb_bytes[3] = {amb_r * inv, amb_g * inv, amb_b * inv};
+            const float sun_bytes[3] = {sun_r * inv, sun_g * inv, sun_b * inv};
+            MapLightNaturalApply(amb_bytes, sun_bytes, ReplayMapSunElevation(m_mapFile), dl);
+        }
+        else if (GuiGlobalConstants::IsClassicMapLight())
         {
             // CLASSIC: the previous override, byte for byte, fed the region-blended colours
             // instead of entry 0. See ReplayClassicMapLight above for what it is and why the
@@ -2055,8 +2131,14 @@ void ReplayWindow::ApplyMapEnvironment(float world_x, float world_z)
         const float sun_angle =
             static_cast<float>(m_mapFile.environment_info_chunk.env_sun_angle_byte) *
             (6.28318530718f / 256.0f);
-        dl.pad = std::cos(sun_angle);
+        if (!natural)
+            dl.pad = std::cos(sun_angle);
         m_mapRenderer->SetDirectionalLight(dl);
+        m_mapRenderer->SetNaturalMapLight(natural);
+    }
+    else
+    {
+        m_mapRenderer->SetNaturalMapLight(false);
     }
 
     // ---- the haze ---------------------------------------------------------------------------

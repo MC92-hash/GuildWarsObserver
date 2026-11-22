@@ -33,7 +33,7 @@ public:
     };
 
     // Configure the remote host. Call once before making requests.
-    // host: e.g. L"matches.tolkano.com" (no scheme, no path)
+    // host: e.g. L"matches.example.com" (no scheme, no path)
     void SetBaseUrl(const std::wstring& host, bool useTls = true);
 
     // Optional: set a signing function that produces CRLF-separated headers

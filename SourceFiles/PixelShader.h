@@ -15,6 +15,28 @@
 #include <ShoreWaterPixelShader.h>
 #include "TerrainRevPixelShader.h"
 #include "TerrainTileCheckerPixelShader.h"
+#include "MapLightModel.h"
+#include <cstring>
+
+// Serves the terrain program's light extension (TERRAIN_LIGHT_EXT) to D3DCompile from the private
+// MapLightModel, which holds it packed rather than as text.
+class TerrainLightExtInclude : public ID3DInclude
+{
+public:
+    HRESULT __stdcall Open(D3D_INCLUDE_TYPE, LPCSTR file_name, LPCVOID, LPCVOID* data,
+                           UINT* bytes) override
+    {
+        if (!file_name || std::strcmp(file_name, "terrain_light_ext.hlsli") != 0)
+            return E_FAIL;
+        const size_t size = MapLightTerrainShaderTextSize();
+        if (size == 0)
+            return E_FAIL;
+        *data = MapLightTerrainShaderText();
+        *bytes = static_cast<UINT>(size);
+        return S_OK;
+    }
+    HRESULT __stdcall Close(LPCVOID) override { return S_OK; }
+};
 
 enum class PixelShaderType
 {
@@ -75,10 +97,29 @@ public:
                             error_blob.GetAddressOf());
             break;
         case PixelShaderType::TerrainRev:
+        {
+            // With the light extension; without it if that ever fails to build, so the terrain
+            // still draws in the other light modes.
+            static const D3D_SHADER_MACRO kTerrainDefines[] = {{"TERRAIN_LIGHT_EXT", "1"},
+                                                               {nullptr, nullptr}};
+            TerrainLightExtInclude ext_include;
             hr = D3DCompile(TerrainRevPixelShader::shader_ps,
-                            strlen(TerrainRevPixelShader::shader_ps), nullptr, nullptr, nullptr, "main",
-                            "ps_5_0", flags, 0, pixel_shader_blob.GetAddressOf(), error_blob.GetAddressOf());
+                            strlen(TerrainRevPixelShader::shader_ps), nullptr, kTerrainDefines,
+                            &ext_include, "main", "ps_5_0", flags, 0,
+                            pixel_shader_blob.GetAddressOf(), error_blob.GetAddressOf());
+            if (FAILED(hr))
+            {
+                if (error_blob)
+                    OutputDebugStringA(static_cast<const char*>(error_blob->GetBufferPointer()));
+                pixel_shader_blob.Reset();
+                error_blob.Reset();
+                hr = D3DCompile(TerrainRevPixelShader::shader_ps,
+                                strlen(TerrainRevPixelShader::shader_ps), nullptr, nullptr, nullptr,
+                                "main", "ps_5_0", flags, 0, pixel_shader_blob.GetAddressOf(),
+                                error_blob.GetAddressOf());
+            }
             break;
+        }
         case PixelShaderType::TerrainTileChecker:
             hr = D3DCompile(TerrainTileCheckerPixelShader::shader_ps,
                             strlen(TerrainTileCheckerPixelShader::shader_ps), nullptr, nullptr, nullptr, "main",

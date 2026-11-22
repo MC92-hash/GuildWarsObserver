@@ -106,6 +106,11 @@ float4 SampleAtlas(float2 uv, float2 dx, float2 dy)
     return atlas.SampleGrad(samLinear, float3(localUV, layerIndex), dx, dy);
 }
 
+// An optional light extension the host supplies at compile time (flag bit 6, PerFrameCB.h).
+#ifdef TERRAIN_LIGHT_EXT
+#include "terrain_light_ext.hlsli"
+#endif
+
 PSOutput main(PixelInputType input)
 {
     // Calculate derivatives for mipmapping (scaled for 256x256 tiles vs 2048x2048 atlas)
@@ -234,6 +239,7 @@ PSOutput main(PixelInputType input)
     }
     color.a = 1.0f;
 
+    float shadow = 1.0;
     bool should_render_shadow = should_render_flags & 1;
     if (should_render_shadow)
     {
@@ -249,7 +255,7 @@ PSOutput main(PixelInputType input)
         shadowDepth += bias;
 
         // PCF
-        float shadow = 0.0;
+        shadow = 0.0;
         int pcf_samples = 9;
         float2 texelSize = shadowmap_texel_size;
         for (int x = -1; x <= 1; x++)
@@ -268,6 +274,12 @@ PSOutput main(PixelInputType input)
         color.rgb *= lerp(0.65, 1.0, shadow);
         // ============ SHADOW MAP END =====================
     }
+
+#ifdef TERRAIN_LIGHT_EXT
+    // Flag bit 6: the extension draws the pixel, and takes the shadow itself.
+    if ((should_render_flags & 64) != 0)
+        color = TerrainLightExt(result, input.world_position, shadow);
+#endif
 
     bool should_render_fog = should_render_flags & 4;
     if (should_render_fog)
@@ -334,7 +346,8 @@ PSOutput main(PixelInputType input)
     output.rt_0_output = color;
 
     float4 colorId = float4(0, 0, 0, 1);
-    colorId.r = (float) ((object_id & 0x00FF0000) >> 16) / 255.0f;
+)"
+R"(    colorId.r = (float) ((object_id & 0x00FF0000) >> 16) / 255.0f;
     colorId.g = (float) ((object_id & 0x0000FF00) >> 8) / 255.0f;
     colorId.b = (float) ((object_id & 0x000000FF)) / 255.0f;
     output.rt_1_output = colorId;

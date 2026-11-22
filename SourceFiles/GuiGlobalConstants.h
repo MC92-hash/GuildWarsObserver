@@ -168,24 +168,20 @@ public:
 
 	// ---- THE MAP LIGHT MODE (persisted) -----------------------------------------------------
 	//
-	// Two complete looks, chosen by the owner, not a slider between them. Nothing is deleted:
-	// both paths are live code and this switch picks which one runs.
+	// Three complete looks, not a slider between them. Nothing is deleted: every path is live code
+	// and this switch picks which one runs. Chosen in the Graphics panel.
 	//
-	//   Classic (the DEFAULT) - the light and the terrain law of the last commit, which is the
-	//     picture the owner has approved. The light is the previous override: the map's colour
-	//     bytes over 255*2, with the HSL LIGHTNESS of the result rewritten to
-	//     max(intensity/255 * 0.9, floor) - floor 0.70 for the ambient and 0.50 for the sun - so
-	//     the map keeps its hue and the level comes from the floors. The terrain multiplies its
-	//     blended texture by 1.4 * lightingColor. ONE thing differs from the commit, and it is a
-	//     bug fix rather than a look change: the colours fed into that override are the
-	//     REGION-BLENDED ones the environment table resolves per frame, not entry 0 of every
-	//     list. The committed build never read the region table at all, so every map was drawn
-	//     on its entry 0; now the tower side of Corrupted Isle takes its own warm entry and the
-	//     blue-base side its own blue one, both at the old brightness. The gain below is LIVE in
-	//     this mode too, with its own per-mode value: the floors decide the light's HUE and its
-	//     level relative to the map, and the gain is the one brightness the owner sets on top of
-	//     them. Its Classic default is calibrated, so the flag stand matches the reference
-	//     capture instead of sitting well above it - see the gain block below.
+	//   Natural (the DEFAULT, owner 2026-11-22) - the map's own colours, its own sun angle and its
+	//     own baked terrain shading. The law lives in the private repository (MapLightModel); this
+	//     side only hands it the region-blended colour bytes and the map's sun-angle fields, sets
+	//     flag bit 6 and builds the terrain program with the extension it serves.
+	//
+	//   Classic - the light and the terrain law of the earlier default. The light is the previous
+	//     override: the map's colour bytes over 255*2, with the HSL LIGHTNESS of the result
+	//     rewritten to max(intensity/255 * 0.9, floor) - floor 0.70 for the ambient and 0.50 for the
+	//     sun - so the map keeps its hue and the level comes from the floors. The terrain multiplies
+	//     its blended texture by 1.4 * lightingColor, fed the REGION-BLENDED colours the environment
+	//     table resolves per frame. The gain below is live, with its own per-mode value.
 	//
 	//   Client (experimental) - the client's own light law, read out of Gw.exe
 	//     (colour = bytes/255 * intensity/256, no floors anywhere) and the client's own terrain
@@ -194,23 +190,32 @@ public:
 	//     a reason that is still open - see the note under docs/appearance_data. The pre-clamp
 	//     gain below has its own value in this mode and keeps its calibrated default there.
 	//
-	// Everything that is not the light LEVEL is shared by both modes: the region table and the
-	// query point, the haze curve, the per-map prop modulate gate, the shadows, and every one of
-	// the character passes.
+	// Shared by all three: the region table and the query point, the haze curve, the per-map prop
+	// modulate gate, the shadow map, and every one of the character passes.
+	//
+	// PERSISTED UNDER `map_light_mode_v2`. The old `map_light_mode` key is no longer read, so every
+	// existing install starts once on the new default; a choice made after that is kept.
 	static constexpr int kMapLightModeClassic   = 0;
 	static constexpr int kMapLightModeClientExp = 1;
-	static constexpr int kDefaultMapLightMode   = kMapLightModeClassic;
+	static constexpr int kMapLightModeNatural   = 2;
+	static constexpr int kDefaultMapLightMode   = kMapLightModeNatural;
 	inline static int map_light_mode = kDefaultMapLightMode;
 
 	static int ClampMapLightMode(int mode)
 	{
-		return (mode == kMapLightModeClientExp) ? kMapLightModeClientExp : kMapLightModeClassic;
+		if (mode == kMapLightModeClassic || mode == kMapLightModeClientExp ||
+		    mode == kMapLightModeNatural)
+			return mode;
+		return kDefaultMapLightMode;
 	}
 
 	static bool IsClassicMapLight() { return map_light_mode == kMapLightModeClassic; }
+	static bool IsClientMapLight() { return map_light_mode == kMapLightModeClientExp; }
+	static bool IsNaturalMapLight() { return map_light_mode == kMapLightModeNatural; }
 
 	static const char* MapLightModeName()
 	{
+		if (IsNaturalMapLight()) return "Natural";
 		return IsClassicMapLight() ? "Classic" : "Client (experimental)";
 	}
 
@@ -263,6 +268,8 @@ public:
 	// one tile's luminance and left every map too dark against the game; it stays a number to type.
 	static constexpr float kDefaultMapLightGainClassic = 1.0f;
 	static constexpr float kDefaultMapLightGainClient  = 2.03f;    // calibrated - see above
+	// Natural: 1.00x is the law's own level.
+	static constexpr float kDefaultMapLightGainNatural = 1.0f;
 	// There is deliberately no mode-less `kDefaultMapLightGain` any more: "the default" is not a
 	// single number now, and a name that answered for both modes could only be wrong in one.
 	static constexpr float kClientMapLightGain  = 1.0f;   // the level the game itself draws
@@ -270,6 +277,7 @@ public:
 	static constexpr float kMaxMapLightGain     = 4.0f;
 	inline static float map_light_gain_classic = kDefaultMapLightGainClassic;
 	inline static float map_light_gain_client  = kDefaultMapLightGainClient;
+	inline static float map_light_gain_natural = kDefaultMapLightGainNatural;
 
 	static float ClampMapLightGain(float gain)
 	{
@@ -280,15 +288,23 @@ public:
 	// reads or writes "the gain" goes through these and therefore cannot address the wrong mode.
 	static float& MapLightGainForMode(int mode)
 	{
-		return (ClampMapLightMode(mode) == kMapLightModeClassic) ? map_light_gain_classic
-		                                                         : map_light_gain_client;
+		switch (ClampMapLightMode(mode))
+		{
+		case kMapLightModeClientExp: return map_light_gain_client;
+		case kMapLightModeNatural:   return map_light_gain_natural;
+		default:                     return map_light_gain_classic;
+		}
 	}
 	static float& MapLightGain() { return MapLightGainForMode(map_light_mode); }
 
 	static float DefaultMapLightGainForMode(int mode)
 	{
-		return (ClampMapLightMode(mode) == kMapLightModeClassic) ? kDefaultMapLightGainClassic
-		                                                         : kDefaultMapLightGainClient;
+		switch (ClampMapLightMode(mode))
+		{
+		case kMapLightModeClientExp: return kDefaultMapLightGainClient;
+		case kMapLightModeNatural:   return kDefaultMapLightGainNatural;
+		default:                     return kDefaultMapLightGainClassic;
+		}
 	}
 	static float DefaultMapLightGain() { return DefaultMapLightGainForMode(map_light_mode); }
 
@@ -763,13 +779,14 @@ public:
 		file << "character_shadows=" << (character_shadows ? 1 : 0) << "\n";
 		file << "character_haze=" << (character_haze ? 1 : 0) << "\n";
 		file << "map_saturation_enabled=" << (map_saturation_enabled ? 1 : 0) << "\n";
-		file << "map_light_mode=" << map_light_mode << "\n";
+		file << "map_light_mode_v2=" << map_light_mode << "\n";
 		// ONE KEY PER MODE. The old single `map_light_gain` key is still READ below, as the
 		// Client mode's value, so an existing settings file keeps the gain it was tuned to; it
 		// is no longer written, because two sources of truth for one number is how a setting
 		// starts drifting.
 		file << "map_light_gain_classic=" << map_light_gain_classic << "\n";
 		file << "map_light_gain_client=" << map_light_gain_client << "\n";
+		file << "map_light_gain_natural=" << map_light_gain_natural << "\n";
 		file << "replay_camera_fov_degrees=" << replay_camera_fov_degrees << "\n";
 		for (const auto& [soundKey, soundValue] : replay_sound_settings)
 			file << "replay_sound_" << soundKey << "=" << soundValue << "\n";
@@ -856,6 +873,12 @@ public:
 			if (key == "map_light_gain_client") {
 				try {
 					map_light_gain_client = ClampMapLightGain(std::stof(val_str));
+				} catch (...) {}
+				continue;
+			}
+			if (key == "map_light_gain_natural") {
+				try {
+					map_light_gain_natural = ClampMapLightGain(std::stof(val_str));
 				} catch (...) {}
 				continue;
 			}
@@ -991,10 +1014,9 @@ public:
 			else if (key == "footprints") { footprints = (value != 0); loadedFootprints = true; }
 			else if (key == "replay_show_skill_icons") replay_show_skill_icons = (value != 0);
 			else if (key == "replay_show_skill_lasers") replay_show_skill_lasers = (value != 0);
-			// An existing settings file has no map_light_mode key, so it takes the default -
-			// Classic - while its saved map_light_gain is still loaded and kept as the Client
-			// mode's own value, Classic taking its calibrated default on that first run.
-			else if (key == "map_light_mode") map_light_mode = ClampMapLightMode(value);
+			// `map_light_mode` (the key before Natural) is deliberately not read, so an existing
+			// settings file starts once on the default - see the mode block.
+			else if (key == "map_light_mode_v2") map_light_mode = ClampMapLightMode(value);
 			else if (key == "autocam_lookahead") autocam_lookahead = static_cast<float>(value);
 			else if (key == "autocam_hp_thresh") autocam_hp_thresh = value;
 			else if (key == "autocam_dwell") autocam_dwell = static_cast<float>(value);

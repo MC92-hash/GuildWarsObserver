@@ -47,6 +47,29 @@ inline void DrawGraphicsSettingsControls()
                               "smaller and the map's shadows are off.");
     }
 
+    // ---- the map light, independent of the preset (GuiGlobalConstants, map light mode) ----
+    {
+        static const int kModes[] = {GuiGlobalConstants::kMapLightModeNatural,
+                                     GuiGlobalConstants::kMapLightModeClassic,
+                                     GuiGlobalConstants::kMapLightModeClientExp};
+        static const char* kModeLabels[] = {"Natural (recommended)", "Classic",
+                                            "Client (experimental)"};
+        int current = 0;
+        for (int i = 0; i < 3; ++i)
+            if (GuiGlobalConstants::map_light_mode == kModes[i]) current = i;
+        ImGui::SetNextItemWidth(200.f);
+        if (ImGui::Combo("Map light", &current, kModeLabels, 3))
+        {
+            GuiGlobalConstants::map_light_mode = kModes[current];
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Natural: each map's own colours, sun angle and shading (default).\n"
+                              "Classic: the earlier look, brighter and closer to neutral.\n"
+                              "Client (experimental): the game client's light law; the ground\n"
+                              "level is still open.");
+    }
+
     // ---- the details, any change makes the preset Custom ----
     if (ImGui::TreeNode("Details##graphicsDetails"))
     {

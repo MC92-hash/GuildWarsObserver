@@ -26,12 +26,17 @@ struct PerFrameCB
     //               reads it. A new bit was used deliberately rather than a new field, so no
     //               constant-buffer offset moves and every shader that does not declare the
     //               field reads exactly what it read before.
+    //   bit 6 (64)  the Natural map light on the terrain, drawn by the terrain program's light
+    //               extension (TERRAIN_LIGHT_EXT, served by the private MapLightModel). Set ONLY
+    //               by a host that has also put the Natural light in the DirectionalLight
+    //               (MapRenderer::SetNaturalMapLight), so a renderer whose light was never set for
+    //               it cannot draw it. It takes precedence over bit 5.
     //
     // A WORD OF WARNING BEFORE ADDING TO TerrainRevPixelShader.hlsl: its whole text is embedded
-    // in TerrainRevPixelShader.h as ONE raw string literal, and MSVC refuses a string literal
-    // over 16380 bytes (C2026, which reads as a truncated shader rather than a size problem).
-    // The file is at 15841 bytes, so roughly 500 bytes of comment are left before that trips.
-    // Long rationale belongs here, in ordinary C++, where nothing is counted.
+    // in TerrainRevPixelShader.h as raw string literals, and MSVC refuses any ONE literal over
+    // 16380 bytes (C2026, which reads as a truncated shader rather than a size problem). The
+    // header therefore splits the text into two adjacent literals at a line boundary; the
+    // compiler joins them (the joined limit is 65535). Keep each half under the limit.
     //
     uint32_t should_render_flags;
     // The owner's environment light gain for the MAP - terrain and the world's own models. It is
