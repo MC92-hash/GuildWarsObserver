@@ -127,6 +127,10 @@ void ReplayWindow::DrawTimelineController()
     // ── State ────────────────────────────────────────────────────────────
     float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
     auto& ctx  = m_replayCtx;
+    // Spoiler-free: the track's length. The recording's end while the result shows; a fixed
+    // 30:00 while it is hidden, so neither the bar nor its minute ticks give the length away.
+    const bool  spoilersHidden = SpoilersHidden();
+    const float axisT = std::max(1.f, SpoilerAxisEnd(maxT));
 
     const auto&   speeds      = kReplaySpeeds;
     const auto&   speedLabels = kReplaySpeedLabels;
@@ -141,7 +145,10 @@ void ReplayWindow::DrawTimelineController()
     {
         char curBuf[16], totBuf[16];
         FormatTime(m_debugTimeline - m_displayTimeOffset, curBuf, sizeof(curBuf));
-        FormatTime(maxT - m_displayTimeOffset, totBuf, sizeof(totBuf));
+        if (spoilersHidden)
+            snprintf(totBuf, sizeof(totBuf), "--:--");
+        else
+            FormatTime(maxT - m_displayTimeOffset, totBuf, sizeof(totBuf));
 
         dl->AddText(font, fs, ImVec2(x0, y0 + 1.f), cText, curBuf);
         float curW = font->CalcTextSizeA(fs, FLT_MAX, 0.f, curBuf).x;
@@ -164,8 +171,16 @@ void ReplayWindow::DrawTimelineController()
     dl->AddRect(
         ImVec2(trackX, trackBarY), ImVec2(trackX + trackW, trackBarY + TRKH), cBorder, 2.f);
 
-    float pct  = maxT > 0.f ? std::clamp(m_debugTimeline / maxT, 0.f, 1.f) : 0.f;
+    float pct  = std::clamp(m_debugTimeline / axisT, 0.f, 1.f);
     float fillW = trackW * pct;
+    // Spoiler-free: what was already watched past the playhead (after a scrub back), faintly.
+    if (spoilersHidden && m_spoilerSeenT > m_debugTimeline)
+    {
+        const float seenW = trackW * std::clamp(m_spoilerSeenT / axisT, 0.f, 1.f);
+        if (seenW > fillW + 1.f)
+            dl->AddRectFilled(ImVec2(trackX + fillW, trackBarY), ImVec2(trackX + seenW, trackBarY + TRKH),
+                              IM_COL32(200, 168, 75, 46), 2.f);
+    }
     if (fillW > 2.f)
     {
         dl->AddRectFilledMultiColor(
@@ -178,9 +193,9 @@ void ReplayWindow::DrawTimelineController()
     dl->AddCircleFilled(ImVec2(hx, trackMidY), dotR, cGoldBright);
     dl->AddCircle(ImVec2(hx, trackMidY), dotR, IM_COL32(255,255,220,100), 0, 1.5f);
 
-    for (int m = 1; (float)m * 60.f <= maxT; m++)
+    for (int m = 1; (float)m * 60.f <= axisT; m++)
     {
-        float tx = trackX + trackW * ((float)m * 60.f / maxT);
+        float tx = trackX + trackW * ((float)m * 60.f / axisT);
         bool  maj = (m % 5 == 0);
         float th  = (maj ? 7.f : 5.f) * sf;
         dl->AddLine(
@@ -191,28 +206,30 @@ void ReplayWindow::DrawTimelineController()
 
     m_annotationMgr.RenderTimelineMarkers(trackX, trackW,
                                            trackBarY, TRKH + 12.f * sf,
-                                           maxT, m_debugTimeline,
+                                           axisT, m_debugTimeline,
                                            m_displayTimeOffset);
 
     // The key moments under the track while Highlights is on, in the target's team colour.
-    DrawHighlightsTimelineMarkers(trackX, trackW, trackBarY, TRKH, maxT);
+    DrawHighlightsTimelineMarkers(trackX, trackW, trackBarY, TRKH, axisT);
 
     // The clip editor's range and its two handles, before the scrub button so a handle wins
     // the mouse over the track under it.
-    DrawClipTimelineRange(trackX, trackW, trackBarY, TRKH, maxT);
+    DrawClipTimelineRange(trackX, trackW, trackBarY, TRKH, axisT);
 
+    // A point on the track is a moment on the axis; past the recording's end (only possible on
+    // the spoiler-free axis) it is the end, which reveals the match.
     ImGui::SetCursorScreenPos(ImVec2(trackX, y0));
     ImGui::InvisibleButton("##Scrub", ImVec2(trackW, 20.f * sf));
     if (ImGui::IsItemActive())
     {
         float mouseX = ImGui::GetIO().MousePos.x;
         float t = (mouseX - trackX) / trackW;
-        m_debugTimeline = std::clamp(t, 0.f, 1.f) * maxT;
+        m_debugTimeline = std::min(std::clamp(t, 0.f, 1.f) * axisT, maxT);
     }
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
     {
         float mouseX = ImGui::GetIO().MousePos.x;
-        m_scrubRightClickTime = std::clamp((mouseX - trackX) / trackW, 0.f, 1.f) * maxT;
+        m_scrubRightClickTime = std::min(std::clamp((mouseX - trackX) / trackW, 0.f, 1.f) * axisT, maxT);
         ImGui::OpenPopup("##ScrubCtx");
     }
     if (ImGui::BeginPopup("##ScrubCtx"))
@@ -686,7 +703,7 @@ void ReplayWindow::DrawTimelineController()
 
     // ── Comms lane (under the controls, while a recording is attached) ───
     if (CommsLaneVisible())
-        DrawCommsLane(x0, pw - PAD * 2.f, trackX, trackW, O.y + 72.f * sf, barH - 72.f * sf - 8.f * sf, maxT);
+        DrawCommsLane(x0, pw - PAD * 2.f, trackX, trackW, O.y + 72.f * sf, barH - 72.f * sf - 8.f * sf, axisT);
 
     m_debugTimeline = std::clamp(m_debugTimeline, 0.f, maxT);
 

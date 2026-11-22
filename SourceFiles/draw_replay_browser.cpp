@@ -8,6 +8,7 @@
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "SpoilerFree.h"
 #include "TeamColors.h"
 #include "ReplayHotkeys.h"
 #include "CatapultLeverState.h"
@@ -770,6 +771,94 @@ static ImTextureID GetCupIcon()
     EnsureTextureBasePath();
     std::string path = ui::TextureBasePath() + "\\Textures\\Game_UI\\cup.webp";
     return GetTextureCache().GetTexture(path);
+}
+
+// ─── Spoiler-free mode ───────────────────────────────────────────── [2026-11-22] ──
+//
+// While a match's result is hidden (SpoilerFree.h) the Library draws both teams alike: no cup,
+// no WON chip, no winner's gold, no length, no lord damage, no kills or deaths, and the Stats and
+// Map tabs stay covered. Every view asks these helpers instead of reading the fields itself.
+static bool ResultHidden(const MatchMeta& m) { return SpoilerFree::Get().IsHidden(m.folder_name); }
+static int  ShownWinner(const MatchMeta& m)  { return ResultHidden(m) ? 0 : m.winner_party_id; }
+
+static const char* const kHiddenDuration = "--:--";
+static const char* ShownDuration(const MatchMeta& m)
+{
+    return ResultHidden(m) ? kHiddenDuration : m.match_duration.c_str();
+}
+
+// An eye, struck through while results are hidden. Drawn, as the hanger is: no texture needed.
+static void DrawEyeGlyph(ImDrawList* dl, ImVec2 c, float size, ImU32 col, bool struck)
+{
+    const float w = size * 0.5f, lid = size * 0.62f;
+    dl->PathClear();
+    dl->PathLineTo(ImVec2(c.x - w, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x, c.y - lid), ImVec2(c.x + w, c.y));
+    dl->PathBezierQuadraticCurveTo(ImVec2(c.x, c.y + lid), ImVec2(c.x - w, c.y));
+    dl->PathStroke(col, ImDrawFlags_Closed, 1.5f);
+    dl->AddCircleFilled(c, size * 0.14f, col);
+    if (struck)
+        dl->AddLine(ImVec2(c.x - w * 0.8f, c.y + w * 0.7f), ImVec2(c.x + w * 0.8f, c.y - w * 0.7f), col, 1.6f);
+}
+
+// The top bar's toggle: outlined, amber while results are hidden.
+static void DrawSpoilerToggle()
+{
+    SpoilerFree& sf = SpoilerFree::Get();
+    const bool on = sf.Enabled();
+    const float glyph = ImGui::GetFontSize();
+    const float spaceW = std::max(1.0f, ImGui::CalcTextSize(" ").x);
+    const std::string label = std::string((size_t)std::ceil((glyph + 5.0f) / spaceW), ' ')
+                            + "Spoiler-free##spoiler_toggle";
+    if (ui::SegmentedButton(label.c_str(), on, kColorAccent))
+        sf.SetEnabled(!on);
+    const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+    const ImU32 col = on ? ImGui::GetColorU32(kColorAccent) : IM_COL32(140, 143, 161, 255);
+    DrawEyeGlyph(ImGui::GetWindowDrawList(), ImVec2(mn.x + 8.0f + glyph * 0.5f, (mn.y + mx.y) * 0.5f),
+                 glyph, col, on);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(on ? "Spoiler-free is on: winners, match lengths and match stats stay hidden\n"
+                               "until you watch a match to the end or reveal it."
+                             : "Spoiler-free: hide winners, match lengths and match stats\n"
+                               "until you watch a match to the end.");
+}
+
+// "Reveal result" for one match, in the detail panels.
+static void DrawRevealButton(const MatchMeta& m, const char* id)
+{
+    ImGui::PushID(id);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
+    if (ui::SecondaryButton("Reveal result"))
+        SpoilerFree::Get().Reveal(m.folder_name);
+    ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Show the winner, the length and the stats of this match.\n"
+                          "Watching the replay to the end reveals it too.");
+    ImGui::PopID();
+}
+
+// What the Stats and Map tabs show while the result is hidden: their charts, scrubber and map
+// run to the last second of the match, so they cannot be shown in part.
+static void DrawResultHiddenCover(const MatchMeta& m)
+{
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const char* line1 = "Result hidden";
+    const char* line2 = "Spoiler-free mode is on. Watch the replay to the end, or reveal the result.";
+    const float blockH = ImGui::GetTextLineHeightWithSpacing() * 3.5f;
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0f, (avail.y - blockH) * 0.4f));
+    auto centred = [&](const char* text, const ImVec4& col) {
+        const float w = ImGui::CalcTextSize(text).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail.x - w) * 0.5f));
+        ImGui::TextColored(col, "%s", text);
+    };
+    if (ImFont* bold = GuiGlobalConstants::boldFont) ImGui::PushFont(bold);
+    centred(line1, kColorAccent);
+    if (GuiGlobalConstants::boldFont) ImGui::PopFont();
+    centred(line2, kColorTextDim);
+    ImGui::Spacing();
+    const float bw = ImGui::CalcTextSize("Reveal result").x + 16.0f;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail.x - bw) * 0.5f));
+    DrawRevealButton(m, "##cover_reveal");
 }
 
 static ImTextureID GetFluxIcon()
@@ -3130,6 +3219,8 @@ static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
         stats.profCounts = profCounts;
         stats.timesPlayed++;
 
+        // A hidden result is played but neither won nor lost (spoiler-free mode).
+        if (ResultHidden(m)) continue;
         bool won = (std::to_string(m.winner_party_id) == partyId);
         if (won) stats.wins++;
         else stats.losses++;
@@ -3139,7 +3230,8 @@ static std::vector<TournamentBuildStats> AggregateTournamentBuilds(
     result.reserve(grouped.size());
     for (auto& [key, val] : grouped)
     {
-        val.winPct = val.timesPlayed > 0 ? (val.wins / (float)val.timesPlayed * 100.0f) : 0.0f;
+        const int decided = val.wins + val.losses;
+        val.winPct = decided > 0 ? (val.wins / (float)decided * 100.0f) : 0.0f;
         result.push_back(std::move(val));
     }
 
@@ -3169,6 +3261,7 @@ static std::vector<TournamentBuildStats> AggregateLostToBuilds(
                                               s_state.tournamentGuildName);
         if (partyId.empty()) continue;
 
+        if (ResultHidden(m)) continue; // not known to be a loss (spoiler-free mode)
         bool won = (std::to_string(m.winner_party_id) == partyId);
         if (won) continue; // only interested in losses
 
@@ -3228,6 +3321,8 @@ static const std::vector<TournamentBuildStats>& GetTournamentStats(
                               + s_state.dateFrom.month * 100 + s_state.dateFrom.day)
          + "|" + std::to_string(s_state.dateTo.year * 10000
                               + s_state.dateTo.month * 100 + s_state.dateTo.day);
+    // Revealing a match, or the spoiler-free toggle, changes the record.
+    key += "|s" + std::to_string(SpoilerFree::Get().Version());
 
     if (key == s_tournamentCacheKey &&
         s_tournamentCacheMatchCount == (int)matches.size() &&
@@ -4323,7 +4418,7 @@ static void DrawMatchCards(const std::vector<FilteredMatch>& filtered,
         TeamRibbonItem(ImGui::GetTextLineHeight() + 2.0f, 0, false);
         ImGui::SameLine(0, 6);
         ImGui::TextUnformatted(fm.guild1.display.c_str());
-        if (m.winner_party_id == 1 && cupTex)
+        if (ShownWinner(m) == 1 && cupTex)
         {
             ImGui::SameLine(0, 4);
             ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
@@ -4334,7 +4429,7 @@ static void DrawMatchCards(const std::vector<FilteredMatch>& filtered,
         TeamRibbonItem(ImGui::GetTextLineHeight() + 2.0f, 1, false);
         ImGui::SameLine(0, 6);
         ImGui::TextUnformatted(fm.guild2.display.c_str());
-        if (m.winner_party_id == 2 && cupTex)
+        if (ShownWinner(m) == 2 && cupTex)
         {
             ImGui::SameLine(0, 4);
             ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
@@ -4570,12 +4665,13 @@ static void DrawGalleryCard(const FilteredMatch& fm, float cardWidth, bool isSel
             }
 
             // Duration (left of badge, same row) — 18px
-            if (!m.match_duration.empty())
+            if (!m.match_duration.empty() || ResultHidden(m))
             {
-                ImVec2 durSz = mono->CalcTextSizeA(18.f, FLT_MAX, 0.f, m.match_duration.c_str());
+                const char* dur = ShownDuration(m);
+                ImVec2 durSz = mono->CalcTextSizeA(18.f, FLT_MAX, 0.f, dur);
                 float dx = rx - durSz.x;
                 dl->AddText(mono, 18.f, ImVec2(dx, rowY),
-                            IM_COL32(212, 212, 216, 255), m.match_duration.c_str());
+                            IM_COL32(212, 212, 216, 255), dur);
                 dl->AddText(font, 18.f, ImVec2(dx - 20.f, rowY),
                             IM_COL32(245, 158, 11, 255), "\xe2\x97\xb7");
             }
@@ -4609,8 +4705,8 @@ static void DrawGalleryCard(const FilteredMatch& fm, float cardWidth, bool isSel
         dl->AddLine(ImVec2(vsX, vsMidY + 12.f), ImVec2(vsX, bodyY + bodyH - 4.f),
                     IM_COL32(39, 39, 42, 255));
 
-        bool won1 = (m.winner_party_id == 1);
-        bool won2 = (m.winner_party_id == 2);
+        bool won1 = (ShownWinner(m) == 1);
+        bool won2 = (ShownWinner(m) == 2);
 
         // Left team - top-aligned, no centering
         DrawTeamSide(dl, fm, false,
@@ -4771,6 +4867,8 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
         if (showSkills) ImGui::TableNextColumn(); // skills
         ImGui::TableNextColumn(); // spacer
         int totals[] = { totK, totD, totDmg, totInt, totCnc, totSkl };
+        // Spoiler-free: kills, deaths and the rest are whole-match totals, so all six wait.
+        const bool hideStats = ResultHidden(m);
         for (int si = 0; si < 6; si++)
         {
             ImGui::TableNextColumn();
@@ -4782,7 +4880,8 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
             ImGui::PopStyleColor();
             // Total
             char totBuf[16];
-            if (!totalAvailable[si]) snprintf(totBuf, sizeof(totBuf), "-");
+            if (hideStats) snprintf(totBuf, sizeof(totBuf), "?");
+            else if (!totalAvailable[si]) snprintf(totBuf, sizeof(totBuf), "-");
             else if (totals[si] >= 1000) snprintf(totBuf, sizeof(totBuf), "%.1fk", totals[si] / 1000.f);
             else snprintf(totBuf, sizeof(totBuf), "%d", totals[si]);
             ImGui::PushStyleColor(ImGuiCol_Text, kColorAccent);
@@ -4881,7 +4980,9 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
             {
                 ImGui::TableNextColumn();
                 char buf[16];
-                if (!playerStatAvailable[si])
+                if (hideStats)
+                    snprintf(buf, sizeof(buf), "?");
+                else if (!playerStatAvailable[si])
                     snprintf(buf, sizeof(buf), "-");
                 else if (playerStats[si] >= 1000)
                     snprintf(buf, sizeof(buf), "%.1fk", playerStats[si] / 1000.f);
@@ -4890,7 +4991,7 @@ static void DrawGalleryDetailTeam(const MatchMeta& m, const std::string& partyId
                 float tw = ImGui::CalcTextSize(buf).x;
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (statWs[si] - tw) * 0.5f);
                 bool isKD = (si == 0 || si == 1) && playerStats[si] > 0;
-                if (playerStats[si] == 0)
+                if (hideStats || playerStats[si] == 0)
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.357f, 0.357f, 0.380f, 1.f));
                 else if (isKD)
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.831f, 0.831f, 0.847f, 1.f));
@@ -4978,7 +5079,12 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         ImGui::SameLine(0, 16);
         ImGui::TextColored(kColorTextDim, "%s", dateBuf);
         if (!m.occasion.empty()) { ImGui::SameLine(0, 16); ImGui::TextColored(kColorTextDim, "%s", m.occasion.c_str()); }
-        if (!m.match_duration.empty()) { ImGui::SameLine(0, 16); ImGui::TextColored(kColorText, "%s", m.match_duration.c_str()); }
+        if (ResultHidden(m))
+        {
+            ImGui::SameLine(0, 16); ImGui::TextColored(kColorText, "%s", kHiddenDuration);
+            ImGui::SameLine(0, 12); DrawRevealButton(m, "##gallery_reveal_bar");
+        }
+        else if (!m.match_duration.empty()) { ImGui::SameLine(0, 16); ImGui::TextColored(kColorText, "%s", m.match_duration.c_str()); }
         ImGui::Separator();
     }
 
@@ -5009,7 +5115,12 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         ImGui::TextColored(ImVec4(0.961f, 0.620f, 0.043f, 1.f), "\xe2\x97\x86 %s", mapName ? mapName : "Unknown");
         if (!m.occasion.empty())
             ImGui::TextColored(ImVec4(0.631f, 0.631f, 0.667f, 1.f), "\xe2\x9a\x91 %s", m.occasion.c_str());
-        if (!m.match_duration.empty())
+        if (ResultHidden(m))
+        {
+            ImGui::TextColored(ImVec4(0.831f, 0.831f, 0.847f, 1.f), "\xe2\x97\xb7 %s", kHiddenDuration);
+            DrawRevealButton(m, "##gallery_reveal_side");
+        }
+        else if (!m.match_duration.empty())
             ImGui::TextColored(ImVec4(0.831f, 0.831f, 0.847f, 1.f), "\xe2\x97\xb7 %s", m.match_duration.c_str());
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, 16.f);
@@ -5067,7 +5178,9 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
 
         // Lord Damage
         ImGui::TextColored(ImVec4(0.961f, 0.620f, 0.043f, 1.f), "LORD DAMAGE");
-        if (!m.lord_damage.has_data)
+        if (ResultHidden(m))
+            ImGui::TextColored(ImVec4(0.443f, 0.443f, 0.478f, 1.f), "Hidden (spoiler-free)");
+        else if (!m.lord_damage.has_data)
             ImGui::TextColored(ImVec4(0.443f, 0.443f, 0.478f, 1.f), "No lord damage recorded.");
         else
         {
@@ -5088,7 +5201,7 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         // Team 1
         ImGui::BeginChild("##detail_team1", ImVec2(teamW, 0), ImGuiChildFlags_None,
                           ImGuiWindowFlags_HorizontalScrollbar);
-        DrawGalleryDetailTeam(m, "1", g1, m.winner_party_id == 1, teamW);
+        DrawGalleryDetailTeam(m, "1", g1, ShownWinner(m) == 1, teamW);
         ImGui::EndChild();
 
         ImGui::SameLine(0, 8);
@@ -5096,18 +5209,18 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         // Team 2
         ImGui::BeginChild("##detail_team2", ImVec2(teamW, 0), ImGuiChildFlags_None,
                           ImGuiWindowFlags_HorizontalScrollbar);
-        DrawGalleryDetailTeam(m, "2", g2, m.winner_party_id == 2, teamW);
+        DrawGalleryDetailTeam(m, "2", g2, ShownWinner(m) == 2, teamW);
         ImGui::EndChild();
     }
     else
     {
         // Stacked vertical for narrow panels
         ImGui::Spacing();
-        DrawGalleryDetailTeam(m, "1", g1, m.winner_party_id == 1, availW);
+        DrawGalleryDetailTeam(m, "1", g1, ShownWinner(m) == 1, availW);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        DrawGalleryDetailTeam(m, "2", g2, m.winner_party_id == 2, availW);
+        DrawGalleryDetailTeam(m, "2", g2, ShownWinner(m) == 2, availW);
     }
 }
 
@@ -5422,6 +5535,10 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         }
     }
 
+    // Spoiler-free: hides winners, lengths and stats until a match is watched or revealed.
+    ImGui::SameLine(0, 16);
+    DrawSpoilerToggle();
+
     // Refresh — outlined when new matches are waiting
     ImGui::SameLine(0, 16);
     if (DrawRefreshIconButton("##refresh_gallery", g_refreshHint))
@@ -5489,14 +5606,21 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
         ImGui::TextColored(ImVec4(kColorText), "- %s", s_state.tournamentGuildDisplay.c_str());
 
         // Summary line
-        int totalWins = 0, totalLosses = 0;
-        for (const auto& s : stats) { totalWins += s.wins; totalLosses += s.losses; }
-        int totalMatches = totalWins + totalLosses;
-        float overallPct = totalMatches > 0 ? (totalWins / (float)totalMatches * 100.0f) : 0.0f;
+        int totalWins = 0, totalLosses = 0, totalMatches = 0;
+        for (const auto& s : stats) { totalWins += s.wins; totalLosses += s.losses; totalMatches += s.timesPlayed; }
+        const int decided = totalWins + totalLosses;
+        float overallPct = decided > 0 ? (totalWins / (float)decided * 100.0f) : 0.0f;
 
         ImGui::TextColored(ImVec4(kColorTextDim),
             "%d matches | %d builds | Record: %d-%d (%.0f%%)",
             totalMatches, (int)stats.size(), totalWins, totalLosses, overallPct);
+        // Spoiler-free: the record counts the revealed matches only.
+        if (totalMatches > decided)
+        {
+            ImGui::SameLine(0, 6);
+            ImGui::TextColored(ImVec4(kColorTextMuted), "| %d result%s hidden",
+                               totalMatches - decided, totalMatches - decided == 1 ? "" : "s");
+        }
 
         // Map filter badge
         if (!s_state.tournamentMaps.empty())
@@ -5892,6 +6016,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
                     if (partyId.empty()) continue;
 
                     bool won = (std::to_string(m.winner_party_id) == partyId);
+                    const bool hidden = ResultHidden(m);   // spoiler-free mode
 
                     // For losses drill-down: only show losses where opponent ran this build
                     // For builds drill-down: only show matches where our guild ran this build
@@ -5899,7 +6024,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
                         ? ((partyId == "1") ? "2" : "1")  // opponent's party
                         : partyId;                          // our party
 
-                    if (drillDownIsLoss && won) continue; // only losses
+                    if (drillDownIsLoss && (won || hidden)) continue; // only known losses
 
                     auto pit = m.parties.find(checkPartyId);
                     if (pit == m.parties.end() || pit->second.players.empty()) continue;
@@ -5955,14 +6080,16 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
 
                     // Result
                     ImGui::TableNextColumn();
-                    if (won)
+                    if (hidden)
+                        ImGui::TextColored(kColorTextMuted, "?");
+                    else if (won)
                         ImGui::TextColored(ImVec4(0.30f, 0.69f, 0.31f, 1.0f), "Win");
                     else
                         ImGui::TextColored(ImVec4(0.90f, 0.22f, 0.21f, 1.0f), "Loss");
 
                     // Duration
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(m.match_duration.c_str());
+                    ImGui::TextUnformatted(ShownDuration(m));
 
                     ImGui::PopID();
                 }
@@ -6151,6 +6278,11 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
         ImGui::SetTooltip(g_refreshHint ? "Refresh for latest matches"
                                         : "Refresh - re-fetch match list from cloud");
     DrawNewMatchesPill();
+
+    // Spoiler-free: hides winners, lengths and stats until a match is watched or revealed.
+    ImGui::SameLine(0, 16);
+    CentreOnRow(ImGui::GetFrameHeight());
+    DrawSpoilerToggle();
     ImGui::Separator();
 
     // Card mode for mobile
@@ -6386,7 +6518,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::TableSetColumnIndex(Col_Team1);
                 CenterCell(textH);
                 DrawGuild(fm.guild1);
-                if (m.winner_party_id == 1 && cupTex)
+                if (ShownWinner(m) == 1 && cupTex)
                 {
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
@@ -6479,7 +6611,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                 ImGui::TableSetColumnIndex(Col_Team2);
                 CenterCell(textH);
                 DrawGuild(fm.guild2);
-                if (m.winner_party_id == 2 && cupTex)
+                if (ShownWinner(m) == 2 && cupTex)
                 {
                     ImGui::SameLine();
                     ImGui::Image(cupTex, ImVec2(sz.cupIcon, sz.cupIcon));
@@ -7432,14 +7564,17 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
             ImGui::TextColored(ImVec4(0.75f, 0.73f, 0.68f, 1.0f), "%s", m.occasion.c_str());
             if (bold) ImGui::PopFont();
         }
-        if (!m.match_duration.empty())
+        const bool hidden = ResultHidden(m);   // spoiler-free mode
+        if (!m.match_duration.empty() || hidden)
         {
             ImTextureID durIco = GetDurationIcon();
             if (durIco) { ImGui::Image(durIco, ImVec2(icoH, icoH)); ImGui::SameLine(0, 4); }
             if (bold) ImGui::PushFont(bold);
-            ImGui::TextColored(ImVec4(0.75f, 0.73f, 0.68f, 1.0f), "%s", m.match_duration.c_str());
+            ImGui::TextColored(ImVec4(0.75f, 0.73f, 0.68f, 1.0f), "%s", ShownDuration(m));
             if (bold) ImGui::PopFont();
         }
+        if (hidden)
+            DrawRevealButton(m, "##overview_reveal");
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
         ImGui::PopTextWrapPos();
@@ -7491,7 +7626,11 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
             ImGui::TextUnformatted("LORD DAMAGE");
             ImGui::PopStyleColor();
 
-            if (!ld.has_data)
+            if (hidden)
+            {
+                ImGui::TextColored(kColorTextDim, "Hidden (spoiler-free)");
+            }
+            else if (!ld.has_data)
             {
                 ImGui::TextColored(kColorTextDim, "No lord damage recorded.");
             }
@@ -7568,11 +7707,11 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
     if (stackVertical)
     {
         ImGui::BeginGroup();
-        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz, ob);
+        DrawTeamComposition(m, "1", g1, ShownWinner(m) == 1, sz, ob);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
-        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz, ob);
+        DrawTeamComposition(m, "2", g2, ShownWinner(m) == 2, sz, ob);
         ImGui::EndGroup();
     }
     else
@@ -7580,13 +7719,13 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
         float teamW = (teamsW - sp) * 0.5f;
 
         ImGui::BeginChild("##team1_detail", ImVec2(teamW, 0));
-        DrawTeamComposition(m, "1", g1, m.winner_party_id == 1, sz, ob);
+        DrawTeamComposition(m, "1", g1, ShownWinner(m) == 1, sz, ob);
         ImGui::EndChild();
 
         ImGui::SameLine(0, sp);
 
         ImGui::BeginChild("##team2_detail", ImVec2(teamW, 0));
-        DrawTeamComposition(m, "2", g2, m.winner_party_id == 2, sz, ob);
+        DrawTeamComposition(m, "2", g2, ShownWinner(m) == 2, sz, ob);
         ImGui::EndChild();
     }
 }
@@ -8970,7 +9109,7 @@ static void DrawMapTeamColumn(const MatchMeta& m, const char* partyId, ImVec2 po
             std::string ft1, ft2;
             ParseFolderTags(m.folder_name, ft1, ft2);
             const GuildLabel guild = GetPartyGuild(m, partyId, red ? ft2 : ft1);
-            const bool won = m.winner_party_id == (red ? 2 : 1);
+            const bool won = ShownWinner(m) == (red ? 2 : 1);
             TeamRibbonItem(lineH + 2.0f, red ? 1 : 0, true);
             ImGui::SameLine(0, 8);
             if (won)
@@ -10090,6 +10229,13 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
                        : s_analysis.state == State::Failed      ? "Attributes unavailable"
                                                                 : "Solving attributes...";
         DrawMatchOverview(m, ob);
+    }
+    else if (ResultHidden(m))
+    {
+        // Spoiler-free: the charts, the scrubber and the map all run to the match's last second.
+        ImGui::BeginChild("##detail_tab_body");
+        DrawResultHiddenCover(m);
+        ImGui::EndChild();
     }
     else
     {

@@ -133,6 +133,9 @@ namespace BattleLedger
     struct StripInputs
     {
         float tEnd = 1.f, tNow = 0.f;
+        // Spoiler-free: nothing past this moment is binned, marked or counted, and "Full match"
+        // is off (FLT_MAX: no limit).
+        float horizon = FLT_MAX;
         std::vector<std::pair<float, int>> spikes;                    // first hit, target
         const std::unordered_map<int, std::vector<float>>* deaths = nullptr;   // by agent
     };

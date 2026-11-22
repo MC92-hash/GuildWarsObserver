@@ -514,10 +514,14 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
     auto TagOf = [&](int team) { return who.TagOf(team); };
     const float lineH = ImGui::GetTextLineHeight();
     const float tEnd = std::max(1.f, in.tEnd), tNow = std::clamp(in.tNow, 0.f, tEnd);
+    const float horizon = in.horizon;
+    const bool  limited = horizon < FLT_MAX;
+    if (limited && st.scope == kFull) st.scope = kPlayhead;
     r0 = 0.f; r1 = tEnd;
     if (st.scope == kPlayhead) r1 = tNow;
     else if (st.scope == kLast60) { r1 = tNow; r0 = std::max(0.f, tNow - 60.f); }
     else if (st.scope == kSelection && st.hasSel) { r0 = st.selA; r1 = st.selB; }
+    if (limited) { r1 = std::min(r1, horizon); r0 = std::min(r0, r1); }
     const bool intsTab = st.metric == kInts || st.metric == kIntsRecv;
 
     // ===================== Time strip =====================
@@ -529,7 +533,7 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
             for (int s = 0; s < 4; ++s)
             {
                 labels.push_back(s == kSelection && st.hasSel ? "Selection " + FmtT(st.selA) + "-" + FmtT(st.selB) : std::string(kScopeName[s]));
-                enabled.push_back(s != kSelection || st.hasSel);
+                enabled.push_back((s != kSelection || st.hasSel) && (s != kFull || !limited));
             }
             const int c = Segmented("##scope", labels, st.scope, &enabled);
             if (c == kSelection && !st.hasSel) st.selHintUntil = ImGui::GetTime() + 3.0;
@@ -561,7 +565,7 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
             if (b - a > 2.f) { st.selA = a; st.selB = b; st.hasSel = true; st.scope = kSelection; }
         }
         if (ImGui::IsItemDeactivated()) st.dragFrom = -1.f;
-        if (hov && ImGui::IsMouseDoubleClicked(0)) { st.hasSel = false; st.scope = kFull; }
+        if (hov && ImGui::IsMouseDoubleClicked(0)) { st.hasSel = false; st.scope = limited ? kPlayhead : kFull; }
 
         dl->AddRectFilled(p, ImVec2(p.x + W, p.y + H), IM_COL32(0, 0, 0, 110), 3.f);
         const float mid = p.y + H * 0.5f;
@@ -570,6 +574,7 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
         std::vector<float> top(n), bot(n);
         const bool byTaker = st.metric == kTaken || st.metric == kReceived || st.metric == kIntsRecv;
         auto Put = [&](float t, int agent, float v) {
+            if (t > horizon) return;
             const int team = TeamOf(agent);
             if (!Team::IsSide(team)) return;
             const int b = std::clamp((int)(t / kBin), 0, n - 1);
@@ -608,6 +613,7 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
         if (st.metric == kDealt || st.metric == kTaken)
             for (const auto& [firstHit, target] : in.spikes)
             {
+                if (firstHit > horizon) continue;
                 // On the side that took it.
                 const bool blueHit = Team::IsBlue(TeamOf(target));
                 const float x = xOf(firstHit);
@@ -620,6 +626,7 @@ void DrawTimeStrip(const Data& d, ViewState& st, const StripInputs& in, float& r
             const bool blue = Team::IsBlue(TeamOf(aid));
             for (float t : times)
             {
+                if (t > horizon) continue;
                 const float x = xOf(t), y = blue ? mid - 7.f : mid + 7.f;
                 dl->AddLine(ImVec2(x - 3.f, y - 3.f), ImVec2(x + 3.f, y + 3.f), IM_COL32(255, 255, 255, 220), 1.5f);
                 dl->AddLine(ImVec2(x + 3.f, y - 3.f), ImVec2(x - 3.f, y + 3.f), IM_COL32(255, 255, 255, 220), 1.5f);

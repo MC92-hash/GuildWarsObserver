@@ -1055,6 +1055,7 @@
     <ClCompile Include="SourceFiles\MatchLink.cpp" />
     <ClCompile Include="SourceFiles\UrlProtocol.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_ShareLink.cpp" />
+    <ClCompile Include="SourceFiles\ReplayWindow_Spoilers.cpp" />
     <ClCompile Include="SourceFiles\ReplayWindow_Comms.cpp" />
     <ClCompile Include="SourceFiles\CommsAudio.cpp" />
     <ClCompile Include="SourceFiles\CapeBannerExport.cpp" />

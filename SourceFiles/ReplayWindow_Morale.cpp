@@ -570,8 +570,11 @@ void ReplayWindow::DrawMoralePanel()
     {
         if (!m_moraleTimelineBuilt) BuildMoraleTimelines();
 
-        const float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
-        const float tNow = std::clamp(curTime, 0.f, maxT);
+        const float realMaxT = std::max(1.f, m_replayCtx.maxReplayTime);
+        // Spoiler-free: the play bar's fixed axis while the result is hidden (the lines already
+        // stop at the playhead).
+        const float maxT = std::max(1.f, SpoilerAxisEnd(realMaxT));
+        const float tNow = std::clamp(curTime, 0.f, realMaxT);
         constexpr float vTop = 10.f;
         constexpr float vBot = -60.f;
         const float blueN = static_cast<float>(std::max<size_t>(1, blueTeam.size()));
@@ -604,7 +607,7 @@ void ReplayWindow::DrawMoralePanel()
         ImGui::InvisibleButton("##morale_chart", ImVec2(plotW, kChartH + axisH));
         const bool hovered = ImGui::IsItemHovered();
         const float mouseT = std::clamp((ImGui::GetIO().MousePos.x - plotMin.x) / plotW, 0.f, 1.f) * maxT;
-        if (ImGui::IsItemActive()) m_debugTimeline = mouseT;
+        if (ImGui::IsItemActive()) m_debugTimeline = std::min(mouseT, realMaxT);
 
         dl->AddRectFilled(plotMin, plotMax, IM_COL32(0, 0, 0, 110), 3.f);
 

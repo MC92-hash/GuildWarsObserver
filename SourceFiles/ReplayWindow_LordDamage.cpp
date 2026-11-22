@@ -769,20 +769,27 @@ void ReplayWindow::DrawLordDamagePanel()
         ImVec2 stripP = ImGui::GetCursorScreenPos();
         ImDrawList* dl = ImGui::GetWindowDrawList();
 
+        // Spoiler-free: the strip runs to the play bar's fixed length, and the 5-second buckets
+        // stop at the furthest moment watched.
+        const float axisT = std::max(1.f, SpoilerAxisEnd(maxT));
+        const float horizon = SpoilerHorizon();
+        const bool  fixedAxis = axisT != maxT;
+
         ImGui::InvisibleButton("##LordTimeline", ImVec2(stripW, stripH));
         if (ImGui::IsItemActive() && stripW > 1.f)
         {
             float mx = ImGui::GetIO().MousePos.x - stripP.x;
             float ratio = std::clamp(mx / stripW, 0.f, 1.f);
-            m_debugTimeline = ratio * maxT;
+            m_debugTimeline = std::min(ratio * axisT, maxT);
         }
 
         int nBuckets = (int)std::max(m_lordDmg[0].damageBuckets.size(),
                                       m_lordDmg[1].damageBuckets.size());
         if (nBuckets < 1) nBuckets = 1;
-        float bw = stripW / (float)nBuckets;
+        float bw = fixedAxis ? stripW * 5.f / axisT : stripW / (float)nBuckets;
+        auto shown = [&](int b) { return b * 5.f <= horizon; };
 
-        for (int b = 0; b < (int)m_lordDmg[1].damageBuckets.size(); ++b)
+        for (int b = 0; b < (int)m_lordDmg[1].damageBuckets.size() && shown(b); ++b)
         {
             ImVec2 bMin(stripP.x + b * bw, stripP.y);
             ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + stripH * 0.5f);
@@ -792,7 +799,7 @@ void ReplayWindow::DrawLordDamagePanel()
             dl->AddRectFilled(bMin, bMax, col);
         }
 
-        for (int b = 0; b < (int)m_lordDmg[0].damageBuckets.size(); ++b)
+        for (int b = 0; b < (int)m_lordDmg[0].damageBuckets.size() && shown(b); ++b)
         {
             ImVec2 bMin(stripP.x + b * bw, stripP.y + stripH * 0.5f);
             ImVec2 bMax(stripP.x + (b + 1) * bw, stripP.y + stripH);
@@ -806,7 +813,7 @@ void ReplayWindow::DrawLordDamagePanel()
                     ImVec2(stripP.x + stripW, stripP.y + stripH * 0.5f),
                     IM_COL32(255, 255, 255, 25));
 
-        float phX = stripP.x + (m_debugTimeline / maxT) * stripW;
+        float phX = stripP.x + (m_debugTimeline / axisT) * stripW;
         dl->AddLine(ImVec2(phX, stripP.y), ImVec2(phX, stripP.y + stripH),
             IM_COL32(200, 168, 75, 220), 1.5f);
     }

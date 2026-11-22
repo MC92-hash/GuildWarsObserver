@@ -232,6 +232,8 @@ void ReplayWindow::DrawPianoRollPanel()
     const float halfWin = kZoomHalf[m_pianoRollZoomIdx];
     const float winStart = now - halfWin;
     const float winEnd   = now + halfWin;
+    // Spoiler-free: casts past the furthest moment watched are not drawn (ReplayWindow_Spoilers.cpp).
+    const float horizon  = SpoilerHorizon();
     const float winDur   = winEnd - winStart;
 
     // Layout: each player row holds their own casts (icons on a cast line) and, under it, a thin lane
@@ -549,7 +551,10 @@ void ReplayWindow::DrawPianoRollPanel()
                 ImGui::SameLine(0.f, 8.f);
                 const int at = static_cast<int>(std::upper_bound(uses.begin(), uses.end(), now + 0.05f) - uses.begin());
                 ImGui::AlignTextToFramePadding();
-                ImGui::TextColored(kGoldText, "%d / %d uses", at, static_cast<int>(uses.size()));
+                if (SpoilersHidden())   // spoiler-free: the match's total waits for the end
+                    ImGui::TextColored(kGoldText, "%d uses so far", at);
+                else
+                    ImGui::TextColored(kGoldText, "%d / %d uses", at, static_cast<int>(uses.size()));
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip(m_pianoRollPinned.empty() ? "Uses of these skills up to now, out of the whole match."
                                                                 : "Uses of these skills up to now, out of the whole match,\n"
@@ -898,6 +903,7 @@ void ReplayWindow::DrawPianoRollPanel()
             const float iconY = rowTop + 3.f;
             const float lineY = iconY + kIconSz + 1.f;
             forEachInWindow(ard, [&](const SkillUseEvent& ev) {
+                if (ev.startTime > horizon) return;
                 const float x0 = std::round(timeToX(ev.startTime));
                 const float x1 = std::round(timeToX(HitTime(ev)));
                 const bool linked = PrInPick(m_pianoRollPinned, m_pianoRollPinDir, agentId, ev.targetId);
@@ -969,6 +975,7 @@ void ReplayWindow::DrawPianoRollPanel()
         for (const auto& [casterId, caster] : m_replayCtx.agents)
             forEachInWindow(caster, [&](const SkillUseEvent& ev) {
                 if (ev.targetId < 0 || ev.targetId == casterId) return;
+                if (ev.startTime > horizon) return;
                 auto rit = rowTopOf.find(ev.targetId);
                 if (rit == rowTopOf.end()) return;
                 const bool linked = PrInPick(m_pianoRollPinned, m_pianoRollPinDir, casterId, ev.targetId) &&
@@ -1307,7 +1314,10 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
     ImFont* font = ImGui::GetFont();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x;
-    const float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    const float realMaxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    // Spoiler-free: the play bar's fixed axis, and no spike past the furthest moment watched.
+    const float maxT = std::max(1.f, SpoilerAxisEnd(realMaxT));
+    const float horizon = SpoilerHorizon();
     const float bx0 = p0.x + kLabelW + kPad, bx1 = p0.x + w - kPad;
     const float mid = std::round(p0.y + kH * 0.5f);
     auto X = [&](float t) { return bx0 + std::clamp(t / maxT, 0.f, 1.f) * (bx1 - bx0); };
@@ -1319,7 +1329,14 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
     // Label column.
     dl->AddText(font, font->FontSize, ImVec2(p0.x + 10.f, p0.y + 7.f), ImGui::ColorConvertFloat4ToU32(kPrGold), "Spikes");
     char buf[96];
-    snprintf(buf, sizeof(buf), "%d in the match", static_cast<int>(m_spikes.size()));
+    if (horizon < FLT_MAX)
+    {
+        int seen = 0;
+        for (const SpikeInfo& sp : m_spikes) seen += sp.firstHit <= horizon ? 1 : 0;
+        snprintf(buf, sizeof(buf), "%d so far", seen);
+    }
+    else
+        snprintf(buf, sizeof(buf), "%d in the match", static_cast<int>(m_spikes.size()));
     dl->AddText(font, font->FontSize, ImVec2(p0.x + 10.f, p0.y + 30.f), ImGui::ColorConvertFloat4ToU32(kPrDim), buf);
     ImGui::SetCursorScreenPos(ImVec2(p0.x + 14.f + font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.f, "Spikes").x, p0.y + 7.f));
     PrHelp("One mark = one spike: 3+ enemy damage skills on one player in 1.5 s.\n"
@@ -1342,6 +1359,7 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
     for (size_t i = 0; i < m_spikes.size(); ++i)
     {
         const SpikeInfo& sp = m_spikes[i];
+        if (sp.firstHit > horizon) continue;
         auto tit = m_replayCtx.agents.find(sp.target);
         const uint8_t team = tit != m_replayCtx.agents.end() ? tit->second.teamId : 0;
         const bool top = team != 2;
@@ -1390,7 +1408,7 @@ void ReplayWindow::DrawPianoRollSpikeBar(float winStart, float winEnd, int cardS
             if (m_pianoRollFollowSpikes) { m_pianoRollPinned = { sp.target }; m_pianoRollPinFromSpike = true; }
         }
     }
-    if (ImGui::IsItemActive() && sDragScrub) m_debugTimeline = mouseT;
+    if (ImGui::IsItemActive() && sDragScrub) m_debugTimeline = std::min(mouseT, realMaxT);
     if (ImGui::IsItemHovered() && hovered >= 0 && !ImGui::IsItemActive())
     {
         const SpikeInfo& sp = m_spikes[hovered];
@@ -1895,8 +1913,10 @@ void ReplayWindow::DrawPianoRollMonkCards()
             const int monkId = monks[mi];
             const AgentReplayData* m = agentOf(monkId);
             std::vector<const SpikeInfo*> mine;
+            const float horizon = SpoilerHorizon();   // spoiler-free: the spikes watched so far
             for (const auto& sp : m_spikes)
-                if (const auto* t = agentOf(sp.target); t && t->teamId == team) mine.push_back(&sp);
+                if (const auto* t = agentOf(sp.target); t && t->teamId == team && sp.firstHit <= horizon)
+                    mine.push_back(&sp);
             int covered = 0, first = 0;
             std::vector<float> timings, reactions, healTimes;
             for (const SpikeInfo* sp : mine)

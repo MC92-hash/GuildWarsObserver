@@ -634,7 +634,11 @@ void ReplayWindow::DrawEventTimeline()
     const float timeW  = 80.f;
     const float badgeW = 64.f;
 
-    float maxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    // Spoiler-free (ReplayWindow_Spoilers.cpp): while the result is hidden the axis has the play
+    // bar's fixed length and nothing past the furthest moment watched (`horizon`) is drawn.
+    const float realMaxT = std::max(1.f, m_replayCtx.maxReplayTime);
+    float maxT = std::max(1.f, SpoilerAxisEnd(realMaxT));
+    const float horizon = SpoilerHorizon();
     auto* dev = m_deviceResources->GetD3DDevice();
 
     ImVec2 panelPos(vp->Pos.x, vp->Pos.y + vpH - playbarH - panelH);
@@ -828,9 +832,15 @@ void ReplayWindow::DrawEventTimeline()
     dl->PushClipRect(ImVec2(chartX0, chartY0), ImVec2(chartX1, chartY1), true);
 
     // ── Health curves (smooth linear interpolation with fill) ───────────
+    // One sample per second: a hidden result's curves stop at the horizon.
+    auto curveSamples = [&](size_t size) {
+        int n = static_cast<int>(size);
+        if (horizon < FLT_MAX) n = std::min(n, static_cast<int>(horizon) + 2);
+        return n;
+    };
     auto drawCurve = [&](const std::vector<float>& data, ImU32 lineCol, ImU32 fillCol) {
         if (data.size() < 2) return;
-        int n = static_cast<int>(data.size());
+        int n = curveSamples(data.size());
 
         // Filled area: build triangle strip using AddConvexPoly in segments
         for (int i = 0; i < n - 1; ++i)
@@ -895,6 +905,7 @@ void ReplayWindow::DrawEventTimeline()
     {
         const auto& e = m_timeline.events[i];
         if (!isEventVisible(e)) continue;
+        if (e.time > horizon) continue;   // spoiler-free: not watched yet
 
         float ex = chartX0 + (e.time / maxT) * chartW;
         float ey;
@@ -1177,7 +1188,9 @@ void ReplayWindow::DrawEventTimeline()
         dl->PopClipRect();
 
         char ttBuf[128];
-        if (dispHT < 0.f)
+        if (hoverT > horizon)   // spoiler-free: the time only, not the health still to come
+            snprintf(ttBuf, sizeof(ttBuf), "%s%d:%02d", dispHT < 0.f ? "-" : "", mins, secs);
+        else if (dispHT < 0.f)
             snprintf(ttBuf, sizeof(ttBuf), "-%d:%02d  Red: %.0f%%  Blue: %.0f%%", mins, secs, rh, bh);
         else
             snprintf(ttBuf, sizeof(ttBuf), "%d:%02d  Red: %.0f%%  Blue: %.0f%%", mins, secs, rh, bh);
@@ -1262,7 +1275,7 @@ void ReplayWindow::DrawEventTimeline()
 
     // Mini health curves in scrubber (smooth)
     {
-        int n = static_cast<int>(m_timeline.redHealth.size());
+        int n = std::min(curveSamples(m_timeline.redHealth.size()), static_cast<int>(m_timeline.blueHealth.size()));
         for (int i = 0; i < n - 1; ++i)
         {
             float t0 = static_cast<float>(i);
@@ -1299,7 +1312,7 @@ void ReplayWindow::DrawEventTimeline()
     if (timelineDragging)
     {
         float t = ((mousePos.x - chartX0) / chartW) * maxT;
-        m_debugTimeline = std::clamp(t, 0.f, maxT);
+        m_debugTimeline = std::clamp(t, 0.f, realMaxT);
     }
 
     // ── Bottom border shimmer ───────────────────────────────────────────

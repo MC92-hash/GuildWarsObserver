@@ -1739,7 +1739,8 @@ void ReplayWindow::DrawCommsEditor(float maxTf)
             if (hov) ImGui::SetTooltip(m_replayCtx.isPlaying ? "Pause (Space)" : "Play the replay with the voice comms (Space)");
 
             // The match clock beside it.
-            const std::string clock = Comms::ClockText(m_debugTimeline - dto) + " / " + Comms::ClockText(maxT - dto);
+            const std::string clock = Comms::ClockText(m_debugTimeline - dto) + " / " +
+                                      (SpoilersHidden() ? std::string("--:--") : Comms::ClockText(maxT - dto));
             wdl->AddText(font, fs, ImVec2(L + playSz + 8.f * u, bY0 + (playSz - fs) * 0.5f), IM_COL32(232, 223, 200, 255), clock.c_str());
 
             // Remove and Done: the icons of the bookmark dialog's Cancel and Add (the red no-entry
@@ -1909,7 +1910,8 @@ void ReplayWindow::DrawCommsEditor(float maxTf)
                          (wy0 + wy1) * 0.5f, (wy1 - wy0) * 0.5f - 2.f * u, kMatchWave);
             wdl->AddRect(a, b, kMatchBorder, 4.f * u);
             const char* map = GetMapNameForLoading(m_matchMeta.map_id);
-            const std::string label = std::string(map && *map ? map : "Match") + "   " + Comms::ClockText(maxT - dto);
+            const std::string label = std::string(map && *map ? map : "Match") +
+                                      (SpoilersHidden() ? std::string() : "   " + Comms::ClockText(maxT - dto));
             ClipLabel(x0, x1, a.y, label, kEdText);
         }
         // The Comms clip.

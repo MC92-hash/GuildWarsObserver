@@ -762,9 +762,12 @@ void ReplayWindow::DrawStatsPanel()
             ImGui::TextColored(dim, "SCOPE");
             ImGui::SameLine(0.f, 10.f);
             const char* kScopes[] = { "Full match", "Up to now", "Last 30 s" };
-            for (int i = 0; i < 3; ++i)
+            // Spoiler-free: no full-match totals while the result is hidden.
+            const bool hidden = SpoilersHidden();
+            if (hidden && m_statsPanelScope == 0) m_statsPanelScope = 1;
+            for (int i = hidden ? 1 : 0; i < 3; ++i)
             {
-                if (i) ImGui::SameLine(0.f, 4.f);
+                if (i > (hidden ? 1 : 0)) ImGui::SameLine(0.f, 4.f);
                 if (BattleLedger::Pill(kScopes[i], m_statsPanelScope == i)) m_statsPanelScope = i;
             }
             ImGui::SameLine(0.f, 12.f);
@@ -853,7 +856,9 @@ void ReplayWindow::DrawBattleLedgerPanel()
         ReplayLedgerHost host(this, m_deviceResources->GetD3DDevice(), m_skillIconIndex, m_skillIconCache,
                               &m_damageBitmapFont, &m_healBitmapFont, &m_energyBitmapFont);
         BattleLedger::StripInputs strip;
-        strip.tEnd = std::max(1.f, m_replayCtx.maxReplayTime);
+        // Spoiler-free: the play bar's fixed axis, and nothing past the furthest moment watched.
+        strip.tEnd = std::max(1.f, SpoilerAxisEnd(std::max(1.f, m_replayCtx.maxReplayTime)));
+        strip.horizon = SpoilerHorizon();
         strip.tNow = m_debugTimeline;
         for (const SpikeInfo& s : m_spikes) strip.spikes.push_back({ s.firstHit, s.target });
         strip.deaths = &m_moraleDeaths;

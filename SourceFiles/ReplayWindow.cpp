@@ -7389,6 +7389,7 @@ void ReplayWindow::Tick()
         if (ReplaySync::TakeSeek(m_matchMeta.folder_name, seekT))
             m_debugTimeline = std::clamp(seekT + m_displayTimeOffset, 0.f, std::max(1.f, m_replayCtx.maxReplayTime));
         ApplyLinkView();   // a share link's time, pause and camera (ReplayWindow_ShareLink.cpp)
+        UpdateSpoilers();  // spoiler-free: the furthest moment watched, the reveal (ReplayWindow_Spoilers.cpp)
         ReplaySync::Publish(m_matchMeta.folder_name, m_debugTimeline - m_displayTimeOffset, m_replayCtx.isPlaying);
     }
 

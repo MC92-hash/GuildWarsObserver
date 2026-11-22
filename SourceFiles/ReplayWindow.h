@@ -559,6 +559,18 @@ private:
     // DEV TOOL: the play bar's buttons this frame (id, x0 y0 x1 y1), for the self-test to hover them.
     std::vector<std::pair<std::string, ImVec4>> m_playBarHot;
     void   DrawShareLinkMenuItems();
+
+    // --- Spoiler-free mode (ReplayWindow_Spoilers.cpp, SpoilerFree.h) ---
+    // While the match's result is hidden, every time axis runs to a fixed length (so the scrub bar
+    // never shows the real one) and nothing is drawn past the furthest moment watched. Reaching the
+    // Victory, or the end of the recording, reveals the match.
+    float  m_spoilerSeenT = 0.f;               // the furthest moment reached, on the m_debugTimeline clock
+    bool   m_spoilerWasHidden = false;         // last tick's answer: hidden from now restarts the horizon
+    bool   SpoilersHidden() const;
+    float  SpoilerAxisEnd(float maxT) const;   // maxT, or the fixed length while hidden
+    float  SpoilerHorizon() const;             // FLT_MAX, or m_spoilerSeenT while hidden
+    void   UpdateSpoilers();                   // every tick once loaded
+    void   SpoilerToast(const char* text);     // the play bar's toast (the share link's)
     bool m_showParsedView = true;
     float m_agentListWidth = 220.f;
     std::vector<int> m_sortedAgentIds;

@@ -708,6 +708,12 @@ void ReplayWindow::ToggleHighlights()
 {
     auto& h = HL();
     if (!h.settingsLoaded) LoadHighlightsSettings();
+    // Spoiler-free: the key moments include the Guild Lord's death (ReplayWindow_Spoilers.cpp).
+    if (!h.active && SpoilersHidden())
+    {
+        SpoilerToast("Highlights is locked while the result is hidden");
+        return;
+    }
     if (!h.active)
     {
         BuildHighlights();
@@ -1682,7 +1688,8 @@ void ReplayWindow::DrawHighlightsButton(float x, float y, float h)
         dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(200, 168, 75, 26), 6.f);
     if (hov)
         dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(255, 244, 222, 24), 6.f);
-    const ImU32 fg = hov ? IM_COL32(248, 242, 230, 255) : on ? cGoldBright : cTextMid;
+    const bool locked = !on && SpoilersHidden();   // spoiler-free: see ToggleHighlights
+    const ImU32 fg = locked ? IM_COL32(110, 100, 80, 255) : hov ? IM_COL32(248, 242, 230, 255) : on ? cGoldBright : cTextMid;
     // A star: the moments worth watching. Its inner pentagon and the five points, each convex.
     const ImVec2 sc(x + 9.f, y + h * 0.5f);
     ImVec2 pts[10];
@@ -1697,7 +1704,11 @@ void ReplayWindow::DrawHighlightsButton(float x, float y, float h)
     for (int k = 0; k < 10; k += 2)
         dl->AddTriangleFilled(pts[(k + 9) % 10], pts[k], pts[k + 1], fg);
     dl->AddText(font, fsSm, ImVec2(x + 19.f, y + (h - fsSm) * 0.5f), fg, "Highlights");
-    if (hov)
+    if (hov && locked)
+        ImGui::SetTooltip("Highlights is locked while the result is hidden (spoiler-free):\n"
+                          "its key moments include the Guild Lord's death. Watch to the end,\n"
+                          "or reveal the result in the Library.");
+    else if (hov)
     {
         std::string tip = on ? "Leave Highlights: play the whole match" : "Play only the key moments of the match";
         if (!on && m_hl && m_hl->built) tip += std::format(" ({} found)", m_hl->moments.size());
