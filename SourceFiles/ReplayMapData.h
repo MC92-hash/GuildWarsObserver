@@ -1072,6 +1072,11 @@ struct SkillUseEvent
     bool  wasInterrupted = false;  // true if a matching INTERRUPTED event was found, or a knockdown stopped it
     float rechargeDuration = 0.f;  // precomputed actual recharge (may differ from DB if fast recast)
     bool  wasFastRecast    = false; // true if next cast happened before normal recharge expired
+    // The landing line's index in StoCData::skill (file order), -1 when the use did not land on a
+    // line of that file (attack skills, implicit closes). Two landings in one server tick keep the
+    // order the server sent them in: an enchantment or hex whose line comes before a removal's in the
+    // same tick is already on and can be the one it takes (EffectTimeline's removals, 2026-11-25).
+    int   landingSeq       = -1;
 };
 
 // Tracks one lifecycle incarnation of an agent (agent IDs are recycled by the game)

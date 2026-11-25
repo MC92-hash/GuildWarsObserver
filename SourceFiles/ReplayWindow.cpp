@@ -6446,9 +6446,13 @@ void ReplayWindow::Tick()
                     bool stopped = (ev.type == "SKILL_STOPPED");
                     auto it = m_replayCtx.agents.find(ev.caster_id);
                     if (it != m_replayCtx.agents.end())
+                    {
                         it->second.skillUseHistory.push_back(
                             { oc->second.start, ev.time, 0.f, oc->second.skillId,
                               oc->second.targetId, false, stopped });
+                        it->second.skillUseHistory.back().landingSeq =
+                            static_cast<int>(&ev - m_replayCtx.stocData.skill.data());
+                    }
                     openCasts.erase(oc);
                 }
             }
@@ -6457,8 +6461,12 @@ void ReplayWindow::Tick()
                 int tid = resolveTarget(ev.target_id, ev.caster_id);
                 auto it = m_replayCtx.agents.find(ev.caster_id);
                 if (it != m_replayCtx.agents.end())
+                {
                     it->second.skillUseHistory.push_back(
                         { ev.time, ev.time, 0.f, ev.skill_id, tid, true, false });
+                    it->second.skillUseHistory.back().landingSeq =
+                        static_cast<int>(&ev - m_replayCtx.stocData.skill.data());
+                }
             }
         }
 
