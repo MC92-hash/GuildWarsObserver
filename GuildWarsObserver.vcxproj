@@ -1019,6 +1019,10 @@
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
     </FxCompile>
   </ItemGroup>
+  <ItemGroup Label="Library page fonts">
+    <ClCompile Include="SourceFiles\LibraryFonts.cpp" />
+    <ClInclude Include="SourceFiles\LibraryFonts.h" />
+  </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="SourceFiles\resource.rc" />
   </ItemGroup>

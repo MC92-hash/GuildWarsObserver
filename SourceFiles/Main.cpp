@@ -661,6 +661,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, 
         if (GuiGlobalConstants::IsDeveloperMode() &&
             (meta_module_selftest_requested() || trials_module_selftest_requested()))
             showCmd = SW_HIDE;
+        // DEV TOOL (GWO_LIBRARY_SHOT): never shown on a monitor, not even maximised for a frame;
+        // the hook puts it off-screen without activating it (MapBrowser::LibraryShotSelfTest).
+        if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT", nullptr, 0) > 0)
+            showCmd = SW_HIDE;
         UrlProtocol::SetMainWindow(hwnd, showCmd);
         if (linkOnlyStart && showCmd != SW_HIDE)
         {

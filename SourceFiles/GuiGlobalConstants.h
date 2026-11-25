@@ -55,6 +55,14 @@ enum DisplayFontFamily : int
 inline constexpr float kUiFontRatios[] = {0.8f, 0.87f, 0.93f, 1.0f, 1.07f, 1.13f, 1.2f, 1.33f};
 inline constexpr float kUiHeadingRatios[] = {1.47f, 1.73f, 2.67f};
 
+// [2026-11-22] The Library page's CSS type sizes (draw_library_page.inl), baked by LibraryFonts at
+// exactly css * kLibraryEm * the page's scale pixels. kLibraryEm turns a CSS
+// size into an ImGui one: ImGui sizes a font by its ascent plus descent, CSS by its em, and the
+// interface font's (Roboto's) ascent plus descent is 1.172 em.
+inline constexpr float kLibraryEm = 1.1719f;
+inline constexpr float kLibraryPageSizes[] = {9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 15.0f, 23.0f};
+inline constexpr float kLibraryPageBoldSizes[] = {11.0f, 12.0f, 13.0f, 15.0f};
+
 struct DisplayFontRung
 {
 	ImFont* font = nullptr;
@@ -472,6 +480,22 @@ public:
 	inline static int replay_gallery_columns = 3;    // 2, 3, or 4
 	inline static int replay_browser_theme = 0;      // 0=GW Observer, 1=Watchtower
 	inline static int replay_card_style = 0;         // 0=Classic, 1=Visual
+	// [2026-11-22] 0 = the Library page (draw_library_page.inl), 1 = the legacy layout: the table
+	// or the card gallery with the filter sidebar. Scout always draws the legacy layout.
+	inline static int replay_library_legacy = 0;
+	// The Library page's size: 0 = Auto (from the window), else a percent of the mockup's size.
+	inline static int replay_library_size = 0;
+
+	// The Library page's scale: the Settings font size over 15, times the page size (Auto: the
+	// window against 1920 x 1080, from 1 to 2), in steps of 0.05, so a resize re-bakes the page's
+	// type only when the scale moves a whole step.
+	static float LibraryPageScale(float clientW, float clientH)
+	{
+		const float size = replay_library_size > 0
+			? replay_library_size / 100.0f
+			: std::clamp(std::min(clientW / 1920.0f, clientH / 1080.0f), 1.0f, 2.0f);
+		return std::max(0.5f, std::round(saved_font_size / 15.0f * size * 20.0f) / 20.0f);
+	}
 
 	// Update settings
 	inline static std::string dismissed_update_version;
@@ -768,6 +792,8 @@ public:
 		file << "replay_gallery_columns=" << replay_gallery_columns << "\n";
 		file << "replay_browser_theme=" << replay_browser_theme << "\n";
 		file << "replay_card_style=" << replay_card_style << "\n";
+		file << "replay_library_legacy=" << replay_library_legacy << "\n";
+		file << "replay_library_size=" << replay_library_size << "\n";
 
 		file << "\n[Updates]\n";
 		file << "dismissed_update_version=" << dismissed_update_version << "\n";
@@ -1040,6 +1066,8 @@ public:
 			else if (key == "replay_gallery_columns") replay_gallery_columns = std::clamp(value, 2, 4);
 			else if (key == "replay_browser_theme") replay_browser_theme = std::clamp(value, 0, 1);
 			else if (key == "replay_card_style") replay_card_style = std::clamp(value, 0, 1);
+			else if (key == "replay_library_legacy") replay_library_legacy = std::clamp(value, 0, 1);
+			else if (key == "replay_library_size") replay_library_size = value <= 0 ? 0 : std::clamp(value, 80, 200);
 		}
 
 		if (legacyUnifiedMovement >= 0.f) {

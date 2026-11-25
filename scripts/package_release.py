@@ -34,6 +34,7 @@ USER_STATE = {
     "ui_layout.json",
     "notes.json",
     "ratings.json",
+    "favourites.json",
     "spoilers.json",
     "bookmarks.json",
     "animation_cache.ini",

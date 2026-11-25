@@ -617,6 +617,43 @@ static void draw_settings_window()
 	ImGui::Dummy(ImVec2(0, 4.f));
 
 	{
+		// [2026-11-22] The Library page, or the legacy layout (whose view is chosen below).
+		int layout = GuiGlobalConstants::replay_library_legacy;
+		if (ImGui::RadioButton("Library page", &layout, 0))
+		{
+			GuiGlobalConstants::replay_library_legacy = 0;
+			GuiGlobalConstants::SaveSettings();
+		}
+		ImGui::SameLine(0, 16);
+		if (ImGui::RadioButton("Legacy layout", &layout, 1))
+		{
+			GuiGlobalConstants::replay_library_legacy = 1;
+			GuiGlobalConstants::SaveSettings();
+		}
+		ImGui::Dummy(ImVec2(0, 4.f));
+
+		// The page's size: Auto follows the window (x1 up to 1920 x 1080, x1.35 at 2560 x 1440).
+		if (layout == 0)
+		{
+			static const int kSizes[] = { 0, 90, 100, 110, 125, 150, 175 };
+			static const char* const kLabels[] = { "Auto (follows the window)", "90%", "100%", "110%", "125%", "150%", "175%" };
+			int current = 0;
+			for (int i = 0; i < IM_ARRAYSIZE(kSizes); i++)
+				if (kSizes[i] == GuiGlobalConstants::replay_library_size) current = i;
+			ImGui::TextUnformatted("Library size");
+			ImGui::SameLine(0, 8);
+			ImGui::SetNextItemWidth(220.f);
+			if (ImGui::Combo("##library_size", &current, kLabels, IM_ARRAYSIZE(kLabels)))
+			{
+				GuiGlobalConstants::replay_library_size = kSizes[current];
+				GuiGlobalConstants::SaveSettings();
+			}
+			ImGui::Dummy(ImVec2(0, 4.f));
+		}
+	}
+
+	if (GuiGlobalConstants::replay_library_legacy != 0)
+	{
 		int viewMode = GuiGlobalConstants::replay_card_gallery_mode;
 		if (ImGui::RadioButton("Table View", &viewMode, 0))
 		{

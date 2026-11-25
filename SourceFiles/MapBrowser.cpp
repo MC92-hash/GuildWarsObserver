@@ -31,12 +31,17 @@
 #include "ReplaySync.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "SpoilerFree.h"
+#include "LibraryFonts.h"
 
 extern void ExitMapBrowser() noexcept;
 extern std::string g_commsBadgeHoverTest;   // draw_replay_browser.cpp
 extern ImVec2 g_commsBadgeHoverPos;
 extern bool g_ratingSortTest;
 extern bool g_myMatchesTest;
+extern std::string g_libraryPageTestSelect;   // draw_library_page.inl
+extern std::string g_libraryPageTestMenu;
+void LibraryPageTestFilters(bool on);
 
 // ---------------------------------------------------------------------------
 // DEV TOOL: GWO_LIBRARY_SHOT=<folder for the pictures>|<match folder>. The Library window, off
@@ -91,6 +96,59 @@ void MapBrowser::LibraryShotSelfTest()
         RunLog::Line("library-shot: picture '%s'", (dir / name).string().c_str());
     };
     const double t = now - t0;
+
+    // GWO_LIBRARY_SHOT_PAGE=1 [2026-11-22]: the Library page instead, with the given match selected,
+    // at GWO_LIBRARY_SHOT_SIZE (default 1800x1080, the mockup's): page.png, page_filters.png (a few
+    // filters on, the Skills menu open), page_menu_map.png (the Map menu), page_spoilers.png
+    // (Spoiler-free on; the test script restores settings/spoilers.json and gui_settings.ini).
+    static const bool page = GetEnvironmentVariableA("GWO_LIBRARY_SHOT_PAGE", nullptr, 0) > 0;
+    if (page)
+    {
+        static bool spoilersWere = false;
+        auto size = [&] {
+            int w = 1800, hgt = 1080;
+            char sz[64] = {};
+            if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT_SIZE", sz, sizeof(sz)) > 0)
+                sscanf_s(sz, "%dx%d", &w, &hgt);
+            if (HWND h = m_deviceResources->GetWindow())
+            {
+                RECT r = {0, 0, w, hgt};
+                AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+                SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+            }
+        };
+        if (stage == 0 && t > 8.0)
+        {
+            size();
+            GuiGlobalConstants::replay_library_legacy = 0;
+            g_libraryPageTestSelect = folder;
+            stage = 1;
+        }
+        else if (stage == 1 && t > 12.0)
+        {
+            shot("page.png");
+            LibraryPageTestFilters(true);
+            g_libraryPageTestMenu = "skills";
+            stage = 2;
+        }
+        else if (stage == 2 && t > 14.5) { shot("page_filters.png"); g_libraryPageTestMenu = "map"; stage = 3; }
+        else if (stage == 3 && t > 17.0)
+        {
+            shot("page_menu_map.png");
+            g_libraryPageTestMenu = "-";
+            LibraryPageTestFilters(false);
+            spoilersWere = SpoilerFree::Get().Enabled();
+            SpoilerFree::Get().SetEnabled(true);
+            stage = 4;
+        }
+        else if (stage == 4 && t > 19.0) { shot("page_spoilers.png"); SpoilerFree::Get().SetEnabled(spoilersWere); stage = 5; }
+        else if (stage == 5 && t > 19.5)
+        {
+            stage = 6;
+            if (HWND h = m_deviceResources->GetWindow()) PostMessage(h, WM_CLOSE, 0, 0);
+        }
+        return;
+    }
     // The list sorted on Rating (as one click on its header), the badge's tooltip, then the
     // Filters panel with "My matches" > "With voice comms" ticked.
     if (stage == 0 && t > 9.0)
@@ -209,6 +267,7 @@ static void LoadSelectedFont(float fontSize)
 {
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
+    LibraryFonts::SetFaces(std::string(), std::string());   // set again below when the font has files
     GuiGlobalConstants::display_font_count = 0;   // the rungs point into the atlas just cleared
 
     int idx = GuiGlobalConstants::saved_font_index;
@@ -390,6 +449,10 @@ static void LoadSelectedFont(float fontSize)
             bake_ui(ui_regular, ratio, kDisplayUi);
         for (const float ratio : kUiFontRatios)
             bake_ui(ui_bold, ratio, kDisplayUiBold);
+
+        // THE LIBRARY PAGE'S TYPE [2026-11-22]: the same faces, baked by the page itself into an atlas
+        // of its own at the scale it draws at (LibraryFonts.h), on the frame it needs them.
+        LibraryFonts::SetFaces(ui_regular, ui_bold.empty() ? ui_regular : ui_bold);
     }
 
     io.Fonts->Build();
@@ -505,6 +568,7 @@ void MapBrowser::Initialize(HWND window, int width, int height)
     ImGui_ImplDX11_Init(m_deviceResources->GetD3DDevice(), m_deviceResources->GetD3DDeviceContext());
 
     GetTextureCache().Init(m_deviceResources->GetD3DDevice());
+    LibraryFonts::SetDevice(m_deviceResources->GetD3DDevice());
 
     RunLog::Line("Initialize: device, ImGui and texture cache ready");
 

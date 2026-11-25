@@ -8,6 +8,8 @@
 #include "SkillDatabase.h"
 #include "MatchRatings.h"
 #include "MatchNotes.h"
+#include "MatchFavourites.h"
+#include "LibraryFonts.h"
 #include "SpoilerFree.h"
 #include "TeamColors.h"
 #include "ReplayHotkeys.h"
@@ -821,6 +823,20 @@ static void DrawSpoilerToggle()
                                "until you watch a match to the end or reveal it."
                              : "Spoiler-free: hide winners, match lengths and match stats\n"
                                "until you watch a match to the end.");
+}
+
+// [2026-11-22] The legacy layout's way back to the Library page (draw_library_page.inl), on its
+// top bars. The page's own footer has the way here.
+static void DrawNewLookButton()
+{
+    if (ui::SegmentedButton("New Library##new_look", false, kColorAccent))
+    {
+        GuiGlobalConstants::replay_library_legacy = 0;
+        GuiGlobalConstants::SaveSettings();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Switch to the new Library page: the match list with elite skills,\n"
+                          "and the selected match's builds beside it.");
 }
 
 // "Reveal result" for one match, in the detail panels.
@@ -3571,6 +3587,9 @@ static std::vector<FilteredMatch> BuildFilteredMatches(const std::vector<MatchMe
                 }
                 if (found) break;
             }
+            // ...and this PC's notes on the match [2026-11-22: the Library page's search says so].
+            if (!found && MatchNotes::Get().HasNote(m.folder_name))
+                found = ToLower(MatchNotes::Get().GetNote(m.folder_name)).find(searchLower) != std::string::npos;
             if (!found) continue;
         }
 
@@ -3712,7 +3731,8 @@ static uint64_t FilterSignature(const std::vector<MatchMeta>& matches)
     mix((uint64_t)s_state.sortColumn);
     mix(s_state.sortAscending ? 1u : 0u);
     mix((s_state.myRated ? 1u : 0u) | (s_state.myNotes ? 2u : 0u) | (s_state.myComms ? 4u : 0u));
-    if (s_state.myNotes || s_state.sortColumn == 9) mix(MatchNotes::Get().Version());
+    // The typed search reads the notes too.
+    if (s_state.myNotes || s_state.sortColumn == 9 || s_state.searchDebounced[0] != '\0') mix(MatchNotes::Get().Version());
     // Rating's sort puts the matches with comms first within a rating: it and the comms filter
     // follow the comms store.
     if (s_state.myComms || s_state.sortColumn == 9) mix(Comms::BadgeVersion());
@@ -5351,6 +5371,8 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
             GuiGlobalConstants::replay_card_gallery_mode = 1;
             GuiGlobalConstants::SaveSettings();
         }
+        ImGui::SameLine(0, 12);
+        DrawNewLookButton();
     }
 
     // ── Opponent guild search + map filter (inline in top bar when Scout is active) ──
@@ -6283,6 +6305,9 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
     ImGui::SameLine(0, 16);
     CentreOnRow(ImGui::GetFrameHeight());
     DrawSpoilerToggle();
+    ImGui::SameLine(0, 16);
+    CentreOnRow(ImGui::GetFrameHeight());
+    DrawNewLookButton();
     ImGui::Separator();
 
     // Card mode for mobile
@@ -10258,6 +10283,33 @@ static void DrawMatchDetailPanel(const MatchMeta& m, bool fillRemaining)
     ImGui::PopStyleVar(2);
 }
 
+// The search box's debounce (200 ms) and the expiry of the new-match flashes (2 s): once a frame,
+// whichever page draws.
+static void TickSearchAndHighlights()
+{
+    if (s_state.lastSearchEditTime >= 0.0f &&
+        (float)ImGui::GetTime() - s_state.lastSearchEditTime >= 0.2f)
+    {
+        snprintf(s_state.searchDebounced, sizeof(s_state.searchDebounced),
+                 "%s", s_state.searchBuf);
+        s_state.lastSearchEditTime = -1.0f;
+    }
+
+    float now = (float)ImGui::GetTime();
+    for (auto it = s_state.highlightStartTimes.begin(); it != s_state.highlightStartTimes.end();)
+    {
+        if (now - it->second > 2.f)
+            it = s_state.highlightStartTimes.erase(it);
+        else
+            ++it;
+    }
+}
+
+// ─── The Library page ────────────────────────────────────────────────────────
+// [2026-11-22] The new main page, in its own file but this translation unit (it uses the
+// statics above). The legacy layout below is unchanged and drawn when the page is not.
+#include "draw_library_page.inl"
+
 // ─── Main entry point ────────────────────────────────────────────────────────
 
 bool replay_browser_scout_mode()
@@ -10384,6 +10436,14 @@ void draw_replay_browser(ReplayLibrary& library)
     if (s_state.layout != LayoutMode::Mobile)
         s_state.mobileShowDetail = false;
 
+    // The Library page draws everything below by itself; Scout and the legacy layout go on here.
+    if (libpage::Active())
+    {
+        TickSearchAndHighlights();
+        libpage::Draw(matches);
+        return;
+    }
+
     ImGui::SetNextWindowPos(ImVec2(0, GuiGlobalConstants::ContentTop()), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(totalW, displaySize.y - GuiGlobalConstants::ContentTop()), ImGuiCond_Always);
 
@@ -10407,26 +10467,8 @@ void draw_replay_browser(ReplayLibrary& library)
     }
 
 
-    // Debounce global search (200ms)
-    if (s_state.lastSearchEditTime >= 0.0f &&
-        (float)ImGui::GetTime() - s_state.lastSearchEditTime >= 0.2f)
-    {
-        snprintf(s_state.searchDebounced, sizeof(s_state.searchDebounced),
-                 "%s", s_state.searchBuf);
-        s_state.lastSearchEditTime = -1.0f;
-    }
-
-    // Expire old highlight flashes (2000ms)
-    {
-        float now = (float)ImGui::GetTime();
-        for (auto it = s_state.highlightStartTimes.begin(); it != s_state.highlightStartTimes.end();)
-        {
-            if (now - it->second > 2.f)
-                it = s_state.highlightStartTimes.erase(it);
-            else
-                ++it;
-        }
-    }
+    // Debounce global search (200ms), expire old highlight flashes (2000ms)
+    TickSearchAndHighlights();
 
     const auto& filtered = FilterMatches(matches);
 
