@@ -2782,6 +2782,16 @@ static void DrawLabelsRow(ImDrawList* dl, float x0, float x1, float y, const Lis
 
 // A skill's picture in a cell. The list crops the elites' baked-in gold edge (V41: the picture drawn
 // 33 px in a 29 px cell); the sidebar's bars keep it, the whole picture (owner 2026-11-25).
+// A head and shoulders filling the cell a..b: the list's mark for a henchman (no art for one ships).
+static void DrawHenchmanGlyph(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
+{
+    const float s = b.x - a.x, cx = (a.x + b.x) * 0.5f;
+    dl->AddCircleFilled(ImVec2(cx, a.y + s * 0.36f), s * 0.17f, col, 20);
+    dl->PathArcTo(ImVec2(cx, b.y - s * 0.12f), s * 0.30f, 3.14159265f, 2.0f * 3.14159265f, 20);
+    dl->PathLineTo(ImVec2(cx + s * 0.30f, b.y - s * 0.12f));
+    dl->PathFillConvex(col);
+}
+
 static void SkillCell(ImDrawList* dl, ImTextureID tex, ImVec2 a, ImVec2 b, bool cropEdge)
 {
     const float f = cropEdge ? 2.0f / 33.0f : 0.0f;
@@ -2827,7 +2837,14 @@ static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, c
         const ImVec2 a(R(ix), R(iy)), b(R(ix) + g.icon, R(iy) + g.icon);
         const EliteSlot* slot = i < (int)slots.size() ? &slots[i] : nullptr;
         bool drewIcon = false;
-        if (slot && slot->skill)
+        if (slot && slot->henchman)
+        {
+            // A henchman: no elite skill, a head and shoulders.
+            dl->AddRectFilled(a, b, Hex(0x1a1916, 0xd0));
+            DrawHenchmanGlyph(dl, a, b, Hex(0xc8b27a, 0xe0));
+            drewIcon = true;
+        }
+        else if (slot && slot->skill)
             if (ImTextureID tex = GetSkillIcon(slot->skill, view))
             {
                 SkillCell(dl, tex, a, b, true);
@@ -2851,6 +2868,8 @@ static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, c
             if (slot->empty)
                 ImGui::SetTooltip(m.is_cloud_only ? "Empty slot (a henchman shows here once the match is downloaded)"
                                                   : "Empty slot: nobody played here");
+            else if (slot->henchman)
+                ImGui::SetTooltip("%s\nA guild hall henchman, filling an empty slot.", slot->player.c_str());
             else if (slot->skill)
             {
                 DrawSkillTooltip(slot->skill, view);
