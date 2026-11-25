@@ -30,6 +30,8 @@
 std::string g_libraryPageTestSelect;
 std::string g_libraryPageTestMenu;
 
+#include "ReplayMapData.h"   // kHenchmen: the guild hall henchmen a party can fill its slots with
+
 namespace libpage
 {
 // ─── Scale, type and colour ──────────────────────────────────────────────────
@@ -983,7 +985,50 @@ struct EliteSlot
     int skill = 0;   // 0: the player took no elite
     int prof = 0;
     std::string player;
+    bool henchman = false;
+    bool empty = false;   // nobody in this slot: a player who never joined
 };
+
+// A team's eight slots, as the Library shows them (owner 2026-11-25): its players by player number,
+// then its henchmen (infos.json "OTHER", recognised by model id, kHenchmen), then empty slots up to
+// eight. The cloud index carries players only, so a cloud match's henchmen show as empty slots
+// until it is downloaded.
+struct RosterSlot
+{
+    const PlayerMeta* player = nullptr;     // a player, or the henchman's own agent entry
+    const HenchmanInfo* henchman = nullptr; // set for a henchman
+};
+
+static std::vector<RosterSlot> TeamSlots(const MatchMeta& m, const char* partyId)
+{
+    std::vector<RosterSlot> slots;
+    auto pit = m.parties.find(partyId);
+    if (pit != m.parties.end())
+    {
+        for (const auto& p : pit->second.players) slots.push_back({ &p, nullptr });
+        std::sort(slots.begin(), slots.end(),
+                  [](const RosterSlot& a, const RosterSlot& b) { return a.player->player_number < b.player->player_number; });
+        std::vector<RosterSlot> hench;
+        for (const auto& o : pit->second.others)
+            if (const HenchmanInfo* h = LookupHenchman((uint32_t)o.model_id)) hench.push_back({ &o, h });
+        std::sort(hench.begin(), hench.end(),
+                  [](const RosterSlot& a, const RosterSlot& b) { return a.henchman->modelId < b.henchman->modelId; });
+        slots.insert(slots.end(), hench.begin(), hench.end());
+    }
+    while (slots.size() < 8) slots.push_back({});
+    return slots;
+}
+
+// A henchman's bar: the wiki's (kHenchmen), the same in every match (owner 2026-11-25), not what
+// the recording happened to see it use.
+static std::vector<int> HenchmanSkills(const RosterSlot& s)
+{
+    std::vector<int> out;
+    if (s.henchman)
+        for (int id : s.henchman->skills)
+            if (id) out.push_back(id);
+    return out;
+}
 struct EliteLineup
 {
     std::vector<EliteSlot> team[2];
@@ -1002,26 +1047,35 @@ static const EliteLineup& LineupOf(const MatchMeta& m)
     if (!inserted) return it->second;
     const SkillDatabaseView& view = GetMatchSkillView(m);
     for (int side = 0; side < 2; side++)
-    {
-        auto pit = m.parties.find(side == 0 ? "1" : "2");
-        if (pit == m.parties.end()) continue;
-        std::vector<const PlayerMeta*> players;
-        for (const auto& p : pit->second.players) players.push_back(&p);
-        std::sort(players.begin(), players.end(),
-                  [](const PlayerMeta* a, const PlayerMeta* b) { return a->player_number < b->player_number; });
-        for (const PlayerMeta* p : players)
+        for (const RosterSlot& rs : TeamSlots(m, side == 0 ? "1" : "2"))
         {
             EliteSlot slot;
-            slot.prof = p->primary;
-            slot.player = p->encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p->encoded_name);
-            for (int id : p->used_skills)
+            if (!rs.player)
+                slot.empty = true;
+            else if (rs.henchman)
             {
-                const SkillInfo* si = view.Get(id);
-                if (si && si->is_elite) { slot.skill = id; break; }
+                slot.henchman = true;
+                slot.prof = rs.henchman->profession;
+                slot.player = rs.henchman->name;
+                for (int id : HenchmanSkills(rs))
+                {
+                    const SkillInfo* si = view.Get(id);
+                    if (si && si->is_elite) { slot.skill = id; break; }
+                }
+            }
+            else
+            {
+                const PlayerMeta* p = rs.player;
+                slot.prof = p->primary;
+                slot.player = p->encoded_name.empty() ? "(unnamed)" : SanitizePlayerName(p->encoded_name);
+                for (int id : p->used_skills)
+                {
+                    const SkillInfo* si = view.Get(id);
+                    if (si && si->is_elite) { slot.skill = id; break; }
+                }
             }
             it->second.team[side].push_back(std::move(slot));
         }
-    }
     return it->second;
 }
 
@@ -1041,6 +1095,9 @@ struct PageState
     bool autoSelected = false;
     bool showDetail = false;         // single-pane width: the sidebar in place of the list
     std::string openMenu;            // the filter menu open under the filter row ("" = none)
+    std::string queriedMenu;         // the menu the queries below were typed in; another one clears them
+    char mapQuery[64] = {};          // the Map menu's field
+    char fluxQuery[64] = {};         // the Flux menu's field: a flux or a month
     ImVec2 menuAnchor;
     bool menuLabelHovered = false;
     int scrollToRow = -1;            // a keyboard move asks the list to bring this row into view
@@ -1499,8 +1556,10 @@ static void UpdateFluxMonths(const std::vector<MatchMeta>& matches)
         s_fluxMonth[name] = (int)(std::max_element(months.begin() + 1, months.end()) - months.begin());
 }
 
+// The wiki's month for a flux of the cycle; else the month most of its matches were played in.
 static int FluxMonth(const std::string& name)
 {
+    if (const int month = GetFluxCycleMonth(name)) return month;
     const auto it = s_fluxMonth.find(name);
     return it == s_fluxMonth.end() ? 0 : it->second;
 }
@@ -1697,6 +1756,7 @@ static int MapIdOf(const std::string& name, const std::vector<MatchMeta>& matche
 // menu's rows tile with the spacing written here rather than the style's.
 
 static float s_menuW = 0.0f;
+static bool s_menuJustOpened = false;   // a menu with a field opened this frame: the field takes the keys
 
 static void MenuGap(float css)
 {
@@ -1877,7 +1937,8 @@ static bool MenuInput(const char* id, const char* hint, char* buf, size_t size, 
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col::Text));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImGui::ColorConvertU32ToFloat4(col::SearchText));
     ImGui::SetNextItemWidth(s_menuW - Px(36));
-    if (focusOnOpen && ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    if (focusOnOpen && (ImGui::IsWindowAppearing() || s_menuJustOpened)) ImGui::SetKeyboardFocusHere();
+    s_menuJustOpened = false;
     const bool edited = ImGui::InputTextWithHint(id, hint, buf, size);
     if (enter)
         *enter = (ImGui::IsItemActive() || ImGui::IsItemDeactivated()) &&
@@ -1893,11 +1954,47 @@ static bool MenuInput(const char* id, const char* hint, char* buf, size_t size, 
 
 // ─── The menus ───────────────────────────────────────────────────────────────
 
+// A query typed in a menu belongs to that menu: opening another one clears both.
+static void SyncMenuQueries()
+{
+    if (s_page.queriedMenu == s_page.openMenu) return;
+    s_page.queriedMenu = s_page.openMenu;
+    s_menuJustOpened = true;
+    s_page.mapQuery[0] = '\0';
+    s_page.fluxQuery[0] = '\0';
+}
+
 static void MenuMap(const std::vector<MatchMeta>& matches)
 {
+    SyncMenuQueries();
     if (MenuHeader("MAP", !s_state.selectedMaps.empty())) s_state.selectedMaps.clear();
     const OptionCounts& c = CountsFor(CountCat::Map, matches);
+
+    // Type a map: the halls whose name holds it, the most played first; Enter takes the first.
+    bool enter = false;
+    MenuInput("##lib_map_query", "Type a map\xE2\x80\xA6", s_page.mapQuery, sizeof(s_page.mapQuery), true, &enter);
+    const std::string query = ToLower(std::string(s_page.mapQuery));
+    std::vector<size_t> rows;
     for (size_t i = 1; i < s_state.mapNames.size(); i++)
+        if (query.empty() || ToLower(s_state.mapNames[i]).find(query) != std::string::npos) rows.push_back(i);
+    if (!query.empty())
+    {
+        std::stable_sort(rows.begin(), rows.end(), [&](size_t a, size_t b) {
+            return CountOf(c, s_state.mapNames[a]) > CountOf(c, s_state.mapNames[b]);
+        });
+        if (enter && !rows.empty())
+        {
+            const std::string& first = s_state.mapNames[rows[0]];
+            if (s_state.selectedMaps.count(first)) s_state.selectedMaps.erase(first);
+            else                                   s_state.selectedMaps.insert(first);
+            s_page.mapQuery[0] = '\0';
+        }
+        MenuGap(4);
+        if (rows.empty()) MenuNote("No map by that name.");
+    }
+    else
+        MenuGap(4);
+    for (const size_t i : rows)
     {
         const std::string& name = s_state.mapNames[i];
         const bool on = s_state.selectedMaps.count(name) > 0;
@@ -1959,37 +2056,73 @@ static void MenuOccasion(const std::vector<MatchMeta>& matches)
     }
 }
 
+// Does a flux answer the Flux menu's query: its name, or its month ("nov", "november", "11")?
+static bool FluxMatches(const std::string& name, const std::string& query)
+{
+    if (query.empty()) return true;
+    if (ToLower(name).find(query) != std::string::npos) return true;
+    static const char* const kMonths[] = { "", "january", "february", "march", "april", "may", "june",
+                                           "july", "august", "september", "october", "november", "december" };
+    const int month = FluxMonth(name);
+    if (month < 1 || month > 12) return false;
+    const std::string full = kMonths[month];
+    if (full.rfind(query, 0) == 0) return true;   // "nov", "novem"
+    return query == std::to_string(month) || query == (month < 10 ? "0" : "") + std::to_string(month);
+}
+
 static void MenuFlux(const std::vector<MatchMeta>& matches)
 {
+    SyncMenuQueries();
     if (MenuHeader("FLUX", !s_state.selectedFluxes.empty())) s_state.selectedFluxes.clear();
     const OptionCounts& c = CountsFor(CountCat::Flux, matches);
+
+    // Type a flux or a month: the matching ones; Enter takes the first.
+    bool enter = false;
+    MenuInput("##lib_flux_query", "Type a flux or a month\xE2\x80\xA6", s_page.fluxQuery, sizeof(s_page.fluxQuery), true, &enter);
+    const std::string query = ToLower(std::string(s_page.fluxQuery));
+    MenuGap(4);
+
     // In calendar order, January first; a flux with no month last.
     std::vector<size_t> order;
-    for (size_t i = 1; i < s_state.fluxNames.size(); i++) order.push_back(i);
+    for (size_t i = 1; i < s_state.fluxNames.size(); i++)
+        if (FluxMatches(s_state.fluxNames[i], query)) order.push_back(i);
+    if (!query.empty() && order.empty()) MenuNote("No flux by that name or month.");
     std::stable_sort(order.begin(), order.end(), [](size_t a, size_t b) {
         const int ma = FluxMonth(s_state.fluxNames[a]), mb = FluxMonth(s_state.fluxNames[b]);
         return (ma > 0 ? ma : 13) < (mb > 0 ? mb : 13);
     });
+    if (enter && !order.empty())
+    {
+        const std::string& first = s_state.fluxNames[order[0]];
+        if (s_state.selectedFluxes.count(first)) s_state.selectedFluxes.erase(first);
+        else                                     s_state.selectedFluxes.insert(first);
+        s_page.fluxQuery[0] = '\0';
+    }
+    const ImTextureID fluxIcon = GetFluxIcon();
     for (const size_t i : order)
     {
         const std::string& name = s_state.fluxNames[i];
         const bool on = s_state.selectedFluxes.count(name) > 0;
         const std::string label = FluxLabel(name);
         ImGui::PushID((int)i);
-        if (CheckRow("##flux", on ? 1 : 0, label.c_str(), CountOf(c, name), false, nullptr, nullptr, false, 0.0f))
+        if (CheckRow("##flux", on ? 1 : 0, label.c_str(), CountOf(c, name), false, nullptr, fluxIcon, false, 0.0f))
         {
             if (on) s_state.selectedFluxes.erase(name);
             else    s_state.selectedFluxes.insert(name);
         }
         if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(320.0f);
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "%s", name.c_str());
             if (const char* desc = GetFluxDescription(name))
             {
-                ImGui::BeginTooltip();
-                ImGui::PushTextWrapPos(320.0f);
+                ImGui::Spacing();
                 ImGui::TextUnformatted(desc);
-                ImGui::PopTextWrapPos();
-                ImGui::EndTooltip();
             }
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
         ImGui::PopID();
     }
 }
@@ -2702,18 +2835,23 @@ static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, c
             }
         if (!drewIcon)
         {
-            dl->AddRectFilled(a, b, Hex(0x1a1916, 0xb0));
+            // No elite: the primary profession's icon, nearly the cell's size; an empty slot stays
+            // a dark cell.
+            dl->AddRectFilled(a, b, slot && !slot->empty ? Hex(0x1a1916, 0xd0) : Hex(0x1a1916, 0x70));
             if (slot && slot->prof)
                 if (ImTextureID prof = GetProfessionIcon(slot->prof))
                 {
-                    const float inset = g.icon * 0.22f;
+                    const float inset = R(g.icon * 0.1f);
                     dl->AddImage(prof, ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset),
-                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 110));
+                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 235));
                 }
         }
         if (hoverable && slot && ImGui::IsMouseHoveringRect(a, b))
         {
-            if (slot->skill)
+            if (slot->empty)
+                ImGui::SetTooltip(m.is_cloud_only ? "Empty slot (a henchman shows here once the match is downloaded)"
+                                                  : "Empty slot: nobody played here");
+            else if (slot->skill)
             {
                 DrawSkillTooltip(slot->skill, view);
                 ImGui::BeginTooltip();
@@ -2988,25 +3126,87 @@ static float DrawRosterTeam(ImDrawList* dl, const MatchMeta& m, const char* part
     }
     y = h1.y + Px(6);
 
-    // Players.
-    auto pit = m.parties.find(partyId);
-    if (pit == m.parties.end() || pit->second.players.empty())
-    {
-        Text(dl, T(11), ImVec2(x, y + Px(6)), v41::FactLabel, m.is_cloud_only ? "Builds arrive with the match download" : "No player data");
-        ImGui::PopID();
-        return y + Px(6) + LineH(11);
-    }
+    // Eight rows: the players, the henchmen, then an empty row a slot nobody filled (TeamSlots).
+    const std::vector<RosterSlot> slots = TeamSlots(m, partyId);
     std::vector<const PlayerMeta*> players;
-    for (const auto& p : pit->second.players) players.push_back(&p);
-    std::sort(players.begin(), players.end(),
-              [](const PlayerMeta* a, const PlayerMeta* b) { return a->player_number < b->player_number; });
+    for (const RosterSlot& rs : slots)
+        if (rs.player && !rs.henchman) players.push_back(rs.player);
 
     // The list's cell size; 6 px between bars (2 px when compact).
     const float rowH = compact ? Px(31) : Px(35), cell = Px(29), barW = cell * 8.0f;
     const Type pn = T(13);
-    for (const PlayerMeta* pp : players)
+    const float copyS = Px(18), copyGap = Px(8);
+    int slotIndex = 0;
+    for (const RosterSlot& rs : slots)
     {
-        const PlayerMeta& p = *pp;
+        const int thisSlot = slotIndex++;
+        if (!rs.player || rs.henchman)
+        {
+            const float cy = y + rowH * 0.5f;
+            const ImVec2 bar0(R(x + w - barW), R(cy - cell * 0.5f));
+            const float nx = x + Px(16) + Px(7);
+            const float nameMaxW = std::max(Px(20), w - Px(16) - Px(7) - copyGap * 2.0f - copyS - barW);
+            ImGui::PushID(1000 + thisSlot);
+            if (!rs.player)
+            {
+                // Nobody here: a faint row, eight dark cells.
+                dl->AddCircle(ImVec2(x + Px(7.5f), cy), Px(5.5f), Hex(0xffffff, 0x22), 16, 1.0f);
+                Text(dl, pn, ImVec2(nx, R(cy - LineH(13) * 0.5f)), Hex(0x8a8172), "Empty slot");
+                for (int i = 0; i < 8; i++)
+                {
+                    const ImVec2 a(bar0.x + R(cell * i), bar0.y), b(bar0.x + R(cell * (i + 1)), bar0.y + cell);
+                    dl->AddRectFilled(ImVec2(a.x + 1.0f, a.y + 1.0f), ImVec2(b.x - 1.0f, b.y - 1.0f), Hex(0x1a1916, 0x60));
+                }
+                if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(x + w, y + rowH)) && ImGui::IsWindowHovered())
+                    ImGui::SetTooltip(m.is_cloud_only ? "Nobody in this slot in the cloud index.\n"
+                                                        "A henchman shows here once the match is downloaded."
+                                                      : "Nobody played in this slot (the player never joined).");
+            }
+            else
+            {
+                // A henchman: its profession, its name and title, its bar.
+                const HenchmanInfo& h = *rs.henchman;
+                PlayerMeta hp = *rs.player;
+                hp.primary = h.profession;
+                hp.secondary = 0;
+                hp.used_skills = HenchmanSkills(rs);
+                const ImVec2 i0(x, R(cy - Px(7.5f))), i1(x + Px(15), R(cy - Px(7.5f)) + Px(15));
+                if (ImTextureID ico = GetProfessionIcon(h.profession)) dl->AddImage(ico, i0, i1);
+                const std::string full = h.name;
+                const size_t br = full.find(" [");
+                const std::string nm = full.substr(0, br);
+                const std::string title = br == std::string::npos ? std::string() : full.substr(br + 1);
+                const float ty = R(cy - LineH(13) * 0.5f);
+                const float nameW = TextFit(dl, pn, ImVec2(nx, ty), nameMaxW, v41::Player, nm.c_str());
+                if (!title.empty() && nameW + Px(5) < nameMaxW)
+                    TextFit(dl, T(11), ImVec2(nx + nameW + Px(5), ty + Ascent(13) - Ascent(11)), nameMaxW - nameW - Px(5),
+                            v41::RosterTag, title.c_str());
+                if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(nx + nameMaxW, y + rowH)) && ImGui::IsWindowHovered())
+                    ImGui::SetTooltip("%s\nA guild hall henchman, filling an empty slot. Its bar is always the same.", full.c_str());
+
+                if (!hp.used_skills.empty())
+                {
+                    static std::unordered_map<std::string, float> s_henchCopiedAt;
+                    const std::string ckey = m.folder_name + "|" + partyId + "|h" + std::to_string(h.modelId);
+                    const auto cit = s_henchCopiedAt.find(ckey);
+                    const float fb = cit == s_henchCopiedAt.end() ? -1.0f : cit->second;
+                    ImGui::SetCursorScreenPos(ImVec2(R(x + w - barW - copyGap - copyS), y));
+                    if (DrawCopyIcon("##copy_hench", copyS, R((rowH - copyS) * 0.5f), fb))
+                    {
+                        const std::string chatLink = "[" + nm + "-Skills;" + PlayerTemplateCode(hp, nullptr) + "]";
+                        ImGui::SetClipboardText(chatLink.c_str());
+                        s_henchCopiedAt[ckey] = (float)ImGui::GetTime();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", fb >= 0.0f && (float)ImGui::GetTime() - fb < 1.5f ? "Copied!" : "Copy build template");
+                }
+                DrawBuildBar(dl, hp, view, bar0, cell);
+            }
+            ImGui::PopID();
+            y += rowH;
+            continue;
+        }
+        const PlayerMeta& p = *rs.player;
         const std::string key = std::string(partyId) + ":" + std::to_string(p.player_number);
         const std::vector<SolvedAttribute>* build = nullptr;
         if (ob.builds)
@@ -3031,7 +3231,6 @@ static float DrawRosterTeam(ImDrawList* dl, const MatchMeta& m, const char* part
         if (pinned) Outline(dl, ImVec2(i0.x - 2.0f, i0.y - 2.0f), ImVec2(i1.x + 2.0f, i1.y + 2.0f), ImGui::GetColorU32(kColorAccent), 3.0f);
 
         // Name: a search link. Then the copy button, 8 px before the bar.
-        const float copyS = Px(18), copyGap = Px(8);
         const float nx2 = x + Px(16) + Px(7);
         const float nameMaxW = std::max(Px(20), w - Px(16) - Px(7) - copyGap * 2.0f - copyS - barW);
         if (LinkText(dl, "##name", pn, ImVec2(nx2, R(cy - LineH(13) * 0.5f)), nameMaxW, v41::Player, clean.c_str()))
@@ -3723,7 +3922,15 @@ static void Draw(const std::vector<MatchMeta>& matches)
     }
     if (!g_libraryPageTestMenu.empty())
     {
-        s_page.openMenu = g_libraryPageTestMenu == "-" ? std::string() : g_libraryPageTestMenu;
+        // "menu:text" also types text in that menu's field (map, flux).
+        const size_t colon = g_libraryPageTestMenu.find(':');
+        s_page.openMenu = g_libraryPageTestMenu == "-" ? std::string() : g_libraryPageTestMenu.substr(0, colon);
+        if (colon != std::string::npos)
+        {
+            SyncMenuQueries();
+            char* field = s_page.openMenu == "flux" ? s_page.fluxQuery : s_page.mapQuery;
+            snprintf(field, 64, "%s", g_libraryPageTestMenu.substr(colon + 1).c_str());
+        }
         g_libraryPageTestMenu.clear();
     }
 

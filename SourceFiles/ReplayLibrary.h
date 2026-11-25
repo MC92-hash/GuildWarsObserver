@@ -108,6 +108,16 @@ struct LordDamageData
     std::string debug_status;
 };
 
+// A flux's one name: the recordings and the cloud index say "Like a Boss (and The Boss)" and
+// "Parting Gift (and Gift of Battle)", the wiki's monthly table "Like a Boss" and "Parting Gift".
+// Everything after " (and " is dropped, so each month has one flux.
+inline std::string CanonicalFluxName(std::string name)
+{
+    const size_t cut = name.find(" (and ");
+    if (cut != std::string::npos) name.erase(cut);
+    return name;
+}
+
 struct MatchMeta
 {
     int map_id = 0;

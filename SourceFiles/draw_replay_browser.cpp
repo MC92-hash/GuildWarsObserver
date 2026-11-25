@@ -1186,27 +1186,45 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
 
 // ─── Flux description lookup ─────────────────────────────────────────────────
 
-struct FluxTableEntry { const char* name; const char* desc; };
+// The monthly flux cycle (wiki, Flux; fixed since September 2013): January Odran's Razor through
+// December Parting Gift. Names as CanonicalFluxName leaves them.
+struct FluxTableEntry { const char* name; int month; const char* desc; };
 static const FluxTableEntry kFluxTable[] = {
-    { "Odran's Razor",          "PvP combat is unmodified." },
-    { "Amateur Hour",           "Your secondary profession skills deal 30% more damage to foes with that primary profession." },
-    { "Hidden Talent",          "You have a +2 bonus to all of the secondary attributes of your secondary profession." },
-    { "There Can Be Only One",  "You deal +30% damage to foes of the same primary profession. Each time you kill one of these foes, you regain all Health and Energy and receive a 5% morale boost." },
-    { "Meek Shall Inherit",     "If you do not equip an elite skill, you have +2 to all attributes, +2 Health regeneration, and +1 Energy regeneration." },
-    { "Jack of All Trades",     "If your attributes are all between 8-11 before buffs, your skills deal 15% additional damage, activate 25% faster, and cost 20% less Energy." },
-    { "Chain Combo",            "Gain a stacking 5% damage bonus (max 30%) whenever you use a skill of a different attribute than the last skill used. Bonus resets if your next skill has the same attribute." },
-    { "Xinrae's Revenge",       "Whenever you successfully activate a skill, it is disabled (3 seconds) for all party and opposing party members in the area who have it on their skill bars." },
-    { "Like a Boss",            "Kill the boss (or any player if there is no boss); now you're the boss: -20 armor, +33% attack speed, +33% movement speed, -33% skill activation time, +3 Health regeneration, and +1 Energy regeneration. If you die, you're not the boss anymore. If a player killed you, they're the boss now." },
-    { "Minion Apocalypse",      "Each player death deals 50 damage to all nearby creatures and spawns a masterless bone horror (level 20)." },
-    { "All In",                 "If all your skills use one attribute, gain +3 Health regeneration and +100 max Health; your skills also cost 25% less Energy." },
-    { "Parting Gift",           "If you die, you drop a bundle on the ground that grants bonuses to whoever picks it up." },
+    { "Odran's Razor",          1,  "PvP combat is unmodified." },
+    { "Amateur Hour",           2,  "Your secondary profession skills deal 30% more damage to foes with that primary profession." },
+    { "Hidden Talent",          3,  "You have a +2 bonus to all of the secondary attributes of your secondary profession." },
+    { "There Can Be Only One",  4,  "You deal +30% damage to foes of the same primary profession. Each time you kill one of these foes, you regain all Health and Energy and receive a 5% morale boost." },
+    { "Meek Shall Inherit",     5,  "If you do not equip an elite skill, you have +2 to all attributes, +2 Health regeneration, and +1 Energy regeneration." },
+    { "Jack of All Trades",     6,  "If your attributes are all between 8-11 before buffs, your skills deal 15% additional damage, activate 25% faster, and cost 20% less Energy." },
+    { "Chain Combo",            7,  "Gain a stacking 5% damage bonus (max 30%) whenever you use a skill of a different attribute than the last skill used. Bonus resets if your next skill has the same attribute." },
+    { "Xinrae's Revenge",       8,  "Whenever you successfully activate a skill, it is disabled (3 seconds) for all party and opposing party members in the area who have it on their skill bars." },
+    { "Like a Boss",            9,  "Kill the boss (or any player if there is no boss); now you're the boss: -20 armor, +33% attack speed, +33% movement speed, -33% skill activation time, +3 Health regeneration, and +1 Energy regeneration. If you die, you're not the boss anymore. If a player killed you, they're the boss now." },
+    { "Minion Apocalypse",      10, "Each player death deals 50 damage to all nearby creatures and spawns a masterless bone horror (level 20)." },
+    { "All In",                 11, "If all your skills use one attribute, gain +3 Health regeneration and +100 max Health; your skills also cost 25% less Energy." },
+    { "Parting Gift",           12, "If you die, you drop a bundle on the ground that grants bonuses to whoever picks it up." },
 };
+
+// The month a flux runs in (1-12), 0 for a name not in the cycle.
+static int GetFluxCycleMonth(const std::string& fluxName)
+{
+    const std::string name = CanonicalFluxName(fluxName);
+    for (const auto& entry : kFluxTable)
+        if (name == entry.name) return entry.month;
+    return 0;
+}
 
 const char* GetFluxDescription(const std::string& fluxName)
 {
     for (const auto& entry : kFluxTable)
         if (fluxName == entry.name)
             return entry.desc;
+    // A recorded name with more after the table's: "Like a Boss (and The Boss)".
+    for (const auto& entry : kFluxTable)
+    {
+        const size_t n = strlen(entry.name);
+        if (fluxName.size() > n && fluxName.compare(0, n, entry.name) == 0 && (fluxName[n] == ' ' || fluxName[n] == '('))
+            return entry.desc;
+    }
 
     return nullptr;
 }

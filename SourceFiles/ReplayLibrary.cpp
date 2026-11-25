@@ -180,7 +180,7 @@ bool LocalReplayProvider::ParseInfosJson(const std::filesystem::path& jsonPath, 
         if (j.is_discarded()) return false;
 
         out.map_id = j.value("map_id", 0);
-        out.flux = j.value("flux", std::string());
+        out.flux = CanonicalFluxName(j.value("flux", std::string()));
         // Developer test: GWO_FLUX_OVERRIDE="All In" replays any match under that flux's rules.
         char fluxOverride[64] = {};
         if (GetEnvironmentVariableA("GWO_FLUX_OVERRIDE", fluxOverride, (DWORD)sizeof(fluxOverride)) > 0)

@@ -65,7 +65,7 @@ MatchMeta CloudReplayProvider::BuildMetaFromIndex(const RemoteMatchEntry& entry,
     meta.month = entry.month;
     meta.day = entry.day;
     meta.occasion = entry.occasion;
-    meta.flux = entry.flux;
+    meta.flux = CanonicalFluxName(entry.flux);
     meta.match_duration = entry.duration;
     meta.winner_party_id = entry.winner;
     meta.download_bytes = entry.size_bytes;

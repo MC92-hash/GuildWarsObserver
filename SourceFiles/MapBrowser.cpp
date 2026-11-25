@@ -105,6 +105,11 @@ void MapBrowser::LibraryShotSelfTest()
     if (page)
     {
         static bool spoilersWere = false;
+        // The two menus pictured (GWO_LIBRARY_SHOT_MENU1 / 2, "menu" or "menu:typed text"), else Skills and Map.
+        auto shotMenu = [](const char* var, const char* fallback) {
+            char v[128] = {};
+            return std::string(GetEnvironmentVariableA(var, v, sizeof(v)) > 0 ? v : fallback);
+        };
         auto size = [&] {
             int w = 1800, hgt = 1080;
             char sz[64] = {};
@@ -130,10 +135,10 @@ void MapBrowser::LibraryShotSelfTest()
         {
             shot("page.png");
             LibraryPageTestFilters(true);
-            g_libraryPageTestMenu = "skills";
+            g_libraryPageTestMenu = shotMenu("GWO_LIBRARY_SHOT_MENU1", "skills");
             stage = 2;
         }
-        else if (stage == 2 && t > 14.5) { shot("page_filters.png"); g_libraryPageTestMenu = "map"; stage = 3; }
+        else if (stage == 2 && t > 14.5) { shot("page_filters.png"); g_libraryPageTestMenu = shotMenu("GWO_LIBRARY_SHOT_MENU2", "map"); stage = 3; }
         else if (stage == 3 && t > 17.0)
         {
             shot("page_menu_map.png");
