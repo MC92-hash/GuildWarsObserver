@@ -1,6 +1,8 @@
 #pragma once
 
 #include "ReplayLibrary.h"
+#include <atomic>
+#include <string>
 
 struct PendingReplayRequest
 {
@@ -13,6 +15,11 @@ struct PendingReplayRequest
 
 inline PendingReplayRequest g_pendingReplay;
 inline bool g_cloudDownloadInProgress = false;
+// The running download (MapBrowser): which match, and how far it is. The Library's lord damage
+// Calculate button shows the percentage on the match it was started for.
+inline std::string g_cloudDownloadFolder;
+inline std::atomic<uint64_t> g_cloudDownloadReceived{0};
+inline std::atomic<uint64_t> g_cloudDownloadTotal{0};
 inline bool g_refreshMatchIndex = false;
 inline bool g_invalidateFilters = false;
 inline bool g_refreshHint = false;

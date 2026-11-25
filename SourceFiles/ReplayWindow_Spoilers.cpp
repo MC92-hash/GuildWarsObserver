@@ -58,28 +58,6 @@ void ReplayWindow::UpdateSpoilers()
         m_spoilerSeenT = m_debugTimeline;
     m_spoilerSeenT = std::max(m_spoilerSeenT, m_debugTimeline);
 
-    // The end is only final once every parser is in.
-    if (m_replayTimeConsolidated && !folder.empty() && !sf.IsRevealed(folder))
-    {
-        // The Victory message when the recording has one, else the last second of it. A loop
-        // back to the start happens one frame after that second, so it is never skipped.
-        float revealT = std::max(0.f, m_replayCtx.maxReplayTime - 1.0f);
-        for (const auto& j : m_replayCtx.stocData.jumbo)
-            if (j.message == "VICTORY" || j.message == "FLAWLESS_VICTORY")
-                revealT = std::min(revealT, j.time);
-
-        // Recorded even when nothing hides the match: watched to the end, it stays revealed if
-        // the toggle goes on later.
-        if (m_debugTimeline >= revealT)
-        {
-            sf.Reveal(folder);
-            RunLog::Line("spoilers: '%s' revealed - the replay reached %.1f s (%s)", folder.c_str(), m_debugTimeline,
-                         revealT < m_replayCtx.maxReplayTime - 1.0f ? "the Victory" : "the end of the recording");
-            if (hidden)
-                SpoilerToast("Result revealed");
-        }
-    }
-
     const bool nowHidden = sf.IsHidden(folder);
     // Hidden while Highlights plays (a share link, or the toggle switched on): its moments
     // include the Guild Lord's death, so it stops.

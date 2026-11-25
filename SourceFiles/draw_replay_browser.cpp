@@ -22,6 +22,8 @@
 #include <set>
 #include <unordered_map>
 #include <thread>
+#include <future>
+#include <list>
 #include <fstream>
 #include <array>
 #include <map>
@@ -819,10 +821,10 @@ static void DrawSpoilerToggle()
     DrawEyeGlyph(ImGui::GetWindowDrawList(), ImVec2(mn.x + 8.0f + glyph * 0.5f, (mn.y + mx.y) * 0.5f),
                  glyph, col, on);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(on ? "Spoiler-free is on: winners, match lengths and match stats stay hidden\n"
-                               "until you watch a match to the end or reveal it."
-                             : "Spoiler-free: hide winners, match lengths and match stats\n"
-                               "until you watch a match to the end.");
+        ImGui::SetTooltip(on ? "Spoiler is on: winners, match lengths, lord damage and match stats\n"
+                               "are hidden for every match. Turn it off to see them."
+                             : "Spoiler: hide winners, match lengths, lord damage and match stats\n"
+                               "for every match.");
 }
 
 // [2026-11-22] The legacy layout's way back to the Library page (draw_library_page.inl), on its
@@ -839,27 +841,13 @@ static void DrawNewLookButton()
                           "and the selected match's builds beside it.");
 }
 
-// "Reveal result" for one match, in the detail panels.
-static void DrawRevealButton(const MatchMeta& m, const char* id)
-{
-    ImGui::PushID(id);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
-    if (ui::SecondaryButton("Reveal result"))
-        SpoilerFree::Get().Reveal(m.folder_name);
-    ImGui::PopStyleVar();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Show the winner, the length and the stats of this match.\n"
-                          "Watching the replay to the end reveals it too.");
-    ImGui::PopID();
-}
-
 // What the Stats and Map tabs show while the result is hidden: their charts, scrubber and map
 // run to the last second of the match, so they cannot be shown in part.
 static void DrawResultHiddenCover(const MatchMeta& m)
 {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const char* line1 = "Result hidden";
-    const char* line2 = "Spoiler-free mode is on. Watch the replay to the end, or reveal the result.";
+    const char* line2 = "Spoiler mode is on. Turn it off in the Library to see the result.";
     const float blockH = ImGui::GetTextLineHeightWithSpacing() * 3.5f;
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0f, (avail.y - blockH) * 0.4f));
     auto centred = [&](const char* text, const ImVec4& col) {
@@ -871,10 +859,6 @@ static void DrawResultHiddenCover(const MatchMeta& m)
     centred(line1, kColorAccent);
     if (GuiGlobalConstants::boldFont) ImGui::PopFont();
     centred(line2, kColorTextDim);
-    ImGui::Spacing();
-    const float bw = ImGui::CalcTextSize("Reveal result").x + 16.0f;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail.x - bw) * 0.5f));
-    DrawRevealButton(m, "##cover_reveal");
 }
 
 static ImTextureID GetFluxIcon()
@@ -3337,7 +3321,7 @@ static const std::vector<TournamentBuildStats>& GetTournamentStats(
                               + s_state.dateFrom.month * 100 + s_state.dateFrom.day)
          + "|" + std::to_string(s_state.dateTo.year * 10000
                               + s_state.dateTo.month * 100 + s_state.dateTo.day);
-    // Revealing a match, or the spoiler-free toggle, changes the record.
+    // The Spoiler toggle changes the record.
     key += "|s" + std::to_string(SpoilerFree::Get().Version());
 
     if (key == s_tournamentCacheKey &&
@@ -5102,7 +5086,6 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         if (ResultHidden(m))
         {
             ImGui::SameLine(0, 16); ImGui::TextColored(kColorText, "%s", kHiddenDuration);
-            ImGui::SameLine(0, 12); DrawRevealButton(m, "##gallery_reveal_bar");
         }
         else if (!m.match_duration.empty()) { ImGui::SameLine(0, 16); ImGui::TextColored(kColorText, "%s", m.match_duration.c_str()); }
         ImGui::Separator();
@@ -5138,7 +5121,6 @@ static void DrawGalleryDetailPanel(const MatchMeta& m)
         if (ResultHidden(m))
         {
             ImGui::TextColored(ImVec4(0.831f, 0.831f, 0.847f, 1.f), "\xe2\x97\xb7 %s", kHiddenDuration);
-            DrawRevealButton(m, "##gallery_reveal_side");
         }
         else if (!m.match_duration.empty())
             ImGui::TextColored(ImVec4(0.831f, 0.831f, 0.847f, 1.f), "\xe2\x97\xb7 %s", m.match_duration.c_str());
@@ -5557,7 +5539,7 @@ static void DrawGalleryTopBar(int matchCount, bool hideSortAndCount = false)
         }
     }
 
-    // Spoiler-free: hides winners, lengths and stats until a match is watched or revealed.
+    // Spoiler-free: hides winners, lengths and stats while the Spoiler toggle is on.
     ImGui::SameLine(0, 16);
     DrawSpoilerToggle();
 
@@ -5636,7 +5618,7 @@ static void DrawTournamentStatsPanel(const std::vector<MatchMeta>& matches, floa
         ImGui::TextColored(ImVec4(kColorTextDim),
             "%d matches | %d builds | Record: %d-%d (%.0f%%)",
             totalMatches, (int)stats.size(), totalWins, totalLosses, overallPct);
-        // Spoiler-free: the record counts the revealed matches only.
+        // Spoiler mode: the record counts no hidden result.
         if (totalMatches > decided)
         {
             ImGui::SameLine(0, 6);
@@ -6301,7 +6283,7 @@ static void DrawMatchListTable(const std::vector<FilteredMatch>& filtered,
                                         : "Refresh - re-fetch match list from cloud");
     DrawNewMatchesPill();
 
-    // Spoiler-free: hides winners, lengths and stats until a match is watched or revealed.
+    // Spoiler-free: hides winners, lengths and stats while the Spoiler toggle is on.
     ImGui::SameLine(0, 16);
     CentreOnRow(ImGui::GetFrameHeight());
     DrawSpoilerToggle();
@@ -7598,8 +7580,6 @@ static void DrawMatchOverview(const MatchMeta& m, const OverviewBuilds& ob)
             ImGui::TextColored(ImVec4(0.75f, 0.73f, 0.68f, 1.0f), "%s", ShownDuration(m));
             if (bold) ImGui::PopFont();
         }
-        if (hidden)
-            DrawRevealButton(m, "##overview_reveal");
         if (!m.flux.empty())
             DrawFluxWithTooltip(m.flux, icoH);
         ImGui::PopTextWrapPos();
@@ -7879,7 +7859,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 14;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 15;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7951,6 +7931,8 @@ struct MatchAnalysisJob
     BattleLedger::Data ledger;    // the Damage & Healing lines, times on the match clock
     MatchStats::Records stats;    // the Stats tab's extra columns, times on the match clock
     std::unordered_map<std::string, std::vector<SolvedAttribute>> builds;   // "party:number"
+    bool hasLordDamage = false;   // false: neither Guild Lord is in the recording
+    long lordDamage[2] = { 0, 0 }; // dealt by team 1, by team 2, to the other's Lord
 };
 
 static MatchAnalysisJob s_analysis;
@@ -8044,6 +8026,14 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
     readCurve("health_team1", job.healthTeam1);
     readCurve("health_team2", job.healthTeam2);
     job.mapId = root.value("map_id", -1);
+    job.hasLordDamage = false;
+    if (const auto ld = root.find("lord_damage"); ld != root.end() && ld->is_array() && ld->size() == 2 &&
+        (*ld)[0].is_number() && (*ld)[1].is_number())
+    {
+        job.lordDamage[0] = std::max(0L, (*ld)[0].get<long>());
+        job.lordDamage[1] = std::max(0L, (*ld)[1].get<long>());
+        job.hasLordDamage = true;
+    }
     job.gateSeconds = std::max(0, root.value("gate_seconds", 0));
     auto readAgents = [&](const char* key, std::vector<MatchAnalysisPlayer>& out) {
         out.clear();

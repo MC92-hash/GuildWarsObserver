@@ -131,6 +131,7 @@ struct MatchMeta
     std::string folder_path;
 
     bool is_cloud_only = false;  // true if match is available online but not cached locally
+    uint64_t download_bytes = 0; // a cloud-only match's archive size, from the index (0: unknown)
     int recording_version = 0;
 };
 

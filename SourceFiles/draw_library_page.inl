@@ -1,5 +1,10 @@
 // =================================================================================================
-// THE LIBRARY PAGE  [2026-11-22]
+// THE LIBRARY PAGE  [2026-11-22, V41 2026-11-25]
+//
+// V41 (output/imagegen/library-calculate-v41.html, library-v41-implementation-spec.txt): the list and
+// the sidebar are two glass panels, 10 px apart, over the selected hall's scene; the rows run Star |
+// Date | Event | Guild 1 | vs | Guild 2 | Map | Duration; the open filter is a panel in the page's
+// flow; the sidebar's lord damage is worked out from the recording on request (DrawLordDamage).
 //
 // The Library's main page as the owner's mockup draws it (output/imagegen/library-deep-blue-v11.html,
 // its final charcoal-and-gold sheet): a title row with Update matches and Spoiler-free, the search
@@ -30,7 +35,7 @@ namespace libpage
 // ─── Scale, type and colour ──────────────────────────────────────────────────
 
 // The page's scale: the Settings font size over 15, times the page size, which follows the window
-// (GuiGlobalConstants::LibraryPageScale): 1 up to 1920 x 1080, 1.35 at 2560 x 1440, 2 at 4K.
+// (GuiGlobalConstants::LibraryPageScale): 1 from 1920 px wide up, down to 0.8 on a narrower window.
 static float s_k = 1.0f;
 
 static inline float Px(float css) { return css * s_k; }
@@ -57,14 +62,14 @@ namespace col
 constexpr ImU32 Page          = Hex(0x191919);
 constexpr ImU32 Text          = Hex(0xdedcd5);
 constexpr ImU32 Small         = Hex(0x989387);
-constexpr ImU32 SearchBg      = Hex(0x141413);
+constexpr ImU32 SearchBg      = Hex(0x141413, 0xe8);
 constexpr ImU32 SearchRule    = Hex(0x484337);
 constexpr ImU32 SearchText    = Hex(0xa39c8c);
-constexpr ImU32 ButtonBg      = Hex(0x25231e);
+constexpr ImU32 ButtonBg      = Hex(0x25231e, 0xe8);
 constexpr ImU32 ButtonHovBg   = Hex(0x2e2b24);
 constexpr ImU32 ButtonText    = Hex(0xd6d1c5);
 constexpr ImU32 ButtonActive  = Hex(0xcfb98b);
-constexpr ImU32 ActionBg      = Hex(0x22211d);
+constexpr ImU32 ActionBg      = Hex(0x22211d, 0xe8);
 constexpr ImU32 ActionText    = Hex(0xc9c2b5);
 constexpr ImU32 ActionRule    = Hex(0x474033);
 constexpr ImU32 ActionHovBg   = Hex(0x302c23);
@@ -97,6 +102,113 @@ constexpr ImU32 EmptySlot     = Hex(0x25231f);
 constexpr ImU32 Comms         = Hex(0xbaa168);
 constexpr ImU32 Aside         = Hex(0x13120f);
 constexpr ImU32 AsideRule     = Hex(0x454033);
+// The glass: the page under the art, the list's panel (clear behind the toolbar and the filters,
+// nearly solid where the rows are), the sidebar's panel, the rows and the labels.
+constexpr ImU32 PageDeep      = Hex(0x141413);
+constexpr ImU32 Veil          = Hex(0x0c0e10);
+constexpr ImU32 ListClear     = Hex(0x171716, 0x22);
+constexpr ImU32 ListSolid     = Hex(0x191919, 0xd8);
+constexpr ImU32 ListBorder    = Hex(0x5a5243, 0x55);
+constexpr ImU32 AsideGlass    = Hex(0x13120f, 0xd8);
+constexpr ImU32 AsideBorder   = Hex(0x514735, 0x88);
+constexpr ImU32 RowBg         = Hex(0x191919, 0x60);
+constexpr ImU32 LabelsBg      = Hex(0x181817, 0xc9);
+// V41 (output/imagegen/library-v41-implementation-spec.txt): the panels, the rows, the sidebar.
+namespace v41
+{
+constexpr ImU32 PanelLine     = Hex(0xffffff, 28);     // the panels' 1 px outline and their seam
+constexpr ImU32 PanelSheen    = Hex(0xffffff, 18);     // inset top highlight, about 7%
+constexpr ImU32 Wash0         = Hex(0x191919, 0x38);   // full-screen wash, 120deg
+constexpr ImU32 Wash1         = Hex(0x191919, 0x70);
+constexpr ImU32 Tint0         = Hex(0x242420, 0x55);   // panel tint at 0, 125, 170, 205 px down
+constexpr ImU32 Tint1         = Hex(0x242420, 0x70);
+constexpr ImU32 Tint2         = Hex(0x1d1d1b, 0xd4);
+constexpr ImU32 Tint3         = Hex(0x1c1c1b, 0xdc);
+constexpr ImU32 Row           = Hex(0x1c1c1b, 0x16);
+constexpr ImU32 RowHover      = Hex(0x333129, 0x88);
+constexpr ImU32 RowRule       = Hex(0xffffff, 12);
+constexpr ImU32 SelA          = Hex(0x49402c, 0xe8);
+constexpr ImU32 SelB          = Hex(0x363125, 0xdb);
+constexpr ImU32 SelAccent     = Hex(0xc5aa70);
+constexpr ImU32 GuildName     = Hex(0xcecac1);
+constexpr ImU32 WinnerName    = Hex(0xfff9ec);
+constexpr ImU32 ListTag       = Hex(0xb4ad9d);
+constexpr ImU32 Date          = Hex(0xbab2a4);
+constexpr ImU32 Event         = Hex(0xd7d2c7);
+constexpr ImU32 EventBg       = Hex(0xffffff, 0x09);
+constexpr ImU32 EventLine     = Hex(0xffffff, 0x18);
+constexpr ImU32 MapName       = Hex(0xc4bfb4);
+constexpr ImU32 Duration      = Hex(0xa9a294);
+constexpr ImU32 Labels        = Hex(0xa49b89);
+constexpr ImU32 Star          = Hex(0x968b76);
+constexpr ImU32 StarOn        = Hex(0xd2b775);
+constexpr ImU32 Versus        = Hex(0x8e887c);
+constexpr ImU32 VersusLine    = Hex(0xffffff, 0x0e);
+constexpr ImU32 Footer        = Hex(0xa29885);
+constexpr ImU32 SearchBg      = Hex(0x151514, 0xa8);
+constexpr ImU32 SearchLine    = Hex(0xffffff, 0x12);
+constexpr ImU32 SearchText    = Hex(0xbfb9ae);
+constexpr ImU32 BtnOnA        = Hex(0x38362f);
+constexpr ImU32 BtnOnB        = Hex(0x2d2c27);
+constexpr ImU32 BtnOnText     = Hex(0xe8dfcb);
+constexpr ImU32 BtnOnLine     = Hex(0x8d7b50, 0x29);
+constexpr ImU32 BtnOff        = Hex(0xffffff, 0x06);
+constexpr ImU32 BtnOffLine    = Hex(0xffffff, 0x12);
+constexpr ImU32 BtnOffText    = Hex(0xbfb8a9);
+constexpr ImU32 ActA          = Hex(0x302e28);
+constexpr ImU32 ActB          = Hex(0x25241f);
+constexpr ImU32 ActLine       = Hex(0x675a3e, 0x55);
+constexpr ImU32 ActText       = Hex(0xcbc2b0);
+constexpr ImU32 NewDot        = Hex(0xc8ae72);
+constexpr ImU32 Filters       = Hex(0xc5c0b5);
+constexpr ImU32 MenuA         = Hex(0x302f29);
+constexpr ImU32 MenuB         = Hex(0x262621);
+constexpr ImU32 MenuLine      = Hex(0xffffff, 0x14);
+constexpr ImU32 Meta          = Hex(0xafa38d);
+constexpr ImU32 Title         = Hex(0xe8e1d1);
+constexpr ImU32 FactLabel     = Hex(0xa69a84);
+constexpr ImU32 FactValue     = Hex(0xd7cdb8);
+constexpr ImU32 FactsBg       = Hex(0xffffff, 0x02);
+constexpr ImU32 FactsLine     = Hex(0xffffff, 0x10);
+constexpr ImU32 LordHead      = Hex(0xc4b9a0);
+constexpr ImU32 LordStatus    = Hex(0xa69a83);
+constexpr ImU32 LordValue     = Hex(0xe1dacb);
+constexpr ImU32 TrackA        = Hex(0xffffff, 0x12);
+constexpr ImU32 TrackB        = Hex(0xffffff, 0x06);
+constexpr ImU32 BlueFillA     = Hex(0x547b9c);
+constexpr ImU32 BlueFillB     = Hex(0x88b8df);
+constexpr ImU32 RedFillA      = Hex(0x995f5a);
+constexpr ImU32 RedFillB      = Hex(0xdb938c);
+constexpr ImU32 CalcText      = Hex(0xe0ceb0);
+constexpr ImU32 CalcBg        = Hex(0x27251f, 0xf5);
+constexpr ImU32 CalcLine      = Hex(0x88754e);
+constexpr ImU32 CalcCost      = Hex(0xafa28b);
+constexpr ImU32 CalcHovBg     = Hex(0x373125);
+constexpr ImU32 CalcHovLine   = Hex(0xc0a16a);
+constexpr ImU32 CalcBusyBg    = Hex(0x29261f, 0xf5);
+constexpr ImU32 CalcBusyText  = Hex(0xc6b898);
+constexpr ImU32 VoiceIcon     = Hex(0xbca578);
+constexpr ImU32 VoiceTitle    = Hex(0xcfc4ad);
+constexpr ImU32 VoiceSub      = Hex(0xa1947d);
+constexpr ImU32 DetailsText   = Hex(0xc1b397);
+constexpr ImU32 DetailsBg     = Hex(0xffffff, 0x04);
+constexpr ImU32 DetailsLine   = Hex(0xffffff, 0x14);
+constexpr ImU32 ReplayA       = Hex(0xd2bb83);
+constexpr ImU32 ReplayB       = Hex(0xb6a06c);
+constexpr ImU32 ReplayLine    = Hex(0xddc48c, 0x55);
+constexpr ImU32 ReplayText    = Hex(0x27251e);
+constexpr ImU32 TabOn         = Hex(0xd5bc80);
+constexpr ImU32 Tabs          = Hex(0xc5c0b5);
+constexpr ImU32 BlueStripe    = Hex(0x79b4e6);
+constexpr ImU32 BlueName      = Hex(0xc3e1fa);
+constexpr ImU32 BlueWash      = Hex(0x669bd5, 0x15);
+constexpr ImU32 RedStripe     = Hex(0xde8178);
+constexpr ImU32 RedName       = Hex(0xf3c4bd);
+constexpr ImU32 RedWash       = Hex(0xd36e66, 0x15);
+constexpr ImU32 RosterTag     = Hex(0xbfb5a5);
+constexpr ImU32 Player        = Hex(0xc6beae);
+constexpr ImU32 HeroFade      = Hex(0x13120f);
+}
 constexpr ImU32 FactLabel     = Hex(0x968f81);
 constexpr ImU32 FactValue     = Hex(0xd8d2c7);
 constexpr ImU32 Link          = Hex(0xc9b27e);
@@ -123,6 +235,7 @@ constexpr ImU32 Menu          = Hex(0x1d1c19);
 constexpr ImU32 Popover       = Hex(0x24211b);
 constexpr ImU32 PopoverRule   = Hex(0x4c4231);
 }
+namespace v41 = col::v41;
 
 struct Type
 {
@@ -442,6 +555,426 @@ static void ImageContain(ImDrawList* dl, ImTextureID tex, float tw, float th, Im
     dl->AddImage(tex, p, ImVec2(p.x + w, p.y + h), ImVec2(0, 0), ImVec2(1, 1), tint);
 }
 
+// ─── The backdrop: the selected match's hall behind the page, glass panels over it ─
+
+struct BackdropArt
+{
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> sharp, soft;   // soft: lightly blurred, seen through the glass
+    float w = 0.0f, h = 0.0f;
+};
+
+// A loading screen decoded, toned down and blurred off the main thread; uploaded on it.
+struct BackdropPixels
+{
+    std::string path;
+    std::vector<uint8_t> sharp, soft;
+    int w = 0, h = 0, softW = 0, softH = 0;
+};
+
+// The mockup's scene filter, CSS sepia(0.3) saturate(0.65): the two filter matrices of the Filter
+// Effects spec, applied in that order to the sRGB bytes, as a browser applies them.
+static void Desaturate(std::vector<uint8_t>& px)
+{
+    const float a = 1.0f - 0.3f, s = 0.65f;
+    const float sep[9] = { 0.393f + 0.607f * a, 0.769f - 0.769f * a, 0.189f - 0.189f * a,
+                           0.349f - 0.349f * a, 0.686f + 0.314f * a, 0.168f - 0.168f * a,
+                           0.272f - 0.272f * a, 0.534f - 0.534f * a, 0.131f + 0.869f * a };
+    const float sat[9] = { 0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s,
+                           0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s,
+                           0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s };
+    for (size_t i = 0; i + 3 < px.size(); i += 4)
+    {
+        const float c[3] = { (float)px[i], (float)px[i + 1], (float)px[i + 2] };
+        float d[3], o[3];
+        for (int k = 0; k < 3; k++)
+            d[k] = std::clamp(sep[k * 3] * c[0] + sep[k * 3 + 1] * c[1] + sep[k * 3 + 2] * c[2], 0.0f, 255.0f);
+        for (int k = 0; k < 3; k++)
+            o[k] = std::clamp(sat[k * 3] * d[0] + sat[k * 3 + 1] * d[1] + sat[k * 3 + 2] * d[2], 0.0f, 255.0f);
+        for (int k = 0; k < 3; k++) px[i + k] = (uint8_t)(o[k] + 0.5f);
+    }
+}
+
+// Three box passes each way: close to a gaussian.
+static void BoxBlur(std::vector<uint8_t>& px, int w, int h, int radius)
+{
+    std::vector<uint8_t> tmp(px.size());
+    const float n = 2.0f * radius + 1.0f;
+    for (int pass = 0; pass < 3; pass++)
+    {
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < 4; c++)
+                {
+                    float sum = 0.0f;
+                    for (int k = -radius; k <= radius; k++)
+                        sum += px[((size_t)y * w + std::clamp(x + k, 0, w - 1)) * 4 + c];
+                    tmp[((size_t)y * w + x) * 4 + c] = (uint8_t)(sum / n + 0.5f);
+                }
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < 4; c++)
+                {
+                    float sum = 0.0f;
+                    for (int k = -radius; k <= radius; k++)
+                        sum += tmp[((size_t)std::clamp(y + k, 0, h - 1) * w + x) * 4 + c];
+                    px[((size_t)y * w + x) * 4 + c] = (uint8_t)(sum / n + 0.5f);
+                }
+    }
+}
+
+static Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> UploadRgba(ID3D11Device* dev, const std::vector<uint8_t>& px,
+                                                                   int w, int h)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = (UINT)w;
+    desc.Height = (UINT)h;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA data = {};
+    data.pSysMem = px.data();
+    data.SysMemPitch = (UINT)w * 4;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+    if (SUCCEEDED(dev->CreateTexture2D(&desc, &data, tex.GetAddressOf())))
+        dev->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
+    return srv;
+}
+
+// On a worker thread (WIC needs COM there too): the picture at most 1920 px wide, toned down,
+// and a 640 px copy lightly blurred, which drawn at the panels' size blurs about as much as the
+// mockup's backdrop-filter: blur(3px).
+static BackdropPixels DecodeBackdrop(std::string path)
+{
+    BackdropPixels out;
+    out.path = path;
+    const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    DirectX::ScratchImage img, rgba, mips;
+    const DirectX::Image* src = nullptr;
+    if (SUCCEEDED(DirectX::LoadFromWICFile(std::filesystem::path(path).c_str(), DirectX::WIC_FLAGS_IGNORE_SRGB, nullptr, img)))
+        src = img.GetImage(0, 0, 0);
+    if (src && src->format != DXGI_FORMAT_R8G8B8A8_UNORM)
+        src = SUCCEEDED(DirectX::Convert(*src, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT,
+                                         DirectX::TEX_THRESHOLD_DEFAULT, rgba))
+                  ? rgba.GetImage(0, 0, 0)
+                  : nullptr;
+    if (src && src->width > 0 && src->height > 0 &&
+        SUCCEEDED(DirectX::GenerateMipMaps(*src, DirectX::TEX_FILTER_DEFAULT, 0, mips)))
+    {
+        auto level = [&](size_t maxW) {
+            const DirectX::Image* im = mips.GetImages();
+            size_t i = 0;
+            while (i + 1 < mips.GetImageCount() && im[i].width > maxW) i++;
+            return im + i;
+        };
+        auto pixels = [](const DirectX::Image* im) {
+            std::vector<uint8_t> v(im->width * im->height * 4);
+            for (size_t y = 0; y < im->height; y++)
+                memcpy(v.data() + y * im->width * 4, im->pixels + y * im->rowPitch, im->width * 4);
+            return v;
+        };
+        const DirectX::Image* big = level(1920);
+        out.sharp = pixels(big);
+        Desaturate(out.sharp);
+        out.w = (int)big->width;
+        out.h = (int)big->height;
+        const DirectX::Image* blurSource = level(640);
+        out.soft = pixels(blurSource);
+        Desaturate(out.soft);
+        out.softW = (int)blurSource->width;
+        out.softH = (int)blurSource->height;
+        BoxBlur(out.soft, out.softW, out.softH, 1);
+    }
+    if (SUCCEEDED(co)) CoUninitialize();
+    return out;
+}
+
+// The pictures loaded (the last four, most recent first), the one being decoded, and the fade from
+// the previous match's hall to the selected one's.
+struct BackdropState
+{
+    ID3D11Device* dev = nullptr;
+    std::list<std::pair<std::string, BackdropArt>> cache;
+    std::future<BackdropPixels> job;
+    std::set<std::string> failed;
+    std::string current, previous;
+    double fadeStart = -10.0;
+};
+static BackdropState s_backdrop;
+
+static const BackdropArt* FindBackdrop(const std::string& path, bool touch)
+{
+    auto& cache = s_backdrop.cache;
+    for (auto it = cache.begin(); it != cache.end(); ++it)
+        if (it->first == path)
+        {
+            if (touch && it != cache.begin()) cache.splice(cache.begin(), cache, it);   // `it` stays valid
+            return &it->second;
+        }
+    return nullptr;
+}
+
+// How much of the art shows (Settings > Browser > Background).
+static float BackdropStrength()
+{
+    switch (GuiGlobalConstants::replay_library_backdrop)
+    {
+    case 1:  return 0.38f;   // Subtle
+    case 2:  return 0.0f;    // Off
+    default: return 0.68f;   // Normal: V41's scene opacity
+    }
+}
+
+// The scene: the selected match's hall, its loading screen (owner 2026-11-25), else (no match
+// selected, or a hall with only a small picture) V41's Isle of Meditation.
+static std::string BackdropPath(int mapId)
+{
+    const std::string& p = HallArtPath(mapId);
+    if (p.find("\\Loading_Screen\\") != std::string::npos) return p;
+    EnsureTextureBasePath();
+    return ui::TextureBasePath() + "\\Textures\\Loading_Screen\\Isle of Meditation.jpg";
+}
+
+// Once a frame, with the selected match's map: a picture not loaded yet is decoded on a worker (the
+// list never waits for it), and the page fades to it once it is in.
+static void UpdateBackdrop(int mapId)
+{
+    BackdropState& s = s_backdrop;
+    ID3D11Device* dev = GetTextureCache().Device();
+    if (!dev || BackdropStrength() <= 0.0f) return;
+    if (dev != s.dev)
+    {
+        s.cache.clear();
+        s.current.clear();
+        s.previous.clear();
+        s.dev = dev;
+    }
+    if (s.job.valid() && s.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    {
+        BackdropPixels px = s.job.get();
+        BackdropArt art;
+        if (!px.sharp.empty())
+        {
+            art.sharp = UploadRgba(dev, px.sharp, px.w, px.h);
+            art.soft = UploadRgba(dev, px.soft, px.softW, px.softH);
+            art.w = (float)px.w;
+            art.h = (float)px.h;
+        }
+        if (art.sharp && art.soft)
+        {
+            s.cache.emplace_front(px.path, art);
+            while (s.cache.size() > 4) s.cache.pop_back();
+        }
+        else
+        {
+            s.failed.insert(px.path);
+            RunLog::Line("library-page: no backdrop art from '%s'", px.path.c_str());
+        }
+    }
+    const std::string want = BackdropPath(mapId);
+    if (want == s.current) return;
+    if (FindBackdrop(want, true))
+    {
+        s.previous = s.current;
+        s.current = want;
+        s.fadeStart = ImGui::GetTime();
+    }
+    else if (!s.job.valid() && !s.failed.count(want))
+        s.job = std::async(std::launch::async, DecodeBackdrop, want);
+}
+
+// CSS background-size: cover, at 46% down as in the mockup: the art's texture coordinate under a
+// point of the page.
+struct CoverMap
+{
+    ImVec2 a, uv0;
+    float scale = 1.0f, tw = 1.0f, th = 1.0f;
+    CoverMap(ImVec2 pa, ImVec2 pb, float w, float h) : a(pa), tw(w), th(h)
+    {
+        const float bw = pb.x - pa.x, bh = pb.y - pa.y;
+        scale = std::max(bw / tw, bh / th);
+        const float uw = bw / (tw * scale), vh = bh / (th * scale);
+        uv0 = ImVec2((1.0f - uw) * 0.5f, (1.0f - vh) * 0.46f);
+    }
+    ImVec2 UV(ImVec2 p) const { return ImVec2(uv0.x + (p.x - a.x) / (tw * scale), uv0.y + (p.y - a.y) / (th * scale)); }
+};
+
+// The art over [a, b] of the page: the sharp picture or the blurred one, the previous hall fading
+// out under the selected one.
+static void DrawBackdropArt(ImDrawList* dl, ImVec2 pageA, ImVec2 pageB, ImVec2 a, ImVec2 b, bool soft, float rounding)
+{
+    const float k = BackdropStrength();
+    if (k <= 0.0f) return;
+    const BackdropState& s = s_backdrop;
+    const float t = (float)std::clamp((ImGui::GetTime() - s.fadeStart) / 0.45, 0.0, 1.0);
+    auto draw = [&](const std::string& path, float alpha) {
+        const BackdropArt* art = path.empty() ? nullptr : FindBackdrop(path, false);
+        if (!art || alpha < 0.004f) return;
+        const CoverMap map(pageA, pageB, art->w, art->h);
+        ID3D11ShaderResourceView* tex = soft ? art->soft.Get() : art->sharp.Get();
+        dl->AddImageRounded((ImTextureID)tex, a, b, map.UV(a), map.UV(b), IM_COL32(255, 255, 255, (int)(alpha * 255.0f)), rounding);
+    };
+    if (t < 1.0f) draw(s.previous, k);
+    draw(s.current, k * t);
+}
+
+static ImU32 LerpColor(ImU32 a, ImU32 b, float t)
+{
+    auto ch = [&](int shift) {
+        const float x = (float)((a >> shift) & 0xFF), y = (float)((b >> shift) & 0xFF);
+        return (ImU32)(x + (y - x) * t + 0.5f) << shift;
+    };
+    return ch(IM_COL32_R_SHIFT) | ch(IM_COL32_G_SHIFT) | ch(IM_COL32_B_SHIFT) | ch(IM_COL32_A_SHIFT);
+}
+
+// A rounded rectangle filled top to bottom through colour stops (a CSS linear-gradient; stops at
+// fractions of the height, in order). Drawn in bands, a band per stop, since a colour only changes
+// between vertices: the rounded caps keep their antialiased fringe, the bands between them have none.
+struct GradientStop
+{
+    float at;
+    ImU32 col;
+};
+
+static ImU32 GradientAt(std::initializer_list<GradientStop> stops, float t)
+{
+    if (t <= stops.begin()->at) return stops.begin()->col;
+    for (auto it = stops.begin(); it + 1 != stops.end(); ++it)
+        if (t <= (it + 1)->at)
+            return LerpColor(it->col, (it + 1)->col, (it + 1)->at > it->at ? (t - it->at) / ((it + 1)->at - it->at) : 1.0f);
+    return (stops.end() - 1)->col;
+}
+
+static void FillRoundedGradient(ImDrawList* dl, ImVec2 a, ImVec2 b, float r, std::initializer_list<GradientStop> stops,
+                                ImDrawFlags corners = 0)
+{
+    const float h = b.y - a.y;
+    if (h <= 0.0f || b.x <= a.x) return;
+    if ((corners & ImDrawFlags_RoundCornersMask_) == 0) corners = ImDrawFlags_RoundCornersAll;
+    r = std::min(r, h * 0.5f);
+    auto colAt = [&](float y) { return GradientAt(stops, std::clamp((y - a.y) / h, 0.0f, 1.0f)); };
+    auto cap = [&](float y0, float y1, ImDrawFlags which) {
+        ImDrawFlags f = corners & which;
+        if (f == 0) f = ImDrawFlags_RoundCornersNone;
+        const int v0 = dl->VtxBuffer.Size;
+        dl->AddRectFilled(ImVec2(a.x, y0), ImVec2(b.x, y1), IM_COL32_WHITE, r, f);
+        for (int i = v0; i < dl->VtxBuffer.Size; i++)
+        {
+            ImDrawVert& v = dl->VtxBuffer[i];
+            ImU32 c = colAt(v.pos.y);
+            if ((v.col & IM_COL32_A_MASK) == 0) c &= ~IM_COL32_A_MASK;
+            v.col = c;
+        }
+    };
+    if (r > 0.0f) cap(a.y, a.y + r, ImDrawFlags_RoundCornersTop);
+    std::vector<float> ys = { a.y + r };
+    for (const GradientStop& st : stops)
+    {
+        const float y = a.y + st.at * h;
+        if (y > a.y + r && y < b.y - r) ys.push_back(y);
+    }
+    ys.push_back(b.y - r);
+    for (size_t i = 0; i + 1 < ys.size(); i++)
+        if (ys[i + 1] > ys[i])
+        {
+            const ImU32 c0 = colAt(ys[i]), c1 = colAt(ys[i + 1]);
+            dl->AddRectFilledMultiColor(ImVec2(a.x, ys[i]), ImVec2(b.x, ys[i + 1]), c0, c0, c1, c1);
+        }
+    if (r > 0.0f) cap(b.y - r, b.y, ImDrawFlags_RoundCornersBottom);
+}
+
+static void FillRoundedGradient(ImDrawList* dl, ImVec2 a, ImVec2 b, float r, ImU32 top, ImU32 middle, float mid,
+                                ImU32 bottom, ImDrawFlags corners = 0)
+{
+    FillRoundedGradient(dl, a, b, r, { { 0.0f, top }, { mid, middle }, { 1.0f, bottom } }, corners);
+}
+
+// A CSS linear-gradient(angle, c0, c1) over the box [a, b], applied to the vertices the draw list
+// added since v0: each takes the colour of its position on the gradient line. A shape ImGui fills as
+// one convex polygon interpolates a linear function exactly, so a rounded rectangle gets the true
+// gradient.
+static void ShadeLinear(ImDrawList* dl, int v0, ImVec2 a, ImVec2 b, float angleDeg, ImU32 c0, ImU32 c1)
+{
+    const float th = angleDeg * 3.14159265f / 180.0f;
+    const ImVec2 dir(std::sin(th), -std::cos(th));
+    const float w = b.x - a.x, h = b.y - a.y;
+    const float len = std::max(1e-3f, std::fabs(w * dir.x) + std::fabs(h * dir.y));
+    const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    for (int i = v0; i < dl->VtxBuffer.Size; i++)
+    {
+        ImDrawVert& v = dl->VtxBuffer[i];
+        const float t = std::clamp(((v.pos.x - c.x) * dir.x + (v.pos.y - c.y) * dir.y) / len + 0.5f, 0.0f, 1.0f);
+        ImU32 out = LerpColor(c0, c1, t);
+        if ((v.col & IM_COL32_A_MASK) == 0) out &= ~IM_COL32_A_MASK;   // the antialiased fringe
+        v.col = out;
+    }
+}
+
+static void FillLinear(ImDrawList* dl, ImVec2 a, ImVec2 b, float rounding, float angleDeg, ImU32 c0, ImU32 c1,
+                       ImDrawFlags flags = 0)
+{
+    if (b.x <= a.x || b.y <= a.y) return;
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddRectFilled(a, b, IM_COL32_WHITE, rounding, flags);
+    ShadeLinear(dl, v0, a, b, angleDeg, c0, c1);
+}
+
+// The full-screen wash, linear-gradient(120deg, #19191938, #19191970): page-wide, drawn on [a, b].
+static void DrawWash(ImDrawList* dl, ImVec2 pageA, ImVec2 pageB, ImVec2 a, ImVec2 b, float rounding, ImDrawFlags flags)
+{
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddRectFilled(a, b, IM_COL32_WHITE, rounding, flags);
+    ShadeLinear(dl, v0, pageA, pageB, 120.0f, v41::Wash0, v41::Wash1);
+}
+
+// The scene behind the panels: the page colour, the art at its strength (V41: opacity 0.68), the wash.
+static void DrawBackdrop(ImDrawList* dl, ImVec2 a, ImVec2 b)
+{
+    dl->AddRectFilled(a, b, col::Page);
+    DrawBackdropArt(dl, a, b, a, b, false, 0.0f);
+    DrawWash(dl, a, b, a, b, 0.0f, 0);
+}
+
+// A V41 glass panel (the list and the sidebar alike): the scene under it blurred (backdrop-filter:
+// blur(4px)), then its tint, set in pixels from the panel's top and holding its last stop below
+// 205 px, then a 1 px white outline and the inset top highlight. `corners`: the outer ones only, as
+// the two panels meet on a straight seam. `rightLine`: false on the list, whose right edge is the
+// sidebar's left border.
+static void DrawPanel(ImDrawList* dl, ImVec2 pageA, ImVec2 pageB, ImVec2 a, ImVec2 b, ImDrawFlags corners, bool rightLine)
+{
+    const float r = Px(5);
+    dl->AddRectFilled(a, b, col::Page, r, corners);
+    if (BackdropStrength() > 0.0f)
+    {
+        DrawBackdropArt(dl, pageA, pageB, a, b, true, 0.0f);
+        DrawWash(dl, pageA, pageB, a, b, 0.0f, 0);
+    }
+    const float h = std::max(1.0f, b.y - a.y);
+    auto at = [&](float css) { return std::min(1.0f, Px(css) / h); };
+    FillRoundedGradient(dl, a, b, r,
+                        { { 0.0f, v41::Tint0 }, { at(125), v41::Tint1 }, { at(170), v41::Tint2 }, { at(205), v41::Tint3 },
+                          { 1.0f, v41::Tint3 } },
+                        corners);
+    dl->AddLine(ImVec2(a.x + ((corners & ImDrawFlags_RoundCornersTopLeft) ? r : 1.0f), a.y + 1.5f),
+                ImVec2(b.x - ((corners & ImDrawFlags_RoundCornersTopRight) ? r : 1.0f), a.y + 1.5f), v41::PanelSheen);
+    if (rightLine)
+        dl->AddRect(ImVec2(R(a.x) + 0.5f, R(a.y) + 0.5f), ImVec2(R(b.x) - 0.5f, R(b.y) - 0.5f), v41::PanelLine, r, corners, 1.0f);
+    else
+    {
+        // Top, left and bottom: the right edge is the seam the sidebar draws.
+        const ImVec2 a2(R(a.x) + 0.5f, R(a.y) + 0.5f), b2(R(b.x), R(b.y) - 0.5f);
+        dl->PathLineTo(ImVec2(b2.x, b2.y));
+        dl->PathArcToFast(ImVec2(a2.x + r, b2.y - r), r, 3, 6);
+        dl->PathArcToFast(ImVec2(a2.x + r, a2.y + r), r, 6, 9);
+        dl->PathLineTo(ImVec2(b2.x, a2.y));
+        dl->PathStroke(v41::PanelLine, 0, 1.0f);
+    }
+}
+
+
 // ─── Match data the page shows ───────────────────────────────────────────────
 
 // Each team's elite skills, one slot per player in player order: what the list shows of a build.
@@ -583,8 +1116,13 @@ static bool ActionButton(const char* id, ImVec2 pos, ImVec2 size, bool on, bool&
     hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 b(pos.x + size.x, pos.y + size.y);
-    dl->AddRectFilled(pos, b, on ? col::ToggleOnBg : hovered ? col::ActionHovBg : col::ActionBg, Px(3));
-    Outline(dl, pos, b, on ? col::ToggleOnRule : hovered ? col::ActionHovRule : col::ActionRule, Px(3));
+    // V41: height 40, linear-gradient(#302e28, #25241f), 1 px #675a3e55, 5 px rounding.
+    if (on)
+        dl->AddRectFilled(pos, b, col::ToggleOnBg, Px(5));
+    else
+        FillLinear(dl, pos, b, Px(5), 180.0f, hovered ? LerpColor(v41::ActA, Hex(0x3d3a31), 0.6f) : v41::ActA,
+                   hovered ? LerpColor(v41::ActB, Hex(0x2e2c25), 0.6f) : v41::ActB);
+    Outline(dl, pos, b, on ? col::ToggleOnRule : hovered ? col::ActionHovRule : v41::ActLine, Px(5));
     return clicked;
 }
 
@@ -592,15 +1130,18 @@ static bool ActionButton(const char* id, ImVec2 pos, ImVec2 size, bool on, bool&
 
 static void DrawSearch(ImDrawList* dl, float x, float y, float w, float h)
 {
+    // V41: 44 px, #151514a8 with a 1 px #ffffff12 outline, 5 px rounding, a faint inner shadow.
     const ImVec2 a(x, y), b(x + w, y + h);
-    dl->AddRectFilled(a, b, col::SearchBg, Px(3));
-    HRule(dl, a.x + Px(2), b.x - Px(2), b.y - 1.0f, col::SearchRule);
+    dl->AddRectFilled(a, b, v41::SearchBg, Px(5));
+    dl->AddRectFilledMultiColor(ImVec2(a.x + 1.0f, a.y + 1.0f), ImVec2(b.x - 1.0f, a.y + Px(5)), Hex(0, 0x12), Hex(0, 0x12),
+                                Hex(0, 0), Hex(0, 0));
+    Outline(dl, a, b, v41::SearchLine, Px(5));
 
-    const Type t = T(11);
-    const float textTop = R(y + (h - LineH(11)) * 0.5f);
-    float cx = x + Px(16);
-    DrawMagnifier(dl, ImVec2(cx + Px(5), textTop + LineH(11) * 0.5f), Px(10), col::SearchText);
-    cx += Px(11) + TextW(t, "  ");
+    const Type t = T(13);
+    const float textTop = R(y + (h - LineH(13)) * 0.5f);
+    float cx = x + Px(15);
+    DrawMagnifier(dl, ImVec2(cx + Px(5), textTop + LineH(13) * 0.5f), Px(10), v41::SearchText);
+    cx += Px(11) + TextW(t, " ") + Px(4);
 
     // The search chips (a guild or player picked from the suggestions, or Enter): inside the box,
     // before the text. A click on one removes it.
@@ -638,8 +1179,8 @@ static void DrawSearch(ImDrawList* dl, float x, float y, float w, float h)
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(col::Text));
-    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImGui::ColorConvertU32ToFloat4(col::SearchText));
-    ImGui::SetNextItemWidth(std::max(Px(40), b.x - Px(16) - cx));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImGui::ColorConvertU32ToFloat4(v41::SearchText));
+    ImGui::SetNextItemWidth(std::max(Px(40), b.x - Px(15) - cx));
     const char* hint = s_state.selectedSearchTerms.empty() ? "Search players, guilds, or notes\xE2\x80\xA6" : "Add to the search\xE2\x80\xA6";
     const bool edited = ImGui::InputTextWithHint("##lib_search", hint, s_state.searchBuf, sizeof(s_state.searchBuf));
     ImGui::PopStyleColor(5);
@@ -704,18 +1245,29 @@ static bool ToolbarButton(ImDrawList* dl, const char* id, ImVec2 pos, ImVec2 siz
     const bool clicked = ImGui::InvisibleButton(id, size);
     const bool hov = ImGui::IsItemHovered();
     const ImVec2 b(pos.x + size.x, pos.y + size.y);
-    dl->AddRectFilled(pos, b, hov ? col::ButtonHovBg : col::ButtonBg, Px(3));
-    if (active) HRule(dl, pos.x + Px(2), b.x - Px(2), b.y - 1.0f, col::ButtonActive);
-    const Type t = T(11);
+    // V41: the chosen view on a gradient (#38362f to #2d2c27) with a gold-tinted outline and an inset
+    // highlight; the other one a faint outlined box.
+    if (active)
+    {
+        FillLinear(dl, pos, b, Px(5), 180.0f, v41::BtnOnA, v41::BtnOnB);
+        dl->AddLine(ImVec2(pos.x + Px(5), pos.y + 1.5f), ImVec2(b.x - Px(5), pos.y + 1.5f), v41::PanelSheen);
+        Outline(dl, pos, b, v41::BtnOnLine, Px(5));
+    }
+    else
+    {
+        dl->AddRectFilled(pos, b, hov ? Hex(0xffffff, 0x0e) : v41::BtnOff, Px(5));
+        Outline(dl, pos, b, v41::BtnOffLine, Px(5));
+    }
+    const ImU32 fg = active ? v41::BtnOnText : hov ? col::Text : v41::BtnOffText;
+    const Type t = T(13);
     float tx = pos.x + Px(13);
-    const float ty = R(pos.y + (size.y - LineH(11)) * 0.5f);
+    const float ty = R(pos.y + (size.y - LineH(13)) * 0.5f);
     if (star)
     {
-        DrawStar(dl, ImVec2(tx + Px(5.5f), ty + LineH(11) * 0.5f + Px(0.5f)), Px(5.0f), active ? col::StarOn : col::ButtonText,
-                 active, 1.15f);
-        tx += Px(10) + TextW(t, " ");
+        DrawStar(dl, ImVec2(tx + Px(5.5f), ty + LineH(13) * 0.5f + Px(0.5f)), Px(5.0f), active ? v41::StarOn : fg, active, 1.1f);
+        tx += Px(11) + TextW(t, " ");
     }
-    Text(dl, t, ImVec2(tx, ty), col::ButtonText, label);
+    Text(dl, t, ImVec2(tx, ty), fg, label);
     return clicked;
 }
 
@@ -726,89 +1278,95 @@ static bool LinkText(ImDrawList* dl, const char* id, const Type& t, ImVec2 pos, 
 // One row where the mockup had two: the "Match library" title row is gone (the count is in the
 // footer), and its two actions sit at the end of the search row. While the search would be narrower
 // than 260 px, the two actions keep only their pictures.
+// V41: the search (44 px, flexing), All matches and Favorites (13 px type, 12 x 13 padding, 41 px),
+// Update matches and Spoiler-free (11 px type, 40 px), 10 px apart, each centred on the search's row.
 static float DrawToolbar(ImDrawList* dl, float x0, float x1, float y)
 {
-    const float h = R(Px(8) * 2.0f + LineH(11) + 1.0f);
-    const Type tb = T(11), ab = T(11), st = T(9);
+    const float h = Px(44);
+    const float bh = R(Px(12) * 2.0f + LineH(13) + 2.0f), ah = Px(40);
+    const float by = R(y + (h - bh) * 0.5f), ay = R(y + (h - ah) * 0.5f);
+    const Type tb = T(13), ab = T(11), st = T(9);
     SpoilerFree& sf = SpoilerFree::Get();
     const bool spoilers = sf.Enabled();
     const char* state = spoilers ? "On" : "Off";
     const bool waiting = g_refreshHint;
 
-    const float favW = Px(13) * 2.0f + Px(10) + TextW(tb, " ") + TextW(tb, "Favorites");
-    const float allW = Px(13) * 2.0f + TextW(tb, "All matches");
-    float updW = 2.0f + Px(12) + Px(20) + Px(8) + TextW(ab, "Update matches") + (waiting ? Px(13) : 0.0f) + Px(12);
-    float spW = 2.0f + Px(12) + Px(16) + Px(8) + TextW(ab, "Spoiler") + Px(8) + TextW(st, state) + Px(12);
-    const float gap = Px(12), groupGap = Px(20);
+    const float favW = 2.0f + Px(13) * 2.0f + Px(11) + TextW(tb, " ") + TextW(tb, "Favorites");
+    const float allW = 2.0f + Px(13) * 2.0f + TextW(tb, "All matches");
+    float updW = 2.0f + Px(8) + Px(20) + Px(8) + TextW(ab, "Update matches") + (waiting ? Px(13) : 0.0f) + Px(8);
+    float spW = 2.0f + Px(8) + Px(16) + Px(8) + TextW(ab, "Spoiler-free") + Px(14) + TextW(st, state) + Px(8);
+    const float gap = Px(10), groupGap = Px(10);
     const bool compact = (x1 - x0) - (allW + favW + updW + spW + gap * 3.0f + groupGap) < Px(260);
     if (compact)
     {
-        updW = 2.0f + Px(12) * 2.0f + Px(20) + (waiting ? Px(10) : 0.0f);
-        spW = 2.0f + Px(12) * 2.0f + Px(16) + Px(6) + TextW(st, state);
+        updW = 2.0f + Px(8) * 2.0f + Px(20) + (waiting ? Px(10) : 0.0f);
+        spW = 2.0f + Px(8) * 2.0f + Px(16) + Px(6) + TextW(st, state);
     }
-    const ImVec2 spPos(R(x1 - spW), y);
-    const ImVec2 upPos(R(spPos.x - gap - updW), y);
-    const ImVec2 favPos(R(upPos.x - groupGap - favW), y);
-    const ImVec2 allPos(R(favPos.x - gap - allW), y);
+    const ImVec2 spPos(R(x1 - spW), ay);
+    const ImVec2 upPos(R(spPos.x - gap - updW), ay);
+    const ImVec2 favPos(R(upPos.x - groupGap - favW), by);
+    const ImVec2 allPos(R(favPos.x - gap - allW), by);
     DrawSearch(dl, x0, y, allPos.x - gap - x0, h);
 
-    if (ToolbarButton(dl, "##lib_all", allPos, ImVec2(allW, h), "All matches", !s_page.favouritesOnly, false))
+    if (ToolbarButton(dl, "##lib_all", allPos, ImVec2(allW, bh), "All matches", !s_page.favouritesOnly, false))
         s_page.favouritesOnly = false;
-    if (ToolbarButton(dl, "##lib_fav", favPos, ImVec2(favW, h), "Favorites", s_page.favouritesOnly, true))
+    if (ToolbarButton(dl, "##lib_fav", favPos, ImVec2(favW, bh), "Favorites", s_page.favouritesOnly, true))
         s_page.favouritesOnly = true;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The matches you starred (%d). Click a row's star to add one.", (int)MatchFavourites::Get().Count());
 
     // Update matches: the lit refresh badge, the label, and a dot while new matches wait.
     bool hov = false;
-    if (ActionButton("##lib_update", upPos, ImVec2(updW, h), false, hov))
+    y = ay;   // the actions' row, centred on the search's
+    const float hh = ah;
+    if (ActionButton("##lib_update", upPos, ImVec2(updW, hh), false, hov))
     {
         g_refreshMatchIndex = true;
         g_refreshHint = false;
     }
     {
-        float cx = upPos.x + 1.0f + Px(12);
+        float cx = upPos.x + 1.0f + Px(8);
         EnsureTextureBasePath();
         if (ImTextureID tex = GetTextureCache().GetTexture(ui::TextureBasePath() + "\\Textures\\DDS\\ATEXDXT5\\texture_337393.dds"))
-            dl->AddImage(tex, ImVec2(cx, R(y + (h - Px(20)) * 0.5f)), ImVec2(cx + Px(20), R(y + (h - Px(20)) * 0.5f) + Px(20)),
+            dl->AddImage(tex, ImVec2(cx, R(y + (hh - Px(20)) * 0.5f)), ImVec2(cx + Px(20), R(y + (hh - Px(20)) * 0.5f) + Px(20)),
                          ImVec2(kRefreshLitX0 / kRefreshAtlasW, kRefreshSrcY0 / kRefreshAtlasH),
                          ImVec2(kRefreshLitX1 / kRefreshAtlasW, kRefreshSrcY1 / kRefreshAtlasH));
         cx += Px(20);
         if (!compact)
         {
             cx += Px(8);
-            Text(dl, ab, ImVec2(cx, y + (h - LineH(11)) * 0.5f), col::ActionText, "Update matches");
+            Text(dl, ab, ImVec2(cx, y + (hh - LineH(11)) * 0.5f), v41::ActText, "Update matches");
             cx += TextW(ab, "Update matches");
         }
         if (waiting)
-            dl->AddCircleFilled(ImVec2(cx + Px(6) + Px(2.5f), y + h * 0.5f), Px(2.5f), col::NewDot, 12);
+            dl->AddCircleFilled(ImVec2(cx + Px(6) + Px(2.5f), y + hh * 0.5f), Px(2.5f), v41::NewDot, 12);
     }
     if (hov)
         ImGui::SetTooltip(waiting ? "New matches are waiting: refresh the list" : "Update matches: re-fetch the match list from the cloud");
 
     // Spoiler-free: eye, label, Off / On.
-    if (ActionButton("##lib_spoiler", spPos, ImVec2(spW, h), spoilers, hov))
+    if (ActionButton("##lib_spoiler", spPos, ImVec2(spW, hh), spoilers, hov))
         sf.SetEnabled(!spoilers);
     {
-        const ImU32 fg = spoilers ? col::ToggleOn : col::ActionText;
-        float cx = spPos.x + 1.0f + Px(12);
-        DrawEyeGlyph(dl, ImVec2(cx + Px(8), y + h * 0.5f), Px(14), fg, spoilers);
+        const ImU32 fg = spoilers ? col::ToggleOn : v41::ActText;
+        float cx = spPos.x + 1.0f + Px(8);
+        DrawEyeGlyph(dl, ImVec2(cx + Px(8), y + hh * 0.5f), Px(14), fg, spoilers);
         cx += Px(16);
         if (!compact)
         {
             cx += Px(8);
-            Text(dl, ab, ImVec2(cx, y + (h - LineH(11)) * 0.5f), fg, "Spoiler");
-            cx += TextW(ab, "Spoiler") + Px(8);
+            Text(dl, ab, ImVec2(cx, y + (hh - LineH(11)) * 0.5f), fg, "Spoiler-free");
+            cx += TextW(ab, "Spoiler-free") + Px(14);
         }
         else
             cx += Px(6);
-        Text(dl, st, ImVec2(cx, y + (h - LineH(9)) * 0.5f + Px(1)), spoilers ? col::ToggleOn : col::ToggleState, state);
+        Text(dl, st, ImVec2(cx, y + (hh - LineH(9)) * 0.5f + Px(1)), spoilers ? col::ToggleOn : col::ToggleState, state);
     }
     if (hov)
-        ImGui::SetTooltip(spoilers ? "Spoiler-free is on: winners, match lengths and match stats stay hidden\n"
-                                     "until you watch a match to the end or reveal it."
-                                   : "Spoiler-free: hide winners, match lengths and match stats\n"
-                                     "until you watch a match to the end.");
+        ImGui::SetTooltip(spoilers ? "Spoiler is on: winners, match lengths, lord damage and match stats\n"
+                                     "are hidden for every match. Turn it off to see them."
+                                   : "Spoiler: hide winners, match lengths, lord damage and match stats\n"
+                                     "for every match.");
     return h;
 }
 
@@ -1772,32 +2330,35 @@ static void MenuMore(const std::vector<MatchMeta>& matches)
 
 // The open filter menu: a plain window under its button, not a popup, since the Date menu's
 // calendars are popups of their own. It closes itself: a click outside it, or Escape.
-static void DrawFilterMenuWindow(const std::vector<MatchMeta>& matches)
+// V41: the open filter is a panel in the page's flow, between the filter row and the list, which it
+// pushes down; it never covers a match. One group open at a time. 16 px padding, 8 px rounding,
+// linear-gradient(110deg, #302f29, #262621), a 1 px white 8% outline, 18 px below it. Taller than
+// about half the page, it scrolls. Returns the height it takes, its margin included.
+static float DrawFilterPanel(const std::vector<MatchMeta>& matches, float x0, float x1, float y, float maxH)
 {
-    if (s_page.openMenu.empty()) return;
+    if (s_page.openMenu.empty()) return 0.0f;
     const std::string id = s_page.openMenu;
-    const ImGuiIO& io = ImGui::GetIO();
-    const float w = id == "skills" ? Px(390) : Px(330);
-    const float padX = Px(14), padY = Px(12);
-    s_menuW = w - padX * 2.0f;
-    ImVec2 pos = s_page.menuAnchor;
-    pos.x = std::max(Px(8), std::min(pos.x, io.DisplaySize.x - w - Px(8)));
-    const float maxH = std::max(Px(220), io.DisplaySize.y - pos.y - Px(16));
-    ImGui::SetNextWindowPos(pos);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(w, maxH));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(col::Menu));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(col::ActionRule));
+    const float w = x1 - x0, pad = Px(16);
+    s_menuW = std::min(w - pad * 2.0f - Px(10), id == "skills" ? Px(760) : Px(560));
+    ImGui::SetCursorScreenPos(ImVec2(x0, y));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(w, std::max(Px(160), maxH)));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImGui::ColorConvertU32ToFloat4(Hex(0x3b3830)));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Px(5));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padX, padY));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImGui::ColorConvertU32ToFloat4(Hex(0x4a463b)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
     ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, Px(8));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
     bool hovered = false;
-    if (ImGui::Begin("##lib_filter_menu", nullptr,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse))
+    if (ImGui::BeginChild("##lib_filter_panel", ImVec2(w, 0),
+                          ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoNav))
     {
+        {
+            ImDrawList* pdl = ImGui::GetWindowDrawList();
+            const ImVec2 pa = ImGui::GetWindowPos(), ps = ImGui::GetWindowSize();
+            const ImVec2 pb(pa.x + ps.x, pa.y + ps.y);
+            FillLinear(pdl, pa, pb, Px(8), 110.0f, v41::MenuA, v41::MenuB);
+            Outline(pdl, pa, pb, v41::MenuLine, Px(8));
+        }
         if (id == "team")          MenuTeam();
         else if (id == "map")      MenuMap(matches);
         else if (id == "occasion") MenuOccasion(matches);
@@ -1805,18 +2366,21 @@ static void DrawFilterMenuWindow(const std::vector<MatchMeta>& matches)
         else if (id == "flux")     MenuFlux(matches);
         else if (id == "date")     MenuDate();
         else if (id == "more")     MenuMore(matches);
-        hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem |
+        hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem |
                                          ImGuiHoveredFlags_AllowWhenBlockedByPopup);
     }
-    ImGui::End();
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor(4);
+    ImGui::EndChild();
+    const float h = ImGui::GetItemRectSize().y;
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
 
     const bool popupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hovered && !popupOpen && !s_page.menuLabelHovered)
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !hovered && !popupOpen && !s_page.menuLabelHovered &&
+        !ImGui::IsMouseHoveringRect(ImVec2(x0, y), ImVec2(x1, y + h)))
         s_page.openMenu.clear();
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !popupOpen)
         s_page.openMenu.clear();
+    return h + Px(18);
 }
 
 // ─── The filter row ──────────────────────────────────────────────────────────
@@ -1917,10 +2481,12 @@ static void DrawFilterChip(ImDrawList* dl, const FilterMenu& f, const std::strin
 
 // The filter buttons, wrapping onto a second line if the active ones need it; the sort and Clear
 // filters at the right of the first. Returns the row's height.
+// V41: 31 px, 12 px type, each control padded 12 px and 12 px apart; the sort at the far right.
 static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
 {
-    const Type t = T(11);
-    const float lineH = R(LineH(11) + Px(10));
+    const Type t = T(12);
+    const float lineH = Px(31);
+    const float padX = Px(12);
     s_page.menuLabelHovered = false;
 
     // The sort, at the right: the current order and its arrow; a click lists the others.
@@ -1930,13 +2496,13 @@ static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
     const char* sortLabel = current >= 0 ? kSortOptions[current].label : "Sorted";
     const bool down = current < 0 ? !s_state.sortAscending : !kSortOptions[current].ascending;
     const float sortW = TextW(t, sortLabel) + TextW(t, " ") + Px(9);
-    const ImVec2 sortPos(R(x1 - sortW), R(y + (lineH - LineH(11)) * 0.5f));
+    const ImVec2 sortPos(R(x1 - Px(10) - sortW), R(y + (lineH - LineH(12)) * 0.5f));
     ImGui::SetCursorScreenPos(sortPos);
-    const bool sortClicked = ImGui::InvisibleButton("##lib_sort_btn", ImVec2(sortW, LineH(11)));
+    const bool sortClicked = ImGui::InvisibleButton("##lib_sort_btn", ImVec2(sortW, LineH(12)));
     const bool sortHov = ImGui::IsItemHovered();
-    const ImU32 sc = sortHov ? col::LinkHover : col::Sort;
+    const ImU32 sc = sortHov ? col::LinkHover : v41::Filters;
     Text(dl, t, sortPos, sc, sortLabel);
-    DrawArrowVertical(dl, ImVec2(sortPos.x + sortW - Px(4.5f), sortPos.y + LineH(11) * 0.52f), Px(10), sc, down);
+    DrawArrowVertical(dl, ImVec2(sortPos.x + sortW - Px(4.5f), sortPos.y + LineH(12) * 0.52f), Px(10), sc, down);
     if (sortClicked) ImGui::OpenPopup("##lib_sort");
     ImGui::SetNextWindowPos(ImVec2(sortPos.x + sortW, y + lineH + Px(4)), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(col::Menu));
@@ -1981,7 +2547,7 @@ static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
     {
         const bool active = FilterActive(f.id);
         const std::string value = active ? FilterValue(f.id) : std::string();
-        const float w = active ? FilterChipWidth(f, value) : TextW(t, f.label) + TextW(t, " ") + Px(9);
+        const float w = active ? FilterChipWidth(f, value) : padX + TextW(t, f.label) + TextW(t, " ") + Px(9) + padX;
         if (x > x0 && x + w > limit)
         {
             x = x0;
@@ -1991,10 +2557,10 @@ static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
         if (active)
         {
             DrawFilterChip(dl, f, value, ImVec2(R(x), R(ly)), R(w), lineH);
-            x += R(w) + Px(10);
+            x += R(w) + Px(12);
             continue;
         }
-        const float ty = R(ly + (lineH - LineH(11)) * 0.5f);
+        const float ty = R(ly + (lineH - LineH(12)) * 0.5f);
         ImGui::SetCursorScreenPos(ImVec2(x, ly));
         ImGui::PushID(f.id);
         const bool clicked = ImGui::InvisibleButton("##menu", ImVec2(w, lineH));
@@ -2002,12 +2568,13 @@ static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
         ImGui::PopID();
         s_page.menuLabelHovered |= hov;
         const bool open = s_page.openMenu == f.id;
-        const ImU32 c = open ? col::FilterOn : hov ? col::Text : col::Filters;
-        Text(dl, t, ImVec2(x, ty), c, f.label);
-        DrawChevronDown(dl, ImVec2(x + TextW(t, f.label) + TextW(t, " ") + Px(4), ty + LineH(11) * 0.56f), Px(6), c);
+        if (open || hov)
+            dl->AddRectFilled(ImVec2(x, ly), ImVec2(x + w, ly + lineH), open ? Hex(0xffffff, 0x0c) : Hex(0xffffff, 0x07), Px(5));
+        const ImU32 c = open ? col::FilterOn : hov ? col::Text : v41::Filters;
+        Text(dl, t, ImVec2(x + padX, ty), c, f.label);
+        DrawChevronDown(dl, ImVec2(x + padX + TextW(t, f.label) + TextW(t, " ") + Px(4), ty + LineH(12) * 0.56f), Px(6), c);
         if (clicked) s_page.openMenu = open ? std::string() : std::string(f.id);
-        if (s_page.openMenu == f.id) s_page.menuAnchor = ImVec2(x - Px(12), ly + lineH + Px(4));
-        x += w + Px(28);
+        x += w + Px(12);
     }
     return ly + lineH - y;
 }
@@ -2017,41 +2584,39 @@ static float DrawFilterRow(ImDrawList* dl, float x0, float x1, float y)
 struct ListGeom
 {
     float w = 0.0f;                    // the rows' width
-    bool thumb = true;                 // the thumbnail column, dropped first when the list narrows
-    float icon = 0.0f, iconGap = 0.0f; // the elite lineup's icons
-    float starX = 0, thumbX = 0, team1X = 0, vsX = 0, team2X = 0, mapX = 0, durX = 0;
+    bool event = true;                 // the Event column, dropped first when the list narrows
+    float icon = 0.0f, iconGap = 0.0f; // the elite lineup's cells
+    float starX = 0, dateX = 0, eventX = 0, team1X = 0, vsX = 0, team2X = 0, mapX = 0, durX = 0;
     float teamW = 0.0f, mapW = 0.0f;
 };
 
-// The mockup's grid: 18px 66px 1fr 20px 1fr 130px 40px, 10 px gaps, 12 px padding. The map column
-// grows to 210 px on a wide list, where "mAT Quarterfinals" no longer fits in 130.
+// V41's grid, the same for the labels and the rows: 18px 95px 105px 1fr 20px 1fr 185px 40px, 9 px
+// gaps, 9 px padding. Star | Date | Event | Guild 1 | vs | Guild 2 | Map | Duration. A list too
+// narrow for two 246 px lineups drops the Event column, then narrows the cells.
 static ListGeom ComputeListGeom(float w)
 {
     ListGeom g;
     g.w = w;
-    const float gap = Px(10), pad = Px(12);
-    const float star = Px(18), thumb = Px(66), vs = Px(20), dur = Px(40);
-    const float map = R(std::clamp(w * 0.13f, Px(130), Px(210)));
+    const float gap = Px(9), pad = Px(9);
+    const float star = Px(18), date = Px(95), event = Px(105), vs = Px(20), map = Px(185), dur = Px(40);
     g.mapW = map;
     const float inner = w - pad * 2.0f;
-    float fixed = star + vs + map + dur + gap * 5.0f + thumb + gap;
+    float fixed = star + date + event + vs + map + dur + gap * 7.0f;
     float teamW = (inner - fixed) * 0.5f;
-    if (teamW < Px(212))
+    g.icon = Px(29);
+    g.iconGap = Px(4);   // owner 2026-11-25: more room between the elites than V41's 2 px
+    const float lineup = g.icon * 8.0f + g.iconGap * 7.0f;
+    if (teamW < lineup)
     {
-        g.thumb = false;
-        fixed -= thumb + gap;
+        g.event = false;
+        fixed -= event + gap;
         teamW = (inner - fixed) * 0.5f;
     }
-    g.icon = Px(23);
-    g.iconGap = Px(4);
-    if (teamW < g.icon * 8.0f + g.iconGap * 7.0f)
-    {
-        g.iconGap = Px(2);
-        g.icon = std::max(Px(12), std::floor((teamW - g.iconGap * 7.0f) / 8.0f));
-    }
+    if (teamW < lineup) g.icon = std::max(Px(12), std::floor((teamW - g.iconGap * 7.0f) / 8.0f));
     float x = pad;
     g.starX = x;  x += star + gap;
-    if (g.thumb) { g.thumbX = x; x += thumb + gap; }
+    g.dateX = x;  x += date + gap;
+    if (g.event) { g.eventX = x; x += event + gap; }
     g.team1X = x; x += teamW + gap;
     g.vsX = x;    x += vs + gap;
     g.team2X = x; x += teamW + gap;
@@ -2061,70 +2626,69 @@ static ListGeom ComputeListGeom(float w)
     return g;
 }
 
-// The column labels; MAP · OCCASION over its column. The "N new matches added" pill sits after
-// the first label, since the title row it was beside is gone.
+// The column labels: 32 px (6 px above, 12 below), 10 px type tracked 1.5 px, a faint rule under
+// them. The "N new matches added" pill follows MATCHUP / ELITE SKILLS.
 static void DrawLabelsRow(ImDrawList* dl, float x0, float x1, float y, const ListGeom& g)
 {
     const Type t = T(10);
-    const float tracking = Px(1.1f);
+    const float tracking = Px(1.5f);
+    const float ty = y + Px(6);
+    TextSpaced(dl, t, ImVec2(x0 + g.dateX, ty), v41::Labels, "DATE", tracking);
+    if (g.event) TextSpaced(dl, t, ImVec2(x0 + g.eventX, ty), v41::Labels, "EVENT", tracking);
     const char* left = "MATCHUP / ELITE SKILLS";
-    const ImVec2 leftPos(x0 + Px(20), y + Px(10));
-    const float leftW = TextSpaced(dl, t, leftPos, col::Labels, left, tracking);
+    const ImVec2 leftPos(x0 + g.team1X, ty);
+    const float leftW = TextSpaced(dl, t, leftPos, v41::Labels, left, tracking);
+    TextSpaced(dl, t, ImVec2(x0 + g.mapX, ty), v41::Labels, "MAP", tracking);
+    // The mockup's DURATION is smaller and barely tracked (9 px, 0.4 px), so it fits its 40 px column.
+    TextSpaced(dl, T(9), ImVec2(x0 + g.durX, ty + Ascent(10) - Ascent(9)), v41::Labels, "DURATION", Px(0.4f));
+    HRule(dl, x0, x1, y + Px(32) - 1.0f, Hex(0xffffff, 0x15));
     ImGui::SetCursorScreenPos(leftPos);
     ImGui::Dummy(ImVec2(leftW, LineH(10)));
     DrawNewMatchesPill();
-    const char* right = "DURATION";
-    const float wr = TextSpaced(nullptr, t, ImVec2(), 0, right, tracking);
-    TextSpaced(dl, t, ImVec2(x1 - Px(20) - wr, y + Px(10)), col::Labels, right, tracking);
-    TextSpaced(dl, t, ImVec2(x0 + g.mapX, y + Px(10)), col::Labels, "MAP \xC2\xB7 OCCASION", tracking);
-    HRule(dl, x0, x1, y + Px(10) * 2.0f + LineH(10), col::LabelsRule);
 }
 
-// One team's cell: the name (gold behind a cup when it won), its tag, the comms headset on the
-// first team, and the eight elite skills.
-static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, const MatchMeta& m,
-                         const GuildLabel& gl, bool winner, bool comms, const std::vector<EliteSlot>& slots,
-                         bool hoverable)
+// A skill's picture in a cell. The list crops the elites' baked-in gold edge (V41: the picture drawn
+// 33 px in a 29 px cell); the sidebar's bars keep it, the whole picture (owner 2026-11-25).
+static void SkillCell(ImDrawList* dl, ImTextureID tex, ImVec2 a, ImVec2 b, bool cropEdge)
 {
-    const Type name = T(12, true), tag = T(11);
-    const float nameH = LineH(12);
-    const float top = R(cy - (nameH + Px(5) + g.icon) * 0.5f);
+    const float f = cropEdge ? 2.0f / 33.0f : 0.0f;
+    dl->AddImage(tex, a, b, ImVec2(f, f), ImVec2(1.0f - f, 1.0f - f));
+}
+
+// One team's cell: the trophy before the winner's name, the name (bold 14, the winner's lighter,
+// never gold), its tag, then the eight elite skills, 29 px cells 2 px apart.
+static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, const MatchMeta& m,
+                         const GuildLabel& gl, bool winner, const std::vector<EliteSlot>& slots, bool hoverable)
+{
+    const Type name = T(14, true), tag = T(11);
+    const float lineH = Px(23);
+    const float top = R(cy - (lineH + Px(5) + g.icon) * 0.5f);
+    const float nameTop = R(top + (lineH - LineH(14)) * 0.5f);
     float tx = x, maxW = g.teamW;
     if (winner)
     {
-        const float box = Px(22);
-        const ImVec2 b0(x, R(top + nameH * 0.5f - box * 0.5f)), b1(b0.x + box, b0.y + box);
-        dl->AddRectFilled(b0, b1, col::CupBg, Px(3));
-        if (ImTextureID cup = GetCupIcon())
-            ImageContain(dl, cup, 64.0f, 109.0f, ImVec2(b0.x + Px(2), b0.y + Px(2)), ImVec2(b1.x - Px(2), b1.y - Px(2)));
-        tx += Px(27);
-        maxW -= Px(27);
+        const float box = Px(23);
+        const ImVec2 b0(x, top), b1(b0.x + box, b0.y + box);
+        if (ImTextureID cup = GetCupIcon()) ImageContain(dl, cup, 64.0f, 109.0f, b0, b1);
+        if (hoverable && ImGui::IsMouseHoveringRect(b0, b1)) ImGui::SetTooltip("Winning guild");
+        tx += box + Px(9);
+        maxW -= box + Px(9);
     }
     const std::string& nm = gl.name.empty() ? gl.display : gl.name;
     const float nameW = TextW(name, nm.c_str());
-    const float drawn = TextFit(dl, name, ImVec2(tx, top), maxW, winner ? col::Winner : col::Text, nm.c_str());
-    float after = tx + drawn;
+    const float drawn = TextFit(dl, name, ImVec2(tx, nameTop), maxW, winner ? v41::WinnerName : v41::GuildName, nm.c_str());
     if (drawn >= nameW && !gl.name.empty() && !gl.tag.empty())
     {
         const std::string tg = "[" + gl.tag + "]";
-        const float sp = TextW(name, " ");
-        if (after + sp < tx + maxW)
-            after += sp + TextFit(dl, tag, ImVec2(after + sp, top + Ascent(12) - Ascent(11)), tx + maxW - after - sp,
-                                  col::Small, tg.c_str());
-    }
-    if (comms && after + Px(8) + Px(15) <= tx + maxW)
-    {
-        const Comms::Badge badge = Comms::BadgeFor(m.folder_name);
-        const ImVec2 bp(after + Px(8), R(top + (nameH - Px(15)) * 0.5f));
-        DrawHeadsetGlyph(dl, bp, Px(15), badge.exists ? col::Comms : Hex(0x828288));
-        if (hoverable && ImGui::IsMouseHoveringRect(bp, ImVec2(bp.x + Px(15), bp.y + Px(15))))
-            ImGui::SetTooltip(badge.exists ? "Voice comms attached: %s" : "Voice comms file missing: %s", badge.name.c_str());
+        const float after = tx + drawn + Px(4);
+        if (after < tx + maxW)
+            TextFit(dl, tag, ImVec2(after, nameTop + Ascent(14) - Ascent(11)), tx + maxW - after, v41::ListTag, tg.c_str());
     }
 
     // The lineup.
     const SkillDatabaseView* view = slots.empty() ? nullptr : &GetMatchSkillView(m);
     float ix = x;
-    const float iy = top + nameH + Px(5);
+    const float iy = top + lineH + Px(5);
     for (int i = 0; i < 8; i++)
     {
         const ImVec2 a(R(ix), R(iy)), b(R(ix) + g.icon, R(iy) + g.icon);
@@ -2133,21 +2697,20 @@ static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, c
         if (slot && slot->skill)
             if (ImTextureID tex = GetSkillIcon(slot->skill, view))
             {
-                dl->AddImage(tex, a, b);
+                SkillCell(dl, tex, a, b, true);
                 drewIcon = true;
             }
         if (!drewIcon)
         {
-            dl->AddRectFilled(a, b, col::EmptySlot);
+            dl->AddRectFilled(a, b, Hex(0x1a1916, 0xb0));
             if (slot && slot->prof)
                 if (ImTextureID prof = GetProfessionIcon(slot->prof))
                 {
-                    const float inset = g.icon * 0.2f;
+                    const float inset = g.icon * 0.22f;
                     dl->AddImage(prof, ImVec2(a.x + inset, a.y + inset), ImVec2(b.x - inset, b.y - inset),
                                  ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 110));
                 }
         }
-        Outline(dl, a, b, col::IconRule, 0.0f);
         if (hoverable && slot && ImGui::IsMouseHoveringRect(a, b))
         {
             if (slot->skill)
@@ -2164,9 +2727,34 @@ static void DrawTeamCell(ImDrawList* dl, const ListGeom& g, float x, float cy, c
     }
 }
 
+// Text wrapped on words into at most two lines of maxW (the second cut with an ellipsis), centred
+// on cy: the list's map names. lineH: the line pitch.
+static void TextWrap2(ImDrawList* dl, const Type& t, float x, float cy, float maxW, float lineH, ImU32 c, const std::string& s)
+{
+    std::string first = s, second;
+    if (TextW(t, s.c_str()) > maxW)
+    {
+        size_t cut = std::string::npos;
+        for (size_t i = s.find(' '); i != std::string::npos; i = s.find(' ', i + 1))
+        {
+            if (TextW(t, s.c_str(), s.c_str() + i) > maxW) break;
+            cut = i;
+        }
+        if (cut != std::string::npos)
+        {
+            first = s.substr(0, cut);
+            second = s.substr(cut + 1);
+        }
+    }
+    const float total = second.empty() ? lineH : lineH * 2.0f;
+    const float y0 = cy - total * 0.5f + (lineH - LineH(11)) * 0.5f;
+    TextFit(dl, t, ImVec2(x, R(y0)), maxW, c, first.c_str());
+    if (!second.empty()) TextFit(dl, t, ImVec2(x, R(y0 + lineH)), maxW, c, second.c_str());
+}
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-// A small outlined button on the sidebar (Details, Reveal this match): 10 px type.
+// A small outlined button on the sidebar (Details): 10 px type.
 static bool SmallButton(ImDrawList* dl, const char* id, ImVec2 pos, const char* label, float padX, float padY,
                         bool chevron, ImVec2* sizeOut = nullptr)
 {
@@ -2177,11 +2765,12 @@ static bool SmallButton(ImDrawList* dl, const char* id, ImVec2 pos, const char* 
     const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
     const bool hov = ImGui::IsItemHovered();
     const ImVec2 b(pos.x + w, pos.y + h);
-    dl->AddRectFilled(pos, b, hov ? col::ActionHovBg : col::ActionBg, Px(3));
-    Outline(dl, pos, b, hov ? col::ActionHovRule : col::ActionRule, Px(3));
-    Text(dl, t, ImVec2(pos.x + 1.0f + padX, pos.y + 1.0f + padY), col::ActionText, label);
+    // V41's Details: white 1.6% fill, a white 8% outline, 3 px rounding, #c1b397 type.
+    dl->AddRectFilled(pos, b, hov ? Hex(0xffffff, 0x0c) : v41::DetailsBg, Px(3));
+    Outline(dl, pos, b, hov ? col::ActionHovRule : v41::DetailsLine, Px(3));
+    Text(dl, t, ImVec2(pos.x + 1.0f + padX, pos.y + 1.0f + padY), v41::DetailsText, label);
     if (chevron)
-        DrawChevronDown(dl, ImVec2(b.x - 1.0f - padX - Px(3.5f), pos.y + h * 0.53f), Px(5.5f), col::ActionText);
+        DrawChevronDown(dl, ImVec2(b.x - 1.0f - padX - Px(3.5f), pos.y + h * 0.53f), Px(5.5f), v41::DetailsText);
     if (sizeOut) *sizeOut = ImVec2(w, h);
     return clicked;
 }
@@ -2215,19 +2804,26 @@ static void DrawReplayButton(ImDrawList* dl, const MatchMeta& m, ImVec2 pos, ImV
     const bool hov = ImGui::IsItemHovered() && !busy;
     const bool act = ImGui::IsItemActive() && !busy;
     const ImVec2 b(pos.x + size.x, pos.y + size.y);
-    const ImU32 ca = act ? col::ReplayB : hov ? col::ReplayHovA : col::ReplayA;
-    const ImU32 cb = act ? col::ReplayActB : hov ? col::ReplayHovB : col::ReplayB;
-    dl->AddRectFilledMultiColor(pos, b, ca, cb, cb, ca);
-    if (busy) dl->AddRectFilled(pos, b, Hex(0x13120f, 120));
+    // V41: linear-gradient(105deg, #d2bb83, #b6a06c), a #ddc48c55 outline, 4 px rounding, an inset
+    // white highlight along the top, a soft shadow under it.
+    const ImU32 ca = act ? Hex(0xc4ad77) : hov ? Hex(0xdcc690) : v41::ReplayA;
+    const ImU32 cb = act ? Hex(0xa58f5f) : hov ? Hex(0xc2ac78) : v41::ReplayB;
+    for (int k = 1; k <= 3; k++)
+        dl->AddRectFilled(ImVec2(pos.x - k, pos.y + Px(5) - k), ImVec2(b.x + k, b.y + Px(5) + k), Hex(0, 0x0a), Px(4) + k);
+    FillLinear(dl, pos, b, Px(4), 105.0f, ca, cb);
+    dl->AddLine(ImVec2(pos.x + Px(4), pos.y + 1.5f), ImVec2(b.x - Px(4), pos.y + 1.5f), Hex(0xffffff, 0x33));
+    Outline(dl, pos, b, v41::ReplayLine, Px(4));
+    if (busy) dl->AddRectFilled(pos, b, Hex(0x13120f, 120), Px(4));
 
-    const Type t = T(15, true);
-    const float tracking = Px(0.5f);
+    const Type t = T(13, true);
+    const float tracking = Px(1.0f);
     const float labelW = TextSpaced(nullptr, t, ImVec2(), 0, "REPLAY MATCH", tracking);
-    const float triW = Px(11), gap = TextW(t, "  ") + Px(6);
+    const float triW = Px(10), gap = Px(14);
     const float x0 = R(pos.x + (size.x - (triW + gap + labelW)) * 0.5f);
     const float push = act ? 1.0f : 0.0f;
-    DrawPlay(dl, ImVec2(x0 + triW * 0.5f, pos.y + size.y * 0.5f + push), Px(12.5f), col::ReplayText);
-    TextSpaced(dl, t, ImVec2(x0 + triW + gap, pos.y + Px(11) + push), col::ReplayText, "REPLAY MATCH", tracking);
+    DrawPlay(dl, ImVec2(x0 + triW * 0.5f, pos.y + size.y * 0.5f + push), Px(11), v41::ReplayText);
+    TextSpaced(dl, t, ImVec2(x0 + triW + gap, R(pos.y + (size.y - LineH(13)) * 0.5f) + push), v41::ReplayText, "REPLAY MATCH",
+               tracking);
 
     if (clicked && !busy)
     {
@@ -2302,68 +2898,112 @@ static void DrawShareLink(ImDrawList* dl, const MatchMeta& m, float right, float
                                          : UrlProtocol::kNotPublishedTip);
 }
 
-// A team in the Builds tab: its heading (cup and WINNER for the winner), then a line a player:
-// profession, name, and the bar. The profession icon and the name show the build card on hover; a
-// click on the icon pins it, a click on the name searches for the player, a right-click copies the
-// template.
-static float DrawBuildsTeam(ImDrawList* dl, const MatchMeta& m, const char* partyId, const GuildLabel& gl,
+// V41's build bar: eight 28 px cells with no gaps (224 px), each skill's picture drawn 32 px and
+// cropped to the cell. Hover a skill for its card; a click adds it to the Skills filter or takes it
+// out, as the legacy row does.
+static void DrawBuildBar(ImDrawList* dl, const PlayerMeta& p, const SkillDatabaseView& view, ImVec2 pos, float cell)
+{
+    std::vector<int> skills;
+    if (!p.used_skills.empty())
+    {
+        const auto sorted = view.SortSkillsForDisplay(p.used_skills, p.primary, p.secondary);
+        skills.assign(sorted.begin(), sorted.end());
+    }
+    for (int i = 0; i < 8; i++)
+    {
+        const ImVec2 a(R(pos.x + cell * i), R(pos.y)), b(R(pos.x + cell * (i + 1)), R(pos.y) + cell);
+        const int id = i < (int)skills.size() ? skills[i] : 0;
+        const ImTextureID tex = id ? GetSkillIcon(id, &view) : ImTextureID();
+        if (tex)
+            SkillCell(dl, tex, a, b, false);
+        else
+            dl->AddRectFilled(a, b, Hex(0x1a1916, 0xb0));
+        if (!id) continue;
+        const bool picked = s_state.selectedSkills.count(id) > 0;
+        if (picked) dl->AddRect(a, b, ImGui::GetColorU32(kColorAccent), 0.0f, 0, 2.0f);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(i);
+        const bool clicked = ImGui::InvisibleButton("##skill", ImVec2(b.x - a.x, b.y - a.y));
+        const bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        if (hov)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            DrawSkillTooltip(id, &view);
+        }
+        if (clicked)
+        {
+            if (picked) s_state.selectedSkills.erase(id);
+            else        s_state.selectedSkills.insert(id);
+        }
+    }
+}
+
+// A team in the Builds tab. The heading (40 px): the guild's cape, a 3 px stripe in its side's
+// colour (party 1 blue, party 2 red), the name in that colour, its tag, and the trophy at the far
+// right for the winner, over a wash of the side's colour. Then a 30 px line a player: profession,
+// name, the full bar. The profession icon and the name show the build card on hover; a click on the
+// icon pins it, a click on the name searches for the player, a right-click copies the template.
+static float DrawRosterTeam(ImDrawList* dl, const MatchMeta& m, const char* partyId, const GuildLabel& gl, bool red,
                             bool winner, float x, float w, float y, const OverviewBuilds& ob, bool compact)
 {
     const SkillDatabaseView& view = GetMatchSkillView(m);
-    y += Px(17);
+    const ImU32 stripe = red ? v41::RedStripe : v41::BlueStripe;
+    const ImU32 nameCol = red ? v41::RedName : v41::BlueName;
+    const ImU32 wash = red ? v41::RedWash : v41::BlueWash;
 
     // Heading.
-    const Type name = T(13, true), tag = T(13);
-    const float headH = winner ? Px(23) : LineH(13);
-    float hx = x;
+    y += compact ? Px(8) : Px(12);
+    const float hh = Px(40);
+    const ImVec2 h0(x, R(y)), h1(x + w, R(y) + hh);
+    FillLinear(dl, h0, ImVec2(x + w * 0.9f, h1.y), 0.0f, 90.0f, wash, wash & ~IM_COL32_A_MASK);
+    if (ImTextureID cape = GetGuildCape(m, gl))
+        ImageContain(dl, cape, 96.0f, 192.0f, h0, ImVec2(h0.x + Px(22), h1.y));
+    dl->AddRectFilled(ImVec2(x + Px(29), h0.y + Px(8)), ImVec2(x + Px(32), h1.y - Px(8)), stripe, Px(2));
+    float right = x + w;
     if (winner)
     {
-        const ImVec2 b0(x, R(y)), b1(x + Px(23), R(y) + Px(23));
-        dl->AddRectFilled(b0, b1, col::CupBg, Px(3));
-        if (ImTextureID cup = GetCupIcon())
-            ImageContain(dl, cup, 64.0f, 109.0f, ImVec2(b0.x + Px(2), b0.y + Px(2)), ImVec2(b1.x - Px(2), b1.y - Px(2)));
-        hx += Px(23) + Px(8);
-    }
-    const float textTop = y + (headH - LineH(13)) * 0.5f;
-    float winnerW = 0.0f;
-    const Type wl = T(9);
-    if (winner)
-    {
-        winnerW = TextSpaced(nullptr, wl, ImVec2(), 0, "WINNER", Px(0.7f));
-        TextSpaced(dl, wl, ImVec2(x + w - winnerW, y + (headH - LineH(9)) * 0.5f), col::WinnerLabel, "WINNER", Px(0.7f));
+        const ImVec2 c0(R(x + w - Px(22)), R(h0.y + (hh - Px(22)) * 0.5f)), c1(c0.x + Px(22), c0.y + Px(22));
+        if (ImTextureID cup = GetCupIcon()) ImageContain(dl, cup, 64.0f, 109.0f, c0, c1);
+        if (ImGui::IsMouseHoveringRect(c0, c1) && ImGui::IsWindowHovered()) ImGui::SetTooltip("Winning guild");
+        right = c0.x - Px(8);
     }
     const std::string nm = gl.name.empty() ? gl.display : gl.name;
-    const float maxNameW = x + w - winnerW - Px(8) - hx;
+    const Type name = T(14, true), tag = T(11);
+    const float nx = x + Px(38);
+    const float textTop = R(h0.y + (hh - LineH(14)) * 0.5f);
     ImGui::PushID(partyId);
-    if (LinkText(dl, "##guild", name, ImVec2(hx, textTop), maxNameW, col::Text, nm.c_str()))
+    if (LinkText(dl, "##guild", name, ImVec2(nx, textTop), right - nx, nameCol, nm.c_str()))
         FilterBySearchTerm(gl.display);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show every match for %s", gl.display.c_str());
-    const float nameW = TextFit(nullptr, name, ImVec2(), maxNameW, 0, nm.c_str());
-    if (!gl.name.empty() && !gl.tag.empty())
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s team: %s\nClick to show every match for this guild", red ? "Red" : "Blue", gl.display.c_str());
+    else if (ImGui::IsMouseHoveringRect(h0, h1) && ImGui::IsWindowHovered())
+        ImGui::SetTooltip("%s team", red ? "Red" : "Blue");
+    const float nameW = TextFit(nullptr, name, ImVec2(), right - nx, 0, nm.c_str());
+    if (!gl.name.empty() && !gl.tag.empty() && nx + nameW + Px(4) < right)
     {
-        const float gap = winner ? Px(5) : TextW(name, " ");
         const std::string tg = "[" + gl.tag + "]";
-        if (hx + nameW + gap < x + w - winnerW - Px(8))
-            TextFit(dl, tag, ImVec2(hx + nameW + gap, textTop), x + w - winnerW - Px(8) - (hx + nameW + gap), col::Tag, tg.c_str());
+        TextFit(dl, tag, ImVec2(nx + nameW + Px(4), textTop + Ascent(14) - Ascent(11)), right - (nx + nameW + Px(4)),
+                v41::RosterTag, tg.c_str());
     }
-    y += headH + Px(9);
+    y = h1.y + Px(6);
 
     // Players.
     auto pit = m.parties.find(partyId);
     if (pit == m.parties.end() || pit->second.players.empty())
     {
-        Text(dl, T(11), ImVec2(x, y), col::FactLabel, m.is_cloud_only ? "Builds arrive with the match download" : "No player data");
+        Text(dl, T(11), ImVec2(x, y + Px(6)), v41::FactLabel, m.is_cloud_only ? "Builds arrive with the match download" : "No player data");
         ImGui::PopID();
-        return y + LineH(11);
+        return y + Px(6) + LineH(11);
     }
     std::vector<const PlayerMeta*> players;
     for (const auto& p : pit->second.players) players.push_back(&p);
     std::sort(players.begin(), players.end(),
               [](const PlayerMeta* a, const PlayerMeta* b) { return a->player_number < b->player_number; });
 
-    const float rowH = compact ? Px(25) : Px(28);
-    const float barW = Px(22) * 8.0f + Px(2) * 7.0f;
-    const Type pn = T(11);
+    // The list's cell size; 6 px between bars (2 px when compact).
+    const float rowH = compact ? Px(31) : Px(35), cell = Px(29), barW = cell * 8.0f;
+    const Type pn = T(13);
     for (const PlayerMeta* pp : players)
     {
         const PlayerMeta& p = *pp;
@@ -2390,10 +3030,11 @@ static float DrawBuildsTeam(ImDrawList* dl, const MatchMeta& m, const char* part
         }
         if (pinned) Outline(dl, ImVec2(i0.x - 2.0f, i0.y - 2.0f), ImVec2(i1.x + 2.0f, i1.y + 2.0f), ImGui::GetColorU32(kColorAccent), 3.0f);
 
-        // Name: a search link.
-        const float nx = x + Px(23);
-        const float nameMaxW = std::max(Px(20), w - Px(23) - Px(7) - barW);
-        if (LinkText(dl, "##name", pn, ImVec2(nx, cy - LineH(11) * 0.5f), nameMaxW, col::Player, clean.c_str()))
+        // Name: a search link. Then the copy button, 8 px before the bar.
+        const float copyS = Px(18), copyGap = Px(8);
+        const float nx2 = x + Px(16) + Px(7);
+        const float nameMaxW = std::max(Px(20), w - Px(16) - Px(7) - copyGap * 2.0f - copyS - barW);
+        if (LinkText(dl, "##name", pn, ImVec2(nx2, R(cy - LineH(13) * 0.5f)), nameMaxW, v41::Player, clean.c_str()))
         {
             if (ImGui::GetIO().KeyCtrl) AddSearchTerm(clean);
             else                        FilterBySearchTerm(clean);
@@ -2401,7 +3042,7 @@ static float DrawBuildsTeam(ImDrawList* dl, const MatchMeta& m, const char* part
         showCard |= ImGui::IsItemHovered();
 
         // Right-click on the icon or the name: the templates.
-        if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(nx + nameMaxW, y + rowH)) &&
+        if (ImGui::IsMouseHoveringRect(ImVec2(x, y), ImVec2(nx2 + nameMaxW, y + rowH)) &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::IsWindowHovered())
         {
             s_page.ctxName = clean;
@@ -2427,9 +3068,34 @@ static float DrawBuildsTeam(ImDrawList* dl, const MatchMeta& m, const char* part
             ImGui::EndTooltip();
         }
 
-        // The bar: hover for the skill, click to filter by it.
-        ImGui::SetCursorScreenPos(ImVec2(R(x + w - barW), R(cy - Px(11))));
-        DrawPlayerSkillRow(p, view, Px(22));
+        // Copy the build: the template (skills and the solved attributes) as a chat link, as the
+        // legacy Overview's button copies it.
+        if (!p.used_skills.empty() || !p.skill_template_code.empty())
+        {
+            static std::unordered_map<std::string, float> s_copiedAt;
+            const std::string ckey = m.folder_name + "|" + key;
+            const auto cit = s_copiedAt.find(ckey);
+            const float fb = cit == s_copiedAt.end() ? -1.0f : cit->second;
+            ImGui::SetCursorScreenPos(ImVec2(R(x + w - barW - copyGap - copyS), y));
+            if (DrawCopyIcon("##copy_build", copyS, R((rowH - copyS) * 0.5f), fb))
+            {
+                const std::string chatLink = "[" + clean + "-Skills;" + PlayerTemplateCode(p, build) + "]";
+                ImGui::SetClipboardText(chatLink.c_str());
+                s_copiedAt[ckey] = (float)ImGui::GetTime();
+            }
+            if (ImGui::IsItemHovered())
+            {
+                const bool copied = fb >= 0.0f && (float)ImGui::GetTime() - fb < 1.5f;
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(copied ? "Copied!" : "Copy build template");
+                if (!copied)
+                    ImGui::TextColored(kColorTextDim, build ? "Skills and the solved attributes (points only, no runes)"
+                                                            : "Skills only until the match has been read");
+                ImGui::EndTooltip();
+            }
+        }
+
+        DrawBuildBar(dl, p, view, ImVec2(R(x + w - barW), R(cy - cell * 0.5f)), cell);
 
         ImGui::PopID();
         y += rowH;
@@ -2470,6 +3136,181 @@ static void DrawPinnedCard(const MatchMeta& m, const OverviewBuilds& ob)
         }
 }
 
+// ─── Lord damage: worked out from the recording, on request ──────────────────
+//
+// The totals come from the match reader (ReplayWindow::ExportMatchAnalysis "lord_damage", the
+// replay's own BuildLordDamageData), never from the recorder's lord_events, which assumed a fixed
+// Lord maximum. A local match is read as soon as it is selected (its builds need the same pass); a
+// cloud match waits for Calculate, which downloads it without opening the replay, then reads it.
+// The job is the browser's single analysis job, bound to its match's folder.
+
+static const char* const kLordTip = "The lord damage is worked out from the recording. Nothing opens; it takes a few seconds.";
+
+static std::string DownloadSize(uint64_t bytes)
+{
+    char buf[32];
+    if (bytes >= 1024ull * 1024ull) snprintf(buf, sizeof(buf), "%.1f MB", (double)bytes / (1024.0 * 1024.0));
+    else                             snprintf(buf, sizeof(buf), "%d KB", (int)std::max<uint64_t>(1, (bytes + 512) / 1024));
+    return buf;
+}
+
+// A circular arrow (the mockup's refresh mark), h px tall, centred on c.
+static void DrawRefreshGlyph(ImDrawList* dl, ImVec2 c, float h, ImU32 col)
+{
+    const float r = h * 0.38f, pi = 3.14159265f;
+    dl->PathArcTo(c, r, -pi * 0.35f, pi * 1.35f, 20);
+    dl->PathStroke(col, 0, std::max(1.0f, h * 0.11f));
+    const ImVec2 tip(c.x + r * std::cos(-pi * 0.35f), c.y + r * std::sin(-pi * 0.35f));
+    const float s = h * 0.26f;
+    dl->AddTriangleFilled(ImVec2(tip.x + s * 0.55f, tip.y - s * 0.1f), ImVec2(tip.x - s * 0.55f, tip.y - s * 0.45f),
+                          ImVec2(tip.x - s * 0.1f, tip.y + s * 0.6f), col);
+}
+
+static float DrawLordDamage(ImDrawList* dl, const MatchMeta& m, const GuildLabel g[2], float x, float w, float y, bool compact)
+{
+    using State = MatchAnalysisJob::State;
+    const float top = y;
+    const bool hidden = ResultHidden(m);
+    const bool mine = s_analysis.folderName == m.folder_name;
+    const bool have = mine && s_analysis.state == State::Ready && s_analysis.hasLordDamage;
+    const bool absent = mine && s_analysis.state == State::Ready && !s_analysis.hasLordDamage;
+    const bool failed = mine && s_analysis.state == State::Failed;
+    const bool downloading = (mine && s_analysis.state == State::Downloading) ||
+                             (g_cloudDownloadInProgress && g_cloudDownloadFolder == m.folder_name);
+    const bool computing = !downloading && mine &&
+                           (s_analysis.state == State::Analysing || (s_analysis.state == State::Idle && !m.is_cloud_only));
+    const bool otherDownload = g_cloudDownloadInProgress && !downloading;
+
+    // The Guild Lord, and the heading with the state at the right.
+    {
+        EnsureTextureBasePath();
+        if (ImTextureID lord = GetTextureCache().GetTexture(ui::TextureBasePath() + "\\Textures\\Game_UI\\guild_lord_full.png"))
+            ImageContain(dl, lord, 100.0f, 217.0f, ImVec2(x, top + (compact ? Px(8) : Px(9))),
+                         ImVec2(x + Px(25), top + (compact ? Px(8) : Px(9)) + (compact ? Px(50) : Px(54))));
+    }
+    const float cx = x + Px(36), cw = w - Px(36);
+    const float headTop = top + (compact ? Px(6) : Px(10));
+    TextSpaced(dl, T(10), ImVec2(cx, R(headTop + (Px(18) - LineH(10)) * 0.5f)), v41::LordHead, "LORD DAMAGE", Px(1));
+    const char* status = have ? (hidden ? "Calculated \xC2\xB7 hidden" : "Calculated")
+                       : absent      ? "No Guild Lord in this recording"
+                       : downloading ? "Downloading"
+                       : computing   ? "Calculating"
+                       : failed      ? "Calculation failed"
+                                     : "Not calculated";
+    const Type st = T(9);
+    Text(dl, st, ImVec2(R(cx + cw - TextW(st, status)), R(headTop + (Px(18) - LineH(9)) * 0.5f)), v41::LordStatus, status);
+
+    // Two rows: tag (48 px), the track, the total (55 px, right aligned), on one scale: the larger
+    // total fills its track. These compare the teams' damage; they are not the Lords' health.
+    const float rowsTop = headTop + Px(18) + (compact ? Px(6) : Px(12));
+    const float rowH = Px(15), rowGap = Px(12);
+    const float trackX = cx + Px(48) + Px(10), trackW = cw - Px(48) - Px(55) - Px(20);
+    const bool show = have && !hidden;
+    const long mx = show ? std::max(s_analysis.lordDamage[0], s_analysis.lordDamage[1]) : 0;
+    for (int i = 0; i < 2; i++)
+    {
+        const float ry = rowsTop + i * (rowH + rowGap);
+        const std::string tag = g[i].tag.empty() ? std::string(i == 0 ? "Blue" : "Red") : "[" + g[i].tag + "]";
+        TextFit(dl, T(11), ImVec2(cx, R(ry + (rowH - LineH(11)) * 0.5f)), Px(48), i == 0 ? v41::BlueStripe : v41::RedStripe, tag.c_str());
+        const ImVec2 t0(R(trackX), R(ry + (rowH - Px(7)) * 0.5f)), t1(R(trackX + trackW), t0.y + Px(7));
+        if (show)
+        {
+            dl->AddRectFilled(t0, t1, Hex(0xffffff, 0x08), Px(2));
+            const float frac = mx > 0 ? (float)s_analysis.lordDamage[i] / (float)mx : 0.0f;
+            if (frac > 0.0f)
+                FillLinear(dl, t0, ImVec2(R(t0.x + (t1.x - t0.x) * frac), t1.y), Px(2), 90.0f, i == 0 ? v41::BlueFillA : v41::RedFillA,
+                           i == 0 ? v41::BlueFillB : v41::RedFillB);
+        }
+        else
+        {
+            // Empty: repeating-linear-gradient(90deg, #ffffff12 0 4px, #ffffff06 4px 7px).
+            dl->PushClipRect(t0, t1, true);
+            for (float sx = t0.x; sx < t1.x; sx += Px(7))
+            {
+                dl->AddRectFilled(ImVec2(sx, t0.y), ImVec2(std::min(t1.x, sx + Px(4)), t1.y), v41::TrackA);
+                dl->AddRectFilled(ImVec2(std::min(t1.x, sx + Px(4)), t0.y), ImVec2(std::min(t1.x, sx + Px(7)), t1.y), v41::TrackB);
+            }
+            dl->PopClipRect();
+        }
+        const std::string value = show ? Thousands((size_t)s_analysis.lordDamage[i]) : std::string("?");
+        const Type vt = T(13);
+        Text(dl, vt, ImVec2(R(cx + cw - TextW(vt, value.c_str())), R(ry + (rowH - LineH(13)) * 0.5f)), v41::LordValue, value.c_str());
+    }
+    if (show && ImGui::IsMouseHoveringRect(ImVec2(cx, rowsTop), ImVec2(cx + cw, rowsTop + rowH * 2.0f + rowGap)) &&
+        ImGui::IsWindowHovered())
+        ImGui::SetTooltip("The damage each team dealt to the other's Guild Lord, worked out from the recording.\n"
+                          "Both bars use one scale: the larger total fills its track.");
+
+    // Not worked out yet: one button over the tracks (left 52, right 57 of the rows), no extra row.
+    if (!have && !absent)
+    {
+        const ImVec2 o0(cx + Px(52), rowsTop), o1(cx + cw - Px(57), rowsTop + rowH * 2.0f + rowGap);
+        std::string label, cost;
+        if (downloading)
+        {
+            const uint64_t tot = g_cloudDownloadTotal.load(), got = g_cloudDownloadReceived.load();
+            if (tot > 0 && g_cloudDownloadFolder == m.folder_name)
+                label = "Downloading " + std::to_string((int)std::min<uint64_t>(100, got * 100 / tot)) + "%\xE2\x80\xA6";
+            else
+                label = "Downloading\xE2\x80\xA6";
+        }
+        else if (computing) label = "Calculating\xE2\x80\xA6";
+        else if (failed)    label = "Retry";
+        else
+        {
+            label = "Calculate";
+            if (m.is_cloud_only) cost = m.download_bytes > 0 ? " \xC2\xB7 " + DownloadSize(m.download_bytes) + " download" : " \xC2\xB7 download";
+        }
+        const bool busy = downloading || computing || otherDownload;
+        const Type lt = T(11), ct = T(10);
+        const bool glyph = !downloading && !computing;
+        const float contentW = (glyph ? Px(10) + Px(5) : 0.0f) + TextW(lt, label.c_str()) + (cost.empty() ? 0.0f : TextW(ct, cost.c_str()));
+        const float bw = std::max(Px(180), contentW + Px(9) * 2.0f + 2.0f), bh = Px(29);
+        const ImVec2 b0(R((o0.x + o1.x - bw) * 0.5f), R((o0.y + o1.y - bh) * 0.5f)), b1(b0.x + R(bw), b0.y + bh);
+        ImGui::SetCursorScreenPos(b0);
+        const bool clicked = ImGui::InvisibleButton("##lib_lord_calc", ImVec2(b1.x - b0.x, bh));
+        const bool hov = ImGui::IsItemHovered() && !busy;
+        for (int k = 1; k <= 4; k++)   // box-shadow: 0 2px 8px #0006
+            dl->AddRectFilled(ImVec2(b0.x - k, b0.y + Px(2) - k), ImVec2(b1.x + k, b1.y + Px(2) + k), Hex(0, 0x10), Px(4) + k);
+        dl->AddRectFilled(b0, b1, busy ? v41::CalcBusyBg : hov ? v41::CalcHovBg : v41::CalcBg, Px(4));
+        Outline(dl, b0, b1, hov ? v41::CalcHovLine : v41::CalcLine, Px(4));
+        float tx = R((b0.x + b1.x - contentW) * 0.5f);
+        const ImU32 fg = busy ? v41::CalcBusyText : v41::CalcText;
+        const float ty = R(b0.y + (bh - LineH(11)) * 0.5f);
+        if (glyph)
+        {
+            DrawRefreshGlyph(dl, ImVec2(tx + Px(5), b0.y + bh * 0.5f), Px(10), fg);
+            tx += Px(10) + Px(5);
+        }
+        Text(dl, lt, ImVec2(tx, ty), fg, label.c_str());
+        tx += TextW(lt, label.c_str());
+        if (!cost.empty()) Text(dl, ct, ImVec2(tx, ty + Ascent(11) - Ascent(10)), v41::CalcCost, cost.c_str());
+        if (ImGui::IsItemHovered())
+        {
+            if (failed && !s_analysis.error.empty())
+                ImGui::SetTooltip("%s\n\n%s", kLordTip, s_analysis.error.c_str());
+            else if (otherDownload)
+                ImGui::SetTooltip("%s\n\nAnother match is downloading; this one can start when it is done.", kLordTip);
+            else
+                ImGui::SetTooltip("%s", kLordTip);
+        }
+        if (clicked && !busy)
+        {
+            if (failed)
+            {
+                StopAnalysisProcess();
+                s_analysis = MatchAnalysisJob();
+                s_analysis.folderName = m.folder_name;
+            }
+            UpdateMatchAnalysis(m, true);
+        }
+    }
+
+    const float bottom = std::max(top + (compact ? Px(72) : Px(112)), rowsTop + rowH * 2.0f + rowGap + (compact ? Px(9) : Px(13)));
+    HRule(dl, x, x + w, bottom - 1.0f, Hex(0xffffff, 0x12));
+    return bottom + Px(2);
+}
+
 static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -2481,6 +3322,14 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
     const bool hidden = ResultHidden(m);
     const std::string& folder = m.folder_name;
 
+    // Compact (owner 2026-11-25): on a panel too short for both rosters at full size (about 1250 px
+    // of page), a thinner hero, the four facts on one line, a tighter lord block and replay button,
+    // and 31 px player rows: about 250 px less, so both teams fit on a 1080p screen.
+    const bool compact = ImGui::GetContentRegionAvail().y < Px(1250);
+
+    // The match reader (builds, lord damage): a local match is read as soon as it is selected.
+    UpdateMatchAnalysis(m, false);
+
     // Single-pane width: the way back to the list, above the hero.
     if (backLink)
     {
@@ -2490,64 +3339,107 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
         y += bh;
     }
 
-    // Hero: the hall's loading screen, fading into the sidebar.
+    // Hero: the hall's loading screen across the panel, 155 px, at 0.9 opacity, masked from opaque
+    // at half its height to clear at the bottom, with a #13120f fade rising from its foot.
     {
-        const float heroH = Px(100);
+        const float heroH = compact ? Px(78) : Px(155);
         const ImVec2 a(o.x, y), b(o.x + fullW, y + heroH);
+        const float mid = a.y + heroH * 0.5f;
         if (const ArtTexture* art = LoadArt(HallArtPath(m.map_id)))
-            ImageCover(dl, (ImTextureID)art->srv.Get(), art->w, art->h, a, b, IM_COL32_WHITE, 0.0f);
-        else
-            dl->AddRectFilledMultiColor(a, b, Hex(0x2a2720), Hex(0x2a2720), col::Aside, col::Aside);
-        const ImU32 clear = col::Aside & ~IM_COL32_A_MASK;
-        dl->AddRectFilledMultiColor(ImVec2(a.x, a.y + heroH * 0.1f), b, clear, clear, col::Aside, col::Aside);
+        {
+            // Cover, centred: the two halves drawn separately so the lower one can fade.
+            const float bw = b.x - a.x, bhh = b.y - a.y;
+            const float s = std::max(bw / art->w, bhh / art->h);
+            const float uw = bw / (art->w * s), vh = bhh / (art->h * s);
+            const ImVec2 uv0((1.0f - uw) * 0.5f, (1.0f - vh) * 0.5f), uv1(uv0.x + uw, uv0.y + vh);
+            const float vm = (uv0.y + uv1.y) * 0.5f;
+            const ImTextureID tex = (ImTextureID)art->srv.Get();
+            dl->AddImage(tex, a, ImVec2(b.x, mid), uv0, ImVec2(uv1.x, vm), IM_COL32(255, 255, 255, 230));
+            dl->AddImage(tex, ImVec2(a.x, mid), b, ImVec2(uv0.x, vm), uv1, IM_COL32_WHITE);
+            ImDrawVert* v = dl->VtxBuffer.Data + dl->VtxBuffer.Size - 4;   // a, (b.x, a.y), b, (a.x, b.y)
+            v[0].col = v[1].col = IM_COL32(255, 255, 255, 230);
+            v[2].col = v[3].col = IM_COL32(255, 255, 255, 0);
+        }
+        // The fade from the foot (alpha along the mask): 0 at 10% down, about 0.4 at half, 0 at the foot.
+        const ImU32 f = v41::HeroFade & ~IM_COL32_A_MASK;
+        const float y10 = a.y + heroH * 0.1f;
+        dl->AddRectFilledMultiColor(ImVec2(a.x, y10), ImVec2(b.x, mid), f, f, f | (0x66u << IM_COL32_A_SHIFT), f | (0x66u << IM_COL32_A_SHIFT));
+        dl->AddRectFilledMultiColor(ImVec2(a.x, mid), b, f | (0x66u << IM_COL32_A_SHIFT), f | (0x66u << IM_COL32_A_SHIFT), f, f);
         y = b.y;
     }
 
-    // SELECTED MATCH · 18 NOV 2026
-    y += Px(4);
+    // SELECTED MATCH · 18 NOV 2026, over the hero's foot.
+    y -= compact ? Px(18) : Px(24);
     const std::string meta = "SELECTED MATCH \xC2\xB7 " + MatchDate(m, true);
-    TextSpaced(dl, T(10), ImVec2(x, y), col::Muted, meta.c_str(), Px(1));
+    TextSpaced(dl, T(10), ImVec2(x, R(y)), v41::Meta, meta.c_str(), Px(1.5f));
     y += LineH(10);
 
-    // The hall.
-    y += Px(11);
+    // The hall: 26 px, its icon beside it.
+    y += compact ? Px(6) : Px(11);
     {
-        const float titleH = LineH(23);
+        const float titleH = Px(32);
         if (ImTextureID ico = GetGuildHallIcon())
             dl->AddImage(ico, ImVec2(x, R(y + (titleH - Px(22)) * 0.5f)), ImVec2(x + Px(22), R(y + (titleH - Px(22)) * 0.5f) + Px(22)));
         const char* mapName = GetMapName(m.map_id);
         const std::string mapStr = mapName ? mapName : ("Map " + std::to_string(m.map_id));
-        TextFit(dl, T(23), ImVec2(x + Px(31), y), w - Px(31), col::Text, mapStr.c_str());
-        y += titleH + Px(15);
+        const Type tt = T(26);
+        float tx = x + Px(31);
+        const float ty = R(y + (titleH - LineH(26)) * 0.5f);
+        // letter-spacing -0.5px
+        for (const char* it = mapStr.c_str(); *it;)
+        {
+            unsigned int cp = 0;
+            const int n = ImTextCharFromUtf8(&cp, it, nullptr);
+            if (n <= 0) break;
+            const float cwid = TextW(tt, it, it + n);
+            if (tx + cwid > x + w) break;
+            Text(dl, tt, ImVec2(tx, ty), v41::Title, std::string(it, it + n).c_str());
+            tx += cwid - Px(0.5f);
+            it += n;
+        }
+        y += titleH + (compact ? Px(10) : Px(22));
     }
 
-    // The facts: occasion, duration, flux, notes.
+    // The facts, in a box: occasion, duration, flux, notes.
     {
-        const float colW = (w - Px(24)) * 0.5f;
+        const float boxPad = compact ? Px(9) : Px(12);
         const float factH = LineH(10) + Px(3) + LineH(13);
+        const float boxH = 2.0f + boxPad * 2.0f + (compact ? factH : factH * 2.0f + Px(10));
+        const ImVec2 f0(x, R(y)), f1(x + w, R(y) + R(boxH));
+        dl->AddRectFilled(f0, f1, v41::FactsBg, Px(6));
+        Outline(dl, f0, f1, v41::FactsLine, Px(6));
+        const float colGap = compact ? Px(10) : Px(24);
+        const float colW = compact ? (w - 2.0f - boxPad * 2.0f - colGap * 3.0f) * 0.25f : (w - 2.0f - boxPad * 2.0f - colGap) * 0.5f;
         const Type label = T(10), value = T(13);
-        auto icon = [&](float fx, float fy, ImTextureID tex, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1)) {
+        // `size`: the drawn size in the 20 px slot (the clock fills its picture, the arena icon does not).
+        auto icon = [&](float fx, float fy, ImTextureID tex, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1), float size = 20.0f) {
             if (!tex) return;
-            const float iy = R(fy + (factH - Px(20)) * 0.5f);
-            dl->AddImage(tex, ImVec2(fx, iy), ImVec2(fx + Px(20), iy + Px(20)), uv0, uv1);
+            const float sz = Px(size), ix = R(fx + (Px(20) - sz) * 0.5f);
+            const float iy = R(fy + (factH - sz) * 0.5f);
+            dl->AddImage(tex, ImVec2(ix, iy), ImVec2(ix + sz, iy + sz), uv0, uv1);
         };
-        const float c0 = x, c1 = x + colW + Px(24);
-        const float r0 = y, r1 = y + factH + Px(10);
-        const float vx0 = c0 + Px(30), vx1 = c1 + Px(30), vw = colW - Px(30);
+        // Occasion, Duration | Flux, Notes: two by two, or four in a row when compact.
+        const float iconW = compact ? Px(26) : Px(30);
+        const float c0 = f0.x + 1.0f + boxPad, c1 = c0 + colW + colGap;
+        const float cF = compact ? c1 + colW + colGap : c0, cN = compact ? cF + colW + colGap : c1;
+        const float r0 = f0.y + 1.0f + boxPad, r1 = compact ? r0 : r0 + factH + Px(10);
+        const float vx0 = c0 + iconW, vx1 = c1 + iconW, vw = colW - iconW;
+        const float vxF = cF + iconW, vxN = cN + iconW;
+        const float valueY = LineH(10) + Px(3);
 
         icon(c0, r0, GetArenaIcon());
-        Text(dl, label, ImVec2(vx0, r0), col::FactLabel, "Occasion");
-        TextFit(dl, value, ImVec2(vx0, r0 + LineH(10) + Px(3)), vw, col::FactValue, m.occasion.empty() ? "-" : m.occasion.c_str());
+        Text(dl, label, ImVec2(vx0, r0), v41::FactLabel, "Occasion");
+        TextFit(dl, value, ImVec2(vx0, r0 + valueY), vw, v41::FactValue, m.occasion.empty() ? "-" : m.occasion.c_str());
 
-        icon(c1, r0, GetDurationIcon());
-        Text(dl, label, ImVec2(vx1, r0), col::FactLabel, "Duration");
-        Text(dl, T(11), ImVec2(vx1, r0 + LineH(10) + Px(3) + Px(0.7f)), hidden ? col::HiddenText : col::FactValue,
+        icon(c1, r0, GetDurationIcon(), ImVec2(0, 0), ImVec2(1, 1), 15.0f);
+        Text(dl, label, ImVec2(vx1, r0), v41::FactLabel, "Duration");
+        Text(dl, T(11), ImVec2(vx1, r0 + valueY + (LineH(13) - LineH(11)) * 0.5f), hidden ? col::HiddenText : v41::FactValue,
              hidden ? kHiddenWord : (m.match_duration.empty() ? "-" : m.match_duration.c_str()));
 
-        icon(c0, r1, GetFluxIcon());
-        Text(dl, label, ImVec2(vx0, r1), col::FactLabel, "Flux");
-        TextFit(dl, value, ImVec2(vx0, r1 + LineH(10) + Px(3)), vw, col::FactValue, m.flux.empty() ? "None" : m.flux.c_str());
-        if (!m.flux.empty() && ImGui::IsMouseHoveringRect(ImVec2(c0, r1), ImVec2(c0 + colW, r1 + factH)) && ImGui::IsWindowHovered())
+        icon(cF, r1, GetFluxIcon());
+        Text(dl, label, ImVec2(vxF, r1), v41::FactLabel, "Flux");
+        TextFit(dl, value, ImVec2(vxF, r1 + valueY), vw, v41::FactValue, m.flux.empty() ? "None" : m.flux.c_str());
+        if (!m.flux.empty() && ImGui::IsMouseHoveringRect(ImVec2(cF, r1), ImVec2(cF + colW, r1 + factH)) && ImGui::IsWindowHovered())
             if (const char* desc = GetFluxDescription(m.flux))
             {
                 ImGui::BeginTooltip();
@@ -2560,12 +3452,12 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
             }
 
         ImVec2 uv0, uv1;
-        icon(c1, r1, GetNotesScrollIcon(&uv0, &uv1), uv0, uv1);
-        Text(dl, label, ImVec2(vx1, r1), col::FactLabel, "Notes");
+        icon(cN, r1, GetNotesScrollIcon(&uv0, &uv1), uv0, uv1);
+        Text(dl, label, ImVec2(vxN, r1), v41::FactLabel, "Notes");
         const std::string note = MatchNotes::Get().GetNote(folder);
         std::string firstLine = note.substr(0, note.find('\n'));
-        const ImVec2 linkPos(vx1, r1 + LineH(10) + Px(3) + (LineH(13) - LineH(12)) * 0.5f);
-        if (LinkText(dl, "##lib_note_link", T(12), linkPos, vw, col::Link, note.empty() ? "Add a note" : firstLine.c_str()))
+        const ImVec2 linkPos(vxN, r1 + valueY);
+        if (LinkText(dl, "##lib_note_link", T(13), linkPos, vw, col::Link, note.empty() ? "Add a note" : firstLine.c_str()))
         {
             s_state.browserNoteBuffer = note;
             s_state.browserNoteMatchId = folder;
@@ -2579,7 +3471,7 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
         }
-        ImGui::SetNextWindowPos(ImVec2(x, r1 + factH + Px(6)));
+        ImGui::SetNextWindowPos(ImVec2(x, f1.y + Px(6)));
         ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGui::ColorConvertU32ToFloat4(col::Popover));
         ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(col::PopoverRule));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(10), Px(10)));
@@ -2601,20 +3493,27 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(2);
 
-        y = r1 + factH + Px(11);
-        HRule(dl, x, x + w, y, col::Rule);
-        y += 1.0f;
+        y = f1.y + (compact ? Px(6) : Px(12));
     }
 
-    // Voice comms attached on this PC.
+    std::string ft1, ft2;
+    ParseFolderTags(m.folder_name, ft1, ft2);
+    const GuildLabel guilds[2] = { GetPartyGuild(m, "1", ft1), GetPartyGuild(m, "2", ft2) };
+
+    // Lord damage.
+    y = DrawLordDamage(dl, m, guilds, x, w, y, compact);
+
+    // Voice comms attached on this PC: the only place the list's matches show them.
     const Comms::Badge badge = Comms::BadgeFor(folder);
     if (badge.present)
     {
         y += Px(10);
-        const float rowH = LineH(12) + Px(3) + LineH(10);
-        DrawHeadsetGlyph(dl, ImVec2(x, R(y + (rowH - Px(20)) * 0.5f)), Px(20), badge.exists ? col::VoiceIcon : Hex(0x828288));
-        Text(dl, T(12), ImVec2(x + Px(29), y), col::VoiceTitle, "Voice comms attached");
-        Text(dl, T(10), ImVec2(x + Px(29), y + LineH(12) + Px(3)), col::VoiceSub,
+        const float rowH = Px(30);
+        const float textH = LineH(12) + Px(3) + LineH(10);
+        DrawHeadsetGlyph(dl, ImVec2(x, R(y + (rowH - Px(20)) * 0.5f)), Px(20), badge.exists ? v41::VoiceIcon : Hex(0x828288));
+        const float ty = R(y + (rowH - textH) * 0.5f);
+        Text(dl, T(12), ImVec2(x + Px(29), ty), v41::VoiceTitle, "Voice comms attached");
+        Text(dl, T(10), ImVec2(x + Px(29), ty + LineH(12) + Px(3)), v41::VoiceSub,
              badge.exists ? "Available on this PC" : "The file is missing on this PC");
         const float bw = SmallButtonWidth("Details", Px(9), true);
         const float bh = 2.0f + Px(10) + LineH(10);
@@ -2643,30 +3542,14 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
         y += rowH;
     }
 
-    // Spoiler-free: the result is hidden until revealed.
-    if (hidden)
-    {
-        y += Px(10);
-        HRule(dl, x, x + w, y, col::Rule);
-        y += 1.0f + Px(9);
-        const float bh = 2.0f + Px(8) + LineH(10);
-        Text(dl, T(11), ImVec2(x, y + (bh - LineH(11)) * 0.5f), col::Notice, "Result hidden");
-        const float bw = SmallButtonWidth("Reveal this match", Px(8), false);
-        if (SmallButton(dl, "##lib_reveal", ImVec2(R(x + w - bw), R(y)), "Reveal this match", Px(8), Px(4), false))
-            SpoilerFree::Get().Reveal(folder);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Show the winner, the length and the stats of this match.\n"
-                              "Watching the replay to the end reveals it too.");
-        y += bh;
-    }
+    // Replay match: 43 px, 11 above and 12 below.
+    const float replayH = compact ? Px(38) : Px(43);
+    y += compact ? Px(8) : Px(11);
+    DrawReplayButton(dl, m, ImVec2(x, R(y)), ImVec2(w, replayH));
+    y += replayH + (compact ? Px(8) : Px(12));
 
-    // Replay match.
-    y += Px(11);
-    const float replayH = Px(11) * 2.0f + LineH(15);
-    DrawReplayButton(dl, m, ImVec2(x, R(y)), ImVec2(w, R(replayH)));
-    y += replayH + Px(12);
-
-    // Tabs: Builds here; Stats and Map open the full-width details.
+    // Tabs: Builds here; Stats and Map open the full-width details. 15 px, 28 apart, a faint rule
+    // 12 px under them.
     {
         const Type tn = T(15), tb = T(15, true);
         struct Tab { const char* label; int tab; } tabs[] = {
@@ -2683,7 +3566,7 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
             const bool clicked = ImGui::InvisibleButton("##tab", ImVec2(tw, LineH(15) + Px(10)));
             const bool hov = ImGui::IsItemHovered();
             ImGui::PopID();
-            const ImU32 c = active ? col::TabOn : locked ? WithAlpha(col::Tabs, 0.45f) : hov ? col::Text : col::Tabs;
+            const ImU32 c = active ? v41::TabOn : locked ? WithAlpha(Hex(0xa89a82), 0.45f) : hov ? col::Text : Hex(0xa89a82);
             Text(dl, tt, ImVec2(tx, y), c, tab.label);
             if (hov && !active)
                 ImGui::SetTooltip("%s", locked ? (tab.tab == DetailTab_Stats ? "Stats are hidden in spoiler-free mode"
@@ -2696,13 +3579,12 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
             }
             tx += tw + Px(28);
         }
-        y += LineH(15) + Px(10);
-        HRule(dl, x, x + w, y, col::Rule);
+        y += LineH(15) + (compact ? Px(8) : Px(12));
+        HRule(dl, x, x + w, y, Hex(0xffffff, 0x14));
         y += 1.0f;
     }
 
     // Builds.
-    UpdateMatchAnalysis(m, false);
     OverviewBuilds ob;
     {
         using State = MatchAnalysisJob::State;
@@ -2715,12 +3597,9 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
                                                                           : "Solving attributes...";
     }
     obOut = ob;
-    std::string ft1, ft2;
-    ParseFolderTags(m.folder_name, ft1, ft2);
-    const GuildLabel g1 = GetPartyGuild(m, "1", ft1), g2 = GetPartyGuild(m, "2", ft2);
     const int winnerSide = ShownWinner(m);
-    y = DrawBuildsTeam(dl, m, "1", g1, winnerSide == 1, x, w, y, ob, hidden);
-    y = DrawBuildsTeam(dl, m, "2", g2, winnerSide == 2, x, w, y, ob, hidden);
+    y = DrawRosterTeam(dl, m, "1", guilds[0], false, winnerSide == 1, x, w, y, ob, compact);
+    y = DrawRosterTeam(dl, m, "2", guilds[1], true, winnerSide == 2, x, w, y, ob, compact);
 
     // The player context menu (right-click in a team).
     if (s_page.openCtx)
@@ -2738,14 +3617,14 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
         ImGui::EndPopup();
     }
 
-    // Rating and Share.
-    y += Px(15);
-    HRule(dl, x, x + w, y, col::Rule);
+    // Rating and Share, under a faint rule (V41's .note: 14 px above, 13 px inside).
+    y += Px(14);
+    HRule(dl, x, x + w, y, Hex(0xffffff, 0x12));
     y += 1.0f + Px(13);
     {
         const float lh = LineH(15);
         const Type rl = T(11);
-        Text(dl, rl, ImVec2(x, y + (lh - LineH(11)) * 0.5f), col::FactLabel, "Rating");
+        Text(dl, rl, ImVec2(x, y + (lh - LineH(11)) * 0.5f), v41::FactLabel, "Rating");
         DrawRatingStars(dl, ImVec2(x + TextW(rl, "Rating") + Px(10), y), lh, folder);
         DrawShareLink(dl, m, x + w, y, lh);
         y += lh;
@@ -2893,36 +3772,53 @@ static void Draw(const std::vector<MatchMeta>& matches)
         return;
     }
 
-    // Widths: the sidebar narrows with the window; below 1000 px the page is one pane, the list or
-    // the selected match.
+    // The scene behind the page (the selected match's hall); the list and the sidebar are glass
+    // panels over it, inside V41's margins (14 px above and below, 22 px at the sides).
+    const ImVec2 pageA = wp, pageB(wp.x + ws.x, wp.y + ws.y);
+    UpdateBackdrop(validSel ? matches[s_state.selectedMatchIndex].map_id : -1);
+    DrawBackdrop(dl, pageA, pageB);
+    const float mx = Px(22), my = Px(14);
+
+    // Widths: below 1000 px the page is one pane, the list or the selected match.
     const bool single = ws.x < Px(1000);
     if (!single) s_page.showDetail = false;
     const bool detailPane = single && s_page.showDetail && validSel;
-    float asideW = ws.x >= Px(1500) ? Px(450) : ws.x >= Px(1250) ? Px(410) : Px(380);
-    if (single) asideW = detailPane ? ws.x : 0.0f;
-    const float listW = ws.x - asideW;
+    // Owner 2026-11-25: a wider sidebar than V41's 490 px, and the two panels apart (10 px), each
+    // with its own outline, instead of sharing a seam.
+    float asideW = ws.x >= Px(1500) ? Px(540) : ws.x >= Px(1250) ? Px(470) : Px(430);
+    if (single) asideW = detailPane ? ws.x - mx * 2.0f : 0.0f;
+    const float panelGap = Px(10);
+    const float listW = single ? ws.x - mx * 2.0f : ws.x - mx * 2.0f - asideW - panelGap;
 
     if (!detailPane)
     {
-        const float x0 = wp.x + Px(28), x1 = wp.x + listW - Px(28);
-        float y = R(wp.y + Px(22));
+        const ImVec2 panelA(R(wp.x + mx), R(wp.y + my));
+        const ImVec2 panelB(R(panelA.x + listW), R(pageB.y - my));
+        DrawPanel(dl, pageA, pageB, panelA, panelB,
+                  ImDrawFlags_RoundCornersAll, true);
+        const float x0 = R(panelA.x + Px(20)), x1 = R(panelB.x - Px(20));
+        float y = R(panelA.y + Px(22));
 
-        // Search, All matches / Favorites, Update matches, Spoiler-free.
-        y += DrawToolbar(dl, x0, x1, y) + Px(14);
+        // Search, All matches / Favorites, Update matches, Spoiler-free: 44 px, 5 px under it, then the
+        // filters 18 px further down.
+        y += DrawToolbar(dl, x0, x1, y) + Px(5) + Px(18);
 
-        // The filter buttons (two lines when the active ones need them), the sort.
-        y += DrawFilterRow(dl, x0, x1, y) + Px(12);
+        // The filter buttons (two lines when the active ones need them), the sort; 17 px under them.
+        y += DrawFilterRow(dl, x0, x1, y) + Px(17);
+
+        // The open filter, in the flow: it pushes the list down.
+        y += DrawFilterPanel(matches, x0, x1, y, (panelB.y - y) * 0.55f);
 
         const ListGeom g = ComputeListGeom(x1 - x0);
         DrawLabelsRow(dl, x0, x1, y, g);
-        y += Px(10) * 2.0f + LineH(10) + 1.0f;
+        y += Px(32);
 
-        // The rows: a child as wide as the list plus a gutter for its scrollbar, in the page's
-        // right padding, so the rows keep the mockup's width whether it shows or not.
-        const float rowH = Px(59);
+        // The rows: a child as wide as the list plus a gutter for its scrollbar, in the panel's right
+        // padding, so the rows keep their width whether it shows or not.
+        const float rowH = Px(66);
         const float footH = Px(16) + LineH(11) + Px(14);
         const float listTop = R(y);
-        const float room = std::max(rowH, wp.y + ws.y - footH - listTop);
+        const float room = std::max(rowH, panelB.y - footH - listTop);
         const float listH = std::min(room, std::max(rowH, rowH * rowCount));
         ImGui::SetCursorScreenPos(ImVec2(x0, listTop));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
@@ -2968,63 +3864,83 @@ static void Draw(const std::vector<MatchMeta>& matches)
                     const bool rowItemHovered = ImGui::IsItemHovered();
                     const bool rowHot = listHovered && ImGui::IsMouseHoveringRect(a, b);
 
+                    // V41: every row the same faint tint; the hovered one lighter; the selected one a
+                    // warm gradient, 5 px rounding, a 3 px gold edge on its left.
+                    ldl->AddRectFilled(a, b, v41::Row);
                     if (selected)
                     {
-                        ldl->AddRectFilledMultiColor(a, b, col::SelA, col::SelB, col::SelB, col::SelA);
-                        ldl->AddRectFilled(a, ImVec2(a.x + Px(2), b.y - 1.0f), col::SelBar);
+                        ldl->AddRectFilled(a, b, v41::SelAccent, Px(5));
+                        FillLinear(ldl, ImVec2(a.x + Px(3), a.y), b, Px(5), 100.0f, v41::SelA, v41::SelB,
+                                   ImDrawFlags_RoundCornersRight);
+                        ldl->AddLine(ImVec2(a.x + Px(5), a.y + 1.5f), ImVec2(b.x - Px(5), a.y + 1.5f), Hex(0xffffff, 0x0c));
                     }
-                    else if (rowHot)
-                        ldl->AddRectFilled(a, b, col::RowHover);
+                    else
+                    {
+                        if (rowHot) ldl->AddRectFilled(a, b, v41::RowHover, Px(5));
+                        HRule(ldl, a.x, b.x, b.y - 1.0f, v41::RowRule);
+                    }
                     if (auto hl = s_state.highlightStartTimes.find(m.folder_path); hl != s_state.highlightStartTimes.end())
                     {
                         const float alpha = std::max(0.0f, 1.0f - ((float)ImGui::GetTime() - hl->second) / 2.0f) * 0.15f;
                         if (alpha > 0.0f) ldl->AddRectFilled(a, b, IM_COL32(212, 160, 32, (int)(alpha * 255)));
                     }
-                    HRule(ldl, a.x, b.x, b.y - 1.0f, col::RowRule);
 
-                    // Favourite star.
+                    // Favourite star (20 px type).
                     const bool fav = MatchFavourites::Get().IsFavourite(m.folder_name);
-                    ImGui::SetCursorScreenPos(ImVec2(a.x + g.starX, cy - Px(11)));
-                    const bool starClicked = ImGui::InvisibleButton("##fav", ImVec2(Px(18), Px(22)));
+                    ImGui::SetCursorScreenPos(ImVec2(a.x + g.starX, cy - Px(13)));
+                    const bool starClicked = ImGui::InvisibleButton("##fav", ImVec2(Px(18), Px(26)));
                     const bool starHov = ImGui::IsItemHovered();
-                    const ImU32 starCol = starHov ? col::LinkHover : (fav || selected) ? col::StarOn : col::Star;
-                    DrawStar(ldl, ImVec2(a.x + g.starX + Px(7.5f), cy + Px(0.5f)), Px(7.2f), starCol, fav, 1.15f);
+                    const ImU32 starCol = starHov ? col::LinkHover : (fav || selected) ? v41::StarOn : v41::Star;
+                    DrawStar(ldl, ImVec2(a.x + g.starX + Px(9), cy + Px(1)), Px(7.6f), starCol, fav, 1.15f);
                     if (starClicked) MatchFavourites::Get().Toggle(m.folder_name);
                     if (starHov) ImGui::SetTooltip(fav ? "Remove from favorites" : "Add to favorites");
 
-                    // Thumbnail: the hall's loading screen.
-                    if (g.thumb)
+                    // Date.
                     {
-                        const ImVec2 t0(a.x + g.thumbX, R(cy - Px(21))), t1(t0.x + Px(64), t0.y + Px(42));
-                        if (const ArtTexture* art = LoadArt(HallArtPath(m.map_id)))
-                            ImageCover(ldl, (ImTextureID)art->srv.Get(), art->w, art->h, t0, t1, IM_COL32(255, 255, 255, 242), Px(2));
-                        else
-                            ldl->AddRectFilled(t0, t1, Hex(0x2a2823), Px(2));
+                        const std::string date = MatchDate(m, false);
+                        TextFit(ldl, T(11), ImVec2(a.x + g.dateX, R(cy - LineH(11) * 0.5f)), Px(95), v41::Date, date.c_str());
+                    }
+
+                    // Event: one badge style for every occasion, finals included.
+                    if (g.event && !m.occasion.empty())
+                    {
+                        const Type et = T(11, true);
+                        const float maxW = Px(105);
+                        const float tw = std::min(TextW(et, m.occasion.c_str()), maxW - Px(14) - 2.0f);
+                        const float bw = R(tw + Px(14) + 2.0f), bh = R(LineH(11) * 1.07f + Px(6) + 2.0f);
+                        const ImVec2 e0(a.x + g.eventX, R(cy - bh * 0.5f)), e1(e0.x + bw, e0.y + bh);
+                        ldl->AddRectFilled(e0, e1, v41::EventBg, Px(4));
+                        Outline(ldl, e0, e1, v41::EventLine, Px(4));
+                        TextFit(ldl, et, ImVec2(e0.x + 1.0f + Px(7), R(cy - LineH(11) * 0.5f)), tw + 1.0f, v41::Event, m.occasion.c_str());
                     }
 
                     // The teams.
                     const EliteLineup& lineup = LineupOf(m);
                     const int winner = ShownWinner(m);
-                    const bool comms = Comms::BadgeFor(m.folder_name).present;
-                    DrawTeamCell(ldl, g, a.x + g.team1X, cy, m, fm.guild1, winner == 1, comms, lineup.team[0], rowHot);
-                    Text(ldl, T(12), ImVec2(a.x + g.vsX, cy - LineH(12) * 0.5f), col::Versus, "vs");
-                    DrawTeamCell(ldl, g, a.x + g.team2X, cy, m, fm.guild2, winner == 2, false, lineup.team[1], rowHot);
-
-                    // Map, date and occasion.
+                    DrawTeamCell(ldl, g, a.x + g.team1X, cy, m, fm.guild1, winner == 1, lineup.team[0], rowHot);
                     {
-                        const Type t = T(11);
-                        const float blockTop = cy - (LineH(11) * 2.0f + Px(5)) * 0.5f;
-                        TextFit(ldl, t, ImVec2(a.x + g.mapX, blockTop), g.mapW, col::MapName, fm.mapName.c_str());
-                        std::string line = MatchDate(m, false);
-                        if (!m.occasion.empty()) line += " \xC2\xB7 " + m.occasion;
-                        TextFit(ldl, t, ImVec2(a.x + g.mapX, blockTop + LineH(11) + Px(5)), g.mapW, col::Muted, line.c_str());
+                        const ImVec2 vc(a.x + g.vsX + Px(10), cy);
+                        ldl->AddCircle(vc, Px(11) - 0.5f, v41::VersusLine, 24, 1.0f);
+                        const Type vt = T(10);
+                        Text(ldl, vt, ImVec2(R(vc.x - TextW(vt, "vs") * 0.5f), R(cy - LineH(10) * 0.5f)), v41::Versus, "vs");
+                    }
+                    DrawTeamCell(ldl, g, a.x + g.team2X, cy, m, fm.guild2, winner == 2, lineup.team[1], rowHot);
+
+                    // Map: the hall's thumbnail (54 x 36) and its name beside it, wrapping.
+                    {
+                        const ImVec2 t0(a.x + g.mapX, R(cy - Px(18))), t1(t0.x + Px(54), t0.y + Px(36));
+                        if (const ArtTexture* art = LoadArt(HallArtPath(m.map_id)))
+                            ImageCover(ldl, (ImTextureID)art->srv.Get(), art->w, art->h, t0, t1, IM_COL32(255, 255, 255, 242), Px(3));
+                        else
+                            ldl->AddRectFilled(t0, t1, Hex(0x2a2823), Px(3));
+                        TextWrap2(ldl, T(11), t1.x + Px(9), cy, g.mapW - Px(54) - Px(9), Px(14.85f), v41::MapName, fm.mapName);
                     }
 
                     // Duration.
                     {
                         const bool hidden = ResultHidden(m);
                         const char* dur = hidden ? kHiddenWord : (m.match_duration.empty() ? "-" : m.match_duration.c_str());
-                        Text(ldl, T(11), ImVec2(a.x + g.durX, cy - LineH(11) * 0.5f), hidden ? col::HiddenText : col::Muted, dur);
+                        Text(ldl, T(11), ImVec2(a.x + g.durX, R(cy - LineH(11) * 0.5f)), hidden ? col::HiddenText : v41::Duration, dur);
                     }
 
                     if (clicked)
@@ -3056,10 +3972,10 @@ static void Draw(const std::vector<MatchMeta>& matches)
             const float fy = listTop + listH + Px(16);
             std::string left = Thousands((size_t)rowCount) + " of " + Thousands(matches.size()) + " matches";
             if (favOnly) left += " \xC2\xB7 favorites";
-            Text(dl, t, ImVec2(x0, fy), col::Muted, left.c_str());
+            Text(dl, t, ImVec2(x0, fy), v41::Footer, left.c_str());
             const char* legacy = "Legacy layout";
             const float lw = TextW(t, legacy);
-            if (LinkText(dl, "##lib_legacy", t, ImVec2(R(x1 - lw), fy), lw + 1.0f, col::Muted, legacy))
+            if (LinkText(dl, "##lib_legacy", t, ImVec2(R(x1 - lw), fy), lw + 1.0f, v41::Footer, legacy))
             {
                 GuiGlobalConstants::replay_library_legacy = 1;
                 GuiGlobalConstants::SaveSettings();
@@ -3070,19 +3986,21 @@ static void Draw(const std::vector<MatchMeta>& matches)
         }
     }
 
-    // The sidebar.
+    // The sidebar: its own panel; it scrolls on its own.
     OverviewBuilds ob;
     bool asideDrawn = false;
     if (asideW > 0.0f)
     {
-        const float ax = wp.x + listW;
-        if (!detailPane) dl->AddRectFilled(ImVec2(ax, wp.y), ImVec2(ax + 1.0f, wp.y + ws.y), col::AsideRule);
-        ImGui::SetCursorScreenPos(ImVec2(detailPane ? ax : ax + 1.0f, wp.y));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(col::Aside));
+        const ImVec2 panelA(R(detailPane ? wp.x + mx : wp.x + mx + listW + panelGap), R(wp.y + my));
+        const ImVec2 panelB(R(pageB.x - mx), R(pageB.y - my));
+        DrawPanel(dl, pageA, pageB, panelA, panelB,
+                  ImDrawFlags_RoundCornersAll, true);
+        ImGui::SetCursorScreenPos(ImVec2(panelA.x + 1.0f, panelA.y + 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImGui::ColorConvertU32ToFloat4(Hex(0x3b3830)));
         ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, Px(8));
-        ImGui::BeginChild("##lib_aside", ImVec2(detailPane ? asideW : asideW - 1.0f, ws.y), ImGuiChildFlags_None,
+        ImGui::BeginChild("##lib_aside", ImVec2(panelB.x - panelA.x - 2.0f, panelB.y - panelA.y - 2.0f), ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoNav);
         if (validSel)
         {
@@ -3094,7 +4012,8 @@ static void Draw(const std::vector<MatchMeta>& matches)
             const ImVec2 o = ImGui::GetCursorScreenPos();
             const char* msg = "Select a match to see its builds and replay it.";
             const Type t = T(13);
-            Text(ImGui::GetWindowDrawList(), t, ImVec2(o.x + (asideW - TextW(t, msg)) * 0.5f, o.y + ws.y * 0.4f), col::Muted, msg);
+            Text(ImGui::GetWindowDrawList(), t, ImVec2(o.x + (panelB.x - panelA.x - TextW(t, msg)) * 0.5f, o.y + ws.y * 0.4f),
+                 col::Muted, msg);
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();
@@ -3108,7 +4027,7 @@ static void Draw(const std::vector<MatchMeta>& matches)
         int cur = -1;
         for (int r = 0; r < rowCount && cur < 0; r++)
             if (rowAt(r).originalIndex == s_state.selectedMatchIndex) cur = r;
-        const int page = std::max(1, (int)((ws.y * 0.6f) / Px(59)));
+        const int page = std::max(1, (int)((ws.y * 0.6f) / Px(66)));
         int next = cur;
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))  next = cur < 0 ? 0 : std::min(cur + 1, rowCount - 1);
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))    next = cur < 0 ? 0 : std::max(cur - 1, 0);
@@ -3131,7 +4050,6 @@ static void Draw(const std::vector<MatchMeta>& matches)
 
     ImGui::End();
 
-    DrawFilterMenuWindow(matches);
     if (asideDrawn) DrawPinnedCard(matches[s_state.selectedMatchIndex], ob);
     ImGui::PopStyleVar();   // FrameBorderSize
     PopGlassTheme(themeColors);

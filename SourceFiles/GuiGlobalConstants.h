@@ -60,8 +60,8 @@ inline constexpr float kUiHeadingRatios[] = {1.47f, 1.73f, 2.67f};
 // size into an ImGui one: ImGui sizes a font by its ascent plus descent, CSS by its em, and the
 // interface font's (Roboto's) ascent plus descent is 1.172 em.
 inline constexpr float kLibraryEm = 1.1719f;
-inline constexpr float kLibraryPageSizes[] = {9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 15.0f, 23.0f};
-inline constexpr float kLibraryPageBoldSizes[] = {11.0f, 12.0f, 13.0f, 15.0f};
+inline constexpr float kLibraryPageSizes[] = {9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 15.0f, 26.0f};
+inline constexpr float kLibraryPageBoldSizes[] = {11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
 
 struct DisplayFontRung
 {
@@ -485,15 +485,21 @@ public:
 	inline static int replay_library_legacy = 0;
 	// The Library page's size: 0 = Auto (from the window), else a percent of the mockup's size.
 	inline static int replay_library_size = 0;
+	// The selected match's hall behind the Library page: 0 = normal, 1 = subtle, 2 = off.
+	inline static int replay_library_backdrop = 0;
 
 	// The Library page's scale: the Settings font size over 15, times the page size (Auto: the
 	// window against 1920 x 1080, from 1 to 2), in steps of 0.05, so a resize re-bakes the page's
 	// type only when the scale moves a whole step.
 	static float LibraryPageScale(float clientW, float clientH)
 	{
+		// Auto: the mockup's sizes 1:1 (V41 was drawn at 1920 px), never larger, however big the
+		// window; a narrower window shrinks the page with it, down to 80% (1536 px and below). A
+		// larger page is the Settings size or the font size, not the screen's.
+		(void)clientH;
 		const float size = replay_library_size > 0
 			? replay_library_size / 100.0f
-			: std::clamp(std::min(clientW / 1920.0f, clientH / 1080.0f), 1.0f, 2.0f);
+			: std::clamp(clientW / 1920.0f, 0.8f, 1.0f);
 		return std::max(0.5f, std::round(saved_font_size / 15.0f * size * 20.0f) / 20.0f);
 	}
 
@@ -794,6 +800,7 @@ public:
 		file << "replay_card_style=" << replay_card_style << "\n";
 		file << "replay_library_legacy=" << replay_library_legacy << "\n";
 		file << "replay_library_size=" << replay_library_size << "\n";
+		file << "replay_library_backdrop=" << replay_library_backdrop << "\n";
 
 		file << "\n[Updates]\n";
 		file << "dismissed_update_version=" << dismissed_update_version << "\n";
@@ -1068,6 +1075,7 @@ public:
 			else if (key == "replay_card_style") replay_card_style = std::clamp(value, 0, 1);
 			else if (key == "replay_library_legacy") replay_library_legacy = std::clamp(value, 0, 1);
 			else if (key == "replay_library_size") replay_library_size = value <= 0 ? 0 : std::clamp(value, 80, 200);
+			else if (key == "replay_library_backdrop") replay_library_backdrop = std::clamp(value, 0, 2);
 		}
 
 		if (legacyUnifiedMovement >= 0.f) {

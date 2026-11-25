@@ -632,11 +632,11 @@ static void draw_settings_window()
 		}
 		ImGui::Dummy(ImVec2(0, 4.f));
 
-		// The page's size: Auto follows the window (x1 up to 1920 x 1080, x1.35 at 2560 x 1440).
+		// The page's size: Auto is 100% from 1920 px wide, shrinking with a narrower window to 80%.
 		if (layout == 0)
 		{
-			static const int kSizes[] = { 0, 90, 100, 110, 125, 150, 175 };
-			static const char* const kLabels[] = { "Auto (follows the window)", "90%", "100%", "110%", "125%", "150%", "175%" };
+			static const int kSizes[] = { 0, 80, 90, 100, 110, 125, 150, 175 };
+			static const char* const kLabels[] = { "Auto (100%, smaller on small windows)", "80%", "90%", "100%", "110%", "125%", "150%", "175%" };
 			int current = 0;
 			for (int i = 0; i < IM_ARRAYSIZE(kSizes); i++)
 				if (kSizes[i] == GuiGlobalConstants::replay_library_size) current = i;
@@ -646,6 +646,18 @@ static void draw_settings_window()
 			if (ImGui::Combo("##library_size", &current, kLabels, IM_ARRAYSIZE(kLabels)))
 			{
 				GuiGlobalConstants::replay_library_size = kSizes[current];
+				GuiGlobalConstants::SaveSettings();
+			}
+
+			// The selected match's hall behind the page and its glass panels.
+			static const char* const kBackdrops[] = { "Normal", "Subtle", "Off" };
+			int backdrop = std::clamp(GuiGlobalConstants::replay_library_backdrop, 0, 2);
+			ImGui::TextUnformatted("Background");
+			ImGui::SameLine(0, 8);
+			ImGui::SetNextItemWidth(220.f);
+			if (ImGui::Combo("##library_backdrop", &backdrop, kBackdrops, IM_ARRAYSIZE(kBackdrops)))
+			{
+				GuiGlobalConstants::replay_library_backdrop = backdrop;
 				GuiGlobalConstants::SaveSettings();
 			}
 			ImGui::Dummy(ImVec2(0, 4.f));

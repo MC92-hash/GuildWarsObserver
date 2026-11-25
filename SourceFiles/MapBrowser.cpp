@@ -121,6 +121,8 @@ void MapBrowser::LibraryShotSelfTest()
         {
             size();
             GuiGlobalConstants::replay_library_legacy = 0;
+            spoilersWere = SpoilerFree::Get().Enabled();   // results shown until the spoilers picture
+            SpoilerFree::Get().SetEnabled(false);
             g_libraryPageTestSelect = folder;
             stage = 1;
         }
@@ -137,7 +139,6 @@ void MapBrowser::LibraryShotSelfTest()
             shot("page_menu_map.png");
             g_libraryPageTestMenu = "-";
             LibraryPageTestFilters(false);
-            spoilersWere = SpoilerFree::Get().Enabled();
             SpoilerFree::Get().SetEnabled(true);
             stage = 4;
         }
@@ -2581,14 +2582,21 @@ void MapBrowser::ProcessPendingReplayRequest()
         m_playDl.errorMsg.clear();
         m_playDl.state.store(PlayDownloadState::Downloading);
         g_cloudDownloadInProgress = true;
+        g_cloudDownloadFolder = match.folder_name;
+        g_cloudDownloadReceived.store(0);
+        g_cloudDownloadTotal.store(entry->size_bytes);
 
         // Capture entry by value for the background thread
         RemoteMatchEntry entryCopy = *entry;
         m_playDl.thread = std::thread([this, entryCopy]() {
             auto progressFn = [this](uint64_t received, uint64_t total) {
                 m_playDl.bytesReceived.store(received);
+                g_cloudDownloadReceived.store(received);
                 if (total > 0)
+                {
                     m_playDl.bytesTotal.store(total);
+                    g_cloudDownloadTotal.store(total);
+                }
             };
             m_playDl.result = m_cloudProvider->EnsureMatchAvailable(entryCopy, progressFn);
             if (m_playDl.result.success)
