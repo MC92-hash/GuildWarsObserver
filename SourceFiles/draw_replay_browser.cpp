@@ -1108,10 +1108,12 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
     }
 
     ImGui::BeginGroup();
+    // The name in bold; an elite one gold, after "[Elite]".
+    if (GuiGlobalConstants::boldFont) ImGui::PushFont(GuiGlobalConstants::boldFont);
     if (si->is_elite)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
-        ImGui::Text("{Elite} %s", si->name.c_str());
+        ImGui::Text("[Elite] %s", si->name.c_str());
         ImGui::PopStyleColor();
     }
     else
@@ -1120,6 +1122,7 @@ static void DrawSkillTooltip(int skillId, const SkillDatabaseView* view = nullpt
         ImGui::TextUnformatted(si->name.c_str());
         ImGui::PopStyleColor();
     }
+    if (GuiGlobalConstants::boldFont) ImGui::PopFont();
 
     const char* typeName = SkillDatabase::GetTypeName(si->type);
     const char* attrName = SkillDatabase::GetAttributeName(si->attribute);
@@ -7877,7 +7880,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 15;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 16;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7950,7 +7953,7 @@ struct MatchAnalysisJob
     MatchStats::Records stats;    // the Stats tab's extra columns, times on the match clock
     std::unordered_map<std::string, std::vector<SolvedAttribute>> builds;   // "party:number"
     bool hasLordDamage = false;   // false: neither Guild Lord is in the recording
-    long lordDamage[2] = { 0, 0 }; // dealt by team 1, by team 2, to the other's Lord
+    long lordDamage[2] = { 0, 0 }; // aggressiveness of team 1, of team 2, on the other's Lord
 };
 
 static MatchAnalysisJob s_analysis;

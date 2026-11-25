@@ -3337,9 +3337,9 @@ static void DrawPinnedCard(const MatchMeta& m, const OverviewBuilds& ob)
 
 // ─── Lord damage: worked out from the recording, on request ──────────────────
 //
-// The totals come from the match reader (ReplayWindow::ExportMatchAnalysis "lord_damage", the
-// replay's own BuildLordDamageData), never from the recorder's lord_events, which assumed a fixed
-// Lord maximum. A local match is read as soon as it is selected (its builds need the same pass); a
+// The totals are the aggressiveness scores (the 28:00 tiebreak) from the match reader
+// (ReplayWindow::ExportMatchAnalysis "lord_damage", the replay's own LordAggressiveness), never from
+// the recorder's lord_events, which assumed a fixed Lord maximum and no tiebreak rules. A local match is read as soon as it is selected (its builds need the same pass); a
 // cloud match waits for Calculate, which downloads it without opening the replay, then reads it.
 // The job is the browser's single analysis job, bound to its match's folder.
 
@@ -3363,6 +3363,45 @@ static void DrawRefreshGlyph(ImDrawList* dl, ImVec2 c, float h, ImU32 col)
     const float s = h * 0.26f;
     dl->AddTriangleFilled(ImVec2(tip.x + s * 0.55f, tip.y - s * 0.1f), ImVec2(tip.x - s * 0.55f, tip.y - s * 0.45f),
                           ImVec2(tip.x - s * 0.1f, tip.y + s * 0.6f), col);
+}
+
+// The tiebreak rules behind the totals, one icon and one line each (the replay's Aggressiveness
+// panel holds the long wording).
+static void DrawLordRulesTooltip()
+{
+    EnsureTextureBasePath();
+    const std::string base = ui::TextureBasePath() + "\\Textures\\";
+    auto file = [&](const char* rel) { return GetTextureCache().GetTexture(base + rel); };
+    struct Rule { ImTextureID icon; const char* value; ImU32 col; const char* text; };
+    const ImU32 plus = IM_COL32(120, 200, 120, 255), minus = IM_COL32(225, 110, 100, 255), zero = IM_COL32(150, 150, 150, 255);
+    const Rule rules[] = {
+        { file("Others_UI\\damagedone.png"), "+1",   plus,  "per point of damage on the enemy lord" },
+        { file("Skill_Icons\\Monster_skill.jpg"), "x0.2", plus, "damage within 10.5 s of his Entourage" },
+        { GetSkillIcon(479),                 "+30",  plus,  "per attack missed under Blind or a miss hex" },
+        { file("Game_UI\\Enchanted.png"),    "-50",  minus, "per enchantment on your own lord (-300 near Entourage)" },
+        { file("Game_UI\\WeaponSpell.png"),  "-50",  minus, "per weapon spell on your own lord (-300 near Entourage)" },
+        { GetSkillIcon(810),                 "0",    zero,  "blocked attacks and other misses" },
+        { GetSkillIcon(657),                 "0",    zero,  "life steal" },
+    };
+    ImGui::BeginTooltip();
+    ImGui::TextUnformatted("Lord damage / Aggressiveness rules");
+    ImGui::Spacing();
+    const float lineH = ImGui::GetTextLineHeight(), ico = lineH + Px(4), valueW = ImGui::CalcTextSize("x0.2").x + Px(8);
+    for (const Rule& r : rules)
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (r.icon) ImGui::GetWindowDrawList()->AddImage(r.icon, p, ImVec2(p.x + ico, p.y + ico));
+        const float ty = p.y + (ico - lineH) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(p.x + ico + Px(6), ty));
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(r.col), "%s", r.value);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + ico + Px(6) + valueW, ty));
+        ImGui::TextUnformatted(r.text);
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + ico + Px(3)));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("Hits count at the lord's full Health. The higher score wins.");
+    ImGui::EndTooltip();
 }
 
 static float DrawLordDamage(ImDrawList* dl, const MatchMeta& m, const GuildLabel g[2], float x, float w, float y, bool compact)
@@ -3437,8 +3476,7 @@ static float DrawLordDamage(ImDrawList* dl, const MatchMeta& m, const GuildLabel
     }
     if (show && ImGui::IsMouseHoveringRect(ImVec2(cx, rowsTop), ImVec2(cx + cw, rowsTop + rowH * 2.0f + rowGap)) &&
         ImGui::IsWindowHovered())
-        ImGui::SetTooltip("The damage each team dealt to the other's Guild Lord, worked out from the recording.\n"
-                          "Both bars use one scale: the larger total fills its track.");
+        DrawLordRulesTooltip();
 
     // Not worked out yet: one button over the tracks (left 52, right 57 of the rows), no extra row.
     if (!have && !absent)

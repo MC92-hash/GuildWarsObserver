@@ -222,7 +222,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 15;   // 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice 13: en_quicksand, en_quicksand_time; All In, Expertise, Healer's Covenant readings. 14: cancelled casts keep their cost, en_lost_cancel. 15: lord_damage.
+    static constexpr int kVersion = 16;   // 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice 13: en_quicksand, en_quicksand_time; All In, Expertise, Healer's Covenant readings. 14: cancelled casts keep their cost, en_lost_cancel. 15: lord_damage. 16: lord_damage = the aggressiveness scores.
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
@@ -591,12 +591,12 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         }
     }
 
-    // The damage each team dealt to the other's Guild Lord (BuildLordDamageData: Health at the Lord's
-    // maximum when each hit landed, the tiebreak's reading), team 1 first: the Library's Lord damage
-    // bars. null when neither Lord is in the recording.
+    // Each team's score against the other's Guild Lord, team 1 first: the Library's Lord damage bars.
+    // It is the aggressiveness score (the 28:00 tiebreak), not the plain damage: players know the
+    // tiebreak as "lord damage". null when neither Lord is in the recording.
     nlohmann::json lordDamage = nullptr;
-    if (m_lordDamageBuilt && (m_lordDmg[0].lordAgentId >= 0 || m_lordDmg[1].lordAgentId >= 0))
-        lordDamage = nlohmann::json::array({ m_lordDmg[1].totalDmgAbs, m_lordDmg[0].totalDmgAbs });
+    if (m_lordAggr.valid && m_lordDamageBuilt && (m_lordDmg[0].lordAgentId >= 0 || m_lordDmg[1].lordAgentId >= 0))
+        lordDamage = nlohmann::json::array({ aggressiveness["team1"]["score"], aggressiveness["team2"]["score"] });
 
     nlohmann::json root = {
         { "version",        kVersion },

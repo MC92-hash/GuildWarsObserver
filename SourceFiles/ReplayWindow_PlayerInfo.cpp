@@ -797,16 +797,18 @@ void ReplayWindow::DrawPlayerInfoPanel()
         if (skillTex) { ImGui::Image(skillTex, ImVec2(40, 40)); ImGui::SameLine(); }
 
         ImGui::BeginGroup();
+        if (GuiGlobalConstants::boldFont) ImGui::PushFont(GuiGlobalConstants::boldFont);
         if (si->is_elite)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.85f, 0.3f, 1.f));
-            ImGui::Text("{Elite} %s", si->name.c_str());
+            ImGui::Text("[Elite] %s", si->name.c_str());
             ImGui::PopStyleColor();
         }
         else
         {
             ImGui::TextColored(ImVec4(1, 1, 1, 1), "%s", si->name.c_str());
         }
+        if (GuiGlobalConstants::boldFont) ImGui::PopFont();
 
         const char* typeName = SkillDatabase::GetTypeName(si->type);
         const char* attrName = SkillDatabase::GetAttributeName(si->attribute);

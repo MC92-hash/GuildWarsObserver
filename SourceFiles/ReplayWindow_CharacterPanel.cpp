@@ -846,8 +846,10 @@ namespace
         ImGui::SameLine(0.f, 8.f);
 
         ImGui::BeginGroup();
-        if (si.is_elite) ImGui::TextColored(ImVec4(1.f, 0.85f, 0.30f, 1.f), "{Elite} %s", si.name.c_str());
+        if (GuiGlobalConstants::boldFont) ImGui::PushFont(GuiGlobalConstants::boldFont);
+        if (si.is_elite) ImGui::TextColored(ImVec4(1.f, 0.85f, 0.30f, 1.f), "[Elite] %s", si.name.c_str());
         else             ImGui::TextColored(ImVec4(1.f, 1.f, 1.f, 1.f), "%s", si.name.c_str());
+        if (GuiGlobalConstants::boldFont) ImGui::PopFont();
 
         const char* typeName = SkillDatabase::GetTypeName(si.type);
         const char* attrName = SkillDatabase::GetAttributeName(si.attribute);
