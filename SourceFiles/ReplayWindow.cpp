@@ -7250,6 +7250,10 @@ void ReplayWindow::Tick()
     if (m_combatLogBuilt && !m_timeline.computed)
         BuildTimelineData();
 
+    // Built again once the attributes are solved: its block and miss-hex windows come from the effect
+    // timeline, whose durations then carry the casters' ranks.
+    if (m_lordDamageBuilt && !m_lordDamageUsedAttributes && m_attributesDeduced)
+        m_lordDamageBuilt = false;
     if (m_combatLogBuilt && !m_lordDamageBuilt)
         BuildLordDamageData();
 

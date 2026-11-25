@@ -579,8 +579,9 @@ void ReplayWindow::DrawLordDamagePanel()
             if (std::fabs(lead) >= 0.5f) ImGui::Text("Gap: %s points.", fmtPoints(std::fabs(lead), false).c_str());
             ImGui::Spacing();
             ImGui::TextColored(kDim, "If neither Guild Lord dies, the team with more aggressiveness at 28:00 wins. "
-                                     "Score = damage on the enemy lord + 20%% of it under his Entourage + 30 per blind miss + 20 per blocked "
-                                     "attack - 50 per enchantment or weapon spell on your own lord (-300 while its Entourage is up).");
+                                     "Score = damage on the enemy lord (20%% of it within 10.5 s of his Entourage) + 30 per attack that "
+                                     "missed under Blind or a miss hex - 50 per enchantment or weapon spell on your own lord (-300 within "
+                                     "10.5 s of its Entourage). Blocked attacks count nothing.");
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
         }
@@ -592,24 +593,24 @@ void ReplayWindow::DrawLordDamagePanel()
             { Cause::Damage, LoadFlagIcon(dev, "damagedone.png"), "Damage on the enemy lord",
               "+1 per point of damage: normal, critical and armour-ignoring hits. Damage his Amulet of Protection heals back still counts.", true },
             { Cause::EntourageDamage, LoadFlagIcon(dev, lordIsRed ? "redguildlord.png" : "blueguildlord.png"), "Damage under Entourage",
-              "Damage that lands while the enemy lord's Entourage is up counts 20%. He can only cast it while his pit NPCs outnumber the attackers in the pit.", true },
+              "Damage that lands within 10.5 seconds of the enemy lord's Entourage counts 20%. He can only cast it while his pit NPCs outnumber the attackers in the pit.", true },
         };
         // Blind always has its chip; a recording made before the blind effect was logged (Oct 8, 2026)
         // can't tell a blind miss from a block, so there it stays dimmed with a "?".
-        chips.push_back({ Cause::BlindMiss, skillIcon(479), "Blind misses",
+        chips.push_back({ Cause::BlindMiss, skillIcon(479), "Misses under Blind or a miss hex",
               m_lordAggr.blindKnown
-                ? "+30 for each attack on the enemy lord that missed while the attacker was Blinded."
-                : "+30 for each attack on the enemy lord that missed while the attacker was Blinded. "
+                ? "+30 for each attack on the enemy lord that missed while the attacker was Blinded or hexed with "
+                  "Blurred Vision, Price of Failure, Reckless Haste or Spirit of Failure."
+                : "+30 for each attack on the enemy lord that missed while the attacker was Blinded or hexed with "
+                  "Blurred Vision, Price of Failure, Reckless Haste or Spirit of Failure. "
                   "This recording was made before blind was logged (Oct 8, 2026), so its blind misses are counted with the blocks.", true });
-        chips.push_back({ Cause::BlockOrMiss, skillIcon(810), m_lordAggr.blindKnown ? "Blocked attacks" : "Blocked or missed attacks",
-              m_lordAggr.blindKnown
-                ? "+20 for each attack on the enemy lord that was blocked or missed. The blocking team loses nothing for it."
-                : "+20 for each attack on the enemy lord that was blocked or missed. The blocking team loses nothing for it. "
-                  "Recordings made before Oct 8, 2026 don't show blind, so blind misses are counted here too.", true });
+        chips.push_back({ Cause::BlockOrMiss, skillIcon(810), "Blocked attacks",
+              "Attacks on the enemy lord that were blocked, or missed with no Blind or miss hex seen: they count nothing.", false });
         chips.push_back({ Cause::Enchantment, sIconEnchanted, "Enchantments on own lord",
-              "-50 for each enchantment this team's players cast on their own lord, -300 if it lands while the lord's Entourage is up.", true });
+              "-50 for each enchantment this team's players cast on their own lord, every cast and every refresh, -300 if it lands "
+              "within 10.5 seconds of the lord's Entourage. Removing it gives nothing back.", true });
         chips.push_back({ Cause::WeaponSpell, sIconWeaponSpell, "Weapon spells on own lord",
-              "-50 for each weapon spell this team's players cast on their own lord, -300 if it lands while the lord's Entourage is up.", true });
+              "-50 for each weapon spell this team's players cast on their own lord, -300 if it lands within 10.5 seconds of the lord's Entourage.", true });
         chips.push_back({ Cause::LifeSteal, skillIcon(657), "Life steal",
               "Health stolen from the enemy lord is not counted.", false });
 
@@ -624,7 +625,8 @@ void ReplayWindow::DrawLordDamagePanel()
             const auto& line = mine.by[(size_t)c.cause];
             const bool active = line.count > 0;
             const bool unknown = c.cause == Cause::BlindMiss && !m_lordAggr.blindKnown;
-            const std::string val = unknown ? "?" : c.counted ? fmtPoints(line.points, true) : fmtPoints(line.health, false);
+            const std::string val = unknown ? "?" : c.cause == Cause::BlockOrMiss ? std::format("x{}", line.count)
+                                  : c.counted ? fmtPoints(line.points, true) : fmtPoints(line.health, false);
             const float chipW = 2.f + ico + 4.f + ImGui::CalcTextSize(val.c_str()).x + 6.f;
             if (cx > 0.f && cx + chipW > availW) { cx = 0.f; cy += chipH + 2.f; }
             ImGui::SetCursorPos(ImVec2(x0 + cx, y0 + cy));
@@ -700,7 +702,7 @@ void ReplayWindow::DrawLordDamagePanel()
                             break;
                         case Cause::BlindMiss:
                             tipIcon(profIconOf(g.actor), 16.f);
-                            ImGui::Text("%s x%d, blinded by", agentName(g.actor).c_str(), g.count);
+                            ImGui::Text("%s x%d, through", agentName(g.actor).c_str(), g.count);
                             ImGui::SameLine(0.f, 6.f);
                             tipIcon(skillIcon(g.skill), 16.f);
                             ImGui::Text("%s", g.source ? agentName(g.source).c_str() : "unknown");
@@ -713,13 +715,13 @@ void ReplayWindow::DrawLordDamagePanel()
                             ImGui::SameLine(0.f, 6.f);
                             if (g.source)
                             {
-                                ImGui::TextColored(kDim, "likely");
+                                ImGui::TextColored(kDim, "blocked by");
                                 ImGui::SameLine(0.f, 5.f);
                                 tipIcon(skillIcon(g.skill), 16.f);
                                 ImGui::Text("%s", agentName(g.source).c_str());
                             }
                             else
-                                ImGui::TextColored(kDim, "no block effect seen");
+                                ImGui::TextColored(kDim, "missed, no Blind, miss hex or block seen");
                             ImGui::SameLine(0.f, 8.f);
                             ImGui::TextColored(kGain, "%s", fmtPoints(g.points, true).c_str());
                             break;
@@ -734,7 +736,7 @@ void ReplayWindow::DrawLordDamagePanel()
                     if (groups.size() > shown)
                         ImGui::TextColored(kDim, "and %d more", (int)(groups.size() - shown));
                     if (c.cause == Cause::BlockOrMiss)
-                        ImGui::TextColored(kDim, "The game doesn't say which defence blocked: the blocker is the block effect last put on the lord.");
+                        ImGui::TextColored(kDim, "The game doesn't say which defence blocked: the blocker shown is the block effect on the lord when the attack landed.");
                 }
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
@@ -1013,8 +1015,9 @@ void ReplayWindow::BuildLordAggressiveness()
             in.packets.push_back({ ce.time, ce.type == "HEAL", ce.caster_id, ce.target_id, ce.value, ce.damage_type });
     for (const BasicAttackEvent& b : stoc.basicAttack)
     {
-        if (b.type == "ATTACK_STARTED") in.swings.push_back({ b.time, b.caster_id, b.target_id, false });
-        else if (b.type == "ATTACK_STOPPED") in.swings.push_back({ b.time, b.caster_id, b.target_id, true });
+        if (b.type == "ATTACK_STARTED") in.swings.push_back({ b.time, b.caster_id, b.target_id, false, false });
+        else if (b.type == "ATTACK_STOPPED") in.swings.push_back({ b.time, b.caster_id, b.target_id, true, false });
+        else if (b.type == "ATTACK_FINISHED") in.swings.push_back({ b.time, b.caster_id, b.target_id, false, true });
     }
     for (const SkillActivationEvent& s : stoc.skill)
     {
@@ -1043,6 +1046,57 @@ void ReplayWindow::BuildLordAggressiveness()
         if (v.kind == K::Add) in.visuals.push_back({ v.time, Visual::Kind::Add, v.agentId, v.value, v.otherId });
         else if (v.kind == K::Remove) in.visuals.push_back({ v.time, Visual::Kind::Remove, v.agentId, v.value, v.otherId });
         else if (v.kind == K::OnTarget) in.visuals.push_back({ v.time, Visual::Kind::OnTarget, v.agentId, v.value, v.otherId });
+    }
+
+    // Blocks and miss hexes from the effect timeline: its durations carry the caster's solved rank, an
+    // Enchanting mod, strips and refreshes (a Protection 15 Shield of Deflection from a +20% staff: 12 s).
+    // Built again once the attributes are solved (Update), as the timeline itself is.
+    m_lordDamageUsedAttributes = m_attributesDeduced;
+    if (const EffectTimeline::Table* fx = EffectTimelineTable())
+    {
+        in.blockAt = [fx, &in](int lord, float t, int& source, int& skill) {
+            // On the lord: Guardian, Shield of Deflection, Weapon of Warding, Pensive Guardian, Ward Against Melee.
+            static constexpr int kOnLord[] = { 258, 259, 793, 2893, 1683, 176 };
+            for (const EffectTimeline::Effect* e : fx->ActiveAt(lord, t))
+                if (std::find(std::begin(kOnLord), std::end(kOnLord), e->skillId) != std::end(kOnLord))
+                {
+                    source = e->caster;
+                    skill = e->skillId;
+                    return true;
+                }
+            // Protector's Defense: the stance of an ally standing beside him.
+            constexpr float kBeside = 200.f;
+            const int team = in.teamOf(lord);
+            for (const auto& [agent, list] : fx->byAgent)
+            {
+                if (agent == lord || in.teamOf(agent) != team) continue;
+                for (const EffectTimeline::Effect& e : list)
+                {
+                    if (e.start > t) break;
+                    if ((e.skillId != 810 && e.skillId != 3457) || e.end < t) continue;
+                    const float d = in.distance(agent, lord, t);
+                    if (d >= 0.f && d <= kBeside)
+                    {
+                        source = agent;
+                        skill = e.skillId;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+        in.missHexAt = [fx](int attacker, float t, int& source, int& skill) {
+            // Spirit of Failure, Price of Failure, Blurred Vision, Reckless Haste.
+            static constexpr int kMissHexes[] = { 48, 103, 235, 834 };
+            for (const EffectTimeline::Effect* e : fx->ActiveAt(attacker, t))
+                if (std::find(std::begin(kMissHexes), std::end(kMissHexes), e->skillId) != std::end(kMissHexes))
+                {
+                    source = e->caster;
+                    skill = e->skillId;
+                    return true;
+                }
+            return false;
+        };
     }
 
     m_lordAggr = Build(in);

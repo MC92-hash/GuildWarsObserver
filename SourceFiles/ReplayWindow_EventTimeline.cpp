@@ -575,9 +575,26 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         std::filesystem::remove(attrTmp, ec);
     }
 
+    // The 28:00 tiebreak score of the Aggressiveness panel at the end of the recording: each team's
+    // total and, by cause (LordAggressiveness::Cause order), [count, health, points].
+    nlohmann::json aggressiveness = nullptr;
+    if (m_lordAggr.valid)
+    {
+        aggressiveness = { { "blind_known", m_lordAggr.blindKnown } };
+        for (int team = 1; team <= 2; ++team)
+        {
+            const LordAggressiveness::Totals t = LordAggressiveness::Sum(m_lordAggr, team, std::numeric_limits<float>::max());
+            nlohmann::json parts = nlohmann::json::array();
+            for (const LordAggressiveness::Line& l : t.by)
+                parts.push_back({ l.count, std::lround(l.health), std::lround(l.points) });
+            aggressiveness["team" + std::to_string(team)] = { { "score", std::lround(t.score) }, { "parts", std::move(parts) } };
+        }
+    }
+
     nlohmann::json root = {
         { "version",        kVersion },
         { "attributes",     std::move(attributes) },
+        { "aggressiveness", std::move(aggressiveness) },
         { "display_offset", m_displayTimeOffset },
         { "gate_seconds",   gate },
         { "replay_length",  m_replayCtx.maxReplayTime },

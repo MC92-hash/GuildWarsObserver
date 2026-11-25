@@ -1428,6 +1428,7 @@ public:
     LordAggressiveness::Result m_lordAggr;
     bool m_showLordDamagePanel = false;
     bool m_lordDamageBuilt = false;
+    bool m_lordDamageUsedAttributes = false;   // built after the attribute solve: block and miss-hex durations final
     void BuildLordDamageData();
     void BuildLordAggressiveness();
     // Morale boosts team 1 or 2 has earned by time t (jumbo MORALE_BOOST messages).
