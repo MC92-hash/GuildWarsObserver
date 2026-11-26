@@ -1088,6 +1088,174 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
         return false;
     };
 
+    // Phase 4a: A recording that starts after a flag was picked up. The pickup packet was sent
+    // before anyone was listening, so the packets alone leave the flag at its base until the
+    // next one and credit its capture to nobody. Only a flag already in a player's hands in the
+    // first seconds of the recording is touched here; every other recording is left as it was.
+    //
+    // The carrier is read off the snapshots: hands holding the very item id the server declared
+    // as that team's flag when the recording began. The base position Phase 2 found is wrong in
+    // the same recordings, since it looks for the flag lying at its base at that moment and it
+    // is not there, so it is taken instead from the flag reappearing at base after the first
+    // capture or return of that team.
+    if (input.agents)
+    {
+        constexpr float kStartWindow  = 3.0f;   // how long after the start a carrier is looked for
+        constexpr float kSameInstant  = 1.0f;   // a snapshot stamped a hair off its packet
+
+        float t0 = FLT_MAX;
+        for (const auto& [aid, ard] : *input.agents)
+            if (!ard.snapshots.empty()) t0 = std::min(t0, ard.snapshots.front().time);
+
+        for (int ti = 0; ti < 2 && t0 < FLT_MAX; ti++)
+        {
+            const uint32_t colour = (ti == 0) ? kBlueExtraId : kRedExtraId;
+
+            // The team's flag item as declared when the recording began.
+            int flagItem = -1;
+            for (const auto& fi : fe.items)
+                if (fi.extra_id == colour && fi.time <= t0 + kSameInstant) flagItem = fi.item_id;
+            if (flagItem < 0) continue;
+
+            // A pickup of that item in the same window means the packets saw it after all.
+            bool packetSeen = false;
+            for (const auto& pe : fe.pickups)
+                if (pe.item_id == flagItem && pe.time <= t0 + kStartWindow) packetSeen = true;
+            if (packetSeen) continue;
+
+            auto holdsFlag = [&](const AgentSnapshot& s) {
+                return s.weapon_type == 0 && s.weapon_item_type == kBundleHeldItemType &&
+                       s.weapon_item_id == static_cast<uint16_t>(flagItem) && !s.is_dead;
+            };
+
+            int   holder = -1;
+            float holderAt = 0.f, hx = 0, hy = 0, hz = 0;
+            const std::vector<AgentSnapshot>* holderSnaps = nullptr;
+            size_t holderIdx = 0;
+            for (const auto& [aid, ard] : *input.agents)
+            {
+                if (ard.type != AgentType::Player) continue;
+                if (Team::Index01(ard.teamId) != ti) continue;
+                // The first snapshot of every agent reads as empty hands holding item 0.
+                for (size_t k = 1; k < ard.snapshots.size(); ++k)
+                {
+                    const auto& s = ard.snapshots[k];
+                    if (s.time > t0 + kStartWindow) break;
+                    if (!holdsFlag(s)) continue;
+                    if (holder < 0 || s.time < holderAt) {
+                        holder = aid; holderAt = s.time; hx = s.x; hy = s.y; hz = s.z;
+                        holderSnaps = &ard.snapshots; holderIdx = k;
+                    }
+                    break;
+                }
+            }
+            if (holder < 0) continue;
+
+            // Where this carry ends: the first time the hands let go of the flag for good (a
+            // single snapshot of empty hands between two full ones is sampling, not a drop),
+            // or the carrier dies.
+            constexpr float kFlicker = 1.0f;
+            float releaseAt = -1.f, rx = 0, ry = 0, rz = 0;
+            for (size_t k = holderIdx + 1; k < holderSnaps->size(); ++k)
+            {
+                const auto& s = (*holderSnaps)[k];
+                if (holdsFlag(s)) continue;
+                bool regained = false;
+                if (!s.is_dead)
+                    for (size_t j = k + 1; j < holderSnaps->size() && (*holderSnaps)[j].time <= s.time + kFlicker; ++j)
+                        if (holdsFlag((*holderSnaps)[j])) { regained = true; break; }
+                if (regained) continue;
+                releaseAt = s.time; rx = s.x; ry = s.y; rz = s.z;
+                break;
+            }
+
+            // A packet at that moment (the capture, a return, the next pickup, a drop) ends the
+            // carry by itself, exactly as for any carry the packets saw start. Without one, the
+            // drop is recorded here, since nothing later would date it correctly.
+            bool packetEndsIt = releaseAt < 0.f;
+            if (!packetEndsIt)
+            {
+                constexpr float kPacketNear = 1.0f;
+                auto isNear = [&](float t) { return std::abs(t - releaseAt) <= kPacketNear; };
+                for (const auto& an : fe.announces) {
+                    if (!isNear(an.time)) continue;
+                    const int team = Team::Index01(an.team);
+                    if (team < 0) continue;
+                    // A capture names the capturing team; a return names the team returning the
+                    // other side's flag.
+                    if ((an.action == 1 && team == ti) || (an.action == 0 && 1 - team == ti))
+                        packetEndsIt = true;
+                }
+                for (const auto& de : fe.drops)
+                    if (de.player_agent_id == holder && isNear(de.time)) packetEndsIt = true;
+                for (const auto& pe : fe.pickups)
+                    if (isNear(pe.time) && ResolveTeamFromPlayer(pe.player_agent_id, input.agents) == ti)
+                        packetEndsIt = true;
+                // Obelisk captures arrive as a FLAG_STAND packet with the team's new flag item.
+                for (const auto& fi : fe.items)
+                    if (fi.extra_id == colour && isNear(fi.time)) packetEndsIt = true;
+            }
+
+            // Already carried when the recording began, so the carry starts with it.
+            FlagTimelineEvent fte;
+            fte.time           = t0;
+            fte.flagTeam       = static_cast<FlagTeam>(ti);
+            fte.eventType      = FlagTimelineEventType::Pickup;
+            fte.newLocation    = FlagLocation::Carried;
+            fte.actorAgentId   = holder;
+            fte.carrierAgentId = holder;
+            fte.x = hx; fte.y = hy; fte.z = hz;
+            result.teams[ti].events.push_back(fte);
+
+            if (packetEndsIt)
+            {
+                carrier[ti]      = holder;
+                carrierSince[ti] = t0;
+                lastItemId[ti]   = flagItem;
+            }
+            else
+            {
+                FlagTimelineEvent dropEv;
+                dropEv.time           = releaseAt;
+                dropEv.flagTeam       = static_cast<FlagTeam>(ti);
+                dropEv.eventType      = FlagTimelineEventType::Drop;
+                dropEv.newLocation    = FlagLocation::Ground;
+                dropEv.actorAgentId   = holder;
+                dropEv.carrierAgentId = -1;
+                dropEv.x = rx; dropEv.y = ry; dropEv.z = rz;
+                result.teams[ti].events.push_back(dropEv);
+                lastGroundPos[ti][0] = rx; lastGroundPos[ti][1] = ry; lastGroundPos[ti][2] = rz;
+            }
+
+            // The base: where a fresh flag of this team's colour appears, in the instant the
+            // server declares it after a capture or a return.
+            bool baseFound = false;
+            for (const auto& fi : fe.items)
+            {
+                if (fi.extra_id != colour || fi.time <= t0 + kSameInstant) continue;
+                for (const auto& [aid, ard] : *input.agents)
+                {
+                    if (ard.type == AgentType::Player) continue;
+                    uint32_t prevItem = 0;
+                    for (const auto& s : ard.snapshots)
+                    {
+                        if (s.item_id == prevItem) continue;
+                        prevItem = s.item_id;
+                        if (s.item_id != static_cast<uint32_t>(fi.item_id)) continue;
+                        if (std::abs(s.time - fi.time) > kSameInstant) continue;
+                        result.teams[ti].spawnX = s.x;
+                        result.teams[ti].spawnY = s.y;
+                        result.teams[ti].spawnZ = s.z;
+                        baseFound = true;
+                        break;
+                    }
+                    if (baseFound) break;
+                }
+                if (baseFound) break;
+            }
+        }
+    }
+
     for (auto& raw : merged)
     {
         switch (raw.code)
@@ -1663,6 +1831,108 @@ FlagTimeline FlagTimelineBuilder::Build(const Input& input)
             result.allEvents.push_back(ev);
     std::stable_sort(result.allEvents.begin(), result.allEvents.end(),
         [](const FlagTimelineEvent& a, const FlagTimelineEvent& b) { return a.time < b.time; });
+
+    // Phase 7: An urn hold, as drawn, ends where the item in the ritualist's hands changes. A
+    // ritualist who picks up the flag (or a bundle) while holding an urn trades one for the other
+    // without ever being seen empty-handed, so the hold Phase 3b found runs on over the carry and
+    // the urn is drawn instead of the flag. Only a change that comes with a pickup packet from
+    // that player ends the hold: a fresh urn cast over the last one also changes the item, and
+    // that one is still an urn. Done last, on the drawn holds only: every phase above has
+    // already used them as they were, so nothing it decided changes.
+    if (input.agents)
+    {
+        constexpr float kPickupNear = 1.5f;
+        for (auto& hold : result.ashesHolds)
+        {
+            auto cit = input.agents->find(hold.carrierAgentId);
+            if (cit == input.agents->end()) continue;
+            const auto& snaps = cit->second.snapshots;
+
+            auto pickedUpNear = [&](float t) {
+                for (const auto& pe : fe.pickups)
+                    if (pe.player_agent_id == hold.carrierAgentId && std::abs(pe.time - t) <= kPickupNear)
+                        return true;
+                return false;
+            };
+
+            bool     haveItem = false;
+            uint16_t heldItem = 0;
+            for (const auto& s : snaps)
+            {
+                if (s.time < hold.startTime) continue;
+                if (hold.endTime >= 0.f && s.time >= hold.endTime) break;
+                const bool full = s.weapon_type == 0 && s.weapon_item_type == kBundleHeldItemType;
+                if (!full) continue;
+                if (!haveItem) { heldItem = s.weapon_item_id; haveItem = true; continue; }
+                if (s.weapon_item_id == heldItem) continue;
+                if (pickedUpNear(s.time)) { hold.endTime = s.time; break; }
+                heldItem = s.weapon_item_id;   // another urn, still held
+            }
+        }
+
+        // The other way round: an urn cast while the hands already hold the flag or a bundle
+        // replaces it with no empty hands in between, so Phase 3b never saw that hold begin. The
+        // urn arrives as the item in hand changing after the cast with no pickup packet behind it,
+        // and stays until the hands empty or change again.
+        constexpr float kCastToHold = 10.f;
+        const size_t cutHolds = result.ashesHolds.size();
+        for (const auto& [castTime, casterId] : ashesCasts)
+        {
+            bool covered = false;
+            for (size_t h = 0; h < cutHolds; ++h)
+            {
+                const AshesHold& hold = result.ashesHolds[h];
+                if (hold.carrierAgentId != casterId) continue;
+                const float end = hold.endTime < 0.f ? FLT_MAX : hold.endTime;
+                if ((hold.startTime >= castTime && hold.startTime <= castTime + kCastToHold) ||
+                    (hold.startTime <= castTime && castTime <= end)) { covered = true; break; }
+            }
+            if (covered) continue;
+
+            auto cit = input.agents->find(casterId);
+            if (cit == input.agents->end()) continue;
+            const auto& snaps = cit->second.snapshots;
+
+            auto pickedUpNear = [&](float t) {
+                for (const auto& pe : fe.pickups)
+                    if (pe.player_agent_id == casterId && std::abs(pe.time - t) <= kPickupNear) return true;
+                return false;
+            };
+            auto full = [](const AgentSnapshot& s) {
+                return s.weapon_type == 0 && s.weapon_item_type == kBundleHeldItemType;
+            };
+
+            for (size_t k = 1; k < snaps.size(); ++k)
+            {
+                const auto& s = snaps[k];
+                if (s.time <= castTime) continue;
+                if (s.time > castTime + kCastToHold) break;
+                const auto& prev = snaps[k - 1];
+                if (!full(prev) || !full(s) || s.weapon_item_id == prev.weapon_item_id) continue;
+                if (pickedUpNear(s.time)) break;
+
+                int skillId = 0;
+                if (input.skills)
+                    for (const auto& ev : *input.skills)
+                        if (ev.caster_id == casterId && ev.time == castTime && LookupAshesSkill(ev.skill_id))
+                        { skillId = ev.skill_id; break; }
+                if (!skillId) break;
+
+                AshesHold hold;
+                hold.startTime      = s.time;
+                hold.endTime        = -1.f;
+                hold.skillId        = skillId;
+                hold.carrierAgentId = casterId;
+                for (size_t j = k + 1; j < snaps.size(); ++j)
+                    if (!full(snaps[j]) || snaps[j].weapon_item_id != s.weapon_item_id)
+                    { hold.endTime = snaps[j].time; break; }
+                result.ashesHolds.push_back(hold);
+                break;
+            }
+        }
+        std::sort(result.ashesHolds.begin(), result.ashesHolds.end(),
+                  [](const AshesHold& a, const AshesHold& b) { return a.startTime < b.startTime; });
+    }
 
     result.valid = true;
     return result;

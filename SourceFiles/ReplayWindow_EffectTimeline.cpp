@@ -208,10 +208,31 @@ void ReplayWindow::BuildEffectTimeline() const
         auto it = m_replayCtx.agents.find(agentId);
         return it == m_replayCtx.agents.end() ? nullptr : &it->second;
     };
+    // A ritualist's urn spell ends when the urn leaves his hands. The urn holds come from the flag
+    // timeline, which also tells an urn from the flag or a bundle traded for it.
+    if (m_flagTimelineBuilt)
+        in.itemReleased = [this](int agentId, int skillId, float landed) -> float {
+            // The hold begins at the first snapshot with the urn in hand, a moment after the cast
+            // lands, so the hold of this skill on this player that covers the landing (an urn cast
+            // over another urn lands inside the first one's hold) or starts closest after it.
+            constexpr float kAfter = 3.f;
+            const AshesHold* best = nullptr;
+            float bestGap = 0.f;
+            for (const AshesHold& h : m_flagTimeline.ashesHolds)
+            {
+                if (h.carrierAgentId != agentId || h.skillId != skillId) continue;
+                const float end = h.endTime < 0.f ? FLT_MAX : h.endTime;
+                if (h.startTime - kAfter > landed || end <= landed) continue;
+                const float gap = std::abs(h.startTime - landed);
+                if (!best || gap < bestGap) { best = &h; bestGap = gap; }
+            }
+            return best ? best->endTime : -1.f;
+        };
 
     m_effectTimeline = Build(in);
     m_effectTimelineBuilt = true;
     m_effectTimelineUsedAttributes = m_attributesDeduced;
+    m_effectTimelineUsedFlags = m_flagTimelineBuilt;
 
     // Developer dump: %TEMP%\gwo_effects_<match>.txt whenever GWO_EFFECT_DEBUG is set.
     char flag[16] = {};
@@ -313,7 +334,8 @@ void ReplayWindow::BuildEffectTimeline() const
 const EffectTimeline::Table* ReplayWindow::EffectTimelineTable() const
 {
     if (!m_replayCtx.stocLoaded || !m_skillUseTimelineBuilt || !m_agentsClassified) return nullptr;
-    if (!m_effectTimelineBuilt || (!m_effectTimelineUsedAttributes && m_attributesDeduced))
+    if (!m_effectTimelineBuilt || (!m_effectTimelineUsedAttributes && m_attributesDeduced) ||
+        (!m_effectTimelineUsedFlags && m_flagTimelineBuilt))
         BuildEffectTimeline();
     return &m_effectTimeline;
 }

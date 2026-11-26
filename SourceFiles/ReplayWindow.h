@@ -652,6 +652,7 @@ private:
     mutable EffectTimeline::Table m_effectTimeline;
     mutable bool m_effectTimelineBuilt = false;
     mutable bool m_effectTimelineUsedAttributes = false;
+    mutable bool m_effectTimelineUsedFlags = false;   // built with the urn holds (item spell ends)
 
     // One floating number per damage or heal packet, as the client shows them: Mind Burn's second
     // packet, a weapon hit's vampiric part or an attack skill's armour-ignoring bonus is a number of
