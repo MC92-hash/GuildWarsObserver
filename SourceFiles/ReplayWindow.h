@@ -189,6 +189,10 @@ public:
     bool ExportCombatLogView(const std::filesystem::path& outPath);
     // The adrenaline model's per-player report (--export-adrenaline), for the audit of the archive.
     bool ExportAdrenaline(const std::filesystem::path& outPath);
+    // The reconstructed flag, bundle and carry timelines as plain text, for diffing two builds
+    // against the same recordings (--export-flag-timeline).
+    bool FlagTimelinesBuilt() const { return m_flagTimelineBuilt && m_bundleCarryBuilt; }
+    bool ExportFlagTimeline(const std::filesystem::path& outPath) const;
     // The pack's version-2 fields (deaths with killers, NPC deaths, skill bars and recharges, weapon sets,
     // damage/healing over time, bundles), appended to the open JSON object.
     void WriteIrisPackV2(std::ostringstream& js, const std::vector<int>& playerIds) const;

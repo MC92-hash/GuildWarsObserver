@@ -319,6 +319,9 @@ extern "C"
 //   GuildWarsObserver.exe --export-adrenaline <match folder> [<out file> | --out <file>]
 //                                                       (default adrenaline.txt; the adrenaline
 //                                                       model's per-player audit, AdrenalineModel)
+//   GuildWarsObserver.exe --export-flag-timeline <match folder> [--out <file>]
+//                                                       (default flag_timeline.txt; the flag, bundle
+//                                                       and carry reconstruction, for diffing builds)
 //
 // The Iris pack is the in-game HUD's data for one match (ReplayWindow_IrisPack.cpp), sealed so that
 // only Iris reads it. The upload step publishes it next to the recording.
@@ -342,7 +345,7 @@ extern "C"
 //   6  solved nothing worth writing, or the file could not be written
 // ---------------------------------------------------------------------------
 
-enum class HeadlessExport { Attributes, IrisPack, MatchAnalysis, CombatLog, Adrenaline };
+enum class HeadlessExport { Attributes, IrisPack, MatchAnalysis, CombatLog, Adrenaline, FlagTimeline };
 
 static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::wstring& outArg, HeadlessExport kind)
 {
@@ -360,6 +363,7 @@ static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::
                     : kind == HeadlessExport::MatchAnalysis ? "export-match-analysis"
                     : kind == HeadlessExport::CombatLog     ? "export-combat-log"
                     : kind == HeadlessExport::Adrenaline    ? "export-adrenaline"
+                    : kind == HeadlessExport::FlagTimeline  ? "export-flag-timeline"
                                                             : "export-attributes";
     std::error_code ec;
     if (!std::filesystem::is_directory(folder, ec))
@@ -411,6 +415,29 @@ static int RunHeadlessAttributeExport(const std::wstring& folderArg, const std::
     {
         std::fprintf(stderr, "%s: could not open the replay\n", tag);
         return 3;
+    }
+
+    // The flag reconstruction needs neither the attribute solve nor the combat log, so it does
+    // not wait for them: a recording whose solve stalls still has its flags compared.
+    if (kind == HeadlessExport::FlagTimeline)
+    {
+        for (int i = 0; i < 6000 && !rw->FlagTimelinesBuilt() && !rw->AnalysisStalled(); i++)
+        {
+            rw->TickHeadless();
+            Sleep(10);
+        }
+        int frc = 5;
+        if (rw->FlagTimelinesBuilt())
+        {
+            const std::filesystem::path out = !outArg.empty() ? std::filesystem::path(outArg)
+                                            : folder / "flag_timeline.txt";
+            if (rw->ExportFlagTimeline(out)) { std::printf("%s: wrote %ls\n", tag, out.c_str()); frc = 0; }
+            else { std::fprintf(stderr, "%s: could not write %ls\n", tag, out.c_str()); frc = 6; }
+        }
+        else
+            std::fprintf(stderr, "%s: analysis stalled for %s\n", tag, match.folder_name.c_str());
+        delete rw;
+        return frc;
     }
 
     while (!rw->AnalysisComplete() && !rw->AnalysisStalled())
@@ -503,6 +530,7 @@ static bool TryHeadlessCommandLine(LPWSTR lpCmdLine, int& exitCode)
         else if (wcscmp(argv[i], L"--export-iris-pack") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::IrisPack; }
         else if (wcscmp(argv[i], L"--export-match-analysis") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::MatchAnalysis; }
         else if (wcscmp(argv[i], L"--export-combat-log") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::CombatLog; }
+        else if (wcscmp(argv[i], L"--export-flag-timeline") == 0 && i + 1 < argc) { folder = argv[++i]; kind = HeadlessExport::FlagTimeline; }
         else if (wcscmp(argv[i], L"--export-adrenaline") == 0 && i + 1 < argc)
         {
             folder = argv[++i];

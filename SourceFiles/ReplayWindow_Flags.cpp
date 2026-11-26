@@ -1235,3 +1235,89 @@ void ReplayWindow::DrawFlagEventMessages()
         }
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Flag / bundle timeline export (--export-flag-timeline)
+//
+// Everything the flag reconstruction decided, one line per event, in a fixed order and with
+// fixed precision, so two builds run against the same recordings can be compared with a plain
+// diff. Flag teams, both flagstands, every vine seed / repair kit, the ritualist urns, and the
+// per-player carry intervals the party bars and the auto camera read.
+// ---------------------------------------------------------------------------
+
+bool ReplayWindow::ExportFlagTimeline(const std::filesystem::path& outPath) const
+{
+    if (!m_flagTimelineBuilt || !m_bundleCarryBuilt) return false;
+
+    std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+
+    auto line = [&](const char* fmt, auto... args) {
+        char buf[512];
+        std::snprintf(buf, sizeof(buf), fmt, args...);
+        out << buf << "\n";
+    };
+
+    static const char* kEventType[] = { "Spawn", "Pickup", "Drop", "Stick", "Return", "GroundSpawn" };
+    static const char* kBundleLoc[] = { "Base", "Carried", "Ground", "Consumed" };
+    static const char* kStandOwner[] = { "Neutral", "Blue", "Red" };
+
+    const FlagTimeline& ft = m_flagTimeline;
+    line("map %d valid %d", m_replayCtx.mapId, ft.valid ? 1 : 0);
+
+    for (int ti = 0; ti < 2; ti++)
+    {
+        const auto& team = ft.teams[ti];
+        line("[flag %s] spawn %.1f %.1f %.1f events %d", ti == 0 ? "blue" : "red",
+             team.spawnX, team.spawnY, team.spawnZ, static_cast<int>(team.events.size()));
+        for (const auto& ev : team.events)
+            line("  %.3f %s -> %s actor %d carrier %d pos %.1f %.1f world %d stand %d",
+                 ev.time, kEventType[static_cast<int>(ev.eventType)],
+                 FlagLocationName(ev.newLocation), ev.actorAgentId, ev.carrierAgentId,
+                 ev.x, ev.y, ev.flagWorldAgentId, ev.standAgentId);
+    }
+
+    auto dumpStand = [&](const char* name, const StandTimeline& st) {
+        line("[%s] agent %d pos %.1f %.1f events %d", name, st.standAgentId, st.standX, st.standY,
+             static_cast<int>(st.events.size()));
+        for (const auto& sc : st.events)
+            line("  %.3f %s agent %d morale %.3f", sc.time, kStandOwner[static_cast<int>(sc.owner)],
+                 sc.standAgentId, sc.moraleExpiry);
+    };
+    dumpStand("tower", ft.stand);
+    dumpStand("obelisk", ft.obelisk);
+
+    for (const auto& b : ft.bundles)
+    {
+        line("[bundle item %d type %d] spawn %.1f %.1f resolved %d events %d", b.itemId,
+             static_cast<int>(b.type), b.spawnX, b.spawnY, b.spawnResolved ? 1 : 0,
+             static_cast<int>(b.events.size()));
+        for (const auto& ev : b.events)
+            line("  %.3f %s actor %d carrier %d confirmed %d pos %.1f %.1f world %d", ev.time,
+                 kBundleLoc[static_cast<int>(ev.newLocation)], ev.actorAgentId, ev.carrierAgentId,
+                 ev.carrierConfirmed ? 1 : 0, ev.x, ev.y, ev.worldAgentId);
+    }
+
+    line("[ashes holds] %d", static_cast<int>(ft.ashesHolds.size()));
+    for (const auto& h : ft.ashesHolds)
+        line("  %.3f .. %.3f skill %d carrier %d", h.startTime, h.endTime, h.skillId, h.carrierAgentId);
+    line("[ashes drops] %d", static_cast<int>(ft.ashesDrops.size()));
+    for (const auto& d : ft.ashesDrops)
+        line("  %.3f .. %.3f skill %d carrier %d pos %.1f %.1f", d.startTime, d.endTime, d.skillId,
+             d.carrierAgentId, d.x, d.y);
+
+    // Carry intervals, by player id so the order does not depend on hash map iteration.
+    std::vector<int> carriers;
+    for (const auto& [pid, intervals] : m_bundleCarry)
+        if (!intervals.empty()) carriers.push_back(pid);
+    std::sort(carriers.begin(), carriers.end());
+    line("[carry intervals] %d players", static_cast<int>(carriers.size()));
+    for (int pid : carriers)
+        for (const auto& bci : m_bundleCarry.at(pid))
+            line("  player %d %s %.3f .. %.3f item agent %d", pid,
+                 BundleTypeName(bci.type) ? BundleTypeName(bci.type) : "Unknown",
+                 bci.startTime, bci.endTime, bci.itemAgentId);
+
+    return static_cast<bool>(out);
+}
