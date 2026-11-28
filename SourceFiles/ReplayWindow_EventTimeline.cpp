@@ -222,7 +222,7 @@ void ReplayWindow::BuildTimelineData()
 // ---------------------------------------------------------------------------
 bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) const
 {
-    static constexpr int kVersion = 16;   // 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice 13: en_quicksand, en_quicksand_time; All In, Expertise, Healer's Covenant readings. 14: cancelled casts keep their cost, en_lost_cancel. 15: lord_damage. 16: lord_damage = the aggressiveness scores.
+    static constexpr int kVersion = 17;   // 17: aggressiveness events + lord ids, prevented lines name their hit (hitBy, hitKey, penetrated). 9: kd_blocked, cond_time; 10: pets on their ranger; 11: Cracked Armor / Deep Wound inflicted; 12: weapon-set deaths, flag carrier deaths, no self-caught conditions as sacrifice 13: en_quicksand, en_quicksand_time; All In, Expertise, Healer's Covenant readings. 14: cancelled casts keep their cost, en_lost_cancel. 15: lord_damage. 16: lord_damage = the aggressiveness scores.
 
     auto typeName = [](TimelineEventType t) -> const char* {
         switch (t)
@@ -516,9 +516,13 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
         nlohmann::json lines = nlohmann::json::array();
         for (const auto& ln : d.lines)
         {
-            lines.push_back({ ms(ln.t), (int)ln.kind, ln.src, ln.dst, ln.amount, ln.skillId, ln.rowKey,
-                              (ln.weaponHit ? 1 : 0) | (ln.estimated ? 2 : 0), ln.count, (int)ln.preventGroup });
+            nlohmann::json a = { ms(ln.t), (int)ln.kind, ln.src, ln.dst, ln.amount, ln.skillId, ln.rowKey,
+                                 (ln.weaponHit ? 1 : 0) | (ln.estimated ? 2 : 0), ln.count, (int)ln.preventGroup };
+            // A prevented line also names the hit it came off: [.., hitBy, hitKey, penetrated].
+            if (ln.kind == BattleLedger::Kind::Prevented) { a.push_back(ln.hitBy); a.push_back(ln.hitKey); a.push_back(ln.penetrated); }
+            lines.push_back(std::move(a));
             named.insert(ln.src); named.insert(ln.dst);
+            if (ln.hitBy) named.insert(ln.hitBy);
         }
         nlohmann::json ints = nlohmann::json::array();
         for (const auto& li : d.ints)
@@ -589,6 +593,17 @@ bool ReplayWindow::ExportMatchAnalysis(const std::filesystem::path& outPath) con
                 parts.push_back({ l.count, std::lround(l.health), std::lround(l.points) });
             aggressiveness["team" + std::to_string(team)] = { { "score", std::lround(t.score) }, { "parts", std::move(parts) } };
         }
+        // Every event behind the scores, for the Library's Lord damage view (its score race and its
+        // "from damage to score" ladder): [ms on the displayed clock, cause, team, actor, skill,
+        // Health x10, points x10, flags (1 estimated source, 2 under Entourage)].
+        nlohmann::json evs = nlohmann::json::array();
+        for (const LordAggressiveness::Event& e : m_lordAggr.events)
+            evs.push_back({ (int)std::lround((e.time - dispOff) * 1000.f), (int)e.cause, e.team, e.actor,
+                            e.sourceSkill > 0 ? m_skillView.ResolvePvpSkillId(e.sourceSkill) : e.sourceSkill,
+                            (int)std::lround(e.health * 10.f), (int)std::lround(e.points * 10.f),
+                            (e.estimated ? 1 : 0) | (e.underEntourage ? 2 : 0) });
+        aggressiveness["events"] = std::move(evs);
+        aggressiveness["lord"] = { m_lordAggr.lord[1], m_lordAggr.lord[2] };
     }
 
     // Each team's score against the other's Guild Lord, team 1 first: the Library's Lord damage bars.

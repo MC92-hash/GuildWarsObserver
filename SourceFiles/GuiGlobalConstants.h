@@ -60,8 +60,10 @@ inline constexpr float kUiHeadingRatios[] = {1.47f, 1.73f, 2.67f};
 // size into an ImGui one: ImGui sizes a font by its ascent plus descent, CSS by its em, and the
 // interface font's (Roboto's) ascent plus descent is 1.172 em.
 inline constexpr float kLibraryEm = 1.1719f;
-inline constexpr float kLibraryPageSizes[] = {9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 15.0f, 26.0f};
-inline constexpr float kLibraryPageBoldSizes[] = {11.0f, 12.0f, 13.0f, 14.0f, 15.0f};
+// 14 and up to 27 (bold 22): the Statistics page (draw_library_stats.inl, V48, 2026-11-26).
+inline constexpr float kLibraryPageSizes[] = {9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 17.0f, 19.0f, 20.0f, 22.0f, 23.0f,
+                                              24.0f, 26.0f, 27.0f};
+inline constexpr float kLibraryPageBoldSizes[] = {11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 22.0f};
 
 struct DisplayFontRung
 {

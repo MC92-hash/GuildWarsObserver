@@ -173,15 +173,34 @@ namespace
         ImGui::EndTooltip();
     }
 
+    // The fixed columns shown before the selection was one list (2026-11-26): what a first start
+    // still shows, with the starred columns.
+    constexpr bool kDefaultOn[SC_Count] = { true, true, true, true, true, true, true, true, false, true, false, false, false };
+
     struct StatsTabState
     {
         bool perMinute = false;
-        bool on[SC_Count] = { true, true, true, true, true, true, true, true, false, true, false, false, false };
-        std::vector<int> extra;           // the catalogue's columns picked, in the order picked (kExtraBase + index)
+        // THE selection: every column shown, fixed or catalogue, in the order picked. The replay
+        // panel's ticks and stars, the Library page's chips, picker and columns all read it.
+        std::vector<int> sel;
+        bool selReady = false;
         char search[64] = {};             // the More stats picker's keywords
         int  sort = SC_Dealt;
+        bool sortDesc = true;             // the Library page's Table: highest first
     };
     StatsTabState s_stats;
+
+    bool InSel(int c) { return std::find(s_stats.sel.begin(), s_stats.sel.end(), c) != s_stats.sel.end(); }
+    void AddSel(int c) { if (!InSel(c)) s_stats.sel.push_back(c); }
+    void RemoveSel(int c) { s_stats.sel.erase(std::remove(s_stats.sel.begin(), s_stats.sel.end(), c), s_stats.sel.end()); }
+
+    // A column's stable key, as MatchStats::Layout() names it.
+    std::string KeyOf(int c)
+    {
+        if (c >= 0 && c < SC_Count) return std::string("base:") + kStatCols[c].name;
+        const auto* d = ExtraDef(c);
+        return d ? std::string(d->key) : std::string();
+    }
 
 
     // Every column's number per player over [r0, r1] on the match clock.
@@ -365,6 +384,33 @@ namespace
         return out;
     }
 
+    // A team's own cell of a catalogue column: counts and sums added up, times added up (per
+    // minute: the average share), a ratio over the summed tries, a median over every case of the
+    // team's players - never a sum of medians or of shares.
+    ExtraCell TeamExtraCell(const StatsTable::Data& data, const MatchStats::StatDef& def,
+                            const std::unordered_map<int, ExtraCell>& cells, const std::vector<int>& rows,
+                            float r0, float r1, bool perMinute)
+    {
+        ExtraCell tc;
+        for (int pid : rows)
+            if (auto it = cells.find(pid); it != cells.end())
+            { tc.v += it->second.v; tc.num += it->second.num; tc.den += it->second.den; tc.n += it->second.n; }
+        if (def.agg == MatchStats::Agg::Ratio) tc.v = tc.den > 0.0 ? tc.num / tc.den : 0.0;
+        if (def.agg == MatchStats::Agg::Time && perMinute && !rows.empty()) tc.v /= rows.size();
+        if (def.agg == MatchStats::Agg::Median)
+        {
+            std::vector<float> all;
+            std::unordered_set<int> mine(rows.begin(), rows.end());
+            if (data.stats)
+                if (auto it = data.stats->find(def.key); it != data.stats->end())
+                    for (const auto& r : it->second)
+                        if (r.t >= r0 && r.t <= r1 && mine.count(r.agent)) all.push_back(r.value);
+            tc.n = (int)all.size();
+            tc.v = Median(std::move(all));
+        }
+        return tc;
+    }
+
     std::string ExtraText(const ExtraCell& c, const MatchStats::StatDef& def, bool perMinute)
     {
         using MatchStats::Agg;
@@ -417,74 +463,85 @@ namespace
         }
     }
 
-    // Favourite stats: starred in the picker, shown as columns every time, kept between sessions in
-    // stats_favourites.txt beside gui_settings.ini (one stat key per line, in the order starred).
-    std::vector<int> s_favs;          // kExtraBase + catalogue index
+    // Favourite stats: starred in the replay panel's picker, shown as columns every time, kept
+    // between sessions in stats_favourites.txt beside gui_settings.ini (one stat key per line, in
+    // the order starred). A favourite is always in the selection.
+    std::vector<int> s_favs;          // column ids (fixed, or kExtraBase + catalogue index)
     bool s_favsLoaded = false;
 
     std::filesystem::path FavouritesFile() { return s_favFile; }
+    std::filesystem::path SelectionFile() { return s_favFile.empty() ? std::filesystem::path() : s_favFile.parent_path() / "stats_selection.txt"; }
 
-    // A fixed column is kept as "base:<name>". Once one fixed column is starred, the starred ones
-    // replace the default set (the others start unticked).
-    void LoadFavourites()
+    // One key per line, unknown and repeated keys skipped.
+    std::vector<int> ReadKeys(const std::filesystem::path& file, bool* opened = nullptr)
     {
-        if (s_favsLoaded || s_favFile.empty()) return;   // read once the path is known
-        s_favsLoaded = true;
-        std::ifstream f(FavouritesFile());
+        std::vector<int> out;
+        std::ifstream f(file);
+        if (opened) *opened = f.is_open();
         std::string key;
-        bool anyBase = false;
         while (std::getline(f, key))
         {
             while (!key.empty() && (key.back() == '\r' || key.back() == ' ')) key.pop_back();
             if (key.empty()) continue;
             const int c = LayoutCol(key.c_str());
-            if (c < 0 || std::find(s_favs.begin(), s_favs.end(), c) != s_favs.end()) continue;
-            s_favs.push_back(c);
-            anyBase |= c < SC_Count;
+            if (c >= 0 && std::find(out.begin(), out.end(), c) == out.end()) out.push_back(c);
         }
-        if (anyBase)
-            for (bool& on : s_stats.on) on = false;
+        return out;
     }
 
-    void SaveFavourites()
+    void WriteKeys(const std::filesystem::path& file, const std::vector<int>& cols)
     {
-        std::ofstream f(FavouritesFile(), std::ios::trunc);
-        for (int c : s_favs)
-        {
-            if (c < SC_Count) f << "base:" << kStatCols[c].name << "\n";
-            else if (const auto* d = ExtraDef(c)) f << d->key << "\n";
-        }
+        if (file.empty()) return;
+        std::ofstream f(file, std::ios::trunc);
+        for (int c : cols)
+            if (const std::string k = KeyOf(c); !k.empty()) f << k << "\n";
     }
+
+    void SaveFavourites() { WriteKeys(FavouritesFile(), s_favs); }
+    void SaveSelection() { WriteKeys(SelectionFile(), s_stats.sel); }
 
     bool IsFavourite(int c) { return std::find(s_favs.begin(), s_favs.end(), c) != s_favs.end(); }
-    // A fixed column is on screen when ticked or starred.
-    bool BaseShown(int c) { return s_stats.on[c] || IsFavourite(c); }
 
-    // Starring keeps the column for good; unstarring leaves it shown for this session.
+    // The selection, once: stats_selection.txt when it exists; else (the first start since the
+    // selection became one list) what the table showed before: the default fixed columns (none
+    // of them once a fixed column was starred), the starred fixed ones, then the starred catalogue
+    // stats. Until the Library gives the path, the defaults alone.
+    void LoadFavourites()
+    {
+        if (!s_stats.selReady)
+        {
+            s_stats.selReady = true;
+            for (int c = 0; c < SC_Count; ++c) if (kDefaultOn[c]) s_stats.sel.push_back(c);
+        }
+        if (s_favsLoaded || s_favFile.empty()) return;   // read once the path is known
+        s_favsLoaded = true;
+        s_favs = ReadKeys(FavouritesFile());
+        bool opened = false;
+        std::vector<int> sel = ReadKeys(SelectionFile(), &opened);
+        if (!opened)
+        {
+            const bool anyBase = std::any_of(s_favs.begin(), s_favs.end(), [](int c) { return c < SC_Count; });
+            sel.clear();
+            for (int c = 0; c < SC_Count; ++c)
+                if ((kDefaultOn[c] && !anyBase) || IsFavourite(c)) sel.push_back(c);
+            for (int c : s_favs) if (c >= SC_Count) sel.push_back(c);
+        }
+        for (int c : s_favs) if (std::find(sel.begin(), sel.end(), c) == sel.end()) sel.push_back(c);
+        s_stats.sel = std::move(sel);
+    }
+
+    // A fixed column is on screen when it is in the selection.
+    bool BaseShown(int c) { return InSel(c); }
+
+    // Starring keeps the column for good; unstarring leaves it shown.
     void ToggleFavourite(int c)
     {
         auto it = std::find(s_favs.begin(), s_favs.end(), c);
-        if (c < SC_Count)
-        {
-            // A fixed column: unstarring leaves it ticked for this session.
-            if (it != s_favs.end()) { s_favs.erase(it); s_stats.on[c] = true; }
-            else s_favs.push_back(c);
-            SaveFavourites();
-            return;
-        }
-        auto ex = std::find(s_stats.extra.begin(), s_stats.extra.end(), c);
-        if (it != s_favs.end()) { s_favs.erase(it); if (ex == s_stats.extra.end()) s_stats.extra.push_back(c); }
-        else { s_favs.push_back(c); if (ex != s_stats.extra.end()) s_stats.extra.erase(ex); }
+        if (it != s_favs.end()) s_favs.erase(it);
+        else s_favs.push_back(c);
+        AddSel(c);
         SaveFavourites();
-    }
-
-    // The catalogue's columns on screen: the favourites, then this session's picks.
-    std::vector<int> ShownExtras()
-    {
-        std::vector<int> v;
-        for (int c : s_favs) if (ExtraDef(c)) v.push_back(c);
-        for (int c : s_stats.extra) if (ExtraDef(c) && !IsFavourite(c)) v.push_back(c);
-        return v;
+        SaveSelection();
     }
 
     // A five-pointed star (the app font has no star glyph): filled gold, or an outline.
@@ -515,7 +572,7 @@ namespace
     }
 
     // Every keyword of the picker's search appears in the stat's label, head, group or help.
-    bool MatchesSearch(const MatchStats::StatDef& d, const char* query)
+    bool DefMatchesSearch(const MatchStats::StatDef& d, const char* query)
     {
         auto lower = [](std::string s) { for (auto& ch : s) ch = (char)std::tolower((unsigned char)ch); return s; };
         const std::string hay = lower(std::string(d.label) + " " + d.head + " " + d.group + " " + d.sub + " " + d.meaning + " " + d.help);
@@ -547,9 +604,10 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
     ImGui::SameLine(0.0f, 6.0f);
     if (ImGui::Button("Clear all"))
     {
-        s_stats.extra.clear();
-        for (bool& on : s_stats.on) on = false;
+        s_stats.sel.erase(std::remove_if(s_stats.sel.begin(), s_stats.sel.end(), [](int c) { return !IsFavourite(c); }),
+                          s_stats.sel.end());
         s_stats.search[0] = 0;
+        SaveSelection();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Untick every column. Starred columns stay: unstar them to remove them.");
     ImGui::TextColored(ImVec4(0.59f, 0.61f, 0.65f, 1.0f), "Tick to show a column; star to keep it every time.");
@@ -565,12 +623,13 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
         if (StarButton(fav)) toggleFav = c;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip(fav ? "Favourite: shown every time. Click to unstar." : "Star: show this column every time.");
         ImGui::SameLine(0.0f, 2.0f);
-        bool on = fav || std::find(s_stats.extra.begin(), s_stats.extra.end(), c) != s_stats.extra.end();
+        bool on = fav || InSel(c);
         if (fav) ImGui::BeginDisabled();
         if (ImGui::Checkbox(d.label, &on))
         {
-            if (on) s_stats.extra.push_back(c);
-            else s_stats.extra.erase(std::find(s_stats.extra.begin(), s_stats.extra.end(), c));
+            if (on) AddSel(c);
+            else RemoveSel(c);
+            SaveSelection();
         }
         if (fav) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ColTooltip(c);
@@ -594,7 +653,12 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
         ImGui::SameLine(0.0f, 2.0f);
         bool on = BaseShown(c);
         if (fav) ImGui::BeginDisabled();
-        if (ImGui::Checkbox(kStatCols[c].label, &on)) s_stats.on[c] = on;
+        if (ImGui::Checkbox(kStatCols[c].label, &on))
+        {
+            if (on) AddSel(c);
+            else RemoveSel(c);
+            SaveSelection();
+        }
         if (fav) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ColTooltip(c);
         ImGui::SameLine(0.0f, 8.0f);
@@ -612,7 +676,7 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
         MatchStats::StatDef probe;
         probe.label = kStatCols[c].label; probe.head = kStatCols[c].head; probe.help = kStatCols[c].help;
         probe.group = e.group; probe.sub = e.sub;
-        return MatchesSearch(probe, s_stats.search);
+        return DefMatchesSearch(probe, s_stats.search);
     };
     // The tree: group, sub-group (unless it repeats the group's name), then its stats.
     std::string group, sub;
@@ -622,7 +686,7 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
         const int c = LayoutCol(e.key);
         if (c < 0) continue;
         const auto* d = ExtraDef(c);
-        if (d ? !MatchesSearch(*d, s_stats.search) : !baseMatches(c, e)) continue;
+        if (d ? !DefMatchesSearch(*d, s_stats.search) : !baseMatches(c, e)) continue;
         any = true;
         if (group != e.group)
         {
@@ -648,7 +712,7 @@ __declspec(noinline) void StatsTable::DrawColumnsPanel(Host& host)
         for (size_t i = 0; i < cat.size(); ++i)
         {
             const auto& d = cat[i];
-            if (!d.hidden || !MatchesSearch(d, s_stats.search)) continue;
+            if (!d.hidden || !DefMatchesSearch(d, s_stats.search)) continue;
             if (!header)
             {
                 header = true;
@@ -675,8 +739,7 @@ void StatsTable::DrawTable(const Data& data, Host& host, float r0, float r1)
     const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
     auto raw = StatValues(data, r0, r1);
     std::vector<int> cols;
-    for (int c = 0; c < SC_Count; ++c) if (BaseShown(c)) cols.push_back(c);
-    for (int c : ShownExtras()) cols.push_back(c);
+    for (int c : s_stats.sel) if (c < SC_Count || ExtraDef(c)) cols.push_back(c);
     std::unordered_map<int, std::unordered_map<int, ExtraCell>> extraCells;
     for (int c : cols)
         if (const auto* def = ExtraDef(c)) extraCells[c] = ExtraValues(data, *def, r0, r1, s_stats.perMinute);
@@ -887,29 +950,7 @@ void StatsTable::DrawTable(const Data& data, Host& host, float r0, float r1)
             const int c = cols[k];
             std::string s;
             if (const auto* def = ExtraDef(c))
-            {
-                // The team's own cell: counts and times summed (a time per minute: the average
-                // share), a ratio over the summed tries, a median over every case of the team.
-                ExtraCell tc;
-                const auto& cells = extraCells[c];
-                for (int pid : rows)
-                    if (auto it = cells.find(pid); it != cells.end())
-                    { tc.v += it->second.v; tc.num += it->second.num; tc.den += it->second.den; tc.n += it->second.n; }
-                if (def->agg == MatchStats::Agg::Ratio) tc.v = tc.den > 0.0 ? tc.num / tc.den : 0.0;
-                if (def->agg == MatchStats::Agg::Time && s_stats.perMinute && !rows.empty()) tc.v /= rows.size();
-                if (def->agg == MatchStats::Agg::Median)
-                {
-                    std::vector<float> all;
-                    auto it = data.stats ? data.stats->find(def->key) : MatchStats::Records::const_iterator();
-                    std::unordered_set<int> mine(rows.begin(), rows.end());
-                    if (data.stats && it != data.stats->end())
-                        for (const auto& r : it->second)
-                            if (r.t >= r0 && r.t <= r1 && mine.count(r.agent)) all.push_back(r.value);
-                    tc.n = (int)all.size();
-                    tc.v = Median(std::move(all));
-                }
-                s = ExtraText(tc, *def, s_stats.perMinute);
-            }
+                s = ExtraText(TeamExtraCell(data, *def, extraCells[c], rows, r0, r1, s_stats.perMinute), *def, s_stats.perMinute);
             else
             {
                 double sum = 0.0;
@@ -1025,3 +1066,342 @@ StatsTable::Data StatsTable::MakeData(const Loaded& file, const SkillDatabaseVie
 void StatsTable::SetFavouritesFile(const std::filesystem::path& file) { s_favFile = file; }
 bool StatsTable::PerMinute() { return s_stats.perMinute; }
 void StatsTable::SetPerMinute(bool on) { s_stats.perMinute = on; }
+
+// ─── The selection ───────────────────────────────────────────────────────────────────────────
+
+std::vector<std::string> StatsTable::Selection()
+{
+    LoadFavourites();
+    std::vector<std::string> out;
+    for (int c : s_stats.sel)
+        if (std::string k = KeyOf(c); !k.empty()) out.push_back(std::move(k));
+    return out;
+}
+
+bool StatsTable::IsSelected(const std::string& key)
+{
+    LoadFavourites();
+    const int c = LayoutCol(key.c_str());
+    return c >= 0 && InSel(c);
+}
+
+void StatsTable::Select(const std::string& key, bool on)
+{
+    LoadFavourites();
+    const int c = LayoutCol(key.c_str());
+    if (c < 0) return;
+    if (on) AddSel(c);
+    else
+    {
+        RemoveSel(c);
+        if (IsFavourite(c))
+        {
+            s_favs.erase(std::find(s_favs.begin(), s_favs.end(), c));
+            SaveFavourites();
+        }
+    }
+    SaveSelection();
+}
+
+void StatsTable::ClearSelection()
+{
+    LoadFavourites();
+    s_stats.sel.clear();
+    if (!s_favs.empty())
+    {
+        s_favs.clear();
+        SaveFavourites();
+    }
+    SaveSelection();
+}
+
+std::string StatsTable::SortKey() { LoadFavourites(); return KeyOf(s_stats.sort); }
+bool StatsTable::SortDescending() { return s_stats.sortDesc; }
+
+void StatsTable::SetSort(const std::string& key, bool descending)
+{
+    const int c = LayoutCol(key.c_str());
+    if (c >= 0) s_stats.sort = c;
+    s_stats.sortDesc = descending;
+}
+
+StatsTable::Snapshot StatsTable::TakeSnapshot()
+{
+    LoadFavourites();
+    Snapshot s;
+    s.selection = Selection();
+    for (int c : s_favs) if (std::string k = KeyOf(c); !k.empty()) s.favourites.push_back(std::move(k));
+    s.sortKey = KeyOf(s_stats.sort);
+    s.sortDescending = s_stats.sortDesc;
+    return s;
+}
+
+void StatsTable::Restore(const Snapshot& s)
+{
+    LoadFavourites();
+    auto cols = [](const std::vector<std::string>& keys) {
+        std::vector<int> v;
+        for (const auto& k : keys)
+            if (const int c = LayoutCol(k.c_str()); c >= 0 && std::find(v.begin(), v.end(), c) == v.end()) v.push_back(c);
+        return v;
+    };
+    s_stats.sel = cols(s.selection);
+    s_favs = cols(s.favourites);
+    for (int c : s_favs) AddSel(c);
+    if (const int c = LayoutCol(s.sortKey.c_str()); c >= 0) s_stats.sort = c;
+    s_stats.sortDesc = s.sortDescending;
+    SaveFavourites();
+    SaveSelection();
+}
+
+// ─── Indicators ──────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+    // The layout's group and sub-group of a key ("" when it has none: a detailed stat).
+    const MatchStats::LayoutEntry* LayoutEntryOf(const std::string& key)
+    {
+        for (const auto& e : MatchStats::Layout())
+            if (key == e.key) return &e;
+        return nullptr;
+    }
+
+    // The fixed columns' aggregation, in the catalogue's terms.
+    MatchStats::Agg FixedAgg(int c)
+    {
+        if (IsCountCol(c)) return MatchStats::Agg::Count;
+        if (c == SC_Dead) return MatchStats::Agg::Time;
+        return MatchStats::Agg::Sum;
+    }
+
+    MatchStats::Hue FixedHue(int c)
+    {
+        switch (c)
+        {
+        case SC_Healed: case SC_Received: return MatchStats::Hue::Healing;
+        case SC_Prevented:                return MatchStats::Hue::Prevented;
+        case SC_Ints: case SC_IntsRecv:   return MatchStats::Hue::Interrupt;
+        case SC_Kills: case SC_Deaths: case SC_Skills: case SC_Cancelled: case SC_Dead: case SC_Distance:
+                                          return MatchStats::Hue::Neutral;
+        default:                          return MatchStats::Hue::Damage;
+        }
+    }
+
+    // The fixed columns' numbers, once a frame for the same data and interval: the Library page's
+    // Explore, its Table and its inspector all read them.
+    const std::unordered_map<int, std::array<double, SC_Count>>& CachedStatValues(const StatsTable::Data& data, float r0, float r1)
+    {
+        struct Cache
+        {
+            const void* ledger = nullptr;
+            size_t lines = 0, deaths = 0;
+            float r0 = 0.f, r1 = 0.f;
+            int frame = -1;
+            std::unordered_map<int, std::array<double, SC_Count>> v;
+        };
+        static Cache c;
+        const int frame = ImGui::GetFrameCount();
+        if (c.frame != frame || c.ledger != data.ledger || c.lines != data.ledger->lines.size() || c.deaths != data.deaths.size() ||
+            c.r0 != r0 || c.r1 != r1)
+        {
+            c.v = StatValues(data, r0, r1);
+            c.frame = frame; c.ledger = data.ledger; c.lines = data.ledger->lines.size(); c.deaths = data.deaths.size();
+            c.r0 = r0; c.r1 = r1;
+        }
+        return c.v;
+    }
+
+    std::string WithThousands(long long n)
+    {
+        std::string raw = std::to_string(n < 0 ? -n : n), s;
+        for (int i = (int)raw.size() - 1, k = 0; i >= 0; --i, ++k)
+        {
+            if (k && k % 3 == 0) s.insert(s.begin(), ',');
+            s.insert(s.begin(), raw[i]);
+        }
+        return n < 0 ? "-" + s : s;
+    }
+
+    const char* const kUnavailable = "\xE2\x80\x94";   // an em dash: no value, as opposed to a computed 0
+}
+
+bool StatsTable::Describe(const std::string& key, Indicator& out)
+{
+    const int c = LayoutCol(key.c_str());
+    if (c < 0) return false;
+    out = Indicator();
+    out.key = key;
+    const auto* e = LayoutEntryOf(key);
+    if (const auto* d = ExtraDef(c))
+    {
+        out.label = d->label; out.head = d->head;
+        out.meaning = d->meaning[0] ? d->meaning : d->help;
+        out.method = d->meaning[0] && d->meaning != d->help ? d->help : "";
+        out.group = d->group; out.sub = d->sub;
+        out.agg = d->agg; out.hue = d->hue;
+        out.lowerBetter = d->lowerBetter;
+        out.estimated = d->estimated;
+        out.detailed = d->hidden;
+    }
+    else
+    {
+        const StatColInfo& s = kStatCols[c];
+        out.label = s.label; out.head = s.head; out.meaning = s.help;
+        out.agg = FixedAgg(c); out.hue = FixedHue(c);
+        out.lowerBetter = s.lowerBetter;
+        out.fixed = true;
+        switch (c)
+        {
+        case SC_Dealt: case SC_Taken: case SC_Healed: case SC_Received: case SC_Prevented: case SC_Ints: case SC_IntsRecv:
+            out.ledgerMetric = s.ledgerTab; break;
+        default: break;
+        }
+    }
+    if (e) { out.group = e->group; out.sub = e->sub; }
+    return true;
+}
+
+std::vector<std::string> StatsTable::AllIndicators()
+{
+    std::vector<std::string> out;
+    for (const auto& e : MatchStats::Layout())
+        if (LayoutCol(e.key) >= 0) out.push_back(e.key);
+    for (const auto& d : MatchStats::Catalog())
+        if (d.hidden) out.push_back(d.key);
+    return out;
+}
+
+bool StatsTable::MatchesSearch(const std::string& key, const char* query)
+{
+    Indicator ind;
+    if (!Describe(key, ind)) return false;
+    MatchStats::StatDef probe;
+    probe.label = ind.label.c_str(); probe.head = ind.head.c_str(); probe.group = ind.group.c_str();
+    probe.sub = ind.sub.c_str(); probe.meaning = ind.meaning.c_str(); probe.help = ind.method.c_str();
+    return DefMatchesSearch(probe, query);
+}
+
+std::string StatsTable::UnitText(const std::string& key, bool perMinute)
+{
+    Indicator ind;
+    if (!Describe(key, ind)) return "";
+    using MatchStats::Agg;
+    switch (ind.agg)
+    {
+    case Agg::Ratio:  return "% of the tries (landed / tried)";
+    case Agg::Median: return "seconds, the median case";
+    case Agg::Time:   return perMinute ? "% of the time counted" : "seconds";
+    case Agg::Count:  return perMinute ? "per minute" : "a count";
+    case Agg::Sum:    break;
+    }
+    std::string unit = ind.key == "base:distance" ? "game units"
+                     : ind.hue == MatchStats::Hue::Energy ? "Energy"
+                     : ind.hue == MatchStats::Hue::Neutral ? "a total" : "Health";
+    return perMinute ? unit + " per minute" : unit;
+}
+
+void StatsTable::IndicatorTooltip(Host& host, const std::string& key, const char* hint)
+{
+    const int c = LayoutCol(key.c_str());
+    if (c < 0) return;
+    s_host = &host;
+    ColTooltip(c, hint, true);
+}
+
+// ─── Values ──────────────────────────────────────────────────────────────────────────────────
+
+StatsTable::Column StatsTable::Values(const Data& data, const std::string& key, float r0, float r1, bool perMinute)
+{
+    Column out;
+    const int c = LayoutCol(key.c_str());
+    if (c < 0 || !data.ledger) return out;
+    const BattleLedger::Data& d = *data.ledger;
+    std::vector<int> rows[2];
+    for (int pid : d.players)
+        if (auto it = d.agents.find(pid); it != d.agents.end())
+            if (const int side = Team::Index01(it->second.team); side >= 0) rows[side].push_back(pid);
+
+    if (const auto* def = ExtraDef(c))
+    {
+        using MatchStats::Agg;
+        out.additive = def->agg == Agg::Count || def->agg == Agg::Sum || (def->agg == Agg::Time && !perMinute);
+        if (!data.stats)
+        {
+            for (int pid : d.players) out.players[pid] = Cell();
+            return out;
+        }
+        const auto cells = ExtraValues(data, *def, r0, r1, perMinute);
+        auto toCell = [&](const ExtraCell& e) {
+            Cell x;
+            x.v = e.v; x.num = e.num; x.den = e.den; x.n = e.n;
+            x.has = def->agg == Agg::Median ? e.n > 0 : def->agg == Agg::Ratio ? e.den > 0.0 : true;
+            return x;
+        };
+        for (int pid : d.players)
+        {
+            auto it = cells.find(pid);
+            out.players[pid] = toCell(it == cells.end() ? ExtraCell() : it->second);
+        }
+        for (int side = 0; side < 2; ++side)
+            out.team[side] = toCell(TeamExtraCell(data, *def, cells, rows[side], r0, r1, perMinute));
+        return out;
+    }
+
+    // A fixed column: the table's own numbers.
+    const auto& raw = CachedStatValues(data, r0, r1);
+    const float minutes = std::max(1.0f / 60.0f, (r1 - r0) / 60.0f);
+    const bool known = (c != SC_Dead && c != SC_Distance) || static_cast<bool>(data.track);
+    out.additive = !(c == SC_Dead && perMinute);
+    for (int pid : d.players)
+    {
+        Cell x;
+        x.has = known;
+        if (auto it = raw.find(pid); it != raw.end() && known)
+        {
+            x.v = it->second[c];
+            if (perMinute) x.v = c == SC_Dead ? x.v / std::max(1.0f, r1 - r0) * 100.0 : x.v / minutes;
+        }
+        out.players[pid] = x;
+    }
+    for (int side = 0; side < 2; ++side)
+    {
+        Cell t;
+        t.has = known;
+        for (int pid : rows[side]) t.v += out.players[pid].v;
+        if (!out.additive && !rows[side].empty()) t.v /= rows[side].size();
+        out.team[side] = t;
+    }
+    return out;
+}
+
+std::string StatsTable::Format(const std::string& key, const Cell& cell, bool perMinute, bool compact)
+{
+    if (!cell.has) return kUnavailable;
+    const int c = LayoutCol(key.c_str());
+    if (c < 0) return kUnavailable;
+    char b[48];
+    if (const auto* def = ExtraDef(c))
+    {
+        using MatchStats::Agg;
+        const char* est = def->estimated ? "~" : "";
+        switch (def->agg)
+        {
+        case Agg::Ratio:
+            if (compact) snprintf(b, sizeof b, "%d%%", (int)std::lround(cell.v * 100.0));
+            else snprintf(b, sizeof b, "%d/%d  %d%%", (int)cell.num, (int)cell.den, (int)std::lround(cell.v * 100.0));
+            return b;
+        case Agg::Median: snprintf(b, sizeof b, "%s%.2f s", est, cell.v); return b;
+        case Agg::Time:   snprintf(b, sizeof b, perMinute ? "%s%d%%" : "%s%d s", est, (int)std::lround(cell.v)); return b;
+        case Agg::Count:
+            if (perMinute) snprintf(b, sizeof b, "%s%.1f", est, cell.v);
+            else snprintf(b, sizeof b, "%s%d", est, (int)std::lround(cell.v));
+            return b;
+        case Agg::Sum:
+            return est + WithThousands(std::llround(cell.v));
+        }
+        return kUnavailable;
+    }
+    if (c == SC_Dead) { snprintf(b, sizeof b, perMinute ? "%d%%" : "%d s", (int)std::lround(cell.v)); return b; }
+    if (perMinute && IsCountCol(c)) { snprintf(b, sizeof b, "%.1f", cell.v); return b; }
+    return WithThousands(std::llround(cell.v));
+}

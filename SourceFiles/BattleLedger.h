@@ -38,6 +38,9 @@ namespace BattleLedger
         bool  estimated = false;
         int   count = 0;
         uint8_t preventGroup = 0;     // Prevented without a heal: 1 + DamageAttribution::PreventGroup
+        // Prevented: whose hit it was taken off, that hit's key (skill, -1 a weapon hit, 0 none),
+        // and for armour the Health the hit's armour penetration got through.
+        int   hitBy = 0, hitKey = 0, penetrated = 0;
     };
     constexpr int kRowMinions      = -4;
     constexpr int kRowPets         = -12;   // a pet's hits, on its ranger's "Pets" row
@@ -84,6 +87,11 @@ namespace BattleLedger
         std::unordered_map<int, std::vector<Use>> uses;   // per player, time order
         std::string guild[2], tag[2];         // blue, red: "Name [TAG]" and "TAG"
     };
+
+    // A Prevented line's estimate kind: a capped hit (Protective Spirit) or a blocked attack
+    // (Guardian, Aegis); Line::count is how many it stands for.
+    bool PreventCapped(const Line& ln);
+    bool PreventBlocked(const Line& ln);
 
     enum Metric { kDealt, kTaken, kHealed, kReceived, kPrevented, kInts, kIntsRecv, kMetricCount };
     const char* MetricName(int metric);

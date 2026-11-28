@@ -42,6 +42,7 @@ extern bool g_myMatchesTest;
 extern std::string g_libraryPageTestSelect;   // draw_library_page.inl
 extern std::string g_libraryPageTestMenu;
 void LibraryPageTestFilters(bool on);
+bool LibraryStatsTest(const std::string& cmd);   // draw_library_page.inl
 
 // ---------------------------------------------------------------------------
 // DEV TOOL: GWO_LIBRARY_SHOT=<folder for the pictures>|<match folder>. The Library window, off
@@ -101,6 +102,141 @@ void MapBrowser::LibraryShotSelfTest()
     // at GWO_LIBRARY_SHOT_SIZE (default 1800x1080, the mockup's): page.png, page_filters.png (a few
     // filters on, the Skills menu open), page_menu_map.png (the Map menu), page_spoilers.png
     // (Spoiler-free on; the test script restores settings/spoilers.json and gui_settings.ini).
+    // GWO_LIBRARY_SHOT_STATS=1 [2026-11-26]: the match's Statistics page (V48) instead, with the given
+    // match, at GWO_LIBRARY_SHOT_SIZE (default 1920x1400, the mockup's reference): Explore on the
+    // mockup's five indicators, the picker, the Table, other indicators, a range with the timeline,
+    // Clear all and Undo, a narrow window. Each step waits for the page's analysis. The test script
+    // restores stats_selection.txt and stats_favourites.txt afterwards.
+    static const bool statsShots = GetEnvironmentVariableA("GWO_LIBRARY_SHOT_STATS", nullptr, 0) > 0;
+    if (statsShots)
+    {
+        struct Step { const char* cmds; const char* picture; };
+        static const Step kSteps[] = {
+            { "select:base:dealt,base:ints,base:healed,base:prevented,kd_blocked|active:base:ints|agent:Komugi And Meruem", "stats_explore.png" },
+            { "picker:Defense", "stats_picker.png" },
+            { "picker:-|table:1", "stats_table.png" },
+            { "table:0|active:base:dealt", "stats_dealt.png" },
+            { "active:base:healed", "stats_healed.png" },
+            { "active:kd_blocked|agent:", "stats_kd_blocked.png" },
+            { "active:base:prevented|agent:", "stats_prevented.png" },
+            { "active:base:ints|agent:Komugi And Meruem|range:240,360|timeline:1", "stats_range.png" },
+            { "timeline:0|full|perminute:1|table:1", "stats_table_perminute.png" },
+            { "perminute:0|table:0|clear", "stats_cleared.png" },
+            { "table:1", "stats_cleared_table.png" },
+            { "table:0|undo", "stats_undo.png" },
+            { "picker:-|search:energy|picker:Defense", "stats_search.png" },
+            { "search:|picker:-|select:base:dealt,base:ints,base:healed,base:prevented,kd_blocked,base:taken,base:deaths,int_accuracy,int_reaction,en_denied,cond_inflicted_total,heal_effective,act_lord_damage|active:int_reaction", "stats_many.png" },
+            { "table:1", "stats_many_table.png" },
+        };
+        // GWO_LIBRARY_SHOT_STATS_STEPS="cmds=picture.png;cmds=picture.png" replaces the steps above
+        // (cmds as LibraryStatsTest takes them, joined by '|'), then the run closes.
+        static std::vector<std::pair<std::string, std::string>> steps = [] {
+            std::vector<std::pair<std::string, std::string>> v;
+            char custom[4096] = {};
+            if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT_STATS_STEPS", custom, sizeof(custom)) > 0)
+            {
+                const std::string s = custom;
+                for (size_t i = 0; i < s.size();)
+                {
+                    size_t j = s.find(';', i);
+                    if (j == std::string::npos) j = s.size();
+                    const std::string item = s.substr(i, j - i);
+                    const size_t eq = item.rfind('=');
+                    if (eq != std::string::npos) v.push_back({ item.substr(0, eq), item.substr(eq + 1) });
+                    i = j + 1;
+                }
+            }
+            if (v.empty())
+                for (const Step& st : kSteps) v.push_back({ st.cmds, st.picture });
+            return v;
+        }();
+        static const bool customSteps = GetEnvironmentVariableA("GWO_LIBRARY_SHOT_STATS_STEPS", nullptr, 0) > 0;
+        static int step = -1;
+        static double stepAt = 0.0;
+        if (stage == 0 && t > 8.0)
+        {
+            int w = 1920, hgt = 1400;
+            char sz[64] = {};
+            if (GetEnvironmentVariableA("GWO_LIBRARY_SHOT_SIZE", sz, sizeof(sz)) > 0) sscanf_s(sz, "%dx%d", &w, &hgt);
+            if (HWND h = m_deviceResources->GetWindow())
+            {
+                RECT r = {0, 0, w, hgt};
+                AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+                SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+            }
+            GuiGlobalConstants::replay_library_legacy = 0;
+            SpoilerFree::Get().SetEnabled(false);
+            g_libraryPageTestSelect = folder;
+            stage = 1;
+        }
+        else if (stage == 1 && t > 11.0)
+        {
+            LibraryStatsTest("open");
+            stage = 2;
+            stepAt = now;
+        }
+        else if (stage == 2 && LibraryStatsTest("ready") && now - stepAt > 1.0)
+        {
+            // One step a second and a half: its commands, then its picture two frames' worth later.
+            if (step >= 0 && now - stepAt > 1.5)
+            {
+                shot(steps[step].second.c_str());
+                step++;
+                stepAt = now;
+                if (step >= (int)steps.size()) { stage = customSteps ? 6 : 3; return; }
+                std::string cmds = steps[step].first;
+                for (size_t i = 0; i <= cmds.size();)
+                {
+                    size_t j = cmds.find('|', i);
+                    if (j == std::string::npos) j = cmds.size();
+                    if (j > i) LibraryStatsTest(cmds.substr(i, j - i));
+                    i = j + 1;
+                }
+            }
+            else if (step < 0)
+            {
+                step = 0;
+                stepAt = now;
+                std::string cmds = steps[0].first;
+                for (size_t i = 0; i <= cmds.size();)
+                {
+                    size_t j = cmds.find('|', i);
+                    if (j == std::string::npos) j = cmds.size();
+                    if (j > i) LibraryStatsTest(cmds.substr(i, j - i));
+                    i = j + 1;
+                }
+            }
+        }
+        else if (stage == 2 && t > 240.0)
+        {
+            RunLog::Line("library-shot: the Statistics page's analysis never became ready");
+            stage = 3;
+        }
+        else if (stage == 3)
+        {
+            // Narrow: the page stacked.
+            if (HWND h = m_deviceResources->GetWindow())
+            {
+                RECT r = {0, 0, 1280, 900};
+                AdjustWindowRect(&r, GetWindowLong(h, GWL_STYLE), FALSE);
+                SetWindowPos(h, HWND_BOTTOM, 20000, 20000, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE);
+            }
+            LibraryStatsTest("select:base:dealt,base:ints,base:healed,base:prevented,kd_blocked");
+            LibraryStatsTest("active:base:ints");
+            LibraryStatsTest("table:0");
+            stepAt = now;
+            stage = 4;
+        }
+        else if (stage == 4 && now - stepAt > 2.5) { shot("stats_narrow.png"); SpoilerFree::Get().SetEnabled(true); stage = 5; stepAt = now; }
+        else if (stage == 5 && now - stepAt > 1.5) { shot("stats_spoilers.png"); stage = 6; stepAt = now; }
+        else if (stage == 6 && now - stepAt > 0.5)
+        {
+            stage = 7;
+            if (HWND h = m_deviceResources->GetWindow()) PostMessage(h, WM_CLOSE, 0, 0);
+        }
+        return;
+    }
+
     static const bool page = GetEnvironmentVariableA("GWO_LIBRARY_SHOT_PAGE", nullptr, 0) > 0;
     if (page)
     {

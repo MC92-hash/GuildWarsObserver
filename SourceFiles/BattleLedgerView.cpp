@@ -371,6 +371,9 @@ const char* MetricName(int metric) { return metric >= 0 && metric < kMetricCount
 
 bool GivingMetric(int m) { return m == kDealt || m == kHealed || m == kPrevented || m == kInts; }
 
+bool PreventCapped(const Line& ln) { return ln.preventGroup == 1 + (uint8_t)DamageAttribution::PreventGroup::Cap; }
+bool PreventBlocked(const Line& ln) { return ln.preventGroup == 1 + (uint8_t)DamageAttribution::PreventGroup::Block; }
+
 int LineMetricGiver(Kind k)
 {
     switch (k)

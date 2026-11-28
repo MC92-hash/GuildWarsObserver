@@ -7880,7 +7880,7 @@ static void DrawDetailMaximiseButton(ImVec2 pos)
 // writes match_analysis.json beside the recording, so a second visit reads that file at once.
 // One match at a time: selecting another one stops the export still running for the last.
 
-static constexpr int kMatchAnalysisVersion = 16;   // ReplayWindow::ExportMatchAnalysis kVersion
+static constexpr int kMatchAnalysisVersion = 17;   // ReplayWindow::ExportMatchAnalysis kVersion
 
 enum class AnalysisEvent { Death, FlagCapture, MoraleBoost, Victory, ShrineCaptured, ObeliskCapture };
 
@@ -7954,6 +7954,21 @@ struct MatchAnalysisJob
     std::unordered_map<std::string, std::vector<SolvedAttribute>> builds;   // "party:number"
     bool hasLordDamage = false;   // false: neither Guild Lord is in the recording
     long lordDamage[2] = { 0, 0 }; // aggressiveness of team 1, of team 2, on the other's Lord
+    // The aggressiveness events behind those scores (ReplayWindow::ExportMatchAnalysis
+    // "aggressiveness"): the Lord damage view's score race and ladder. Times on the match clock.
+    struct LordScoreEvent
+    {
+        float t = 0.f;
+        int   cause = 0;      // LordAggressiveness::Cause
+        int   team = 0;       // whose score it moves
+        int   actor = 0;      // the attacker, or the caster of an own-lord enchantment
+        int   skill = 0;      // the enchantment's skill; the blinding / blocking skill
+        float health = 0.f, points = 0.f;
+        bool  estimated = false, underEntourage = false;
+    };
+    std::vector<LordScoreEvent> lordEvents;
+    int lordAgent[3] = { 0, 0, 0 };   // [team 1 / 2] the Guild Lord's agent id
+    long lordParts[3][7][3] = {};      // [team][cause] = count, Health, points
 };
 
 static MatchAnalysisJob s_analysis;
@@ -7998,6 +8013,7 @@ static void ReadLedger(const nlohmann::json& lj, MatchAnalysisJob& job)
         ln.amount = I(a, 4); ln.skillId = I(a, 5); ln.rowKey = I(a, 6);
         ln.weaponHit = (I(a, 7) & 1) != 0; ln.estimated = (I(a, 7) & 2) != 0;
         ln.count = I(a, 8); ln.preventGroup = (uint8_t)I(a, 9);
+        ln.hitBy = I(a, 10); ln.hitKey = I(a, 11); ln.penetrated = I(a, 12);
         d.lines.push_back(ln);
     }
     for (const auto& a : lj.value("ints", nlohmann::json::array()))
@@ -8054,6 +8070,30 @@ static bool LoadMatchAnalysis(const std::filesystem::path& file, MatchAnalysisJo
         job.lordDamage[0] = std::max(0L, (*ld)[0].get<long>());
         job.lordDamage[1] = std::max(0L, (*ld)[1].get<long>());
         job.hasLordDamage = true;
+    }
+    job.lordEvents.clear();
+    std::memset(job.lordParts, 0, sizeof(job.lordParts));
+    job.lordAgent[0] = job.lordAgent[1] = job.lordAgent[2] = 0;
+    if (const auto ag = root.find("aggressiveness"); ag != root.end() && ag->is_object())
+    {
+        auto I = [](const nlohmann::json& a, size_t i) { return i < a.size() && a[i].is_number() ? a[i].get<int>() : 0; };
+        for (const auto& e : ag->value("events", nlohmann::json::array()))
+        {
+            if (!e.is_array() || e.size() < 8) continue;
+            MatchAnalysisJob::LordScoreEvent ev;
+            ev.t = I(e, 0) / 1000.0f; ev.cause = I(e, 1); ev.team = I(e, 2); ev.actor = I(e, 3); ev.skill = I(e, 4);
+            ev.health = I(e, 5) / 10.0f; ev.points = I(e, 6) / 10.0f;
+            ev.estimated = (I(e, 7) & 1) != 0; ev.underEntourage = (I(e, 7) & 2) != 0;
+            job.lordEvents.push_back(ev);
+        }
+        const auto lords = ag->value("lord", nlohmann::json::array());
+        for (int t = 1; t <= 2; ++t) job.lordAgent[t] = I(lords, (size_t)t - 1);
+        for (int t = 1; t <= 2; ++t)
+        {
+            const nlohmann::json parts = ag->value("team" + std::to_string(t), nlohmann::json::object()).value("parts", nlohmann::json::array());
+            for (size_t c = 0; c < parts.size() && c < 7; ++c)
+                for (size_t k = 0; k < 3; ++k) job.lordParts[t][c][k] = parts[c].is_array() ? I(parts[c], k) : 0;
+        }
     }
     job.gateSeconds = std::max(0, root.value("gate_seconds", 0));
     auto readAgents = [&](const char* key, std::vector<MatchAnalysisPlayer>& out) {
@@ -9555,6 +9595,41 @@ static __declspec(noinline) void DrawStatsHeader(const MatchMeta& m, int span, i
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
+// The numbers of the Library's stats views: the analysis file's ledger and records, its deaths,
+// and the per-second track (which starts gateSeconds before 0:00) for time dead and distance.
+// Shared by the legacy Stats tab and the Statistics page (draw_library_stats.inl).
+static StatsTable::Data LibraryStatsData(const MatchMeta& m)
+{
+    const MatchAnalysisJob& job = s_analysis;
+    StatsTable::Data data;
+    data.ledger = &job.ledger;
+    data.stats = &job.stats;
+    data.skills = &GetMatchSkillView(m);
+    for (const auto& e : job.events)
+        if (e.type == AnalysisEvent::Death) data.deaths.push_back({ e.t, e.agent });
+    data.track = [&job](int agent, float a0, float a1, double& dead, double& dist) {
+        const int pre = job.gateSeconds;
+        for (const auto& pl : job.players)
+        {
+            if (pl.agent != agent) continue;
+            const int n = (int)pl.pos.size() / 4;
+            if (n == 0) return;
+            const int a = std::clamp((int)std::ceil(a0) + pre, 0, n - 1), b = std::clamp((int)std::floor(a1) + pre, 0, n - 1);
+            for (int i = a; i <= b; ++i)
+            {
+                if (pl.pos[i * 4 + 3] == 1) dead += 1.0;
+                if (i > a && pl.pos[i * 4 + 3] == 0 && pl.pos[(i - 1) * 4 + 3] == 0)
+                {
+                    const double dx = pl.pos[i * 4] - pl.pos[(i - 1) * 4], dy = pl.pos[i * 4 + 1] - pl.pos[(i - 1) * 4 + 1];
+                    dist += std::sqrt(dx * dx + dy * dy);
+                }
+            }
+            return;
+        }
+    };
+    return data;
+}
+
 static void DrawStatsTab(const MatchMeta& m)
 {
     const MatchAnalysisJob& job = s_analysis;
@@ -9594,35 +9669,7 @@ static void DrawStatsTab(const MatchMeta& m)
         ImGui::EndChild();
         ImGui::PopStyleColor();
         ImGui::SameLine(0.0f, 12.0f);
-        // The numbers: the analysis file's ledger and records, its deaths, and the per-second
-        // track (which starts gateSeconds before 0:00) for time dead and distance.
-        StatsTable::Data data;
-        data.ledger = &job.ledger;
-        data.stats = &job.stats;
-        data.skills = &GetMatchSkillView(m);
-        for (const auto& e : job.events)
-            if (e.type == AnalysisEvent::Death) data.deaths.push_back({ e.t, e.agent });
-        data.track = [&job](int agent, float a0, float a1, double& dead, double& dist) {
-            const int pre = job.gateSeconds;
-            for (const auto& pl : job.players)
-            {
-                if (pl.agent != agent) continue;
-                const int n = (int)pl.pos.size() / 4;
-                if (n == 0) return;
-                const int a = std::clamp((int)std::ceil(a0) + pre, 0, n - 1), b = std::clamp((int)std::floor(a1) + pre, 0, n - 1);
-                for (int i = a; i <= b; ++i)
-                {
-                    if (pl.pos[i * 4 + 3] == 1) dead += 1.0;
-                    if (i > a && pl.pos[i * 4 + 3] == 0 && pl.pos[(i - 1) * 4 + 3] == 0)
-                    {
-                        const double dx = pl.pos[i * 4] - pl.pos[(i - 1) * 4], dy = pl.pos[i * 4 + 1] - pl.pos[(i - 1) * 4 + 1];
-                        dist += std::sqrt(dx * dx + dy * dy);
-                    }
-                }
-                return;
-            }
-        };
-        StatsTable::DrawTable(data, host, r0, r1);
+        StatsTable::DrawTable(LibraryStatsData(m), host, r0, r1);
         return;
     }
 

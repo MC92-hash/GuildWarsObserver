@@ -320,6 +320,24 @@ void ReplayWindow::BuildBattleLedger() const
             const AttributeModel::AttributeRange* a = AttributeModel::SolvedRange(&it->second, attribute);
             return a ? a->best : -1;
         };
+        // The weapon in the attacker's hand at t, for armour penetration: a Sundering upgrade's
+        // chance-based bonus, and a hornbow's base 10% (the item keeps its base name).
+        pin.weapon = [this](int attacker, float t) {
+            DamageAttribution::PreventWeapon w;
+            auto it = m_replayCtx.agents.find(attacker);
+            if (it == m_replayCtx.agents.end() || it->second.snapshots.empty()) return w;
+            const AgentSnapshot* s = FindSnapshotAtTime(it->second, t);
+            if (!s) return w;
+            const int idx = (int)(s - it->second.snapshots.data());
+            const EquippedWeapon held = ResolveEquippedWeapon(it->second, idx, Equipment::Slot_Weapon);
+            if (!held.item || !held.item->resolved) return w;
+            for (const Equipment::Mod& m : held.item->mods)
+                if (m.id == Equipment::ModId::Armor_penetration_chance && m.arg2 > w.bonusPct)
+                { w.bonusPct = m.arg2; w.chancePct = m.arg1; }
+            w.hornbow = held.item->name.find("Hornbow") != std::string::npos
+                     || held.item->name.find("hornbow") != std::string::npos;
+            return w;
+        };
         for (const DamageAttribution::Prevention& pv : DamageAttribution::EstimatePrevention(pin))
         {
             if (pv.health <= 0 && pv.count == 0) continue;
@@ -331,6 +349,9 @@ void ReplayWindow::BuildBattleLedger() const
             ln.estimated = pv.estimated;
             ln.count = pv.count;
             ln.preventGroup = (uint8_t)pv.group + 1;
+            ln.hitBy = pv.attacker;
+            ln.hitKey = pv.hitKey > 0 ? m_skillView.ResolvePvpSkillId(pv.hitKey) : pv.hitKey;
+            ln.penetrated = pv.penetrated;
             m_ledger.push_back(ln);
         }
     }

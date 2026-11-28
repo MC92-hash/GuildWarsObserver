@@ -10,8 +10,8 @@
 // its final charcoal-and-gold sheet): a title row with Update matches and Spoiler-free, the search
 // with the All matches / Favorites switch, a row of filter menus, the match list with each team's
 // eight elite skills, and a sidebar with the selected match's facts, Replay match and both teams'
-// builds. Stats and Map open the existing full-width details (DrawMatchDetailPanel), which do not
-// fit a 450 px sidebar.
+// builds. Stats opens the match's Statistics page (draw_library_stats.inl, V48); Map the existing
+// full-width details (DrawMatchDetailPanel). Neither fits a 450 px sidebar.
 //
 // Included by draw_replay_browser.cpp near its end, so this is the same translation unit: it reads
 // the browser's state (s_state) and calls its helpers directly. The legacy page (the table, the card
@@ -3364,6 +3364,9 @@ static void DrawPinnedCard(const MatchMeta& m, const OverviewBuilds& ob)
 
 static const char* const kLordTip = "The lord damage is worked out from the recording. Nothing opens; it takes a few seconds.";
 
+// Set by the sidebar's "Details" link: the Statistics page opens on its Lord damage view.
+static bool s_openLordView = false;
+
 static std::string DownloadSize(uint64_t bytes)
 {
     char buf[32];
@@ -3445,9 +3448,49 @@ static float DrawLordDamage(ImDrawList* dl, const MatchMeta& m, const GuildLabel
             ImageContain(dl, lord, 100.0f, 217.0f, ImVec2(x, top + (compact ? Px(8) : Px(9))),
                          ImVec2(x + Px(25), top + (compact ? Px(8) : Px(9)) + (compact ? Px(50) : Px(54))));
     }
+    // Calculated: the way into the full view (the Statistics page's Lord damage) - the "View
+    // breakdown" label beside the heading, and the Guild Lord himself, both opening it.
+    const float lordFoot = top + (compact ? Px(8) : Px(9)) + (compact ? Px(50) : Px(54));
+    bool openView = false, figHov = false;
+    if (have && !hidden)
+    {
+        const ImVec2 f0(x, top + (compact ? Px(8) : Px(9)));
+        ImGui::SetCursorScreenPos(f0);
+        openView = ImGui::InvisibleButton("##lib_lord_fig", ImVec2(Px(25), lordFoot - f0.y));
+        figHov = ImGui::IsItemHovered();
+    }
     const float cx = x + Px(36), cw = w - Px(36);
     const float headTop = top + (compact ? Px(6) : Px(10));
-    TextSpaced(dl, T(10), ImVec2(cx, R(headTop + (Px(18) - LineH(10)) * 0.5f)), v41::LordHead, "LORD DAMAGE", Px(1));
+    const float headW = TextSpaced(dl, T(10), ImVec2(cx, R(headTop + (Px(18) - LineH(10)) * 0.5f)), v41::LordHead, "LORD DAMAGE", Px(1));
+    if (have && !hidden)
+    {
+        // "View breakdown ›": a small gold pill right after the heading.
+        const Type lt = T(10.5f, true);
+        const char* label = "View breakdown";
+        const float lw = TextW(lt, label) + Px(18) + Px(10), lh = Px(20);
+        const ImVec2 l0(R(cx + headW + Px(8)), R(headTop + (Px(18) - lh) * 0.5f)), l1(l0.x + lw, l0.y + lh);
+        ImGui::SetCursorScreenPos(l0);
+        openView |= ImGui::InvisibleButton("##lib_lord_view", ImVec2(lw, lh));
+        const bool hov = ImGui::IsItemHovered() || figHov;
+        dl->AddRectFilled(l0, l1, hov ? Hex(0xd9b45e, 0x4d) : Hex(0xd9b45e, 0x2b), lh * 0.5f);
+        Outline(dl, l0, l1, hov ? Hex(0xf0d189) : Hex(0xd9b45e, 0xd9), lh * 0.5f);
+        const ImU32 fg = hov ? Hex(0xfff3d6) : Hex(0xf1dcae);
+        Text(dl, lt, ImVec2(l0.x + Px(9), R(l0.y + (lh - LineH(10.5f)) * 0.5f)), fg, label);
+        const float chx = l1.x - Px(10), chy = l0.y + lh * 0.5f;   // a chevron, drawn (the label's font has no ›)
+        dl->AddLine(ImVec2(chx - Px(2.5f), chy - Px(3.5f)), ImVec2(chx + Px(1), chy), fg, Px(1.6f));
+        dl->AddLine(ImVec2(chx + Px(1), chy), ImVec2(chx - Px(2.5f), chy + Px(3.5f)), fg, Px(1.6f));
+        if (hov)
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::SetTooltip("Open full lord damage");
+        }
+        if (openView)
+        {
+            s_openLordView = true;
+            s_state.detailTab = DetailTab_Stats;
+            s_state.detailMaximised = true;
+        }
+    }
     const char* status = have ? (hidden ? "Calculated \xC2\xB7 hidden" : "Calculated")
                        : absent      ? "No Guild Lord in this recording"
                        : downloading ? "Downloading"
@@ -3562,7 +3605,8 @@ static float DrawLordDamage(ImDrawList* dl, const MatchMeta& m, const GuildLabel
         }
     }
 
-    const float bottom = std::max(top + (compact ? Px(72) : Px(112)), rowsTop + rowH * 2.0f + rowGap + (compact ? Px(9) : Px(13)));
+    const float below = rowsTop + rowH * 2.0f + rowGap;
+    const float bottom = std::max({ top + (compact ? Px(72) : Px(112)), below + (compact ? Px(9) : Px(13)), lordFoot + Px(8) });
     HRule(dl, x, x + w, bottom - 1.0f, Hex(0xffffff, 0x12));
     return bottom + Px(2);
 }
@@ -3891,6 +3935,10 @@ static void DrawAside(const MatchMeta& m, bool backLink, OverviewBuilds& obOut)
     ImGui::Dummy(ImVec2(fullW, y - o.y));
 }
 
+// ─── The match's Statistics page (V48) ───────────────────────────────────────
+// Its own file, this namespace: it uses the page's type, panels and helpers above.
+#include "draw_library_stats.inl"
+
 // ─── The page ────────────────────────────────────────────────────────────────
 
 // The page's scale follows the window. When it settles on a new step for half a second, the page's
@@ -4021,7 +4069,17 @@ static void Draw(const std::vector<MatchMeta>& matches)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const bool validSel = s_state.selectedMatchIndex >= 0 && s_state.selectedMatchIndex < (int)matches.size();
 
-    // Stats and Map: the full-width details, until their Show list.
+    // Stats: the match's Statistics page (draw_library_stats.inl), over the hall's scene.
+    if (s_state.detailMaximised && validSel && s_state.detailTab == DetailTab_Stats)
+    {
+        DrawStatsPage(matches[s_state.selectedMatchIndex], wp, ws);
+        ImGui::End();
+        ImGui::PopStyleVar();   // FrameBorderSize
+        PopGlassTheme(themeColors);
+        return;
+    }
+
+    // Map: the full-width details, until their Show list.
     if (s_state.detailMaximised && validSel)
     {
         ImGui::SetCursorScreenPos(wp);
@@ -4342,4 +4400,95 @@ void LibraryPageTestFilters(bool on)
                 added++;
                 break;
             }
+}
+
+// DEV TOOL (GWO_LIBRARY_SHOT_STATS, MapBrowser.cpp): drives the Statistics page for its pictures.
+// "open" (the selected match's page), "ready" (true once its analysis is read), "select:k1,k2,..."
+// (the selection, in that order), "active:<key>", "agent:<name>", "picker:<category>" ("-" closes
+// it), "search:<text>", "table:1|0", "clear", "undo", "range:<from s>,<to s>", "full",
+// "timeline:1|0", "perminute:1|0". The test script restores stats_selection.txt and
+// stats_favourites.txt afterwards.
+bool LibraryStatsTest(const std::string& cmd)
+{
+    using namespace libpage;
+    const size_t colon = cmd.find(':');
+    const std::string verb = cmd.substr(0, colon), arg = colon == std::string::npos ? std::string() : cmd.substr(colon + 1);
+    if (verb == "open")
+    {
+        s_state.detailTab = DetailTab_Stats;
+        s_state.detailMaximised = true;
+        return true;
+    }
+    if (verb == "lord")
+    {
+        s_openLordView = true;
+        s_state.detailTab = DetailTab_Stats;
+        s_state.detailMaximised = true;
+        return true;
+    }
+    if (verb == "ready")
+        return s_analysis.state == MatchAnalysisJob::State::Ready && !s_analysis.ledger.players.empty();
+    if (verb == "select")
+    {
+        StatsTable::ClearSelection();
+        size_t i = 0;
+        while (i <= arg.size())
+        {
+            size_t j = arg.find(',', i);
+            if (j == std::string::npos) j = arg.size();
+            if (j > i) StatsTable::Select(arg.substr(i, j - i), true);
+            i = j + 1;
+        }
+        NormalizeActive();
+        return true;
+    }
+    if (verb == "active") { ActivateIndicator(arg); return true; }
+    if (verb == "agent")
+    {
+        s_sp.agent = -1;   // none named: the ranking's first
+        for (const auto& [id, ag] : s_analysis.ledger.agents)
+            if (ag.name == arg) s_sp.agent = id;
+        return true;
+    }
+    if (verb == "picker") { s_sp.pickerOpen = arg != "-"; if (s_sp.pickerOpen) s_sp.category = arg; return true; }
+    if (verb == "search") { snprintf(s_sp.search, sizeof s_sp.search, "%s", arg.c_str()); return true; }
+    if (verb == "table") { s_sp.table = arg == "1"; if (s_sp.table) s_sp.focusColumn = s_sp.active; return true; }
+    if (verb == "clear")
+    {
+        const auto sel = StatsTable::Selection();
+        s_sp.undo = StatsTable::TakeSnapshot();
+        s_sp.undoActive = s_sp.active;
+        s_sp.cleared = (int)sel.size();
+        s_sp.undoReady = !sel.empty();
+        StatsTable::ClearSelection();
+        s_sp.active.clear();
+        return true;
+    }
+    if (verb == "undo")
+    {
+        if (!s_sp.undoReady) return false;
+        StatsTable::Restore(s_sp.undo);
+        s_sp.active = s_sp.undoActive;
+        s_sp.undoReady = false;
+        NormalizeActive();
+        return true;
+    }
+    if (verb == "range")
+    {
+        float a = 0.0f, b = 0.0f;
+        if (sscanf_s(arg.c_str(), "%f,%f", &a, &b) != 2 || b <= a) return false;
+        const int pre = s_sp.lastPre;
+        const int span = std::max(1, s_sp.lastSpan);
+        s_state.scope = Scope_Range;
+        s_state.detailIntervalFrom = std::clamp((a + pre) / span, 0.0f, 1.0f);
+        s_state.detailIntervalTo = std::clamp((b + pre) / span, 0.0f, 1.0f);
+        return true;
+    }
+    if (verb == "full") { s_state.scope = Scope_Full; s_state.detailIntervalFrom = 0.0f; s_state.detailIntervalTo = 1.0f; return true; }
+    if (verb == "timeline") { s_sp.timeOpen = arg == "1"; return true; }
+    if (verb == "tug") { s_lv.tug = arg == "1"; return true; }
+    if (verb == "possible") { s_lv.possible = arg == "1"; return true; }
+    if (verb == "scroll") { s_lv.scrollReq = (float)std::atof(arg.c_str()); return true; }
+    if (verb == "perminute") { StatsTable::SetPerMinute(arg == "1"); return true; }
+    return false;
 }
